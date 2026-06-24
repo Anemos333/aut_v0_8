@@ -1,0 +1,82 @@
+name: Build Linux VST3
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build-linux-vst3:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            ninja-build \
+            pkg-config \
+            zip \
+            libasound2-dev \
+            libjack-jackd2-dev \
+            libfreetype6-dev \
+            libfontconfig1-dev \
+            libx11-dev \
+            libxext-dev \
+            libxinerama-dev \
+            libxrandr-dev \
+            libxcursor-dev \
+            libxcomposite-dev \
+            libxdamage-dev \
+            libxrender-dev \
+            libwebkit2gtk-4.0-dev \
+            libglu1-mesa-dev \
+            mesa-common-dev
+
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: |
+          cmake --build build --config Release --verbose
+
+      - name: Inspect build output
+        if: always()
+        run: |
+          echo "=== Looking for VST3 bundles ==="
+          find build -name "*.vst3" -print || true
+
+          echo "=== Looking for shared objects ==="
+          find build -name "*.so" -print || true
+
+          echo "=== Build tree top level ==="
+          find build -maxdepth 4 -type f | head -200 || true
+
+      - name: Package VST3
+        run: |
+          mkdir -p artifacts
+          VST3_PATH="$(find build -name "*.vst3" -type d | head -n 1)"
+
+          if [ -z "$VST3_PATH" ]; then
+            echo "ERROR: no .vst3 bundle found in build/"
+            exit 1
+          fi
+
+          echo "Found VST3: $VST3_PATH"
+          cp -R "$VST3_PATH" artifacts/
+
+          cd artifacts
+          zip -r MicrotonalAutotune-linux-VST3.zip *.vst3
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: MicrotonalAutotune-linux-VST3
+          path: artifacts/MicrotonalAutotune-linux-VST3.zip
