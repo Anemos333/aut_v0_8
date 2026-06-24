@@ -1,0 +1,70 @@
+name: Build Windows VST3
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build-windows-vst3:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -B build `
+            -G "Visual Studio 17 2022" `
+            -A x64 `
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        shell: pwsh
+        run: |
+          cmake --build build --config Release --verbose
+
+      - name: Inspect build output
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host "=== Looking for VST3 bundles ==="
+          Get-ChildItem -Path build -Recurse -Directory -Filter "*.vst3" | ForEach-Object {
+            Write-Host $_.FullName
+          }
+
+          Write-Host "=== Looking for VST3 binaries ==="
+          Get-ChildItem -Path build -Recurse -File -Filter "*.vst3" | ForEach-Object {
+            Write-Host $_.FullName
+          }
+
+      - name: Package VST3
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+
+          $vst3 = Get-ChildItem -Path build -Recurse -Directory -Filter "*.vst3" | Select-Object -First 1
+
+          if (-not $vst3) {
+            Write-Error "No .vst3 bundle directory found in build/"
+            exit 1
+          }
+
+          Write-Host "Found VST3 bundle:"
+          Write-Host $vst3.FullName
+
+          $dest = Join-Path "artifacts" $vst3.Name
+          Copy-Item -Path $vst3.FullName -Destination $dest -Recurse -Force
+
+          Compress-Archive `
+            -Path $dest `
+            -DestinationPath "artifacts/MicrotonalAutotune-windows-VST3.zip" `
+            -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: MicrotonalAutotune-windows-VST3
+          path: artifacts/MicrotonalAutotune-windows-VST3.zip
