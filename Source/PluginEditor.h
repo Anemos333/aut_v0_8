@@ -40,12 +40,29 @@ private:
     juce::Slider amountKnob;
     juce::Label  amountLabel;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> amountAttachment;
+
     juce::Slider humanizeSlider;
     juce::Label  humanizeLabel;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> humanizeAttachment;
 
+    // Scale Lock & Analog Mode
     juce::ToggleButton scaleLockButton { "Scale Lock" };
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> scaleLockAttachment;
+
+    juce::Slider lockHysteresisSlider;
+    juce::Label lockHysteresisLabel;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> lockHysteresisAttachment;
+
+    juce::Slider vibratoPreserveSlider;
+    juce::Label vibratoPreserveLabel;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> vibratoPreserveAttachment;
+
+    juce::ToggleButton analogModeButton { "Analog Mode" };
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> analogModeAttachment;
+
+    juce::Slider outVolumeSlider;
+    juce::Label outVolumeLabel;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> outVolumeAttachment;
 
     // Custom scale editor (shown/hidden)
     std::unique_ptr<CustomScaleEditor> customScaleEditorPage;

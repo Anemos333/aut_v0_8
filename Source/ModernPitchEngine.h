@@ -2,6 +2,7 @@
 
 #include <JuceHeader.h>
 #include "Tempo.h"
+#include "ScaleLock.h"
 
 #include <array>
 #include <atomic>
@@ -42,7 +43,6 @@ public:
     struct Parameters
     {
         float amount = 1.0f;                 // 0..1
-        bool scaleLock = false;              // hard-quantise the wet path to the selected scale target
         float retuneTimeMs = 8.0f;           // stable-note correction time
         float transitionTimeMs = 35.0f;      // note-to-note transition time
         float preserveVibrato = 0.70f;       // 0..1
@@ -58,6 +58,13 @@ public:
         // Wind Fix V5: 0 keeps the V4 residual unchanged, 1 applies the
         // full soft de-breath curve (up to approximately 12 dB in the air band).
         float breathReduction = 0.50f;       // 0..1
+
+        // Scale Lock Parameters
+        bool scaleLock = false;
+        float lockHysteresis = 24.0f;       // 0..80 cents
+        float vibratoPreserve = 0.0f;       // 0..1
+        int scaleSize = 12;
+        int latencyMode = 1;
 
         // Creative tempo layer. When mode == off, the V5 signal path is
         // unchanged. The controller acts only on confirmed target revisions.
@@ -163,7 +170,6 @@ private:
         float consensus = 0.0f;
         float onsetStrength = 0.0f;
         float breathReduction = 0.50f;
-        bool scaleLock = false;
         TrackingState trackingState = TrackingState::unvoiced;
         float noteAgeSeconds = 0.0f;
     };
@@ -459,6 +465,7 @@ private:
         double synthesisTargetCorrectionCents_ = 0.0;
         double currentCorrectionCents_ = 0.0;
         double correctionVelocityCentsPerSecond_ = 0.0;
+        ScaleLock::Processor scaleLockProcessor_;
         std::uint64_t targetRevision_ = 0;
 
         float currentConfidence_ = 0.0f;
@@ -827,6 +834,7 @@ private:
     std::atomic<float> meterCorrectionCents_ { 0.0f };
     std::atomic<float> meterWetMix_ { 0.0f };
     std::atomic<float> meterTransitionBlend_ { 0.0f };
+
     std::atomic<bool> meterDualSynthesisActive_ { false };
     std::atomic<int> meterDetectorSupport_ { 0 };
     std::atomic<int> meterOctaveState_ { 0 };

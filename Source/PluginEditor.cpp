@@ -10,14 +10,14 @@ MicrotonalAutotuneAudioProcessorEditor::MicrotonalAutotuneAudioProcessorEditor (
       processorRef (p)
 {
     // Load background images from BinaryData
-     bgImage = juce::ImageCache::getFromMemory (BinaryData::sfondo1_jpeg,
-                                             BinaryData::sfondo1_jpegSize);
-    //bgImage = juce::ImageCache::getFromMemory (BinaryData::sfondo4_jfif,
-                                                //BinaryData::sfondo4_jfifSize);
-     bgImageScaleEditor = juce::ImageCache::getFromMemory (BinaryData::sfondo2_jpg,
-                                                           BinaryData::sfondo2_jpgSize);
-    //bgImageScaleEditor = juce::ImageCache::getFromMemory (BinaryData::sfondo5_jpeg,
-                                                           //BinaryData::sfondo5_jpegSize);
+    // bgImage = juce::ImageCache::getFromMemory (BinaryData::sfondo1_jpeg,
+    //                                             BinaryData::sfondo1_jpegSize);
+    bgImage = juce::ImageCache::getFromMemory (BinaryData::sfondo4_jfif,
+                                                BinaryData::sfondo4_jfifSize);
+    // bgImageScaleEditor = juce::ImageCache::getFromMemory (BinaryData::sfondo2_jpg,
+    //                                                        BinaryData::sfondo2_jpgSize);
+    bgImageScaleEditor = juce::ImageCache::getFromMemory (BinaryData::sfondo5_jpeg,
+                                                           BinaryData::sfondo5_jpegSize);
 
     // ==================== Scale Selector ====================
     scaleSelectorLabel.setText ("Scala:", juce::dontSendNotification);
@@ -86,7 +86,13 @@ MicrotonalAutotuneAudioProcessorEditor::MicrotonalAutotuneAudioProcessorEditor (
     speedKnob.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 80, 20);
     speedKnob.setColour (juce::Slider::rotarySliderFillColourId, juce::Colour (0xFF6C63FF));
     speedKnob.setColour (juce::Slider::thumbColourId, juce::Colours::white);
-    speedKnob.setTextValueSuffix (" ms");
+    speedKnob.textFromValueFunction = [this](double val) {
+        if (scaleLockButton.getToggleState()) {
+            double mappedVal = val * (7.0 / 500.0);
+            return juce::String(mappedVal, 2) + " ms";
+        }
+        return juce::String(val, 1) + " ms";
+    };
     addAndMakeVisible (speedKnob);
 
     speedLabel.setText ("Velocita (ms)", juce::dontSendNotification);
@@ -114,6 +120,7 @@ MicrotonalAutotuneAudioProcessorEditor::MicrotonalAutotuneAudioProcessorEditor (
 
     amountAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
         processorRef.getAPVTS(), "amount", amountKnob);
+
     // ==================== Humanize Slider ====================
     humanizeSlider.setSliderStyle (juce::Slider::LinearHorizontal);
     humanizeSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 60, 20);
@@ -140,10 +147,60 @@ MicrotonalAutotuneAudioProcessorEditor::MicrotonalAutotuneAudioProcessorEditor (
     humanizeAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
         processorRef.getAPVTS(), "humanize", humanizeSlider);
 
-    scaleLockButton.setColour (juce::ToggleButton::textColourId, juce::Colours::white);
-    addAndMakeVisible (scaleLockButton);
-    scaleLockAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
+    // ==================== Modifica A: Scale Lock ====================
+    scaleLockButton.setColour(juce::ToggleButton::textColourId, juce::Colours::white);
+    addAndMakeVisible(scaleLockButton);
+    scaleLockAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
         processorRef.getAPVTS(), "scaleLock", scaleLockButton);
+    scaleLockButton.onClick = [this]() { setMainControlsVisible(true); };
+
+    lockHysteresisSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    lockHysteresisSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 60, 20);
+    lockHysteresisSlider.setTextValueSuffix (" c");
+    lockHysteresisSlider.setColour (juce::Slider::trackColourId, juce::Colour (0xFFFF0066));
+    lockHysteresisSlider.setColour (juce::Slider::thumbColourId, juce::Colours::white);
+    addAndMakeVisible(lockHysteresisSlider);
+    lockHysteresisLabel.setText ("Lock Hysteresis", juce::dontSendNotification);
+    lockHysteresisLabel.setFont (juce::FontOptions (14.0f, juce::Font::bold));
+    lockHysteresisLabel.setColour (juce::Label::textColourId, juce::Colours::white);
+    lockHysteresisLabel.setJustificationType (juce::Justification::centredLeft);
+    addAndMakeVisible(lockHysteresisLabel);
+    lockHysteresisAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
+        processorRef.getAPVTS(), "lockHysteresis", lockHysteresisSlider);
+
+    vibratoPreserveSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    vibratoPreserveSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 60, 20);
+    vibratoPreserveSlider.setTextValueSuffix (" %");
+    vibratoPreserveSlider.setColour (juce::Slider::trackColourId, juce::Colour (0xFFFF0066));
+    vibratoPreserveSlider.setColour (juce::Slider::thumbColourId, juce::Colours::white);
+    addAndMakeVisible(vibratoPreserveSlider);
+    vibratoPreserveLabel.setText ("Vibrato Preserve", juce::dontSendNotification);
+    vibratoPreserveLabel.setFont (juce::FontOptions (14.0f, juce::Font::bold));
+    vibratoPreserveLabel.setColour (juce::Label::textColourId, juce::Colours::white);
+    vibratoPreserveLabel.setJustificationType (juce::Justification::centredLeft);
+    addAndMakeVisible(vibratoPreserveLabel);
+    vibratoPreserveAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
+        processorRef.getAPVTS(), "vibratoPreserve", vibratoPreserveSlider);
+
+    // ==================== Modifica B: Analog Mode ====================
+    analogModeButton.setColour(juce::ToggleButton::textColourId, juce::Colours::white);
+    addAndMakeVisible(analogModeButton);
+    analogModeAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
+        processorRef.getAPVTS(), "analogMode", analogModeButton);
+
+    outVolumeSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    outVolumeSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 60, 20);
+    outVolumeSlider.setTextValueSuffix (" dB");
+    outVolumeSlider.setColour (juce::Slider::trackColourId, juce::Colour (0xFFFF9900));
+    outVolumeSlider.setColour (juce::Slider::thumbColourId, juce::Colours::white);
+    addAndMakeVisible(outVolumeSlider);
+    outVolumeLabel.setText ("Out Volume", juce::dontSendNotification);
+    outVolumeLabel.setFont (juce::FontOptions (14.0f, juce::Font::bold));
+    outVolumeLabel.setColour (juce::Label::textColourId, juce::Colours::white);
+    outVolumeLabel.setJustificationType (juce::Justification::centredLeft);
+    addAndMakeVisible(outVolumeLabel);
+    outVolumeAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
+        processorRef.getAPVTS(), "outVolume", outVolumeSlider);
 
     // ==================== Creative Tempo page ====================
     tempoPageButton.onClick = [this]() { showTempoPage(); };
@@ -248,20 +305,28 @@ void MicrotonalAutotuneAudioProcessorEditor::setMainControlsVisible(
 {
     scaleSelector.setVisible (shouldBeVisible);
     scaleSelectorLabel.setVisible (shouldBeVisible);
-    scaleLockButton.setVisible (shouldBeVisible);
     rootNoteSelector.setVisible (shouldBeVisible);
     rootNoteSelectorLabel.setVisible (shouldBeVisible);
     speedKnob.setVisible (shouldBeVisible);
     speedLabel.setVisible (shouldBeVisible);
     amountKnob.setVisible (shouldBeVisible);
     amountLabel.setVisible (shouldBeVisible);
+    humanizeSlider.setVisible (shouldBeVisible);
+    humanizeLabel.setVisible (shouldBeVisible);
     modeSelector.setVisible (shouldBeVisible);
     modeSelectorLabel.setVisible (shouldBeVisible);
     tempoPageButton.setVisible (shouldBeVisible);
-    humanizeSlider.setVisible (shouldBeVisible);
-    humanizeLabel.setVisible (shouldBeVisible);
-    
 
+    scaleLockButton.setVisible (shouldBeVisible);
+    analogModeButton.setVisible (shouldBeVisible);
+    outVolumeSlider.setVisible (shouldBeVisible);
+    outVolumeLabel.setVisible (shouldBeVisible);
+
+    bool lockIsOn = scaleLockButton.getToggleState();
+    lockHysteresisSlider.setVisible (shouldBeVisible && lockIsOn);
+    lockHysteresisLabel.setVisible (shouldBeVisible && lockIsOn);
+    vibratoPreserveSlider.setVisible (shouldBeVisible && lockIsOn);
+    vibratoPreserveLabel.setVisible (shouldBeVisible && lockIsOn);
 }
 
 void MicrotonalAutotuneAudioProcessorEditor::setTempoControlsVisible(
@@ -515,6 +580,17 @@ void MicrotonalAutotuneAudioProcessorEditor::timerCallback()
     displayedMetering = processorRef.getPitchMetering();
     if (showingTempoPage)
         updateTempoModeButtons();
+
+    bool lockIsOn = scaleLockButton.getToggleState();
+    if (lockIsOn) {
+        speedKnob.setColour(juce::Slider::rotarySliderFillColourId, juce::Colour(0xFFFF0066));
+    } else {
+        speedKnob.setColour(juce::Slider::rotarySliderFillColourId, juce::Colour(0xFF6C63FF));
+    }
+    
+    // Ripeti il refresh del textValue per far triggerare l'aggiornamento quando si clicca
+    speedKnob.updateText();
+
     repaint();
 }
 
@@ -850,12 +926,11 @@ void MicrotonalAutotuneAudioProcessorEditor::resized()
     modeSelector.setBounds (modeStartX + modeLabelWidth + 4, topMargin, modeSelectorWidth, selectorHeight);
 
     tempoPageButton.setBounds (width / 2 - 45, topMargin + selectorHeight + 10, 90, 28);
-    scaleLockButton.setBounds (topStartX, topMargin + selectorHeight + 10, 100, 28);
 
     // Knobs: centered vertically, at 1/4 and 3/4 width
     int knobSize = juce::jmin (120, width / 4, height / 3);
     int knobCenterY = juce::jmax (90,
-        juce::jmin (height / 2 - 20, height - 215));
+        juce::jmin (height / 2 - 35, height - 250));
 
     // Speed knob at 1/4
     int speedCenterX = width / 4;
@@ -870,26 +945,37 @@ void MicrotonalAutotuneAudioProcessorEditor::resized()
                           knobSize, knobSize);
     amountLabel.setBounds (amountCenterX - knobSize / 2, knobCenterY + knobSize / 2 + 4,
                            knobSize, 20);
-    // humanize
-    // Humanize slider: same width as meter panel, just above it
-auto meterLayoutArea = getLocalBounds();
-meterLayoutArea.removeFromBottom (38); // title area, same as paint()
 
-auto meterArea = meterLayoutArea.removeFromBottom (136).reduced (18, 4);
+    // Scale Lock & Analog Mode Layout
+    int slidersStartY = knobCenterY + knobSize / 2 + 30;
+    
+    // Left side: Scale Lock
+    scaleLockButton.setBounds (speedCenterX - 60, slidersStartY, 120, 24);
+    
+    lockHysteresisLabel.setBounds (speedCenterX - 110, slidersStartY + 28, 100, 24);
+    lockHysteresisSlider.setBounds (speedCenterX - 10, slidersStartY + 28, 140, 24);
+    
+    vibratoPreserveLabel.setBounds (speedCenterX - 110, slidersStartY + 56, 100, 24);
+    vibratoPreserveSlider.setBounds (speedCenterX - 10, slidersStartY + 56, 140, 24);
 
-constexpr int humanizeHeight = 24;
-constexpr int humanizeGap = 6;
+    // Right side: Analog Mode
+    analogModeButton.setBounds (amountCenterX - 60, slidersStartY, 120, 24);
+    
+    outVolumeLabel.setBounds (amountCenterX - 110, slidersStartY + 28, 90, 24);
+    outVolumeSlider.setBounds (amountCenterX - 20, slidersStartY + 28, 140, 24);
 
-auto humanizeArea = meterArea
-    .withY (meterArea.getY() - humanizeHeight - humanizeGap)
-    .withHeight (humanizeHeight);
-
-// Label + slider inside the same total width as the meter box
-auto labelArea = humanizeArea.removeFromLeft (90);
-humanizeArea.removeFromLeft (8);
-
-humanizeLabel.setBounds (labelArea);
-humanizeSlider.setBounds (humanizeArea);
+    // Humanize slider above metering area
+    int meterHeight = 136;
+    int titleHeight = 38;
+    int sliderHeight = 24;
+    int bottomMargin = titleHeight + meterHeight + 10;
+    
+    // "lungo come la finestra di metering"
+    int meterMargin = 18;
+    int meterAreaWidth = width - (meterMargin * 2);
+    
+    humanizeLabel.setBounds(meterMargin, height - bottomMargin - sliderHeight, 80, sliderHeight);
+    humanizeSlider.setBounds(meterMargin + 80, height - bottomMargin - sliderHeight, meterAreaWidth - 80, sliderHeight);
 }
 
 void MicrotonalAutotuneAudioProcessorEditor::onRootNoteSelected()

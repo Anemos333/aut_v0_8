@@ -99,6 +99,13 @@ public:
         parameters_.tempo = settings;
     }
 
+    void setScaleLockParameters(bool scaleLock, float lockHysteresis, float vibratoPreserve) noexcept
+    {
+        parameters_.scaleLock = scaleLock;
+        parameters_.lockHysteresis = lockHysteresis;
+        parameters_.vibratoPreserve = vibratoPreserve;
+    }
+
     void setTempoHostPosition(const CreativeTempo::HostPosition& position) noexcept
     {
         tempoHostPosition_ = position;
@@ -109,31 +116,16 @@ public:
                  int numberOfScaleRatios,
                  double rootFrequency,
                  float speedMs,
-                 float amount,
-                 float humanize,
-                 bool scaleLock = false)
+                 float amount)
     {
-        ModernPitchEngine::Parameters parameters = parameters_;
-        parameters.retuneTimeMs = speedMs;
-        parameters.amount = std::clamp(amount, 0.0f, 1.0f);
-        parameters.humanize = std::clamp(humanize, 0.0f, 1.0f);
-        parameters.scaleLock = scaleLock;
-
-        if (scaleLock)
-        {
-            // Scale Lock hard-quantises the wet path. Amount remains dry/wet;
-            // Humanize is kept as a timbral naturalness/noise/breath control.
-            parameters.preserveVibrato = 0.0f;
-            parameters.breathReduction = std::clamp(0.85f - 0.55f * parameters.humanize,
-                                                    0.20f, 0.85f);
-        }
-
+        parameters_.retuneTimeMs = speedMs;
+        parameters_.amount = amount;
         auto& engine = activeEngine();
         engine.process(buffer,
                        scaleRatios,
                        numberOfScaleRatios,
                        rootFrequency,
-                       parameters,
+                       parameters_,
                        tempoHostPosition_);
     }
 
@@ -141,18 +133,14 @@ public:
                  const std::vector<double>& scaleRatios,
                  double rootFrequency,
                  float speedMs,
-                 float amount,
-                 float humanize,
-                 bool scaleLock = false)
+                 float amount)
     {
         process(buffer,
                 scaleRatios.empty() ? nullptr : scaleRatios.data(),
                 static_cast<int>(scaleRatios.size()),
                 rootFrequency,
                 speedMs,
-                amount,
-                humanize,
-                scaleLock);
+                amount);
     }
 
     void process(float* data,
@@ -160,33 +148,19 @@ public:
                  const std::vector<double>& scaleRatios,
                  double rootFrequency,
                  float speedMs,
-                 float amount,
-                 float humanize,
-                 bool scaleLock = false)
+                 float amount)
     {
         if (data == nullptr || numberOfSamples <= 0)
             return;
-
-        ModernPitchEngine::Parameters parameters = parameters_;
-        parameters.retuneTimeMs = speedMs;
-        parameters.amount = std::clamp(amount, 0.0f, 1.0f);
-        parameters.humanize = std::clamp(humanize, 0.0f, 1.0f);
-        parameters.scaleLock = scaleLock;
-
-        if (scaleLock)
-        {
-            parameters.preserveVibrato = 0.0f;
-            parameters.breathReduction = std::clamp(0.85f - 0.55f * parameters.humanize,
-                                                    0.20f, 0.85f);
-        }
-
+        parameters_.retuneTimeMs = speedMs;
+        parameters_.amount = amount;
         float* channels[] { data };
         juce::AudioBuffer<float> view(channels, 1, numberOfSamples);
         activeEngine().process(view,
                                scaleRatios.empty() ? nullptr : scaleRatios.data(),
                                static_cast<int>(scaleRatios.size()),
                                rootFrequency,
-                               parameters);
+                               parameters_);
     }
 
     void processBypassed(juce::AudioBuffer<float>& buffer)

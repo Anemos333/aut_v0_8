@@ -27,10 +27,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout MicrotonalAutotuneAudioProce
     params.push_back (std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID { "amount", 1 }, "Amount",
         juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f), 100.0f));
+
     params.push_back (std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID { "humanize", 1 }, "Humanize",
         juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f), 20.0f));
-
 
     params.push_back (std::make_unique<juce::AudioParameterChoice> (
         juce::ParameterID { "tempoMode", 1 }, "Creative Tempo Mode",
@@ -47,20 +47,32 @@ juce::AudioProcessorValueTreeState::ParameterLayout MicrotonalAutotuneAudioProce
     params.push_back (std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID { "tempoLockStrength", 1 }, "Glide Lock Strength",
         juce::NormalisableRange<float> (0.0f, 100.0f, 1.0f), 100.0f));
-    params.push_back (std::make_unique<juce::AudioParameterChoice> (
-    juce::ParameterID { "processingMode", 1 },
-    "Processing Mode",
-    juce::StringArray { "Slow", "Quality", "Live", "UltraLive" },
-    1));
+
     params.push_back (std::make_unique<juce::AudioParameterBool> (
         juce::ParameterID { "tempoSmartOnset", 1 }, "Smart Onset", true));
 
+    // Modifica A: Scale Lock
     params.push_back (std::make_unique<juce::AudioParameterBool> (
         juce::ParameterID { "scaleLock", 1 }, "Scale Lock", false));
-    
+        
+    params.push_back (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { "lockHysteresis", 1 }, "Lock Hysteresis",
+        juce::NormalisableRange<float> (0.0f, 80.0f, 1.0f), 24.0f));
+        
+    params.push_back (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { "vibratoPreserve", 1 }, "Vibrato Preserve",
+        juce::NormalisableRange<float> (0.0f, 100.0f, 1.0f), 0.0f));
+
+    // Modifica B: Analog Tube
+    params.push_back (std::make_unique<juce::AudioParameterBool> (
+        juce::ParameterID { "analogMode", 1 }, "Analog Mode", false));
+        
+    params.push_back (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { "outVolume", 1 }, "Output Volume",
+        juce::NormalisableRange<float> (-36.0f, 12.0f, 0.1f), 0.0f));
+
     return { params.begin(), params.end() };
 }
-   
 
 //==============================================================================
 const juce::String MicrotonalAutotuneAudioProcessor::getName() const { return "Microtonal Autotune"; }
@@ -130,10 +142,11 @@ void MicrotonalAutotuneAudioProcessor::prepareToPlay (double sampleRate, int sam
                                     std::max (1, getTotalNumOutputChannels()),
                                     modeToLatency (mode));
         // Set sensible defaults for the advanced parameters
+        float humanizeVal = apvts.getRawParameterValue ("humanize")->load() / 100.0f;
         livePitchProcessor.setAdvancedParameters (
             35.0f,   // transitionMs
             0.70f,   // preserveVibrato
-            0.20f,   // humanize
+            humanizeVal, // humanize
             0.90f,   // formantPreservation
             0.85f,   // transientProtection
             0.70f,   // detectorSensitivity
@@ -151,8 +164,9 @@ void MicrotonalAutotuneAudioProcessor::prepareToPlay (double sampleRate, int sam
                                     lastSamplesPerBlock,
                                     std::max (1, getTotalNumOutputChannels()),
                                     ModernPitchEngine::LatencyMode::live);
+        float humanizeVal = apvts.getRawParameterValue ("humanize")->load() / 100.0f;
         livePitchProcessor.setAdvancedParameters (
-            35.0f, 0.70f, 0.20f, 0.90f, 0.85f, 0.70f, 12.0f, 45.0f, 1600.0f,
+            35.0f, 0.70f, humanizeVal, 0.90f, 0.85f, 0.70f, 12.0f, 45.0f, 1600.0f,
             LivePitchProcessor::StereoMode::linkedMidSide
         );
         setLatencySamples (yinWindowSize);
@@ -531,7 +545,6 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
     const int totalNumInputChannels  = getTotalNumInputChannels();
     const int totalNumOutputChannels = getTotalNumOutputChannels();
     const int numSamples = buffer.getNumSamples();
-    
 
     // Clear unused output channels
     for (int i = totalNumInputChannels; i < totalNumOutputChannels; ++i)
@@ -543,25 +556,40 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
     // Get parameters
     float speedMs = apvts.getRawParameterValue ("speed")->load();
     float amountPct = apvts.getRawParameterValue ("amount")->load();
-    speedMs = std::isfinite (speedMs) ? juce::jlimit (0.0f, 500.0f, speedMs) : 50.0f;
-    amountPct = std::isfinite (amountPct) ? juce::jlimit (0.0f, 100.0f, amountPct) : 0.0f;
-    const float amount = amountPct / 100.0f;
-    
     float humanizePct = apvts.getRawParameterValue ("humanize")->load();
-    humanizePct = std::isfinite (humanizePct)
-    ? juce::jlimit (0.0f, 100.0f, humanizePct)
-    : 20.0f;
 
-    const float humanize = humanizePct / 100.0f;
-    const bool scaleLock = apvts.getRawParameterValue ("scaleLock")->load() >= 0.5f;
+    bool scaleLock = apvts.getRawParameterValue ("scaleLock")->load() > 0.5f;
+    float lockHysteresis = apvts.getRawParameterValue ("lockHysteresis")->load();
+    float vibratoPreserve = apvts.getRawParameterValue ("vibratoPreserve")->load() / 100.0f; // 0-1
+    bool analogMode = apvts.getRawParameterValue ("analogMode")->load() > 0.5f;
+    float outVolumeDb = apvts.getRawParameterValue ("outVolume")->load();
+
+    speedMs = std::isfinite (speedMs) ? juce::jlimit (0.0f, 500.0f, speedMs) : 50.0f;
+    if (scaleLock) {
+        speedMs = speedMs * (7.0f / 500.0f); // Map 0-500 to 0-7 ms
+    }
+    
+    amountPct = std::isfinite (amountPct) ? juce::jlimit (0.0f, 100.0f, amountPct) : 0.0f;
+    humanizePct = std::isfinite (humanizePct) ? juce::jlimit (0.0f, 100.0f, humanizePct) : 20.0f;
+
+    const float amount = amountPct / 100.0f;
+    const float humanizeVal = humanizePct / 100.0f;
+
     for (int channel = 0; channel < totalNumInputChannels; ++channel)
     {
         float* data = buffer.getWritePointer (channel);
         for (int sample = 0; sample < numSamples; ++sample)
         {
-            const float value = data[sample];
-            data[sample] = (! std::isfinite (value) || std::fpclassify (value) == FP_SUBNORMAL)
+            float value = data[sample];
+            value = (! std::isfinite (value) || std::fpclassify (value) == FP_SUBNORMAL)
                 ? 0.0f : juce::jlimit (-32.0f, 32.0f, value);
+                
+            if (analogMode) {
+                // Input tube simulation: asymmetric soft clip + gentle harmonics
+                float x2 = value * value;
+                value = std::tanh(value + 0.1f * x2);
+            }
+            data[sample] = value;
         }
     }
 
@@ -577,6 +605,21 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
         livePitchProcessor.setTempoSettings (getTempoSettings());
         livePitchProcessor.setTempoHostPosition (
             readHostTempoPosition (numSamples));
+        livePitchProcessor.setScaleLockParameters(scaleLock, lockHysteresis, vibratoPreserve);
+
+        // Update dynamic advanced parameters
+        livePitchProcessor.setAdvancedParameters (
+            35.0f,   // transitionMs
+            0.70f,   // preserveVibrato
+            humanizeVal, // humanize
+            0.90f,   // formantPreservation
+            0.85f,   // transientProtection
+            0.70f,   // detectorSensitivity
+            12.0f,   // maximumCorrectionSemitones
+            45.0f,   // minimumPitchHz
+            1600.0f, // maximumPitchHz
+            LivePitchProcessor::StereoMode::linkedMidSide
+        );
 
         // Use the AudioBuffer overload so the engine handles mono/stereo properly
         livePitchProcessor.process (buffer,
@@ -584,10 +627,23 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
                                     scaleSnapshot.count,
                                     scaleSnapshot.rootFrequency,
                                     speedMs,
-                                    amount,
-                                    humanize,
-                                    scaleLock);
+                                    amount);
         releaseScaleSnapshot (snapshotIndex);
+        
+        // Modifica B: Analog output + gain for modern mode
+        float outGain = juce::Decibels::decibelsToGain(outVolumeDb);
+        for (int channel = 0; channel < totalNumInputChannels; ++channel)
+        {
+            float* data = buffer.getWritePointer (channel);
+            for (int sample = 0; sample < numSamples; ++sample)
+            {
+                float value = data[sample];
+                if (analogMode) {
+                    value = std::tanh(value); // symmetric soft clip
+                }
+                data[sample] = value * outGain;
+            }
+        }
         return;
     }
 
@@ -595,12 +651,12 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
     if (slowResetRequested.exchange (false, std::memory_order_acq_rel))
         resetSlowStateNoAlloc();
 
-    // Speed smoothing coefficient (one-pole filter)
-    // speedMs = time to reach ~63% of target
+    double speedSamples = (std::max)(1.0, (static_cast<double>(speedMs) / 1000.0) * currentSampleRate);
     double speedCoeff = 1.0;
-    if (speedMs > 0.0f)
+    if (speedSamples > 1.0)
     {
-        double speedSamples = (static_cast<double> (speedMs) / 1000.0) * currentSampleRate;
+        // Speed smoothing coefficient (one-pole filter)
+        // speedMs = time to reach ~63% of target
         speedCoeff = 1.0 - std::exp (-1.0 / speedSamples);
     }
 
@@ -654,7 +710,7 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
     if (! std::isfinite (smoothedShiftRatio))
         smoothedShiftRatio = 1.0;
     if (! std::isfinite (circBufReadPos))
-        circBufReadPos = static_cast<double> (std::max (0, circBufSize - yinWindowSize));
+        circBufReadPos = static_cast<double> ((std::max) (0, circBufSize - yinWindowSize));
 
     for (int i = 0; i < numSamples; ++i)
     {

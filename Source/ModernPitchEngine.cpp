@@ -1658,20 +1658,35 @@ void ModernPitchEngine::CorrectionController::acceptObservation(
         pitchCentreLog2_ += centreAlpha * (observedLog2_ - pitchCentreLog2_);
     }
 
-    const bool scaleLock = parameters.scaleLock;
-    const float hysteresisCents = scaleLock
-        ? 0.0f
-        : 18.0f + 38.0f * clamp01(parameters.humanize);
-    const double targetReferenceLog2 = scaleLock ? observedLog2_ : pitchCentreLog2_;
-    double newTargetLog2 = quantizer.chooseTargetLog2(targetReferenceLog2,
-                                                      hysteresisCents);
+    double hysteresisCents = 18.0f + 38.0f * clamp01(parameters.humanize);
+    double targetBoundaryCents = hysteresisCents;
+    
+    if (parameters.scaleLock)
+    {
+        ScaleLock::Parameters slParams;
+        slParams.userHysteresis = parameters.lockHysteresis;
+        slParams.vibratoAmount = parameters.vibratoPreserve;
+        slParams.humanize = parameters.humanize;
+        slParams.latencyMode = parameters.latencyMode;
+        slParams.confidence = currentConfidence_;
+        slParams.breathiness = 0.0f;
+        slParams.tempoLockActive = (parameters.tempo.mode == CreativeTempo::Mode::glideLock);
+        slParams.scaleSize = parameters.scaleSize > 0 ? parameters.scaleSize : 12;
+        slParams.stability = 1.0f;
+        slParams.periodicity = 1.0f;
+        
+        hysteresisCents = scaleLockProcessor_.calculateHysteresis(slParams);
+        targetBoundaryCents = hysteresisCents;
+    }
+
+    double newTargetLog2 = quantizer.chooseTargetLog2(pitchCentreLog2_, hysteresisCents);
 
     // Defensive register lock. Scale degrees repeat every octave, therefore
     // the selected target must always be the octave-equivalent target nearest
     // to the tracked pitch centre. This prevents a stale octave state or a
     // custom-scale edge case from publishing an accidental -/+1200-cent move.
     newTargetLog2 = alignTargetToNearestOctave(newTargetLog2,
-                                               targetReferenceLog2);
+                                               pitchCentreLog2_);
 
     const double targetJumpCents = targetValid_
         ? std::abs((newTargetLog2 - targetLog2_) * 1200.0)
@@ -1697,44 +1712,65 @@ void ModernPitchEngine::CorrectionController::acceptObservation(
     targetLog2_ = newTargetLog2;
     targetValid_ = true;
 
-    const double vibratoComponent = observedLog2_ - pitchCentreLog2_;
-
-    // Breath-aware vibrato gate.  Aperiodic pitch jitter must not be promoted
-    // to a sustained musical modulation.  Clean, harmonic vowels retain the
-    // user's full preserveVibrato setting; aspirated tails progressively
-    // collapse toward the tracked pitch centre.
-    const float cleanBreath = 1.0f - spectralBreathiness_;
-    const float vibratoReliability = clamp01(
-        spectralHarmonicity_ * cleanBreath * cleanBreath);
-    const float effectivePreserveVibrato = scaleLock
-        ? 0.0f
-        : clamp01(parameters.preserveVibrato) * vibratoReliability;
-    const double correctedLog2 = targetLog2_
-        + static_cast<double>(effectivePreserveVibrato) * vibratoComponent;
-    double errorCents = (correctedLog2 - observedLog2_) * 1200.0;
-    errorCents = wrapCorrectionToNearestOctave(errorCents);
-
-    const double deadBandCents = scaleLock
-        ? 0.0
-        : 1.5 + 20.0 * static_cast<double>(clamp01(parameters.humanize));
-    if (!scaleLock && std::abs(errorCents) <= deadBandCents)
+    if (parameters.scaleLock)
     {
-        errorCents = 0.0;
+        ScaleLock::Parameters slParams;
+        slParams.userHysteresis = parameters.lockHysteresis;
+        slParams.vibratoAmount = parameters.vibratoPreserve;
+        slParams.humanize = parameters.humanize;
+        slParams.latencyMode = parameters.latencyMode;
+        slParams.confidence = currentConfidence_;
+        slParams.breathiness = 0.0f;
+        slParams.tempoLockActive = (parameters.tempo.mode == CreativeTempo::Mode::glideLock);
+        slParams.scaleSize = parameters.scaleSize > 0 ? parameters.scaleSize : 12;
+        slParams.stability = 1.0f;
+        slParams.periodicity = 1.0f;
+        
+        ScaleLock::ProcessResult res = scaleLockProcessor_.process(
+            observation.frequencyHz > 0.0f ? std::log2(observation.frequencyHz) : 0.0,
+            targetLog2_,
+            pitchCentreLog2_,
+            slParams,
+            sampleRate_);
+            
+        double errorCents = res.targetCorrectionCents;
+        const double maxCorrectionCents = 1200.0 * std::clamp(
+            static_cast<double>(parameters.maximumCorrectionSemitones), 0.0, 24.0);
+        errorCents = std::clamp(errorCents, -maxCorrectionCents, maxCorrectionCents);
+        desiredCorrectionCents_ = errorCents * static_cast<double>(clamp01(parameters.amount));
     }
-    else if (!scaleLock)
+    else
     {
-        errorCents = std::copysign(std::abs(errorCents) - deadBandCents,
-                                   errorCents);
-    }
+        const double vibratoComponent = observedLog2_ - pitchCentreLog2_;
+        const float cleanBreath = 1.0f - spectralBreathiness_;
+        const float vibratoReliability = clamp01(
+            spectralHarmonicity_ * cleanBreath * cleanBreath);
+        const float effectivePreserveVibrato =
+            clamp01(parameters.preserveVibrato) * vibratoReliability;
+        const double correctedLog2 = targetLog2_
+            + static_cast<double>(effectivePreserveVibrato) * vibratoComponent;
+        double errorCents = (correctedLog2 - observedLog2_) * 1200.0;
+        errorCents = wrapCorrectionToNearestOctave(errorCents);
 
-    const double maxCorrectionCents = 1200.0 * std::clamp(
-        static_cast<double>(parameters.maximumCorrectionSemitones), 0.0, 24.0);
-    errorCents = std::clamp(errorCents,
-                            -maxCorrectionCents,
-                            maxCorrectionCents);
-    desiredCorrectionCents_ = errorCents * (scaleLock
-        ? 1.0
-        : static_cast<double>(clamp01(parameters.amount)));
+        const double deadBandCents = 1.5 + 20.0 * static_cast<double>(clamp01(parameters.humanize));
+        if (std::abs(errorCents) <= deadBandCents)
+        {
+            errorCents = 0.0;
+        }
+        else
+        {
+            errorCents = std::copysign(std::abs(errorCents) - deadBandCents,
+                                       errorCents);
+        }
+
+        const double maxCorrectionCents = 1200.0 * std::clamp(
+            static_cast<double>(parameters.maximumCorrectionSemitones), 0.0, 24.0);
+        errorCents = std::clamp(errorCents,
+                                -maxCorrectionCents,
+                                maxCorrectionCents);
+        desiredCorrectionCents_ = errorCents
+            * static_cast<double>(clamp01(parameters.amount));
+    }
 
     const float confidenceGate = confidenceAuthority(currentConfidence_,
                                                       parameters.detectorSensitivity);
@@ -1748,35 +1784,22 @@ void ModernPitchEngine::CorrectionController::acceptObservation(
         * smoothStep(0.22f, 0.68f, spectralReliability_);
     const float polyphonyGate = 1.0f - 0.82f
         * smoothStep(0.12f, 0.65f, spectralPolyphony_);
-    if (scaleLock)
-    {
-        const float safetyGate = clamp01(confidenceGate
-                                         * currentVoicing_
-                                         * consensusGate
-                                         * spectralGate
-                                         * polyphonyGate);
-        authorityTarget_ = safetyGate;
-        wetMixTarget_ = clamp01(safetyGate * clamp01(parameters.amount));
-    }
-    else
-    {
-        authorityTarget_ = clamp01(confidenceGate
-                                   * (voicedLatched_ ? smoothedVoicing_ : 0.0f)
-                                   * consensusGate
-                                   * spectralGate
-                                   * polyphonyGate);
+    authorityTarget_ = clamp01(confidenceGate
+                               * (voicedLatched_ ? smoothedVoicing_ : 0.0f)
+                               * consensusGate
+                               * spectralGate
+                               * polyphonyGate);
 
-        const float correctionNeed = smoothStep(
-            1.5f, 10.0f, static_cast<float>(std::abs(desiredCorrectionCents_)));
-        const float transientAttenuation = 1.0f
-            - clamp01(parameters.transientProtection) * currentOnsetStrength_;
-        wetMixTarget_ = clamp01((voicedLatched_ ? smoothedVoicing_ : 0.0f)
-                                * correctionNeed
-                                * transientAttenuation
-                                * consensusGate
-                                * spectralGate
-                                * polyphonyGate);
-    }
+    const float correctionNeed = smoothStep(
+        1.5f, 10.0f, static_cast<float>(std::abs(desiredCorrectionCents_)));
+    const float transientAttenuation = 1.0f
+        - clamp01(parameters.transientProtection) * currentOnsetStrength_;
+    wetMixTarget_ = clamp01((voicedLatched_ ? smoothedVoicing_ : 0.0f)
+                            * correctionNeed
+                            * transientAttenuation
+                            * consensusGate
+                            * spectralGate
+                            * polyphonyGate);
 
     ++stableObservationCount_;
     if (state_ == TrackingState::unvoiced || state_ == TrackingState::release)
@@ -1804,65 +1827,32 @@ void ModernPitchEngine::CorrectionController::advanceOneSample(
         }
     }
 
-    const bool scaleLock = parameters.scaleLock;
     float stateAuthorityScale = 1.0f;
-    if (scaleLock)
+    switch (state_)
     {
-        switch (state_)
-        {
-            case TrackingState::unvoiced:   stateAuthorityScale = 0.0f; break;
-            case TrackingState::attack:     stateAuthorityScale = 1.0f; break;
-            case TrackingState::acquire:    stateAuthorityScale = 1.0f; break;
-            case TrackingState::stable:     stateAuthorityScale = 1.0f; break;
-            case TrackingState::transition: stateAuthorityScale = 1.0f; break;
-            case TrackingState::release:    stateAuthorityScale = 0.35f; break;
-        }
-    }
-    else
-    {
-        switch (state_)
-        {
-            case TrackingState::unvoiced:   stateAuthorityScale = 0.0f; break;
-            case TrackingState::attack:     stateAuthorityScale = 0.10f; break;
-            case TrackingState::acquire:    stateAuthorityScale = 0.68f; break;
-            case TrackingState::stable:     stateAuthorityScale = 1.0f; break;
-            case TrackingState::transition: stateAuthorityScale = 0.82f; break;
-            case TrackingState::release:    stateAuthorityScale = 0.20f; break;
-        }
+        case TrackingState::unvoiced:   stateAuthorityScale = 0.0f; break;
+        case TrackingState::attack:     stateAuthorityScale = 0.10f; break;
+        case TrackingState::acquire:    stateAuthorityScale = 0.68f; break;
+        case TrackingState::stable:     stateAuthorityScale = 1.0f; break;
+        case TrackingState::transition: stateAuthorityScale = 0.82f; break;
+        case TrackingState::release:    stateAuthorityScale = 0.20f; break;
     }
 
     const float effectiveAuthorityTarget = authorityTarget_ * stateAuthorityScale;
-    if (scaleLock)
-        authority_ = effectiveAuthorityTarget;
-    else
-    {
-        const float authorityCoefficient = effectiveAuthorityTarget > authority_
-            ? authorityAttackCoefficient_
-            : authorityReleaseCoefficient_;
-        authority_ += authorityCoefficient * (effectiveAuthorityTarget - authority_);
-    }
+    const float authorityCoefficient = effectiveAuthorityTarget > authority_
+        ? authorityAttackCoefficient_
+        : authorityReleaseCoefficient_;
+    authority_ += authorityCoefficient * (effectiveAuthorityTarget - authority_);
 
     const float effectiveWetTarget = wetMixTarget_ * stateAuthorityScale;
-    if (scaleLock)
-        wetMix_ = effectiveWetTarget;
-    else
-    {
-        const float wetCoefficient = effectiveWetTarget > wetMix_
-            ? wetAttackCoefficient_
-            : wetReleaseCoefficient_;
-        wetMix_ += wetCoefficient * (effectiveWetTarget - wetMix_);
-    }
+    const float wetCoefficient = effectiveWetTarget > wetMix_
+        ? wetAttackCoefficient_
+        : wetReleaseCoefficient_;
+    wetMix_ += wetCoefficient * (effectiveWetTarget - wetMix_);
 
     const double targetCorrectionCents = desiredCorrectionCents_
-        * (scaleLock ? 1.0 : static_cast<double>(authority_));
+                                       * static_cast<double>(authority_);
     synthesisTargetCorrectionCents_ = targetCorrectionCents;
-
-    if (scaleLock)
-    {
-        currentCorrectionCents_ = targetCorrectionCents;
-        correctionVelocityCentsPerSecond_ = 0.0;
-        return;
-    }
 
     double responseMs = std::max(0.35, static_cast<double>(parameters.retuneTimeMs));
     if (state_ == TrackingState::transition)
@@ -3785,35 +3775,22 @@ float ModernPitchEngine::SpectralVoiceShifter::processSample(
                 * (transition.secondaryCents - transition.primaryCents)
         : transition.primaryCents;
     const float correctionCents = static_cast<float>(std::abs(audibleCents));
-
-    if (!harmonicNoiseContext.scaleLock)
-    {
-        wetTarget *= smoothStep(0.8f, 5.0f, correctionCents);
-        wetTarget *= 1.0f - 0.88f * clamp01(transientSuppression_);
-
-        if (!wetGateOpen_ && wetTarget >= 0.10f)
-            wetGateOpen_ = true;
-        else if (wetGateOpen_ && wetTarget <= 0.025f)
-            wetGateOpen_ = false;
-
-        if (!wetGateOpen_)
-            wetTarget = 0.0f;
-    }
-    else
-    {
-        wetGateOpen_ = wetTarget > 1.0e-5f;
-    }
+    wetTarget *= smoothStep(0.8f, 5.0f, correctionCents);
+    wetTarget *= 1.0f - 0.88f * clamp01(transientSuppression_);
     transientSuppression_ *= transientReleaseCoefficient_;
 
-    if (harmonicNoiseContext.scaleLock)
-        wetMix_ = wetTarget;
-    else
-    {
-        const float wetCoefficient = wetTarget > wetMix_
-            ? wetAttackCoefficient_
-            : wetReleaseCoefficient_;
-        wetMix_ += wetCoefficient * (wetTarget - wetMix_);
-    }
+    if (!wetGateOpen_ && wetTarget >= 0.10f)
+        wetGateOpen_ = true;
+    else if (wetGateOpen_ && wetTarget <= 0.025f)
+        wetGateOpen_ = false;
+
+    if (!wetGateOpen_)
+        wetTarget = 0.0f;
+
+    const float wetCoefficient = wetTarget > wetMix_
+        ? wetAttackCoefficient_
+        : wetReleaseCoefficient_;
+    wetMix_ += wetCoefficient * (wetTarget - wetMix_);
 
     if (std::abs(wetMix_) < 1.0e-7f && wetTarget == 0.0f)
         wetMix_ = 0.0f;
@@ -4103,6 +4080,8 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
         finiteOr(safeParameters.tempo.fallbackBpm, 120.0), 20.0, 400.0);
     const int stereoValue = std::clamp(static_cast<int>(safeParameters.stereoMode), 0, 1);
     safeParameters.stereoMode = static_cast<StereoMode>(stereoValue);
+    safeParameters.scaleSize = numberOfScaleRatios > 0 ? numberOfScaleRatios : 12;
+    safeParameters.latencyMode = static_cast<int>(latencyMode_);
 
     if (scaleQuantizer_.update(scaleRatios,
                                numberOfScaleRatios,
@@ -4130,12 +4109,6 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
     Parameters transitionParameters = safeParameters;
     if (tempoController_.isActive())
         transitionParameters.transitionTimeMs = tempoController_.getGlideTimeMs();
-
-    if (safeParameters.scaleLock)
-    {
-        transitionParameters.transitionTimeMs = 0.0f;
-        transitionManager_.reset();
-    }
 
     std::array<float*, maxSupportedChannels> channelData {};
     for (int channel = 0; channel < numberOfChannels; ++channel)
@@ -4271,36 +4244,23 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
         }
         const float noteAgeSeconds = static_cast<float>(
             std::min(12.0, static_cast<double>(noteAgeSamples_) / sampleRate_));
-        TransitionManager::Command transition;
-        if (safeParameters.scaleLock)
-        {
-            transition.primaryCents = correctionController_.getCurrentCorrectionCents();
-            transition.secondaryCents = transition.primaryCents;
-            transition.blend = 0.0f;
-            transition.dualSynthesis = false;
-            transition.beginSecondary = false;
-            transition.commitSecondary = false;
-        }
-        else
-        {
-            const auto tempoDecision = tempoController_.processSample(
-                correctionController_.getCurrentCorrectionCents(),
-                correctionController_.getDesiredCorrectionCents(),
-                correctionController_.getTargetRevision(),
-                latestOnsetStrength,
-                musicalState,
-                sampleIndex,
-                safeParameters.tempo,
-                safeParameters.transitionTimeMs);
-            transition = transitionManager_.processSample(
-                tempoDecision.controllerCents,
-                tempoDecision.destinationCents,
-                tempoDecision.targetRevision,
-                trackingState,
-                wetMix,
-                transitionParameters,
-                tempoDecision.forceTransition);
-        }
+        const auto tempoDecision = tempoController_.processSample(
+            correctionController_.getCurrentCorrectionCents(),
+            correctionController_.getDesiredCorrectionCents(),
+            correctionController_.getTargetRevision(),
+            latestOnsetStrength,
+            musicalState,
+            sampleIndex,
+            safeParameters.tempo,
+            safeParameters.transitionTimeMs);
+        const auto transition = transitionManager_.processSample(
+            tempoDecision.controllerCents,
+            tempoDecision.destinationCents,
+            tempoDecision.targetRevision,
+            trackingState,
+            wetMix,
+            transitionParameters,
+            tempoDecision.forceTransition);
         const float formant = clamp01(safeParameters.formantPreservation
             * correctionController_.getFormantStability());
         const HarmonicNoiseContext harmonicNoiseContext {
@@ -4310,7 +4270,6 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
             latestConsensus,
             latestOnsetStrength,
             clamp01(safeParameters.breathReduction),
-            safeParameters.scaleLock,
             trackingState,
             noteAgeSeconds
         };
