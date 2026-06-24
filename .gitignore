@@ -1,0 +1,12 @@
+/build/
+/build2/
+/.cmake/
+/cmake-build-*/
+/CreativeTempo_V1_complete/
+/Autotune/
+/build2.zip
+/Source.zip
+/Source1.zip
+/Source2.zip
+/Test.zip
+.DS_Store
