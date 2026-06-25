@@ -16,6 +16,15 @@ ModernLookAndFeel::ModernLookAndFeel()
     setColour(juce::TextButton::buttonColourId, juce::Colour(0xFF2A3048));
     setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xFF6C63FF));
     setColour(juce::TextButton::textColourOffId, juce::Colours::white);
+     bgImage = juce::ImageCache::getFromMemory (BinaryData::sfondo1_jpeg,
+                                              BinaryData::sfondo1_jpegSize);
+    //bgImage = juce::ImageCache::getFromMemory(BinaryData::sfondo4_jfif,
+     //   BinaryData::sfondo4_jfifSize);
+     bgImageScaleEditor = juce::ImageCache::getFromMemory (BinaryData::sfondo2_jpg,
+                                                           BinaryData::sfondo2_jpgSize);
+   // bgImageScaleEditor = juce::ImageCache::getFromMemory(BinaryData::sfondo5_jpeg,
+       // BinaryData::sfondo5_jpegSize);
+
 }
 
 void ModernLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int width, int height, float sliderPos,
@@ -36,15 +45,7 @@ void ModernLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int w
     g.setColour (outline);
     g.strokePath (backgroundArc, juce::PathStrokeType (lineW, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
     // Load background images from BinaryData
-  bgImage = juce::ImageCache::getFromMemory (BinaryData::sfondo1_jpeg,
-                                              BinaryData::sfondo1_jpegSize);
-    //bgImage = juce::ImageCache::getFromMemory(BinaryData::sfondo4_jfif,
-     //   BinaryData::sfondo4_jfifSize);
-     bgImageScaleEditor = juce::ImageCache::getFromMemory (BinaryData::sfondo2_jpg,
-                                                           BinaryData::sfondo2_jpgSize);
-   // bgImageScaleEditor = juce::ImageCache::getFromMemory(BinaryData::sfondo5_jpeg,
-       // BinaryData::sfondo5_jpegSize);
-
+ 
     if (slider.isEnabled())
     {
         juce::Path valueArc;
