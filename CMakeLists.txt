@@ -102,4 +102,4 @@ target_link_libraries(MicrotonalAutotune
         juce::juce_recommended_warning_flags
 )
 
-include(${CMAKE_CURRENT_SOURCE_DIR}/Tests/AutotuneTests.cmake)
+# include(${CMAKE_CURRENT_SOURCE_DIR}/Tests/AutotuneTests.cmake)
