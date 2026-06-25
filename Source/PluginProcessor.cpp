@@ -626,6 +626,14 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
         
         // Modifica B: Analog output + gain for modern mode
         float outGain = juce::Decibels::decibelsToGain(outVolumeDb);
+        // Fast polynomial soft-clipper (Padé approximant for tanh)
+        auto fastSoftClip = [](float x) -> float {
+            if (x < -3.0f) return -1.0f;
+            if (x > 3.0f) return 1.0f;
+            float x2 = x * x;
+            return x * (27.0f + x2) / (27.0f + 9.0f * x2);
+        };
+        
         for (int channel = 0; channel < totalNumInputChannels; ++channel)
         {
             float* data = buffer.getWritePointer (channel);
@@ -633,7 +641,7 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
             {
                 float value = data[sample];
                 if (analogMode) {
-                    value = std::tanh(value); // symmetric soft clip
+                    value = fastSoftClip(value); // efficient symmetric soft clip
                 }
                 data[sample] = value * outGain;
             }
@@ -725,14 +733,26 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
         while (circBufReadPos < 0.0)
             circBufReadPos += static_cast<double> (circBufSize);
 
-        // Linear interpolation
-        int readIdx0 = static_cast<int> (circBufReadPos);
-        int readIdx1 = (readIdx0 + 1) % circBufSize;
-        double frac = circBufReadPos - static_cast<double> (readIdx0);
-
+        // Hermite (cubic) interpolation for higher audio quality
+        int readIdx1 = static_cast<int> (circBufReadPos);
+        int readIdx0 = (readIdx1 - 1 + circBufSize) % circBufSize;
+        int readIdx2 = (readIdx1 + 1) % circBufSize;
+        int readIdx3 = (readIdx1 + 2) % circBufSize;
+        
+        double frac = circBufReadPos - static_cast<double> (readIdx1);
+        
+        float y0 = circularBuffer[static_cast<size_t> (readIdx0)];
+        float y1 = circularBuffer[static_cast<size_t> (readIdx1)];
+        float y2 = circularBuffer[static_cast<size_t> (readIdx2)];
+        float y3 = circularBuffer[static_cast<size_t> (readIdx3)];
+        
+        float c0 = y1;
+        float c1 = 0.5f * (y2 - y0);
+        float c2 = y0 - 2.5f * y1 + 2.0f * y2 - 0.5f * y3;
+        float c3 = 1.5f * (y1 - y2) + 0.5f * (y3 - y0);
+        
         float sample = static_cast<float> (
-            circularBuffer[static_cast<size_t> (readIdx0)] * (1.0 - frac) +
-            circularBuffer[static_cast<size_t> (readIdx1)] * frac);
+            ((c3 * frac + c2) * frac + c1) * frac + c0);
 
         outputData[i] = std::isfinite (sample)
             ? juce::jlimit (-32.0f, 32.0f, sample) : 0.0f;
@@ -741,11 +761,18 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
     // Output stage: Analog saturation + Output Gain (shared with modern path)
     {
         float outGain = juce::Decibels::decibelsToGain (outVolumeDb);
+        auto fastSoftClip = [](float x) -> float {
+            if (x < -3.0f) return -1.0f;
+            if (x > 3.0f) return 1.0f;
+            float x2 = x * x;
+            return x * (27.0f + x2) / (27.0f + 9.0f * x2);
+        };
+        
         for (int i = 0; i < numSamples; ++i)
         {
             float value = outputData[i];
             if (analogMode)
-                value = std::tanh (value);
+                value = fastSoftClip (value);
             outputData[i] = value * outGain;
         }
     }

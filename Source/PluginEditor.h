@@ -5,6 +5,25 @@
 #include "CustomScaleEditor.h"
 
 //==============================================================================
+class ModernLookAndFeel : public juce::LookAndFeel_V4
+{
+public:
+    ModernLookAndFeel();
+    void drawRotarySlider (juce::Graphics& g, int x, int y, int width, int height, float sliderPos,
+                           const float rotaryStartAngle, const float rotaryEndAngle, juce::Slider& slider) override;
+    void drawButtonBackground (juce::Graphics& g, juce::Button& button, const juce::Colour& backgroundColour,
+                               bool shouldDrawButtonAsHighlighted, bool shouldDrawButtonAsDown) override;
+    void drawComboBox (juce::Graphics& g, int width, int height, bool isButtonDown,
+                       int buttonX, int buttonY, int buttonW, int buttonH, juce::ComboBox& box) override;
+    void drawTickBox (juce::Graphics& g, juce::Component& component,
+                      float x, float y, float w, float h,
+                      const bool ticked,
+                      const bool isEnabled,
+                      const bool shouldDrawButtonAsHighlighted,
+                      const bool shouldDrawButtonAsDown) override;
+};
+
+//==============================================================================
 class MicrotonalAutotuneAudioProcessorEditor : public juce::AudioProcessorEditor,
                                                 public CustomScaleEditorListener,
                                                 private juce::Timer
@@ -20,6 +39,7 @@ public:
     void customScaleEditorClosed() override;
 
 private:
+    ModernLookAndFeel modernLookAndFeel;
     MicrotonalAutotuneAudioProcessor& processorRef;
 
     // Background image

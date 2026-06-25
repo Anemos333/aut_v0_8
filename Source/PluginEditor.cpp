@@ -4,20 +4,147 @@
 #include <cmath>
 
 //==============================================================================
+ModernLookAndFeel::ModernLookAndFeel()
+{
+    setColour(juce::Slider::thumbColourId, juce::Colour(0xFFFFFFFF));
+    setColour(juce::Slider::rotarySliderFillColourId, juce::Colour(0xFF6C63FF));
+    setColour(juce::Slider::rotarySliderOutlineColourId, juce::Colour(0xFF2A2D40));
+    setColour(juce::ComboBox::backgroundColourId, juce::Colour(0xFF1E2135));
+    setColour(juce::ComboBox::outlineColourId, juce::Colour(0xFF38405F));
+    setColour(juce::PopupMenu::backgroundColourId, juce::Colour(0xFF1E2135));
+    setColour(juce::PopupMenu::highlightedBackgroundColourId, juce::Colour(0xFF6C63FF));
+    setColour(juce::TextButton::buttonColourId, juce::Colour(0xFF2A3048));
+    setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xFF6C63FF));
+    setColour(juce::TextButton::textColourOffId, juce::Colours::white);
+}
+
+void ModernLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int width, int height, float sliderPos,
+                                          const float rotaryStartAngle, const float rotaryEndAngle, juce::Slider& slider)
+{
+    auto outline = slider.findColour (juce::Slider::rotarySliderOutlineColourId);
+    auto fill    = slider.findColour (juce::Slider::rotarySliderFillColourId);
+
+    auto bounds = juce::Rectangle<int> (x, y, width, height).toFloat().reduced (10);
+    auto radius = juce::jmin (bounds.getWidth(), bounds.getHeight()) / 2.0f;
+    auto toAngle = rotaryStartAngle + sliderPos * (rotaryEndAngle - rotaryStartAngle);
+    auto lineW = juce::jmin (8.0f, radius * 0.5f);
+    auto arcRadius = radius - lineW * 0.5f;
+
+    juce::Path backgroundArc;
+    backgroundArc.addCentredArc (bounds.getCentreX(), bounds.getCentreY(), arcRadius, arcRadius, 0.0f, rotaryStartAngle, rotaryEndAngle, true);
+
+    g.setColour (outline);
+    g.strokePath (backgroundArc, juce::PathStrokeType (lineW, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    // Load background images from BinaryData
+  bgImage = juce::ImageCache::getFromMemory (BinaryData::sfondo1_jpeg,
+                                              BinaryData::sfondo1_jpegSize);
+    //bgImage = juce::ImageCache::getFromMemory(BinaryData::sfondo4_jfif,
+     //   BinaryData::sfondo4_jfifSize);
+     bgImageScaleEditor = juce::ImageCache::getFromMemory (BinaryData::sfondo2_jpg,
+                                                           BinaryData::sfondo2_jpgSize);
+   // bgImageScaleEditor = juce::ImageCache::getFromMemory(BinaryData::sfondo5_jpeg,
+       // BinaryData::sfondo5_jpegSize);
+
+    if (slider.isEnabled())
+    {
+        juce::Path valueArc;
+        valueArc.addCentredArc (bounds.getCentreX(), bounds.getCentreY(), arcRadius, arcRadius, 0.0f, rotaryStartAngle, toAngle, true);
+
+        g.setColour (fill);
+        g.strokePath (valueArc, juce::PathStrokeType (lineW, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+
+        // Glow
+        g.setColour (fill.withAlpha(0.3f));
+        g.strokePath (valueArc, juce::PathStrokeType (lineW * 2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    }
+    
+    // Thumb dot
+    auto thumbWidth = lineW * 2.0f;
+    juce::Point<float> thumbPoint (bounds.getCentreX() + arcRadius * std::cos (toAngle - juce::MathConstants<float>::halfPi),
+                                   bounds.getCentreY() + arcRadius * std::sin (toAngle - juce::MathConstants<float>::halfPi));
+    
+    g.setColour (slider.findColour (juce::Slider::thumbColourId));
+    g.fillEllipse (juce::Rectangle<float> (thumbWidth, thumbWidth).withCentre (thumbPoint));
+}
+
+void ModernLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& button, const juce::Colour& backgroundColour,
+                                              bool shouldDrawButtonAsHighlighted, bool shouldDrawButtonAsDown)
+{
+    auto cornerSize = 6.0f;
+    auto bounds = button.getLocalBounds().toFloat().reduced (0.5f, 0.5f);
+    
+    auto baseColour = backgroundColour.withMultipliedSaturation (button.hasKeyboardFocus (true) ? 1.3f : 0.9f)
+                                      .withMultipliedAlpha (button.isEnabled() ? 1.0f : 0.5f);
+                                      
+    if (shouldDrawButtonAsDown || shouldDrawButtonAsHighlighted)
+        baseColour = baseColour.contrasting (shouldDrawButtonAsDown ? 0.2f : 0.05f);
+
+    g.setColour (baseColour);
+    g.fillRoundedRectangle (bounds, cornerSize);
+    
+    g.setColour (button.findColour (juce::ComboBox::outlineColourId));
+    g.drawRoundedRectangle (bounds, cornerSize, 1.0f);
+}
+
+void ModernLookAndFeel::drawComboBox (juce::Graphics& g, int width, int height, bool isButtonDown,
+                                      int buttonX, int buttonY, int buttonW, int buttonH, juce::ComboBox& box)
+{
+    auto cornerSize = 6.0f;
+    juce::Rectangle<int> boxBounds (0, 0, width, height);
+
+    g.setColour (box.findColour (juce::ComboBox::backgroundColourId));
+    g.fillRoundedRectangle (boxBounds.toFloat(), cornerSize);
+
+    g.setColour (box.findColour (juce::ComboBox::outlineColourId));
+    g.drawRoundedRectangle (boxBounds.toFloat().reduced (0.5f, 0.5f), cornerSize, 1.0f);
+
+    juce::Rectangle<int> arrowZone (width - 30, 0, 20, height);
+    juce::Path path;
+    path.startNewSubPath (arrowZone.getX() + 3.0f, arrowZone.getCentreY() - 2.0f);
+    path.lineTo (static_cast<float> (arrowZone.getCentreX()), arrowZone.getCentreY() + 3.0f);
+    path.lineTo (arrowZone.getRight() - 3.0f, arrowZone.getCentreY() - 2.0f);
+
+    g.setColour (box.findColour (juce::ComboBox::arrowColourId).withAlpha ((box.isEnabled() ? 0.9f : 0.2f)));
+    g.strokePath (path, juce::PathStrokeType (2.0f));
+}
+
+void ModernLookAndFeel::drawTickBox (juce::Graphics& g, juce::Component& component,
+                                     float x, float y, float w, float h,
+                                     const bool ticked,
+                                     const bool isEnabled,
+                                     const bool shouldDrawButtonAsHighlighted,
+                                     const bool shouldDrawButtonAsDown)
+{
+    juce::ignoreUnused (isEnabled, shouldDrawButtonAsHighlighted, shouldDrawButtonAsDown);
+    
+    juce::Rectangle<float> tickBounds (x, y, w, h);
+    
+    g.setColour (juce::Colour(0xFF1E2135));
+    g.fillRoundedRectangle (tickBounds, 4.0f);
+    
+    g.setColour (juce::Colour(0xFF38405F));
+    g.drawRoundedRectangle (tickBounds.reduced(0.5f), 4.0f, 1.0f);
+    
+    if (ticked)
+    {
+        g.setColour (component.findColour(juce::ToggleButton::textColourId));
+        auto tickShape = tickBounds.reduced(4.0f);
+        juce::Path p;
+        p.startNewSubPath(tickShape.getX(), tickShape.getCentreY());
+        p.lineTo(tickShape.getCentreX() - 2.0f, tickShape.getBottom() - 2.0f);
+        p.lineTo(tickShape.getRight(), tickShape.getY() + 2.0f);
+        g.strokePath(p, juce::PathStrokeType(2.5f));
+    }
+}
+
+//==============================================================================
 MicrotonalAutotuneAudioProcessorEditor::MicrotonalAutotuneAudioProcessorEditor (
     MicrotonalAutotuneAudioProcessor& p)
     : AudioProcessorEditor (p),
       processorRef (p)
 {
-    // Load background images from BinaryData
-    // bgImage = juce::ImageCache::getFromMemory (BinaryData::sfondo1_jpeg,
-    //                                             BinaryData::sfondo1_jpegSize);
-    bgImage = juce::ImageCache::getFromMemory (BinaryData::sfondo4_jfif,
-                                                BinaryData::sfondo4_jfifSize);
-    // bgImageScaleEditor = juce::ImageCache::getFromMemory (BinaryData::sfondo2_jpg,
-    //                                                        BinaryData::sfondo2_jpgSize);
-    bgImageScaleEditor = juce::ImageCache::getFromMemory (BinaryData::sfondo5_jpeg,
-                                                           BinaryData::sfondo5_jpegSize);
+    setLookAndFeel(&modernLookAndFeel);
+
 
     // ==================== Scale Selector ====================
     scaleSelectorLabel.setText ("Scala:", juce::dontSendNotification);
@@ -304,6 +431,7 @@ MicrotonalAutotuneAudioProcessorEditor::MicrotonalAutotuneAudioProcessorEditor (
 
 MicrotonalAutotuneAudioProcessorEditor::~MicrotonalAutotuneAudioProcessorEditor()
 {
+    setLookAndFeel(nullptr);
     stopTimer();
 }
 
@@ -816,20 +944,20 @@ void MicrotonalAutotuneAudioProcessorEditor::paint (juce::Graphics& g)
     if (showingScaleEditor)
         return; // CustomScaleEditor paints itself
 
-    // Draw background image
-    if (bgImage.isValid())
-    {
-        g.drawImage (bgImage, getLocalBounds().toFloat(),
-                     juce::RectanglePlacement::stretchToFit);
-    }
-    else
-    {
-        g.fillAll (juce::Colour (0xFF0F0F23));
-    }
+    // Modern vector background
+    auto bounds = getLocalBounds().toFloat();
+    juce::Colour gradientStart (0xFF141726);
+    juce::Colour gradientEnd (0xFF0B0D1A);
+    juce::Colour accentGlow (0x156C63FF); // faint purple glow
 
-    // Semi-transparent overlay for readability
-    g.setColour (juce::Colour (0x88000000));
-    g.fillRect (getLocalBounds());
+    juce::ColourGradient gradient (gradientStart, bounds.getTopLeft(), gradientEnd, bounds.getBottomRight(), false);
+    g.setGradientFill (gradient);
+    g.fillRect (bounds);
+
+    // Subtle radial glow behind the knobs
+    juce::ColourGradient radialGlow (accentGlow, bounds.getCentreX(), bounds.getCentreY() - 30.0f, juce::Colours::transparentBlack, bounds.getCentreX() + 300.0f, bounds.getCentreY() + 300.0f, true);
+    g.setGradientFill (radialGlow);
+    g.fillRect (bounds);
 
     if (showingTempoPage)
     {
