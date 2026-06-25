@@ -121,6 +121,8 @@ public:
     {
         parameters_.retuneTimeMs = speedMs;
         parameters_.amount = amount;
+        updateScaleLockContext(scaleRatios, numberOfScaleRatios);
+
         auto& engine = activeEngine();
         engine.process(buffer,
                        scaleRatios,
@@ -155,6 +157,11 @@ public:
             return;
         parameters_.retuneTimeMs = speedMs;
         parameters_.amount = amount;
+         
+        updateScaleLockContext(scaleRatios.empty() ? nullptr : scaleRatios.data(),
+                       static_cast<int>(scaleRatios.size()));
+```
+
         float* channels[] { data };
         juce::AudioBuffer<float> view(channels, 1, numberOfSamples);
         activeEngine().process(view,
@@ -218,6 +225,80 @@ private:
         const int index = activeModeIndex_.load(std::memory_order_acquire);
         return engines_[static_cast<std::size_t>(index)];
     }
+[[nodiscard]] static float calculateMinScaleStepCents(const double* scaleRatios,
+                                                      int numberOfScaleRatios) noexcept
+{
+    std::array<double, ModernPitchEngine::maxScaleRatios + 1> cents {};
+    int count = 0;
+
+    cents[static_cast<std::size_t>(count++)] = 0.0; // unisono sempre presente
+
+    if (scaleRatios != nullptr && numberOfScaleRatios > 0)
+    {
+        const int safeCount = std::min(numberOfScaleRatios,
+                                       ModernPitchEngine::maxScaleRatios);
+
+        for (int i = 0; i < safeCount && count < static_cast<int>(cents.size()); ++i)
+        {
+            const double ratio = scaleRatios[i];
+            if (! std::isfinite(ratio) || ratio <= 0.0)
+                continue;
+
+            const double logRatio = std::log2(ratio);
+            double folded = 1200.0 * (logRatio - std::floor(logRatio));
+
+            if (folded < 0.0)
+                folded += 1200.0;
+            if (folded >= 1199.9999)
+                folded = 0.0;
+
+            cents[static_cast<std::size_t>(count++)] = folded;
+        }
+    }
+
+    std::sort(cents.begin(), cents.begin() + count);
+
+    int uniqueCount = 0;
+    for (int i = 0; i < count; ++i)
+    {
+        const double value = cents[static_cast<std::size_t>(i)];
+        if (uniqueCount == 0
+            || std::abs(value - cents[static_cast<std::size_t>(uniqueCount - 1)]) > 1.0e-4)
+        {
+            cents[static_cast<std::size_t>(uniqueCount++)] = value;
+        }
+    }
+
+    if (uniqueCount <= 1)
+        return 1200.0f;
+
+    double minStep = 1200.0;
+    for (int i = 1; i < uniqueCount; ++i)
+        minStep = std::min(minStep,
+                           cents[static_cast<std::size_t>(i)]
+                           - cents[static_cast<std::size_t>(i - 1)]);
+
+    const double wrapStep = 1200.0
+        - cents[static_cast<std::size_t>(uniqueCount - 1)]
+        + cents[0];
+    minStep = std::min(minStep, wrapStep);
+
+    return static_cast<float>(std::clamp(minStep, 0.1, 1200.0));
+}
+
+void updateScaleLockContext(const double* scaleRatios, int numberOfScaleRatios) noexcept
+{
+    const int safeCount = (scaleRatios != nullptr && numberOfScaleRatios > 0)
+        ? std::min(numberOfScaleRatios, ModernPitchEngine::maxScaleRatios)
+        : 1;
+
+    parameters_.scaleSize = safeCount;
+    parameters_.minScaleStepCents = calculateMinScaleStepCents(scaleRatios, safeCount);
+    parameters_.latencyMode = activeModeIndex_.load(std::memory_order_acquire);
+   
+}
+```
+
 
     std::array<ModernPitchEngine, engineCount> engines_;
     std::array<std::atomic<bool>, engineCount> resetRequested_ {};
