@@ -941,22 +941,52 @@ void MicrotonalAutotuneAudioProcessorEditor::drawTempoPage(
 void MicrotonalAutotuneAudioProcessorEditor::paint (juce::Graphics& g)
 {
     if (showingScaleEditor)
-        return; // CustomScaleEditor paints itself
+        return;
 
-    // Modern vector background
     auto bounds = getLocalBounds().toFloat();
-    juce::Colour gradientStart (0xFF141726);
-    juce::Colour gradientEnd (0xFF0B0D1A);
-    juce::Colour accentGlow (0x156C63FF); // faint purple glow
 
-    juce::ColourGradient gradient (gradientStart, bounds.getTopLeft(), gradientEnd, bounds.getBottomRight(), false);
-    g.setGradientFill (gradient);
+    if (bgImage.isValid())
+    {
+        g.drawImage (bgImage, bounds, juce::RectanglePlacement::fillDestination);
+    }
+    else
+    {
+        juce::ColourGradient gradient (
+            juce::Colour (0xFF141726), bounds.getTopLeft(),
+            juce::Colour (0xFF0B0D1A), bounds.getBottomRight(),
+            false);
+
+        g.setGradientFill (gradient);
+        g.fillRect (bounds);
+    }
+
+    // Overlay più leggero: rende i controlli leggibili senza cancellare l’immagine.
+    g.setColour (juce::Colour (0x66070A12));
     g.fillRect (bounds);
 
-    // Subtle radial glow behind the knobs
-    juce::ColourGradient radialGlow (accentGlow, bounds.getCentreX(), bounds.getCentreY() - 30.0f, juce::Colours::transparentBlack, bounds.getCentreX() + 300.0f, bounds.getCentreY() + 300.0f, true);
+    juce::ColourGradient radialGlow (
+        juce::Colour (0x226C63FF),
+        bounds.getCentreX(), bounds.getCentreY() - 30.0f,
+        juce::Colours::transparentBlack,
+        bounds.getCentreX() + 300.0f, bounds.getCentreY() + 300.0f,
+        true);
+
     g.setGradientFill (radialGlow);
     g.fillRect (bounds);
+
+    const auto drawPanel = [&g] (juce::Rectangle<int> r, float corner = 12.0f)
+    {
+        if (r.isEmpty())
+            return;
+
+        auto f = r.toFloat();
+
+        g.setColour (juce::Colour (0x68101422));
+        g.fillRoundedRectangle (f, corner);
+
+        g.setColour (juce::Colour (0x447F8CFF));
+        g.drawRoundedRectangle (f.reduced (0.5f), corner, 1.0f);
+    };
 
     if (showingTempoPage)
     {
@@ -964,36 +994,64 @@ void MicrotonalAutotuneAudioProcessorEditor::paint (juce::Graphics& g)
         return;
     }
 
+    // Pannelli dietro i gruppi principali.
+    auto headerPanel = scaleSelectorLabel.getBounds()
+        .getUnion (scaleSelector.getBounds())
+        .getUnion (rootNoteSelectorLabel.getBounds())
+        .getUnion (rootNoteSelector.getBounds())
+        .getUnion (modeSelectorLabel.getBounds())
+        .getUnion (modeSelector.getBounds())
+        .getUnion (tempoPageButton.getBounds())
+        .expanded (14, 10);
+
+    drawPanel (headerPanel);
+
+    drawPanel (speedKnob.getBounds().getUnion (speedLabel.getBounds()).expanded (18, 14));
+    drawPanel (amountKnob.getBounds().getUnion (amountLabel.getBounds()).expanded (18, 14));
+
+    auto utilityPanel = scaleLockButton.getBounds()
+        .getUnion (analogModeButton.getBounds())
+        .getUnion (outVolumeSlider.getBounds())
+        .getUnion (outVolumeLabel.getBounds());
+
+    if (scaleLockButton.getToggleState())
+        utilityPanel = utilityPanel
+            .getUnion (lockHysteresisSlider.getBounds())
+            .getUnion (lockHysteresisLabel.getBounds())
+            .getUnion (vibratoPreserveSlider.getBounds())
+            .getUnion (vibratoPreserveLabel.getBounds());
+
+    drawPanel (utilityPanel.expanded (14, 10));
+
     auto lowerArea = getLocalBounds();
     auto titleArea = lowerArea.removeFromBottom (38);
     auto meterArea = lowerArea.removeFromBottom (136).reduced (18, 4);
+
     drawMeterPanel (g, meterArea);
 
-    // Plugin title
     g.setColour (juce::Colours::white);
     g.setFont (juce::FontOptions (24.0f, juce::Font::bold));
-    g.drawText ("Microtonal Autotune", titleArea,
-                juce::Justification::centred);
+    g.drawText ("Microtonal Autotune", titleArea, juce::Justification::centred);
 
-    // Mode indicator dot — color depends on the selected mode
     int mode = processorRef.processingMode.load();
     if (mode > 0)
     {
         juce::Colour dotColour;
         switch (mode)
         {
-            case 1:  dotColour = juce::Colour (0xFF4488FF); break; // Quality: blue
-            case 2:  dotColour = juce::Colour (0xFF00CC66); break; // Live: green
-            case 3:  dotColour = juce::Colour (0xFFFF8800); break; // Experimental: orange
+            case 1:  dotColour = juce::Colour (0xFF4488FF); break;
+            case 2:  dotColour = juce::Colour (0xFF00CC66); break;
+            case 3:  dotColour = juce::Colour (0xFFFF8800); break;
             default: dotColour = juce::Colour (0xFF888888); break;
         }
 
         auto modeBounds = modeSelector.getBounds();
         int dotX = modeBounds.getRight() + 6;
         int dotY = modeBounds.getCentreY();
+
         g.setColour (dotColour);
         g.fillEllipse (static_cast<float> (dotX - 4), static_cast<float> (dotY - 4), 8.0f, 8.0f);
-        // Outer glow
+
         g.setColour (dotColour.withAlpha (0.3f));
         g.fillEllipse (static_cast<float> (dotX - 7), static_cast<float> (dotY - 7), 14.0f, 14.0f);
     }
@@ -1010,32 +1068,40 @@ void MicrotonalAutotuneAudioProcessorEditor::resized()
     if (showingTempoPage)
     {
         auto area = getLocalBounds().reduced (34, 26);
+
         tempoBackButton.setBounds (area.removeFromTop (30).removeFromLeft (90));
         area.removeFromTop (44);
 
         auto modeRow = area.removeFromTop (38);
         const int modeWidth = modeRow.getWidth() / 3;
+
         tempoOffButton.setBounds (modeRow.removeFromLeft (modeWidth).reduced (5, 2));
         tempoGlideButton.setBounds (modeRow.removeFromLeft (modeWidth).reduced (5, 2));
         glideLockButton.setBounds (modeRow.reduced (5, 2));
 
         area.removeFromTop (18);
+
         auto divisionRow = area.removeFromTop (54);
         tempoDivisionLabel.setBounds (divisionRow.removeFromLeft (120));
         tempoDivisionSelector.setBounds (divisionRow.removeFromLeft (150).reduced (6, 10));
         tempoSmartOnset.setBounds (divisionRow.reduced (18, 10));
 
         area.removeFromTop (12);
+
         auto knobs = area.removeFromTop (150);
         const int half = knobs.getWidth() / 2;
+
         auto glideArea = knobs.removeFromLeft (half);
         auto lockArea = knobs;
+
         const int knobSize = juce::jmin (112, glideArea.getHeight() - 28);
+
         tempoGlideLength.setBounds (glideArea.getCentreX() - knobSize / 2,
                                     glideArea.getY(), knobSize, knobSize);
         tempoGlideLengthLabel.setBounds (glideArea.getX(),
                                          glideArea.getY() + knobSize + 2,
                                          glideArea.getWidth(), 22);
+
         tempoLockStrength.setBounds (lockArea.getCentreX() - knobSize / 2,
                                      lockArea.getY(), knobSize, knobSize);
         tempoLockStrengthLabel.setBounds (lockArea.getX(),
@@ -1044,6 +1110,112 @@ void MicrotonalAutotuneAudioProcessorEditor::resized()
         return;
     }
 
+    auto area = getLocalBounds().reduced (24, 18);
+
+    const int titleHeight = 38;
+    const int meterHeight = 136;
+    const int footerReserved = titleHeight + meterHeight + 10;
+
+    area.removeFromBottom (footerReserved);
+
+    // Header: scala sopra, nota + modo sotto.
+    auto header = area.removeFromTop (74);
+
+    auto scaleRow = header.removeFromTop (30);
+    tempoPageButton.setBounds (scaleRow.removeFromRight (96).reduced (0, 1));
+    scaleRow.removeFromRight (10);
+
+    scaleSelectorLabel.setBounds (scaleRow.removeFromLeft (54));
+    scaleSelector.setBounds (scaleRow.reduced (0, 1));
+
+    header.removeFromTop (8);
+
+    auto secondRow = header.removeFromTop (30);
+    auto noteArea = secondRow.removeFromLeft ((secondRow.getWidth() - 10) / 2);
+    secondRow.removeFromLeft (10);
+    auto modeArea = secondRow;
+
+    rootNoteSelectorLabel.setBounds (noteArea.removeFromLeft (54));
+    rootNoteSelector.setBounds (noteArea.reduced (0, 1));
+
+    modeSelectorLabel.setBounds (modeArea.removeFromLeft (54));
+    modeSelector.setBounds (modeArea.reduced (0, 1));
+
+    area.removeFromTop (14);
+
+    // Humanize resta appena sopra il meter.
+    auto humanizeRow = area.removeFromBottom (30);
+    humanizeLabel.setBounds (humanizeRow.removeFromLeft (86));
+    humanizeSlider.setBounds (humanizeRow.reduced (0, 3));
+
+    area.removeFromBottom (12);
+
+    // Strip utility: Scale Lock + Analog.
+    const bool lockOn = scaleLockButton.getToggleState();
+    auto utility = area.removeFromBottom (lockOn ? 92 : 58);
+
+    auto leftUtility = utility.removeFromLeft ((utility.getWidth() - 14) / 2);
+    utility.removeFromLeft (14);
+    auto rightUtility = utility;
+
+    scaleLockButton.setBounds (leftUtility.removeFromTop (26).removeFromLeft (150));
+
+    if (lockOn)
+    {
+        leftUtility.removeFromTop (8);
+
+        auto hystRow = leftUtility.removeFromTop (24);
+        lockHysteresisLabel.setBounds (hystRow.removeFromLeft (122));
+        lockHysteresisSlider.setBounds (hystRow);
+
+        leftUtility.removeFromTop (6);
+
+        auto vibRow = leftUtility.removeFromTop (24);
+        vibratoPreserveLabel.setBounds (vibRow.removeFromLeft (122));
+        vibratoPreserveSlider.setBounds (vibRow);
+    }
+    else
+    {
+        lockHysteresisLabel.setBounds ({});
+        lockHysteresisSlider.setBounds ({});
+        vibratoPreserveLabel.setBounds ({});
+        vibratoPreserveSlider.setBounds ({});
+    }
+
+    analogModeButton.setBounds (rightUtility.removeFromTop (26).removeFromLeft (150));
+    rightUtility.removeFromTop (8);
+
+    auto outRow = rightUtility.removeFromTop (24);
+    outVolumeLabel.setBounds (outRow.removeFromLeft (92));
+    outVolumeSlider.setBounds (outRow);
+
+    area.removeFromBottom (16);
+
+    // Centro: due knob in card simmetriche.
+    auto knobArea = area;
+
+    auto leftKnobArea = knobArea.removeFromLeft ((knobArea.getWidth() - 20) / 2);
+    knobArea.removeFromLeft (20);
+    auto rightKnobArea = knobArea;
+
+    const int knobSize = juce::jlimit (
+        96, 150,
+        juce::jmin (leftKnobArea.getWidth() - 36, leftKnobArea.getHeight() - 38));
+
+    speedKnob.setBounds (leftKnobArea.getCentreX() - knobSize / 2,
+                         leftKnobArea.getCentreY() - knobSize / 2 - 8,
+                         knobSize, knobSize);
+    speedLabel.setBounds (leftKnobArea.getX(),
+                          speedKnob.getBottom() + 4,
+                          leftKnobArea.getWidth(), 22);
+
+    amountKnob.setBounds (rightKnobArea.getCentreX() - knobSize / 2,
+                          rightKnobArea.getCentreY() - knobSize / 2 - 8,
+                          knobSize, knobSize);
+    amountLabel.setBounds (rightKnobArea.getX(),
+                           amountKnob.getBottom() + 4,
+                           rightKnobArea.getWidth(), 22);
+}
     auto bounds = getLocalBounds();
     int width = bounds.getWidth();
     int height = bounds.getHeight();
