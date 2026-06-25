@@ -160,7 +160,7 @@ public:
          
         updateScaleLockContext(scaleRatios.empty() ? nullptr : scaleRatios.data(),
                        static_cast<int>(scaleRatios.size()));
-```
+
 
         float* channels[] { data };
         juce::AudioBuffer<float> view(channels, 1, numberOfSamples);
@@ -297,7 +297,7 @@ void updateScaleLockContext(const double* scaleRatios, int numberOfScaleRatios) 
     parameters_.latencyMode = activeModeIndex_.load(std::memory_order_acquire);
    
 }
-```
+
 
 
     std::array<ModernPitchEngine, engineCount> engines_;
