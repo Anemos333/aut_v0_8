@@ -22,8 +22,17 @@ namespace ScaleLock
             scaleDensityFactor = 12.0 / static_cast<double>(params.scaleSize);
         }
 
-        double confidenceFactor = static_cast<double>(params.confidence);
-        double hysteresis = static_cast<double>(params.userHysteresis) * modeFactor * tempoFactor * scaleDensityFactor * confidenceFactor;
+        const double confidence = std::clamp (static_cast<double> (params.confidence), 0.0, 1.0);
+
+// Non far collassare l'isteresi quando il detector è incerto.
+// A bassa confidence manteniamo almeno il 55% dell'isteresi richiesta.
+const double confidenceFactor = 0.55 + 0.45 * confidence;
+
+double hysteresis = static_cast<double> (params.userHysteresis)
+                  * modeFactor
+                  * tempoFactor
+                  * scaleDensityFactor
+                  * confidenceFactor;
         
         if (params.tempoLockActive) {
             hysteresis += 15.0; 
@@ -38,9 +47,18 @@ namespace ScaleLock
             return 0.0;
 
         double targetBoundarySafety = 1.0;
-        if (std::abs(vibratoComponent) > effectiveHysteresis * 0.8) {
-            targetBoundarySafety = std::clamp(1.0 - (std::abs(vibratoComponent) - effectiveHysteresis * 0.8) / (effectiveHysteresis * 0.2), 0.0, 1.0);
-        }
+
+if (effectiveHysteresis > 1.0e-6)
+{
+    const double absVibrato = std::abs (vibratoComponent);
+    const double softLimit = effectiveHysteresis * 0.8;
+    const double fadeWidth = std::max (1.0e-6, effectiveHysteresis * 0.2);
+
+    if (absVibrato > softLimit)
+        targetBoundarySafety = std::clamp (
+            1.0 - (absVibrato - softLimit) / fadeWidth,
+            0.0, 1.0);
+}
 
         double baseVibrato = vibratoComponent 
                            * static_cast<double>(params.vibratoAmount)
