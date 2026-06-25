@@ -1215,7 +1215,7 @@ void MicrotonalAutotuneAudioProcessorEditor::resized()
     amountLabel.setBounds (rightKnobArea.getX(),
                            amountKnob.getBottom() + 4,
                            rightKnobArea.getWidth(), 22);
-}
+
     auto bounds = getLocalBounds();
     int width = bounds.getWidth();
     int height = bounds.getHeight();
