@@ -767,13 +767,29 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
             float x2 = x * x;
             return x * (27.0f + x2) / (27.0f + 9.0f * x2);
         };
-        
+        auto scaleLockSoftCompressor = [] (float x) -> float
+{
+    // Curva stateless molto morbida: non pompa, non richiede membri nuovi,
+    // protegge solo i picchi sopra circa -3 dBFS.
+    constexpr float threshold = 0.7079458f; // circa -3 dBFS
+    constexpr float softness = 0.35f;       // basso = molto soft
+
+    const float ax = std::abs(x);
+    if (ax <= threshold)
+        return x;
+
+    const float over = ax - threshold;
+    const float compressed = threshold + over / (1.0f + softness * over);
+    return std::copysign(compressed, x);
+};
+```
         for (int i = 0; i < numSamples; ++i)
         {
             float value = outputData[i];
             if (analogMode)
                 value = fastSoftClip (value);
             outputData[i] = value * outGain;
+            outputData[i] = scaleLockSoftCompressor(outputData[i]);
         }
     }
 
