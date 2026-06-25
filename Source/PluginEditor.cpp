@@ -1075,16 +1075,16 @@ void MicrotonalAutotuneAudioProcessorEditor::resized()
         auto modeRow = area.removeFromTop (38);
         const int modeWidth = modeRow.getWidth() / 3;
 
-        tempoOffButton.setBounds (modeRow.removeFromLeft (modeWidth).reduced (5, 2));
-        tempoGlideButton.setBounds (modeRow.removeFromLeft (modeWidth).reduced (5, 2));
-        glideLockButton.setBounds (modeRow.reduced (5, 2));
+        tempoOffButton.setBounds    (modeRow.removeFromLeft (modeWidth).reduced (5, 2));
+        tempoGlideButton.setBounds  (modeRow.removeFromLeft (modeWidth).reduced (5, 2));
+        glideLockButton.setBounds   (modeRow.reduced (5, 2));
 
         area.removeFromTop (18);
 
         auto divisionRow = area.removeFromTop (54);
-        tempoDivisionLabel.setBounds (divisionRow.removeFromLeft (120));
+        tempoDivisionLabel.setBounds    (divisionRow.removeFromLeft (120));
         tempoDivisionSelector.setBounds (divisionRow.removeFromLeft (150).reduced (6, 10));
-        tempoSmartOnset.setBounds (divisionRow.reduced (18, 10));
+        tempoSmartOnset.setBounds       (divisionRow.reduced (18, 10));
 
         area.removeFromTop (12);
 
@@ -1094,19 +1094,33 @@ void MicrotonalAutotuneAudioProcessorEditor::resized()
         auto glideArea = knobs.removeFromLeft (half);
         auto lockArea = knobs;
 
-        const int knobSize = juce::jmin (112, glideArea.getHeight() - 28);
+        const int tempoKnobSize = juce::jlimit (
+            82, 112, juce::jmin (glideArea.getWidth(), glideArea.getHeight() - 28));
 
-        tempoGlideLength.setBounds (glideArea.getCentreX() - knobSize / 2,
-                                    glideArea.getY(), knobSize, knobSize);
-        tempoGlideLengthLabel.setBounds (glideArea.getX(),
-                                         glideArea.getY() + knobSize + 2,
-                                         glideArea.getWidth(), 22);
+        tempoGlideLength.setBounds (
+            glideArea.getCentreX() - tempoKnobSize / 2,
+            glideArea.getY(),
+            tempoKnobSize,
+            tempoKnobSize);
 
-        tempoLockStrength.setBounds (lockArea.getCentreX() - knobSize / 2,
-                                     lockArea.getY(), knobSize, knobSize);
-        tempoLockStrengthLabel.setBounds (lockArea.getX(),
-                                          lockArea.getY() + knobSize + 2,
-                                          lockArea.getWidth(), 22);
+        tempoGlideLengthLabel.setBounds (
+            glideArea.getX(),
+            glideArea.getY() + tempoKnobSize + 2,
+            glideArea.getWidth(),
+            22);
+
+        tempoLockStrength.setBounds (
+            lockArea.getCentreX() - tempoKnobSize / 2,
+            lockArea.getY(),
+            tempoKnobSize,
+            tempoKnobSize);
+
+        tempoLockStrengthLabel.setBounds (
+            lockArea.getX(),
+            lockArea.getY() + tempoKnobSize + 2,
+            lockArea.getWidth(),
+            22);
+
         return;
     }
 
@@ -1118,12 +1132,13 @@ void MicrotonalAutotuneAudioProcessorEditor::resized()
 
     area.removeFromBottom (footerReserved);
 
-    // Header: scala sopra, nota + modo sotto.
+    // ==================== Header ====================
     auto header = area.removeFromTop (74);
 
     auto scaleRow = header.removeFromTop (30);
-    tempoPageButton.setBounds (scaleRow.removeFromRight (96).reduced (0, 1));
-    scaleRow.removeFromRight (10);
+
+    tempoPageButton.setBounds (scaleRow.removeFromRight (104).reduced (4, 1));
+    scaleRow.removeFromRight (8);
 
     scaleSelectorLabel.setBounds (scaleRow.removeFromLeft (54));
     scaleSelector.setBounds (scaleRow.reduced (0, 1));
@@ -1131,6 +1146,7 @@ void MicrotonalAutotuneAudioProcessorEditor::resized()
     header.removeFromTop (8);
 
     auto secondRow = header.removeFromTop (30);
+
     auto noteArea = secondRow.removeFromLeft ((secondRow.getWidth() - 10) / 2);
     secondRow.removeFromLeft (10);
     auto modeArea = secondRow;
@@ -1141,158 +1157,94 @@ void MicrotonalAutotuneAudioProcessorEditor::resized()
     modeSelectorLabel.setBounds (modeArea.removeFromLeft (54));
     modeSelector.setBounds (modeArea.reduced (0, 1));
 
-    area.removeFromTop (14);
+    area.removeFromTop (12);
 
-    // Humanize resta appena sopra il meter.
+    // ==================== Humanize sopra il meter ====================
     auto humanizeRow = area.removeFromBottom (30);
     humanizeLabel.setBounds (humanizeRow.removeFromLeft (86));
     humanizeSlider.setBounds (humanizeRow.reduced (0, 3));
 
-    area.removeFromBottom (12);
+    area.removeFromBottom (8);
 
-    // Strip utility: Scale Lock + Analog.
-    const bool lockOn = scaleLockButton.getToggleState();
-    auto utility = area.removeFromBottom (lockOn ? 92 : 58);
+    // ==================== Centro: knob + utility ====================
+    auto middle = area;
 
-    auto leftUtility = utility.removeFromLeft ((utility.getWidth() - 14) / 2);
-    utility.removeFromLeft (14);
-    auto rightUtility = utility;
+    const int utilityWidth = juce::jlimit (185, 280, middle.getWidth() / 3);
 
-    scaleLockButton.setBounds (leftUtility.removeFromTop (26).removeFromLeft (150));
+    auto utilityArea = middle.removeFromRight (utilityWidth);
+    middle.removeFromRight (16);
 
-    if (lockOn)
-    {
-        leftUtility.removeFromTop (8);
-
-        auto hystRow = leftUtility.removeFromTop (24);
-        lockHysteresisLabel.setBounds (hystRow.removeFromLeft (122));
-        lockHysteresisSlider.setBounds (hystRow);
-
-        leftUtility.removeFromTop (6);
-
-        auto vibRow = leftUtility.removeFromTop (24);
-        vibratoPreserveLabel.setBounds (vibRow.removeFromLeft (122));
-        vibratoPreserveSlider.setBounds (vibRow);
-    }
-    else
-    {
-        lockHysteresisLabel.setBounds ({});
-        lockHysteresisSlider.setBounds ({});
-        vibratoPreserveLabel.setBounds ({});
-        vibratoPreserveSlider.setBounds ({});
-    }
-
-    analogModeButton.setBounds (rightUtility.removeFromTop (26).removeFromLeft (150));
-    rightUtility.removeFromTop (8);
-
-    auto outRow = rightUtility.removeFromTop (24);
-    outVolumeLabel.setBounds (outRow.removeFromLeft (92));
-    outVolumeSlider.setBounds (outRow);
-
-    area.removeFromBottom (16);
-
-    // Centro: due knob in card simmetriche.
-    auto knobArea = area;
+    auto knobArea = middle;
 
     auto leftKnobArea = knobArea.removeFromLeft ((knobArea.getWidth() - 20) / 2);
     knobArea.removeFromLeft (20);
     auto rightKnobArea = knobArea;
 
-    
-    auto bounds = getLocalBounds();
-    int width = bounds.getWidth();
-    int height = bounds.getHeight();
+    const auto placeKnob = [] (juce::Slider& knob,
+                               juce::Label& label,
+                               juce::Rectangle<int> bounds)
+    {
+        bounds = bounds.reduced (4, 0);
 
-    // Top row layout: Scale selector, Root note selector, Mode selector
-    int selectorHeight = 28;
-    int topMargin = 8;
-    int gap = 10;
+        const int labelH = 24;
+        const int availableH = juce::jmax (82, bounds.getHeight() - labelH);
+        const int knobSize = juce::jlimit (
+            82, 140, juce::jmin (bounds.getWidth(), availableH));
 
-    // Calculate widths
-    int scaleLabelWidth = 50;
-    int scaleSelectorWidth = juce::jmin (220, (width - 220) * 5 / 10);
-    int rootLabelWidth = 42;
-    int rootSelectorWidth = juce::jmin (80, (width - 220) * 2 / 10);
-    int modeLabelWidth = 42;
-    int modeSelectorWidth = juce::jmin (120, (width - 220) * 3 / 10);
+        const int x = bounds.getCentreX() - knobSize / 2;
+        const int y = bounds.getY()
+            + juce::jmax (0, (bounds.getHeight() - labelH - knobSize) / 2);
 
-    int totalTopWidth = scaleLabelWidth + 6 + scaleSelectorWidth
-                      + gap + rootLabelWidth + 4 + rootSelectorWidth
-                      + gap + modeLabelWidth + 4 + modeSelectorWidth;
-    int topStartX = (width - totalTopWidth) / 2;
+        knob.setBounds (x, y, knobSize, knobSize);
+        label.setBounds (bounds.getX(),
+                         y + knobSize + 2,
+                         bounds.getWidth(),
+                         labelH);
+    };
 
-    // Scale selector
-    scaleSelectorLabel.setBounds (topStartX, topMargin, scaleLabelWidth, selectorHeight);
-    scaleSelector.setBounds (topStartX + scaleLabelWidth + 6, topMargin, scaleSelectorWidth, selectorHeight);
+    placeKnob (speedKnob,  speedLabel,  leftKnobArea);
+    placeKnob (amountKnob, amountLabel, rightKnobArea);
 
-    // Root note selector
-    int rootStartX = topStartX + scaleLabelWidth + 6 + scaleSelectorWidth + gap;
-    rootNoteSelectorLabel.setBounds (rootStartX, topMargin, rootLabelWidth, selectorHeight);
-    rootNoteSelector.setBounds (rootStartX + rootLabelWidth + 4, topMargin, rootSelectorWidth, selectorHeight);
+    // ==================== Utility column ====================
+    const bool lockOn = scaleLockButton.getToggleState();
 
-    // Mode selector
-    int modeStartX = rootStartX + rootLabelWidth + 4 + rootSelectorWidth + gap;
-    modeSelectorLabel.setBounds (modeStartX, topMargin, modeLabelWidth, selectorHeight);
-    modeSelector.setBounds (modeStartX + modeLabelWidth + 4, topMargin, modeSelectorWidth, selectorHeight);
+    auto utility = utilityArea.reduced (2, 2);
 
-    tempoPageButton.setBounds (width / 2 - 45, topMargin + selectorHeight + 10, 90, 28);
+    scaleLockButton.setBounds (
+        utility.removeFromTop (26).removeFromLeft (150));
 
-    // Knobs: centered vertically, at 1/4 and 3/4 width
-    int knobSize = juce::jmin (120, width / 4, height / 3);
-    int knobCenterY = juce::jmax (90,
-        juce::jmin (height / 2 - 35, height - 250));
+    if (lockOn)
+    {
+        utility.removeFromTop (8);
 
-    // Speed knob at 1/4
-    int speedCenterX = width / 4;
-    speedKnob.setBounds (speedCenterX - knobSize / 2, knobCenterY - knobSize / 2,
-                         knobSize, knobSize);
-    speedLabel.setBounds (speedCenterX - knobSize / 2, knobCenterY + knobSize / 2 + 4,
-                          knobSize, 20);
+        auto hystRow = utility.removeFromTop (24);
+        lockHysteresisLabel.setBounds (hystRow.removeFromLeft (122));
+        lockHysteresisSlider.setBounds (hystRow);
 
-    // Amount knob at 3/4
-    int amountCenterX = width * 3 / 4;
-    amountKnob.setBounds (amountCenterX - knobSize / 2, knobCenterY - knobSize / 2,
-                          knobSize, knobSize);
-    amountLabel.setBounds (amountCenterX - knobSize / 2, knobCenterY + knobSize / 2 + 4,
-                           knobSize, 20);
+        utility.removeFromTop (6);
 
-    // ---- Controls strip: Scale Lock (left) | Analog Mode (right) ----
-    // Positioned between the knobs and the humanize slider, responsive to width.
-   
-    int sliderHeight = 24;
-    int bottomMargin = titleHeight + meterHeight + 10;
-    int meterMargin = 18;
-    int meterAreaWidth = width - (meterMargin * 2);
+        auto vibRow = utility.removeFromTop (24);
+        vibratoPreserveLabel.setBounds (vibRow.removeFromLeft (122));
+        vibratoPreserveSlider.setBounds (vibRow);
+    }
+    else
+    {
+        lockHysteresisLabel.setBounds (juce::Rectangle<int>());
+        lockHysteresisSlider.setBounds (juce::Rectangle<int>());
+        vibratoPreserveLabel.setBounds (juce::Rectangle<int>());
+        vibratoPreserveSlider.setBounds (juce::Rectangle<int>());
+    }
 
-    // Humanize slider (full width, just above metering)
-    int humanizeY = height - bottomMargin - sliderHeight;
-    humanizeLabel.setBounds (meterMargin, humanizeY, 80, sliderHeight);
-    humanizeSlider.setBounds (meterMargin + 80, humanizeY, meterAreaWidth - 80, sliderHeight);
+    utility.removeFromTop (8);
 
-    // Controls strip sits between knobs and humanize
-    int stripTopY = knobCenterY + knobSize / 2 + 28;
-    int stripBottomY = humanizeY - 8;
-    int stripHeight = stripBottomY - stripTopY;
+    analogModeButton.setBounds (
+        utility.removeFromTop (26).removeFromLeft (150));
 
-    // Divide width into left half (Scale Lock) and right half (Analog)
-    int halfW = (width - meterMargin * 2) / 2;
-    int leftX = meterMargin;
-    int rightX = meterMargin + halfW + 4;
-    int controlW = halfW - 4;
+    utility.removeFromTop (8);
 
-    // --- Left column: Scale Lock ---
-    int row0Y = stripTopY;
-    scaleLockButton.setBounds (leftX, row0Y, juce::jmin (140, controlW), 24);
-
-   
-    // --- Right column: Analog Mode ---
-    analogModeButton.setBounds (rightX, row0Y, juce::jmin (140, controlW), 24);
-
-    
-    int outLabelW = juce::jmin (90, controlW / 3);
-    int outSliderW = controlW - outLabelW - 4;
-    outVolumeLabel.setBounds (rightX, outRow, outLabelW, 22);
-    outVolumeSlider.setBounds (rightX + outLabelW + 4, outRow, outSliderW, 22);
+    auto outRow = utility.removeFromTop (24);
+    outVolumeLabel.setBounds (outRow.removeFromLeft (92));
+    outVolumeSlider.setBounds (outRow);
 }
 
 void MicrotonalAutotuneAudioProcessorEditor::onRootNoteSelected()
