@@ -1198,24 +1198,7 @@ void MicrotonalAutotuneAudioProcessorEditor::resized()
     knobArea.removeFromLeft (20);
     auto rightKnobArea = knobArea;
 
-    const int knobSize = juce::jlimit (
-        96, 150,
-        juce::jmin (leftKnobArea.getWidth() - 36, leftKnobArea.getHeight() - 38));
-
-    speedKnob.setBounds (leftKnobArea.getCentreX() - knobSize / 2,
-                         leftKnobArea.getCentreY() - knobSize / 2 - 8,
-                         knobSize, knobSize);
-    speedLabel.setBounds (leftKnobArea.getX(),
-                          speedKnob.getBottom() + 4,
-                          leftKnobArea.getWidth(), 22);
-
-    amountKnob.setBounds (rightKnobArea.getCentreX() - knobSize / 2,
-                          rightKnobArea.getCentreY() - knobSize / 2 - 8,
-                          knobSize, knobSize);
-    amountLabel.setBounds (rightKnobArea.getX(),
-                           amountKnob.getBottom() + 4,
-                           rightKnobArea.getWidth(), 22);
-
+    
     auto bounds = getLocalBounds();
     int width = bounds.getWidth();
     int height = bounds.getHeight();
@@ -1275,8 +1258,7 @@ void MicrotonalAutotuneAudioProcessorEditor::resized()
 
     // ---- Controls strip: Scale Lock (left) | Analog Mode (right) ----
     // Positioned between the knobs and the humanize slider, responsive to width.
-    int meterHeight = 136;
-    int titleHeight = 38;
+   
     int sliderHeight = 24;
     int bottomMargin = titleHeight + meterHeight + 10;
     int meterMargin = 18;
@@ -1302,32 +1284,11 @@ void MicrotonalAutotuneAudioProcessorEditor::resized()
     int row0Y = stripTopY;
     scaleLockButton.setBounds (leftX, row0Y, juce::jmin (140, controlW), 24);
 
-    bool lockOn = scaleLockButton.getToggleState();
-    if (stripHeight >= 72 && lockOn)
-    {
-        int row1Y = row0Y + 28;
-        int labelW = juce::jmin (110, controlW / 2);
-        int sliderW = controlW - labelW - 4;
-        lockHysteresisLabel.setBounds (leftX, row1Y, labelW, 22);
-        lockHysteresisSlider.setBounds (leftX + labelW + 4, row1Y, sliderW, 22);
-
-        int row2Y = row1Y + 26;
-        vibratoPreserveLabel.setBounds (leftX, row2Y, labelW, 22);
-        vibratoPreserveSlider.setBounds (leftX + labelW + 4, row2Y, sliderW, 22);
-    }
-    else
-    {
-        // Compact: just position off-screen if not visible
-        lockHysteresisLabel.setBounds (leftX, row0Y + 28, 0, 0);
-        lockHysteresisSlider.setBounds (leftX, row0Y + 28, 0, 0);
-        vibratoPreserveLabel.setBounds (leftX, row0Y + 54, 0, 0);
-        vibratoPreserveSlider.setBounds (leftX, row0Y + 54, 0, 0);
-    }
-
+   
     // --- Right column: Analog Mode ---
     analogModeButton.setBounds (rightX, row0Y, juce::jmin (140, controlW), 24);
 
-    int outRow = row0Y + 28;
+    
     int outLabelW = juce::jmin (90, controlW / 3);
     int outSliderW = controlW - outLabelW - 4;
     outVolumeLabel.setBounds (rightX, outRow, outLabelW, 22);
