@@ -64,6 +64,7 @@ public:
         float lockHysteresis = 24.0f;       // 0..80 cents
         float vibratoPreserve = 0.0f;       // 0..1
         int scaleSize = 12;
+        float minScaleStepCents = 100.0f;
         int latencyMode = 1;
 
         // Creative tempo layer. When mode == off, the V5 signal path is
