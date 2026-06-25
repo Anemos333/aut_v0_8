@@ -1672,6 +1672,10 @@ void ModernPitchEngine::CorrectionController::acceptObservation(
         slParams.breathiness = 0.0f;
         slParams.tempoLockActive = (parameters.tempo.mode == CreativeTempo::Mode::glideLock);
         slParams.scaleSize = parameters.scaleSize > 0 ? parameters.scaleSize : 12;
+    slParams.minScaleStepCents = (std::isfinite(parameters.minScaleStepCents)
+                              && parameters.minScaleStepCents > 0.0f)
+    ? parameters.minScaleStepCents
+    : 100.0f;
         slParams.stability = 1.0f;
         slParams.periodicity = 1.0f;
         
@@ -1723,6 +1727,10 @@ void ModernPitchEngine::CorrectionController::acceptObservation(
         slParams.breathiness = 0.0f;
         slParams.tempoLockActive = (parameters.tempo.mode == CreativeTempo::Mode::glideLock);
         slParams.scaleSize = parameters.scaleSize > 0 ? parameters.scaleSize : 12;
+    slParams.minScaleStepCents = (std::isfinite(parameters.minScaleStepCents)
+                              && parameters.minScaleStepCents > 0.0f)
+    ? parameters.minScaleStepCents
+    : 100.0f;
         slParams.stability = 1.0f;
         slParams.periodicity = 1.0f;
         
