@@ -1,7 +1,8 @@
 #pragma once
 
 #include "ModernPitchEngine.h"
-
+#include <cmath>
+#include <limits>
 #include <algorithm>
 #include <array>
 #include <atomic>
