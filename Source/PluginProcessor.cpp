@@ -69,7 +69,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout MicrotonalAutotuneAudioProce
         
     params.push_back (std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID { "outVolume", 1 }, "Output Volume",
-        juce::NormalisableRange<float> (-36.0f, 12.0f, 0.1f), 0.0f));
+        juce::NormalisableRange<float> (-36.0f, 3.0f, 0.1f), 0.0f));
 
     return { params.begin(), params.end() };
 }
