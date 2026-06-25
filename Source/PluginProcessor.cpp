@@ -782,7 +782,7 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
     const float compressed = threshold + over / (1.0f + softness * over);
     return std::copysign(compressed, x);
 };
-```
+
         for (int i = 0; i < numSamples; ++i)
         {
             float value = outputData[i];
