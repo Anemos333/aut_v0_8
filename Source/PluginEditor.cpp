@@ -152,7 +152,15 @@ MicrotonalAutotuneAudioProcessorEditor::MicrotonalAutotuneAudioProcessorEditor (
     addAndMakeVisible(scaleLockButton);
     scaleLockAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
         processorRef.getAPVTS(), "scaleLock", scaleLockButton);
-    scaleLockButton.onClick = [this]() { setMainControlsVisible(true); };
+    scaleLockButton.onClick = [this]()
+    {
+        bool lockOn = scaleLockButton.getToggleState();
+        lockHysteresisSlider.setVisible (lockOn && !showingTempoPage && !showingScaleEditor);
+        lockHysteresisLabel.setVisible (lockOn && !showingTempoPage && !showingScaleEditor);
+        vibratoPreserveSlider.setVisible (lockOn && !showingTempoPage && !showingScaleEditor);
+        vibratoPreserveLabel.setVisible (lockOn && !showingTempoPage && !showingScaleEditor);
+        repaint();
+    };
 
     lockHysteresisSlider.setSliderStyle (juce::Slider::LinearHorizontal);
     lockHysteresisSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 60, 20);
@@ -581,15 +589,35 @@ void MicrotonalAutotuneAudioProcessorEditor::timerCallback()
     if (showingTempoPage)
         updateTempoModeButtons();
 
+    // Update Scale Lock visual state only when it changes
     bool lockIsOn = scaleLockButton.getToggleState();
-    if (lockIsOn) {
-        speedKnob.setColour(juce::Slider::rotarySliderFillColourId, juce::Colour(0xFFFF0066));
-    } else {
-        speedKnob.setColour(juce::Slider::rotarySliderFillColourId, juce::Colour(0xFF6C63FF));
+    if (lockIsOn != lastScaleLockState_)
+    {
+        lastScaleLockState_ = lockIsOn;
+        speedKnob.setColour (juce::Slider::rotarySliderFillColourId,
+                             lockIsOn ? juce::Colour (0xFFFF0066)
+                                      : juce::Colour (0xFF6C63FF));
+        speedKnob.updateText();
+
+        // Toggle text color: green when active
+        scaleLockButton.setColour (juce::ToggleButton::textColourId,
+                                   lockIsOn ? juce::Colour (0xFF00CC66)
+                                            : juce::Colours::white);
+
+        // Grey out sub-params when lock is off (but keep them hidden via onClick)
+        lockHysteresisSlider.setEnabled (lockIsOn);
+        vibratoPreserveSlider.setEnabled (lockIsOn);
     }
-    
-    // Ripeti il refresh del textValue per far triggerare l'aggiornamento quando si clicca
-    speedKnob.updateText();
+
+    // Update Analog Mode visual state only when it changes
+    bool analogIsOn = analogModeButton.getToggleState();
+    if (analogIsOn != lastAnalogModeState_)
+    {
+        lastAnalogModeState_ = analogIsOn;
+        analogModeButton.setColour (juce::ToggleButton::textColourId,
+                                    analogIsOn ? juce::Colour (0xFFFF8800)
+                                               : juce::Colours::white);
+    }
 
     repaint();
 }
@@ -946,36 +974,65 @@ void MicrotonalAutotuneAudioProcessorEditor::resized()
     amountLabel.setBounds (amountCenterX - knobSize / 2, knobCenterY + knobSize / 2 + 4,
                            knobSize, 20);
 
-    // Scale Lock & Analog Mode Layout
-    int slidersStartY = knobCenterY + knobSize / 2 + 30;
-    
-    // Left side: Scale Lock
-    scaleLockButton.setBounds (speedCenterX - 60, slidersStartY, 120, 24);
-    
-    lockHysteresisLabel.setBounds (speedCenterX - 110, slidersStartY + 28, 100, 24);
-    lockHysteresisSlider.setBounds (speedCenterX - 10, slidersStartY + 28, 140, 24);
-    
-    vibratoPreserveLabel.setBounds (speedCenterX - 110, slidersStartY + 56, 100, 24);
-    vibratoPreserveSlider.setBounds (speedCenterX - 10, slidersStartY + 56, 140, 24);
-
-    // Right side: Analog Mode
-    analogModeButton.setBounds (amountCenterX - 60, slidersStartY, 120, 24);
-    
-    outVolumeLabel.setBounds (amountCenterX - 110, slidersStartY + 28, 90, 24);
-    outVolumeSlider.setBounds (amountCenterX - 20, slidersStartY + 28, 140, 24);
-
-    // Humanize slider above metering area
+    // ---- Controls strip: Scale Lock (left) | Analog Mode (right) ----
+    // Positioned between the knobs and the humanize slider, responsive to width.
     int meterHeight = 136;
     int titleHeight = 38;
     int sliderHeight = 24;
     int bottomMargin = titleHeight + meterHeight + 10;
-    
-    // "lungo come la finestra di metering"
     int meterMargin = 18;
     int meterAreaWidth = width - (meterMargin * 2);
-    
-    humanizeLabel.setBounds(meterMargin, height - bottomMargin - sliderHeight, 80, sliderHeight);
-    humanizeSlider.setBounds(meterMargin + 80, height - bottomMargin - sliderHeight, meterAreaWidth - 80, sliderHeight);
+
+    // Humanize slider (full width, just above metering)
+    int humanizeY = height - bottomMargin - sliderHeight;
+    humanizeLabel.setBounds (meterMargin, humanizeY, 80, sliderHeight);
+    humanizeSlider.setBounds (meterMargin + 80, humanizeY, meterAreaWidth - 80, sliderHeight);
+
+    // Controls strip sits between knobs and humanize
+    int stripTopY = knobCenterY + knobSize / 2 + 28;
+    int stripBottomY = humanizeY - 8;
+    int stripHeight = stripBottomY - stripTopY;
+
+    // Divide width into left half (Scale Lock) and right half (Analog)
+    int halfW = (width - meterMargin * 2) / 2;
+    int leftX = meterMargin;
+    int rightX = meterMargin + halfW + 4;
+    int controlW = halfW - 4;
+
+    // --- Left column: Scale Lock ---
+    int row0Y = stripTopY;
+    scaleLockButton.setBounds (leftX, row0Y, juce::jmin (140, controlW), 24);
+
+    bool lockOn = scaleLockButton.getToggleState();
+    if (stripHeight >= 72 && lockOn)
+    {
+        int row1Y = row0Y + 28;
+        int labelW = juce::jmin (110, controlW / 2);
+        int sliderW = controlW - labelW - 4;
+        lockHysteresisLabel.setBounds (leftX, row1Y, labelW, 22);
+        lockHysteresisSlider.setBounds (leftX + labelW + 4, row1Y, sliderW, 22);
+
+        int row2Y = row1Y + 26;
+        vibratoPreserveLabel.setBounds (leftX, row2Y, labelW, 22);
+        vibratoPreserveSlider.setBounds (leftX + labelW + 4, row2Y, sliderW, 22);
+    }
+    else
+    {
+        // Compact: just position off-screen if not visible
+        lockHysteresisLabel.setBounds (leftX, row0Y + 28, 0, 0);
+        lockHysteresisSlider.setBounds (leftX, row0Y + 28, 0, 0);
+        vibratoPreserveLabel.setBounds (leftX, row0Y + 54, 0, 0);
+        vibratoPreserveSlider.setBounds (leftX, row0Y + 54, 0, 0);
+    }
+
+    // --- Right column: Analog Mode ---
+    analogModeButton.setBounds (rightX, row0Y, juce::jmin (140, controlW), 24);
+
+    int outRow = row0Y + 28;
+    int outLabelW = juce::jmin (90, controlW / 3);
+    int outSliderW = controlW - outLabelW - 4;
+    outVolumeLabel.setBounds (rightX, outRow, outLabelW, 22);
+    outVolumeSlider.setBounds (rightX + outLabelW + 4, outRow, outSliderW, 22);
 }
 
 void MicrotonalAutotuneAudioProcessorEditor::onRootNoteSelected()

@@ -116,6 +116,10 @@ private:
     void drawMeterPanel (juce::Graphics& g, juce::Rectangle<int> bounds);
     void drawTempoPage (juce::Graphics& g, juce::Rectangle<int> bounds);
 
+    // State tracking for optimized timer updates
+    bool lastScaleLockState_ = false;
+    bool lastAnalogModeState_ = false;
+
     LivePitchProcessor::Metering displayedMetering;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MicrotonalAutotuneAudioProcessorEditor)

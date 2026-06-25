@@ -47,7 +47,7 @@ namespace ScaleLock
         double calculateHysteresis(const Parameters& params) const;
 
     private:
-        std::vector<double> delayBufferCents;
+        std::vector<double> delayBufferCents = std::vector<double>(1024, 0.0);
         int delayIndex = 0;
 
         double calculatePreservedVibrato(double vibratoComponent, double effectiveHysteresis, const Parameters& params) const;

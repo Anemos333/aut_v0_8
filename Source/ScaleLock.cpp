@@ -4,7 +4,7 @@ namespace ScaleLock
 {
     void Processor::reset()
     {
-        delayBufferCents.clear();
+        std::fill(delayBufferCents.begin(), delayBufferCents.end(), 0.0);
         delayIndex = 0;
     }
 
@@ -93,12 +93,7 @@ namespace ScaleLock
         int targetDelaySamples = static_cast<int>(delayMs * 0.001 * sampleRate);
         targetDelaySamples = std::clamp(targetDelaySamples, 0, 1024);
         
-        if (delayBufferCents.size() != 1024) {
-            delayBufferCents.assign(1024, 0.0);
-            delayIndex = 0;
-        }
-        
-        delayBufferCents[delayIndex] = errorCents;
+        delayBufferCents[static_cast<std::size_t>(delayIndex)] = errorCents;
         int readIndex = (delayIndex - targetDelaySamples + 1024) % 1024;
         double delayedErrorCents = delayBufferCents[readIndex];
         

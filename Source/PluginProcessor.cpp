@@ -583,12 +583,6 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
             float value = data[sample];
             value = (! std::isfinite (value) || std::fpclassify (value) == FP_SUBNORMAL)
                 ? 0.0f : juce::jlimit (-32.0f, 32.0f, value);
-                
-            if (analogMode) {
-                // Input tube simulation: asymmetric soft clip + gentle harmonics
-                float x2 = value * value;
-                value = std::tanh(value + 0.1f * x2);
-            }
             data[sample] = value;
         }
     }
@@ -742,6 +736,18 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
 
         outputData[i] = std::isfinite (sample)
             ? juce::jlimit (-32.0f, 32.0f, sample) : 0.0f;
+    }
+
+    // Output stage: Analog saturation + Output Gain (shared with modern path)
+    {
+        float outGain = juce::Decibels::decibelsToGain (outVolumeDb);
+        for (int i = 0; i < numSamples; ++i)
+        {
+            float value = outputData[i];
+            if (analogMode)
+                value = std::tanh (value);
+            outputData[i] = value * outGain;
+        }
     }
 
     // Copy mono result to all output channels
