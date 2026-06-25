@@ -70,6 +70,7 @@ target_sources(MicrotonalAutotune
         Source/CustomScaleEditor.cpp
         Source/ModernPitchEngine.cpp
         Source/Tempo.cpp
+        Source/ScaleLock.cpp
 )
 
 target_compile_definitions(MicrotonalAutotune
