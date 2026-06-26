@@ -66,6 +66,8 @@ public:
         int scaleSize = 12;
         float minScaleStepCents = 100.0f;
         int latencyMode = 1;
+        float lockStrictness = 0.0f; // 0..1
+        bool hardLockActive = false;
 
         // Creative tempo layer. When mode == off, the V5 signal path is
         // unchanged. The controller acts only on confirmed target revisions.
