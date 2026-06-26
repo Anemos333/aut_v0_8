@@ -12,9 +12,11 @@ namespace ScaleLock
         float userHysteresis = 24.0f; // 0-80 cents
         float vibratoAmount = 0.0f;   // 0-1
         float humanize = 0.20f;       // 0-1
-        int latencyMode = 1;          // 0=UltraLive, 1=Live, 2=Quality
-
-        // External context
+        int latencyMode = 1;    
+        float strictness = 0.0f; // 0..1, usato solo dall'hard Scale Lock
+        bool hardLock = false;// 0=UltraLive, 1=Live, 2=Quality
+        
+            // External context
         float confidence = 1.0f;
         float breathiness = 0.0f;
         bool tempoLockActive = false;
