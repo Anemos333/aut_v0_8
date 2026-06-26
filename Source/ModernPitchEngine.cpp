@@ -1570,6 +1570,10 @@ void ModernPitchEngine::CorrectionController::acceptObservation(
     currentConfidence_ = clamp01(observation.confidence);
     currentVoicing_ = clamp01(observation.voicing);
     currentOnsetStrength_ = clamp01(observation.onsetStrength);
+    const float lockStrictness = parameters.scaleLock && parameters.hardLockActive
+    ? clamp01(parameters.lockStrictness)
+    : 0.0f;
+const bool hardScaleLock = parameters.scaleLock && parameters.hardLockActive && lockStrictness > 0.001f;
 
     const float minimumUsableVoicing = 0.07f + 0.12f
         * (1.0f - clamp01(parameters.detectorSensitivity));
@@ -1669,15 +1673,20 @@ void ModernPitchEngine::CorrectionController::acceptObservation(
         slParams.humanize = parameters.humanize;
         slParams.latencyMode = parameters.latencyMode;
         slParams.confidence = currentConfidence_;
-        slParams.breathiness = 0.0f;
+        slParams.breathiness = spectralBreathiness_;
+slParams.stability = clamp01(0.45f * spectralReliability_
+                            + 0.35f * spectralHarmonicity_
+                            + 0.20f * observation.consensus);
+slParams.periodicity = clamp01(observation.periodicity);
+slParams.strictness = lockStrictness;
+slParams.hardLock = hardScaleLock;
         slParams.tempoLockActive = (parameters.tempo.mode == CreativeTempo::Mode::glideLock);
         slParams.scaleSize = parameters.scaleSize > 0 ? parameters.scaleSize : 12;
     slParams.minScaleStepCents = (std::isfinite(parameters.minScaleStepCents)
                               && parameters.minScaleStepCents > 0.0f)
     ? parameters.minScaleStepCents
     : 100.0f;
-        slParams.stability = 1.0f;
-        slParams.periodicity = 1.0f;
+        
         
         hysteresisCents = scaleLockProcessor_.calculateHysteresis(slParams);
         targetBoundaryCents = hysteresisCents;
@@ -1724,15 +1733,20 @@ void ModernPitchEngine::CorrectionController::acceptObservation(
         slParams.humanize = parameters.humanize;
         slParams.latencyMode = parameters.latencyMode;
         slParams.confidence = currentConfidence_;
-        slParams.breathiness = 0.0f;
+        slParams.breathiness = spectralBreathiness_;
+slParams.stability = clamp01(0.45f * spectralReliability_
+                            + 0.35f * spectralHarmonicity_
+                            + 0.20f * observation.consensus);
+slParams.periodicity = clamp01(observation.periodicity);
+slParams.strictness = lockStrictness;
+slParams.hardLock = hardScaleLock;
         slParams.tempoLockActive = (parameters.tempo.mode == CreativeTempo::Mode::glideLock);
         slParams.scaleSize = parameters.scaleSize > 0 ? parameters.scaleSize : 12;
     slParams.minScaleStepCents = (std::isfinite(parameters.minScaleStepCents)
                               && parameters.minScaleStepCents > 0.0f)
     ? parameters.minScaleStepCents
     : 100.0f;
-        slParams.stability = 1.0f;
-        slParams.periodicity = 1.0f;
+        
         
         ScaleLock::ProcessResult res = scaleLockProcessor_.process(
             observation.frequencyHz > 0.0f ? std::log2(observation.frequencyHz) : 0.0,
