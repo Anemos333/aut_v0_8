@@ -538,7 +538,7 @@ private:
                              const Parameters& parameters) noexcept;
         void updateSecondaryTrajectory(double targetCents,
                                        const Parameters& parameters) noexcept;
-        [[nodiscard]] double transitionThresholdCents() const noexcept;
+        [[nodiscard]] double transitionThresholdCents(const Parameters& parameters) const noexcept;
         [[nodiscard]] int crossfadeLengthSamples(
             const Parameters& parameters) const noexcept;
 
