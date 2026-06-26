@@ -55,8 +55,12 @@ namespace ScaleLock
 
         // Main microtonal safety rule: never allow lock hysteresis to consume
         // almost half or more of the smallest adjacent scale interval.
-        hysteresis = std::min(hysteresis, minStep * 0.45);
+        const double strictness = std::clamp(static_cast<double>(params.strictness), 0.0, 1.0);
+const double hardFactor = params.hardLock
+    ? (0.45 - 0.17 * strictness)   // strict=1 => max 28% del passo minimo
+    : 0.45;
 
+hysteresis = std::min(hysteresis, minStep * hardFactor);
         return std::clamp(hysteresis, 0.0, 100.0);
     }
 
