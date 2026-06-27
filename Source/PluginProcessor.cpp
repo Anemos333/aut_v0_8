@@ -4,6 +4,22 @@
 #include <algorithm>
 #include <limits>
 
+namespace
+{
+    void setParameterNotifyingHost (juce::AudioProcessorValueTreeState& apvts,
+                                    const char* parameterId,
+                                    float plainValue)
+    {
+        if (auto* parameter = apvts.getParameter (parameterId))
+        {
+            parameter->beginChangeGesture();
+            parameter->setValueNotifyingHost (
+                parameter->convertTo0to1 (plainValue));
+            parameter->endChangeGesture();
+        }
+    }
+}
+
 //==============================================================================
 MicrotonalAutotuneAudioProcessor::MicrotonalAutotuneAudioProcessor()
     : AudioProcessor (BusesProperties()
@@ -80,11 +96,34 @@ bool MicrotonalAutotuneAudioProcessor::acceptsMidi() const { return false; }
 bool MicrotonalAutotuneAudioProcessor::producesMidi() const { return false; }
 bool MicrotonalAutotuneAudioProcessor::isMidiEffect() const { return false; }
 double MicrotonalAutotuneAudioProcessor::getTailLengthSeconds() const { return 0.0; }
-int MicrotonalAutotuneAudioProcessor::getNumPrograms() { return 1; }
-int MicrotonalAutotuneAudioProcessor::getCurrentProgram() { return 0; }
-void MicrotonalAutotuneAudioProcessor::setCurrentProgram (int) {}
-const juce::String MicrotonalAutotuneAudioProcessor::getProgramName (int) { return {}; }
-void MicrotonalAutotuneAudioProcessor::changeProgramName (int, const juce::String&) {}
+int MicrotonalAutotuneAudioProcessor::getNumPrograms()
+{
+    return FactoryPresets::getNumPresets();
+}
+
+int MicrotonalAutotuneAudioProcessor::getCurrentProgram()
+{
+    return juce::jlimit (0, getNumPrograms() - 1, selectedPresetIndex);
+}
+
+void MicrotonalAutotuneAudioProcessor::setCurrentProgram (int index)
+{
+    applyFactoryPreset (index);
+}
+
+const juce::String MicrotonalAutotuneAudioProcessor::getProgramName (int index)
+{
+    if (index < 0 || index >= FactoryPresets::getNumPresets())
+        return {};
+
+    return FactoryPresets::getPreset (index).name;
+}
+
+void MicrotonalAutotuneAudioProcessor::changeProgramName (int, const juce::String&)
+{
+    // Factory presets are read-only.
+}
+
 
 //==============================================================================
 ModernPitchEngine::LatencyMode MicrotonalAutotuneAudioProcessor::modeToLatency (int mode) noexcept
@@ -538,37 +577,35 @@ MicrotonalAutotuneAudioProcessor::readHostTempoPosition(
 }
 void MicrotonalAutotuneAudioProcessor::applyFactoryPreset (int index)
 {
+    const int count = FactoryPresets::getNumPresets();
+    if (count <= 0)
+        return;
+
+    index = juce::jlimit (0, count - 1, index);
+    selectedPresetIndex = index;
+
     const auto& preset = FactoryPresets::getPreset (index);
 
-    auto setParam = [this] (const juce::String& id, float plainValue)
-    {
-        if (auto* p = apvts.getParameter (id))
-        {
-            p->beginChangeGesture();
-            p->setValueNotifyingHost (p->convertTo0to1 (plainValue));
-            p->endChangeGesture();
-        }
-    };
+    updateProcessingMode (juce::jlimit (0, 3, preset.processingMode));
 
-    setParam ("speed", preset.speedMs);
-    setParam ("amount", preset.amount);
-    setParam ("humanize", preset.humanize);
+    setParameterNotifyingHost (apvts, "speed",              preset.speedMs);
+    setParameterNotifyingHost (apvts, "amount",             preset.amount);
+    setParameterNotifyingHost (apvts, "humanize",           preset.humanize);
 
-    setParam ("scaleLock", preset.scaleLock ? 1.0f : 0.0f);
-    setParam ("lockHysteresis", preset.lockHysteresis);
-    setParam ("vibratoPreserve", preset.vibratoPreserve);
+    setParameterNotifyingHost (apvts, "scaleLock",          preset.scaleLock ? 1.0f : 0.0f);
+    setParameterNotifyingHost (apvts, "lockHysteresis",     preset.lockHysteresis);
+    setParameterNotifyingHost (apvts, "vibratoPreserve",    preset.vibratoPreserve);
 
-    setParam ("tempoMode", static_cast<float> (preset.tempoMode));
-    setParam ("tempoDivision", static_cast<float> (preset.tempoDivision));
-    setParam ("tempoGlidePercent", preset.tempoGlidePct);
-    setParam ("tempoLockStrength", preset.tempoLockStrength);
-    setParam ("tempoSmartOnset", preset.tempoSmartOnset ? 1.0f : 0.0f);
+    setParameterNotifyingHost (apvts, "tempoMode",          static_cast<float> (preset.tempoMode));
+    setParameterNotifyingHost (apvts, "tempoDivision",      static_cast<float> (preset.tempoDivision));
+    setParameterNotifyingHost (apvts, "tempoGlidePercent",  preset.tempoGlidePct);
+    setParameterNotifyingHost (apvts, "tempoLockStrength",  preset.tempoLockStrength);
+    setParameterNotifyingHost (apvts, "tempoSmartOnset",    preset.tempoSmartOnset ? 1.0f : 0.0f);
 
-    setParam ("analogMode", preset.analogMode ? 1.0f : 0.0f);
-    setParam ("outVolume", preset.outVolumeDb);
-
-    updateProcessingMode (preset.processingMode);
+    setParameterNotifyingHost (apvts, "analogMode",         preset.analogMode ? 1.0f : 0.0f);
+    setParameterNotifyingHost (apvts, "outVolume",          preset.outVolumeDb);
 }
+
 //==============================================================================
 void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
 {
@@ -977,6 +1014,13 @@ void MicrotonalAutotuneAudioProcessor::setStateInformation (const void* data, in
                 int mode = wasLive ? 2 : 0; // map old Live to new Live mode
                 updateProcessingMode (mode);
             }
+            if (tree.hasProperty ("factoryPresetIndex"))
+{
+    selectedPresetIndex = juce::jlimit (
+        0,
+        std::max (0, FactoryPresets::getNumPresets() - 1),
+        static_cast<int> (tree.getProperty ("factoryPresetIndex")));
+}
 
             // Restore custom presets
             auto customTree = tree.getChildWithName ("CustomScales");
