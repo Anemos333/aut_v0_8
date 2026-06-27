@@ -91,6 +91,8 @@ private:
     // Processing mode selector (replaces old LIVE button)
     juce::ComboBox modeSelector;
     juce::Label modeSelectorLabel;
+juce::ComboBox presetSelector;
+juce::Label presetSelectorLabel;
 
     // Third page: creative tempo controls. This is intentionally separate
     // from the main processing-mode selector.
