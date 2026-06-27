@@ -930,6 +930,7 @@ void MicrotonalAutotuneAudioProcessor::getStateInformation (juce::MemoryBlock& d
     state.setProperty ("customPresetIndex", activeCustomPresetIndex.load(), nullptr);
     state.setProperty ("rootNoteIndex", rootNoteIndex.load(), nullptr);
     state.setProperty ("processingMode", processingMode.load(), nullptr);
+    state.setProperty ("factoryPresetIndex", selectedPresetIndex, nullptr);
 
     // Save custom presets
     auto customTree = customPresets.toValueTree();
