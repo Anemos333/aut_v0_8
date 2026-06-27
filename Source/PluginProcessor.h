@@ -68,7 +68,7 @@ public:
 
     // Get the reference frequency for the selected root note
     double getRootFrequency() const;
-    void MicrotonalAutotuneAudioProcessor::applyFactoryPreset (int index);
+    void applyFactoryPreset (int index);
 
     // Lock-free coherent snapshot for the editor/debug overlay.
     [[nodiscard]] LivePitchProcessor::Metering getPitchMetering() const noexcept;
@@ -78,6 +78,7 @@ private:
     juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
     CustomScalePresets customPresets;
+    int selectedPresetIndex = 3;
 
     // YIN pitch detection (Slow mode)
     float detectPitchYIN (const float* buffer, int numSamples, double sampleRate) noexcept;
