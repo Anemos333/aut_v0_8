@@ -130,7 +130,52 @@ void ModernLookAndFeel::drawTickBox (juce::Graphics& g, juce::Component& compone
         g.strokePath(p, juce::PathStrokeType(2.5f));
     }
 }
+void MicrotonalAutotuneAudioProcessorEditor::buildPresetMenu()
+{
+    presetSelector.clear (juce::dontSendNotification);
 
+    juce::String lastGroup;
+
+    for (int i = 0; i < FactoryPresets::getNumPresets(); ++i)
+    {
+        const auto& preset = FactoryPresets::getPreset (i);
+        const juce::String group (preset.group);
+
+        if (group != lastGroup)
+        {
+            presetSelector.addSectionHeading (group);
+            lastGroup = group;
+        }
+
+        presetSelector.addItem (preset.name, i + 1);
+    }
+
+    presetSelector.setSelectedId (
+        processorRef.getCurrentProgram() + 1,
+        juce::dontSendNotification);
+}
+
+void MicrotonalAutotuneAudioProcessorEditor::onPresetSelected()
+{
+    const int index = presetSelector.getSelectedId() - 1;
+
+    if (index < 0 || index >= FactoryPresets::getNumPresets())
+        return;
+
+    processorRef.applyFactoryPreset (index);
+
+    modeSelector.setSelectedId (
+        processorRef.processingMode.load() + 1,
+        juce::dontSendNotification);
+
+    updateTempoModeButtons();
+
+    const bool mainVisible = !showingTempoPage && !showingScaleEditor;
+    setMainControlsVisible (mainVisible);
+
+    resized();
+    repaint();
+}
 //==============================================================================
 MicrotonalAutotuneAudioProcessorEditor::MicrotonalAutotuneAudioProcessorEditor (
     MicrotonalAutotuneAudioProcessor& p)
@@ -145,17 +190,17 @@ MicrotonalAutotuneAudioProcessorEditor::MicrotonalAutotuneAudioProcessorEditor (
                                                           BinaryData::sfondo2_jpgSize);
 
 
-     PresetSelectorLabel.setText ("Preset:", juce::dontSendNotification);
-    PresetSelectorLabel.setFont (juce::FontOptions (14.0f, juce::Font::bold));
-    PresetSelectorLabel.setColour (juce::Label::textColourId, juce::Colours::white);
-    PresetSelectorLabel.setJustificationType (juce::Justification::centredRight);
-    addAndMakeVisible (PresetSelectorLabel);
+    presetSelectorLabel.setText ("Preset:", juce::dontSendNotification);
+presetSelectorLabel.setFont (juce::FontOptions (14.0f, juce::Font::bold));
+presetSelectorLabel.setColour (juce::Label::textColourId, juce::Colours::white);
+presetSelectorLabel.setJustificationType (juce::Justification::centredRight);
+addAndMakeVisible (presetSelectorLabel);
 
-    PresetSelector.setJustificationType (juce::Justification::centredLeft);
-    PresetSelector.onChange = [this]() { onScaleSelected(); };
-    addAndMakeVisible (PresetSelector);
+presetSelector.setJustificationType (juce::Justification::centredLeft);
+presetSelector.onChange = [this]() { onPresetSelected(); };
+addAndMakeVisible (presetSelector);
 
-    buildScaleMenu();
+buildPresetMenu();
     // ==================== Scale Selector ====================
     scaleSelectorLabel.setText ("Scala:", juce::dontSendNotification);
     scaleSelectorLabel.setFont (juce::FontOptions (14.0f, juce::Font::bold));
@@ -467,6 +512,8 @@ void MicrotonalAutotuneAudioProcessorEditor::setMainControlsVisible(
     analogModeButton.setVisible (shouldBeVisible);
     outVolumeSlider.setVisible (shouldBeVisible);
     outVolumeLabel.setVisible (shouldBeVisible);
+    presetSelector.setVisible (shouldBeVisible);
+    presetSelectorLabel.setVisible (shouldBeVisible);
 
     bool lockIsOn = scaleLockButton.getToggleState();
     lockHysteresisSlider.setVisible (shouldBeVisible && lockIsOn);
@@ -1145,6 +1192,10 @@ void MicrotonalAutotuneAudioProcessorEditor::resized()
 
     // ==================== Header ====================
     auto header = area.removeFromTop (74);
+    auto top = getLocalBounds().reduced (24, 18).removeFromTop (20);
+
+    presetSelectorLabel.setBounds (top.removeFromLeft (80));
+    presetSelector.setBounds (top.removeFromLeft (220));
 
     auto scaleRow = header.removeFromTop (30);
 
