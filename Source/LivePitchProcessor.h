@@ -1,7 +1,6 @@
 #pragma once
 
 #include "ModernPitchEngine.h"
-#include "ScaleLockPitchEngine.h"
 #include <cmath>
 #include <limits>
 #include <algorithm>
@@ -35,19 +34,15 @@ public:
         maximumBlockSize_ = std::max(1, maximumExpectedSamplesPerBlock);
         channelCount_ = std::clamp(numberOfChannels, 1,
                                    ModernPitchEngine::maxSupportedChannels);
+for (int modeIndex = 0; modeIndex < engineCount; ++modeIndex)
+{
+    modernEngines_[static_cast<std::size_t>(modeIndex)].prepare(
+        sampleRate_, maximumBlockSize_, channelCount_,
+        static_cast<LatencyMode>(modeIndex));
 
-        for (int modeIndex = 0; modeIndex < engineCount; ++modeIndex)
-        {
-            modernEngines_[static_cast<std::size_t>(modeIndex)].prepare(
-    sampleRate_, maximumBlockSize_, channelCount_,
-    static_cast<LatencyMode>(modeIndex));
-
-scaleLockEngines_[static_cast<std::size_t>(modeIndex)].prepare(
-    sampleRate_, maximumBlockSize_, channelCount_,
-    static_cast<LatencyMode>(modeIndex));
-            resetRequested_[static_cast<std::size_t>(modeIndex)].store(
-                false, std::memory_order_relaxed);
-        }
+    resetRequested_[static_cast<std::size_t>(modeIndex)].store(
+        false, std::memory_order_relaxed);
+}
 
         activeModeIndex_.store(toModeIndex(latencyMode),
                                std::memory_order_release);
