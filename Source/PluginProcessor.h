@@ -4,6 +4,7 @@
 #include "ScaleDefinitions.h"
 #include "CustomScalePresets.h"
 #include "LivePitchProcessor.h"
+#include "Preset.h"
 #include <vector>
 #include <array>
 #include <atomic>
