@@ -130,52 +130,7 @@ void ModernLookAndFeel::drawTickBox (juce::Graphics& g, juce::Component& compone
         g.strokePath(p, juce::PathStrokeType(2.5f));
     }
 }
-void MicrotonalAutotuneAudioProcessorEditor::buildPresetMenu()
-{
-    presetSelector.clear (juce::dontSendNotification);
 
-    juce::String lastGroup;
-
-    for (int i = 0; i < FactoryPresets::getNumPresets(); ++i)
-    {
-        const auto& preset = FactoryPresets::getPreset (i);
-        const juce::String group (preset.group);
-
-        if (group != lastGroup)
-        {
-            presetSelector.addSectionHeading (group);
-            lastGroup = group;
-        }
-
-        presetSelector.addItem (preset.name, i + 1);
-    }
-
-    presetSelector.setSelectedId (
-        processorRef.getCurrentProgram() + 1,
-        juce::dontSendNotification);
-}
-
-void MicrotonalAutotuneAudioProcessorEditor::onPresetSelected()
-{
-    const int index = presetSelector.getSelectedId() - 1;
-
-    if (index < 0 || index >= FactoryPresets::getNumPresets())
-        return;
-
-    processorRef.applyFactoryPreset (index);
-
-    modeSelector.setSelectedId (
-        processorRef.processingMode.load() + 1,
-        juce::dontSendNotification);
-
-    updateTempoModeButtons();
-
-    const bool mainVisible = !showingTempoPage && !showingScaleEditor;
-    setMainControlsVisible (mainVisible);
-
-    resized();
-    repaint();
-}
 //==============================================================================
 MicrotonalAutotuneAudioProcessorEditor::MicrotonalAutotuneAudioProcessorEditor (
     MicrotonalAutotuneAudioProcessor& p)
@@ -590,6 +545,52 @@ void MicrotonalAutotuneAudioProcessorEditor::updateTempoModeButtons()
 }
 
 //==============================================================================
+void MicrotonalAutotuneAudioProcessorEditor::buildPresetMenu()
+{
+    presetSelector.clear (juce::dontSendNotification);
+
+    juce::String lastGroup;
+
+    for (int i = 0; i < FactoryPresets::getNumPresets(); ++i)
+    {
+        const auto& preset = FactoryPresets::getPreset (i);
+        const juce::String group (preset.group);
+
+        if (group != lastGroup)
+        {
+            presetSelector.addSectionHeading (group);
+            lastGroup = group;
+        }
+
+        presetSelector.addItem (preset.name, i + 1);
+    }
+
+    presetSelector.setSelectedId (
+        processorRef.getCurrentProgram() + 1,
+        juce::dontSendNotification);
+}
+
+void MicrotonalAutotuneAudioProcessorEditor::onPresetSelected()
+{
+    const int index = presetSelector.getSelectedId() - 1;
+
+    if (index < 0 || index >= FactoryPresets::getNumPresets())
+        return;
+
+    processorRef.applyFactoryPreset (index);
+
+    modeSelector.setSelectedId (
+        processorRef.processingMode.load() + 1,
+        juce::dontSendNotification);
+
+    updateTempoModeButtons();
+
+    const bool mainVisible = !showingTempoPage && !showingScaleEditor;
+    setMainControlsVisible (mainVisible);
+
+    resized();
+    repaint();
+}
 void MicrotonalAutotuneAudioProcessorEditor::buildScaleMenu()
 {
     scaleSelector.clear (juce::dontSendNotification);
