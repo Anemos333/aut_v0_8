@@ -536,7 +536,39 @@ MicrotonalAutotuneAudioProcessor::readHostTempoPosition(
 
     return result;
 }
+void MicrotonalAutotuneAudioProcessor::applyFactoryPreset (int index)
+{
+    const auto& preset = FactoryPresets::getPreset (index);
 
+    auto setParam = [this] (const juce::String& id, float plainValue)
+    {
+        if (auto* p = apvts.getParameter (id))
+        {
+            p->beginChangeGesture();
+            p->setValueNotifyingHost (p->convertTo0to1 (plainValue));
+            p->endChangeGesture();
+        }
+    };
+
+    setParam ("speed", preset.speedMs);
+    setParam ("amount", preset.amount);
+    setParam ("humanize", preset.humanize);
+
+    setParam ("scaleLock", preset.scaleLock ? 1.0f : 0.0f);
+    setParam ("lockHysteresis", preset.lockHysteresis);
+    setParam ("vibratoPreserve", preset.vibratoPreserve);
+
+    setParam ("tempoMode", static_cast<float> (preset.tempoMode));
+    setParam ("tempoDivision", static_cast<float> (preset.tempoDivision));
+    setParam ("tempoGlidePercent", preset.tempoGlidePct);
+    setParam ("tempoLockStrength", preset.tempoLockStrength);
+    setParam ("tempoSmartOnset", preset.tempoSmartOnset ? 1.0f : 0.0f);
+
+    setParam ("analogMode", preset.analogMode ? 1.0f : 0.0f);
+    setParam ("outVolume", preset.outVolumeDb);
+
+    updateProcessingMode (preset.processingMode);
+}
 //==============================================================================
 void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
 {
