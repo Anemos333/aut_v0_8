@@ -167,7 +167,7 @@ buildPresetMenu();
     scaleSelector.onChange = [this]() { onScaleSelected(); };
     addAndMakeVisible (scaleSelector);
 
-    buildPresetMenu();
+    buildScaleMenu();
 
     // ==================== Root Note Selector ====================
     rootNoteSelectorLabel.setText ("Nota:", juce::dontSendNotification);
@@ -1054,14 +1054,16 @@ void MicrotonalAutotuneAudioProcessorEditor::paint (juce::Graphics& g)
     }
 
     // Pannelli dietro i gruppi principali.
-    auto headerPanel = scaleSelectorLabel.getBounds()
-        .getUnion (scaleSelector.getBounds())
-        .getUnion (rootNoteSelectorLabel.getBounds())
-        .getUnion (rootNoteSelector.getBounds())
-        .getUnion (modeSelectorLabel.getBounds())
-        .getUnion (modeSelector.getBounds())
-        .getUnion (tempoPageButton.getBounds())
-        .expanded (14, 10);
+    auto headerPanel = presetSelectorLabel.getBounds()
+    .getUnion (presetSelector.getBounds())
+    .getUnion (scaleSelectorLabel.getBounds())
+    .getUnion (scaleSelector.getBounds())
+    .getUnion (rootNoteSelectorLabel.getBounds())
+    .getUnion (rootNoteSelector.getBounds())
+    .getUnion (modeSelectorLabel.getBounds())
+    .getUnion (modeSelector.getBounds())
+    .getUnion (tempoPageButton.getBounds())
+    .expanded (14, 10);
 
     drawPanel (headerPanel);
 
@@ -1192,35 +1194,45 @@ void MicrotonalAutotuneAudioProcessorEditor::resized()
     area.removeFromBottom (footerReserved);
 
     // ==================== Header ====================
-    auto header = area.removeFromTop (74);
-    auto top = getLocalBounds().reduced (24, 18).removeFromTop (20);
+   // ==================== Header: Preset + Scala sopra, Root + Modo sotto ====================
+auto header = area.removeFromTop (78);
 
-    presetSelectorLabel.setBounds (top.removeFromLeft (80));
-    presetSelector.setBounds (top.removeFromLeft (220));
+auto firstRow = header.removeFromTop (30);
+auto secondRow = header.removeFromTop (30);
 
-    auto scaleRow = header.removeFromTop (30);
+// Pulsante Tempo laterale, alto quanto le due righe
+auto tempoArea = firstRow.getUnion (secondRow).removeFromRight (112);
+tempoPageButton.setBounds (tempoArea.reduced (4, 8));
 
-    tempoPageButton.setBounds (scaleRow.removeFromRight (104).reduced (4, 1));
-    scaleRow.removeFromRight (8);
+// Lascia spazio a destra per Tempo su entrambe le righe
+firstRow.removeFromRight (120);
+secondRow.removeFromRight (120);
 
-    scaleSelectorLabel.setBounds (scaleRow.removeFromLeft (54));
-    scaleSelector.setBounds (scaleRow.reduced (0, 1));
+// Riga 1: Preset + Scala
+const int firstGap = 10;
+auto presetArea = firstRow.removeFromLeft ((firstRow.getWidth() - firstGap) / 2);
+firstRow.removeFromLeft (firstGap);
+auto scaleArea = firstRow;
 
-    header.removeFromTop (8);
+presetSelectorLabel.setBounds (presetArea.removeFromLeft (62));
+presetSelector.setBounds (presetArea.reduced (0, 1));
 
-    auto secondRow = header.removeFromTop (30);
+scaleSelectorLabel.setBounds (scaleArea.removeFromLeft (54));
+scaleSelector.setBounds (scaleArea.reduced (0, 1));
 
-    auto noteArea = secondRow.removeFromLeft ((secondRow.getWidth() - 10) / 2);
-    secondRow.removeFromLeft (10);
-    auto modeArea = secondRow;
+// Riga 2: Root note + Modalità
+const int secondGap = 10;
+auto noteArea = secondRow.removeFromLeft ((secondRow.getWidth() - secondGap) / 2);
+secondRow.removeFromLeft (secondGap);
+auto modeArea = secondRow;
 
-    rootNoteSelectorLabel.setBounds (noteArea.removeFromLeft (54));
-    rootNoteSelector.setBounds (noteArea.reduced (0, 1));
+rootNoteSelectorLabel.setBounds (noteArea.removeFromLeft (54));
+rootNoteSelector.setBounds (noteArea.reduced (0, 1));
 
-    modeSelectorLabel.setBounds (modeArea.removeFromLeft (54));
-    modeSelector.setBounds (modeArea.reduced (0, 1));
+modeSelectorLabel.setBounds (modeArea.removeFromLeft (54));
+modeSelector.setBounds (modeArea.reduced (0, 1));
 
-    area.removeFromTop (12);
+area.removeFromTop (12);
 
     // ==================== Humanize sopra il meter ====================
     auto humanizeRow = area.removeFromBottom (30);
