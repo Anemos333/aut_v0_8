@@ -131,6 +131,8 @@ juce::Label presetSelectorLabel;
     void updateTempoModeButtons();
     void onRootNoteSelected();
     void onModeSelected();
+void buildPresetMenu();
+void onPresetSelected();
 
     void timerCallback() override;
     [[nodiscard]] static juce::String trackingStateToString (
