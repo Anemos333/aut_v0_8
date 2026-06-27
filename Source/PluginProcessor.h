@@ -67,6 +67,7 @@ public:
 
     // Get the reference frequency for the selected root note
     double getRootFrequency() const;
+    void MicrotonalAutotuneAudioProcessor::applyFactoryPreset (int index);
 
     // Lock-free coherent snapshot for the editor/debug overlay.
     [[nodiscard]] LivePitchProcessor::Metering getPitchMetering() const noexcept;
