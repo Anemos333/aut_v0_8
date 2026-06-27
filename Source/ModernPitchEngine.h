@@ -377,6 +377,7 @@ private:
                     double rootFrequency) noexcept;
 
         void resetTarget() noexcept;
+        void forceTargetLog2(double targetLog2) noexcept;
 
         [[nodiscard]] double chooseTargetLog2(double inputLog2,
                                               float hysteresisCents) noexcept;
@@ -452,6 +453,21 @@ private:
         [[nodiscard]] float confidenceAuthority(float confidence,
                                                 float sensitivity) const noexcept;
 
+        [[nodiscard]] static double sanitisedMinStepCents(const Parameters& parameters) noexcept;
+        [[nodiscard]] static double scaleLockRevisionThresholdCents(const Parameters& parameters,
+                                                                    float strictness,
+                                                                    float vibratoProtection) noexcept;
+        [[nodiscard]] static double scaleLockTransitionThresholdCents(const Parameters& parameters,
+                                                                      float strictness,
+                                                                      float vibratoProtection) noexcept;
+
+        [[nodiscard]] double guardScaleLockTarget(double candidateLog2,
+                                                  const PitchObservation& observation,
+                                                  const Parameters& parameters,
+                                                  double minStepCents,
+                                                  float strictness,
+                                                  bool hardScaleLock) noexcept;
+
         double sampleRate_ = 48000.0;
         TrackingState state_ = TrackingState::unvoiced;
         int stateSamplesRemaining_ = 0;
@@ -490,6 +506,10 @@ private:
         bool voicedLatched_ = false;
         int voicedEnterCount_ = 0;
         int voicedExitCount_ = 0;
+
+        bool revisionCandidateValid_ = false;
+        double revisionCandidateLog2_ = 0.0;
+        int revisionCandidateCount_ = 0;
     };
 
     class TransitionManager

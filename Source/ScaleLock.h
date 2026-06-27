@@ -61,6 +61,8 @@ namespace ScaleLock
 
         static int wrapDelayIndex(int index) noexcept;
         static double stableHash01(double value) noexcept;
+        static double sanitisedMinStepCents(const Parameters& params) noexcept;
+        static double smoothStep01(double x) noexcept;
 
         double updateNoteDelaySamples(double targetLog2,
                                       double sampleRate,

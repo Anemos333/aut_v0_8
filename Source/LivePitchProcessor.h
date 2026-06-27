@@ -34,15 +34,15 @@ public:
         maximumBlockSize_ = std::max(1, maximumExpectedSamplesPerBlock);
         channelCount_ = std::clamp(numberOfChannels, 1,
                                    ModernPitchEngine::maxSupportedChannels);
-for (int modeIndex = 0; modeIndex < engineCount; ++modeIndex)
-{
-    modernEngines_[static_cast<std::size_t>(modeIndex)].prepare(
-        sampleRate_, maximumBlockSize_, channelCount_,
-        static_cast<LatencyMode>(modeIndex));
+        for (int modeIndex = 0; modeIndex < engineCount; ++modeIndex)
+        {
+            modernEngines_[static_cast<std::size_t>(modeIndex)].prepare(
+                sampleRate_, maximumBlockSize_, channelCount_,
+                static_cast<LatencyMode>(modeIndex));
 
-    resetRequested_[static_cast<std::size_t>(modeIndex)].store(
-        false, std::memory_order_relaxed);
-}
+            resetRequested_[static_cast<std::size_t>(modeIndex)].store(
+                false, std::memory_order_relaxed);
+        }
 
         activeModeIndex_.store(toModeIndex(latencyMode),
                                std::memory_order_release);
@@ -52,10 +52,8 @@ for (int modeIndex = 0; modeIndex < engineCount; ++modeIndex)
     void reset() noexcept
     {
         for (auto& engine : modernEngines_)
-    engine.reset();
+            engine.reset();
 
-for (auto& engine : scaleLockEngines_)
-    engine.reset();
         for (auto& request : resetRequested_)
             request.store(false, std::memory_order_relaxed);
     }
@@ -104,17 +102,26 @@ for (auto& engine : scaleLockEngines_)
     }
 
     void setScaleLockParameters(bool scaleLock,
-                            float lockHysteresis,
-                            float vibratoPreserve,
-                            float lockStrictness = 0.0f,
-                            bool hardLock = false) noexcept
-{
-    parameters_.scaleLock = scaleLock;
-    parameters_.lockHysteresis = lockHysteresis;
-    parameters_.vibratoPreserve = vibratoPreserve;
-    parameters_.lockStrictness = std::clamp(lockStrictness, 0.0f, 1.0f);
-    parameters_.hardLockActive = hardLock;
-}
+                                float lockHysteresis,
+                                float vibratoPreserve) noexcept
+    {
+        parameters_.scaleLock = scaleLock;
+        parameters_.lockHysteresis = std::clamp(lockHysteresis, 0.0f, 80.0f);
+        parameters_.vibratoPreserve = std::clamp(vibratoPreserve, 0.0f, 1.0f);
+
+        const float h = parameters_.lockHysteresis / 80.0f;
+        const float hysteresisStrictness = h * h * (3.0f - 2.0f * h); // smoothstep
+
+        const int modeIndex = activeModeIndex_.load(std::memory_order_acquire);
+        const float liveBoost = modeIndex == static_cast<int>(LatencyMode::live) ? 0.03f : 0.0f;
+        const float experimentalBoost = modeIndex == static_cast<int>(LatencyMode::ultraLive) ? 0.12f : 0.0f;
+
+        parameters_.lockStrictness = scaleLock
+            ? std::clamp(hysteresisStrictness + liveBoost + experimentalBoost, 0.0f, 1.0f)
+            : 0.0f;
+
+        parameters_.hardLockActive = scaleLock;
+    }
 
     void setTempoHostPosition(const CreativeTempo::HostPosition& position) noexcept
     {
@@ -132,25 +139,12 @@ for (auto& engine : scaleLockEngines_)
         parameters_.amount = amount;
         updateScaleLockContext(scaleRatios, numberOfScaleRatios);
 
-        auto& engine = activeEngine();
-        if (useScaleLockEngine())
-{
-    activeScaleLockEngine().process(buffer,
-                                    scaleRatios,
-                                    numberOfScaleRatios,
-                                    rootFrequency,
-                                    parameters_,
-                                    tempoHostPosition_);
-}
-else
-{
-    activeModernEngine().process(buffer,
-                                 scaleRatios,
-                                 numberOfScaleRatios,
-                                 rootFrequency,
-                                 parameters_,
-                                 tempoHostPosition_);
-}
+        activeModernEngine().process(buffer,
+                                     scaleRatios,
+                                     numberOfScaleRatios,
+                                     rootFrequency,
+                                     parameters_,
+                                     tempoHostPosition_);
     }
 
     void process(juce::AudioBuffer<float>& buffer,
@@ -185,22 +179,11 @@ else
 
         float* channels[] { data };
         juce::AudioBuffer<float> view(channels, 1, numberOfSamples);
-        if (useScaleLockEngine())
-{
-    activeScaleLockEngine().process(view,
-                                    scaleRatios.empty() ? nullptr : scaleRatios.data(),
-                                    static_cast<int>(scaleRatios.size()),
-                                    rootFrequency,
-                                    parameters_);
-}
-else
-{
-    activeModernEngine().process(view,
-                                 scaleRatios.empty() ? nullptr : scaleRatios.data(),
-                                 static_cast<int>(scaleRatios.size()),
-                                 rootFrequency,
-                                 parameters_);
-}
+        activeModernEngine().process(view,
+                                     scaleRatios.empty() ? nullptr : scaleRatios.data(),
+                                     static_cast<int>(scaleRatios.size()),
+                                     rootFrequency,
+                                     parameters_);
     }
 
     void processBypassed(juce::AudioBuffer<float>& buffer)
@@ -229,12 +212,10 @@ else
     return getMetering().confidence;
 }
 
-[[nodiscard]] Metering getMetering() const noexcept
-{
-    return useScaleLockEngine()
-        ? activeScaleLockEngineConst().getMetering()
-        : activeModernEngineConst().getMetering();
-}
+    [[nodiscard]] Metering getMetering() const noexcept
+    {
+        return activeModernEngineConst().getMetering();
+    }
 
 private:
     static constexpr int engineCount = 3;
@@ -244,51 +225,25 @@ private:
         return std::clamp(static_cast<int>(mode), 0, engineCount - 1);
     }
 
-    [[nodiscard]] bool useScaleLockEngine() const noexcept
-{
-    return parameters_.scaleLock && parameters_.hardLockActive && parameters_.lockStrictness > 0.001f;
-}
-
-ModernPitchEngine& activeModernEngine() noexcept
-{
-    const int index = activeModeIndex_.load(std::memory_order_acquire);
-    auto& resetRequest = resetRequested_[static_cast<std::size_t>(index)];
-    auto& engine = modernEngines_[static_cast<std::size_t>(index)];
-
-    if (resetRequest.exchange(false, std::memory_order_acq_rel))
+    ModernPitchEngine& activeModernEngine() noexcept
     {
-        engine.reset();
-        scaleLockEngines_[static_cast<std::size_t>(index)].reset();
+        const int index = activeModeIndex_.load(std::memory_order_acquire);
+        auto& resetRequest = resetRequested_[static_cast<std::size_t>(index)];
+        auto& engine = modernEngines_[static_cast<std::size_t>(index)];
+
+        if (resetRequest.exchange(false, std::memory_order_acq_rel))
+        {
+            engine.reset();
+        }
+
+        return engine;
     }
 
-    return engine;
-}
-ScaleLockPitchEngine& activeScaleLockEngine() noexcept
-{
-    const int index = activeModeIndex_.load(std::memory_order_acquire);
-    auto& resetRequest = resetRequested_[static_cast<std::size_t>(index)];
-    auto& engine = scaleLockEngines_[static_cast<std::size_t>(index)];
-
-    if (resetRequest.exchange(false, std::memory_order_acq_rel))
+    [[nodiscard]] const ModernPitchEngine& activeModernEngineConst() const noexcept
     {
-        modernEngines_[static_cast<std::size_t>(index)].reset();
-        engine.reset();
+        const int index = activeModeIndex_.load(std::memory_order_acquire);
+        return modernEngines_[static_cast<std::size_t>(index)];
     }
-
-    return engine;
-}
-
-   [[nodiscard]] const ModernPitchEngine& activeModernEngineConst() const noexcept
-{
-    const int index = activeModeIndex_.load(std::memory_order_acquire);
-    return modernEngines_[static_cast<std::size_t>(index)];
-}
-
-[[nodiscard]] const ScaleLockPitchEngine& activeScaleLockEngineConst() const noexcept
-{
-    const int index = activeModeIndex_.load(std::memory_order_acquire);
-    return scaleLockEngines_[static_cast<std::size_t>(index)];
-}
 [[nodiscard]] static float calculateMinScaleStepCents(const double* scaleRatios,
                                                       int numberOfScaleRatios) noexcept
 {
@@ -365,7 +320,6 @@ void updateScaleLockContext(const double* scaleRatios, int numberOfScaleRatios) 
 
 
     std::array<ModernPitchEngine, engineCount> modernEngines_;
- std::array<ScaleLockPitchEngine, engineCount> scaleLockEngines_;
     std::array<std::atomic<bool>, engineCount> resetRequested_ {};
     std::atomic<int> activeModeIndex_ { static_cast<int>(LatencyMode::live) };
     std::atomic<bool> prepared_ { false };

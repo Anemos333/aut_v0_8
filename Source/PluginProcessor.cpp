@@ -564,8 +564,10 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
     bool analogMode = apvts.getRawParameterValue ("analogMode")->load() > 0.5f;
     float outVolumeDb = apvts.getRawParameterValue ("outVolume")->load();
 
+    int mode = juce::jlimit (0, 3, processingMode.load (std::memory_order_relaxed));
+
     speedMs = std::isfinite (speedMs) ? juce::jlimit (0.0f, 500.0f, speedMs) : 50.0f;
-    if (scaleLock) {
+    if (scaleLock || mode == 3) {
         speedMs = speedMs * (7.0f / 500.0f); // Map 0-500 to 0-7 ms
     }
     
@@ -589,7 +591,6 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
 
     const int snapshotIndex = acquireScaleSnapshot();
     const auto& scaleSnapshot = scaleSnapshotSlots_[static_cast<std::size_t> (snapshotIndex)].value;
-    int mode = juce::jlimit (0, 3, processingMode.load (std::memory_order_relaxed));
 
     // ==================== MODERN ENGINE MODES (Quality / Live / Experimental) ====================
     if (mode > 0)
@@ -625,25 +626,28 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
         releaseScaleSnapshot (snapshotIndex);
         
         // Modifica B: Analog output + gain for modern mode
-        float outGain = juce::Decibels::decibelsToGain(outVolumeDb);
-        // Fast polynomial soft-clipper (Padé approximant for tanh)
-        auto fastSoftClip = [](float x) -> float {
-            if (x < -3.0f) return -1.0f;
-            if (x > 3.0f) return 1.0f;
-            float x2 = x * x;
-            return x * (27.0f + x2) / (27.0f + 9.0f * x2);
-        };
-        
-        for (int channel = 0; channel < totalNumInputChannels; ++channel)
+        if (scaleLock)
         {
-            float* data = buffer.getWritePointer (channel);
-            for (int sample = 0; sample < numSamples; ++sample)
+            float outGain = juce::Decibels::decibelsToGain(outVolumeDb);
+            // Fast polynomial soft-clipper (Padé approximant for tanh)
+            auto fastSoftClip = [](float x) -> float {
+                if (x < -3.0f) return -1.0f;
+                if (x > 3.0f) return 1.0f;
+                float x2 = x * x;
+                return x * (27.0f + x2) / (27.0f + 9.0f * x2);
+            };
+            
+            for (int channel = 0; channel < totalNumInputChannels; ++channel)
             {
-                float value = data[sample];
-                if (analogMode) {
-                    value = fastSoftClip(value); // efficient symmetric soft clip
+                float* data = buffer.getWritePointer (channel);
+                for (int sample = 0; sample < numSamples; ++sample)
+                {
+                    float value = data[sample];
+                    if (analogMode) {
+                        value = fastSoftClip(value); // efficient symmetric soft clip
+                    }
+                    data[sample] = value * outGain;
                 }
-                data[sample] = value * outGain;
             }
         }
         return;

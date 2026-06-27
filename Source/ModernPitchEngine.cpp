@@ -1375,6 +1375,12 @@ void ModernPitchEngine::ScaleQuantizer::resetTarget() noexcept
     targetValid_ = false;
 }
 
+void ModernPitchEngine::ScaleQuantizer::forceTargetLog2(double targetLog2) noexcept
+{
+    currentTargetLog2_ = targetLog2;
+    targetValid_ = true;
+}
+
 double ModernPitchEngine::ScaleQuantizer::chooseTargetLog2(double inputLog2,
                                                             float hysteresisCents) noexcept
 {
@@ -1466,6 +1472,9 @@ void ModernPitchEngine::CorrectionController::reset() noexcept
     voicedLatched_ = false;
     voicedEnterCount_ = 0;
     voicedExitCount_ = 0;
+    revisionCandidateValid_ = false;
+    revisionCandidateLog2_ = 0.0;
+    revisionCandidateCount_ = 0;
 }
 
 void ModernPitchEngine::CorrectionController::setSpectralReliability(
@@ -1542,6 +1551,84 @@ float ModernPitchEngine::CorrectionController::confidenceAuthority(
     const float low = 0.62f - 0.20f * safeSensitivity;
     const float high = 0.90f - 0.08f * safeSensitivity;
     return smoothStep(low, high, confidence);
+}
+
+double ModernPitchEngine::CorrectionController::sanitisedMinStepCents(const Parameters& parameters) noexcept
+{
+    double minStep = static_cast<double>(parameters.minScaleStepCents);
+    if (!std::isfinite(minStep) || minStep <= 0.0)
+    {
+        const int safeSize = std::max(1, parameters.scaleSize);
+        minStep = 1200.0 / static_cast<double>(safeSize);
+    }
+    return std::clamp(minStep, 0.1, 1200.0);
+}
+
+double ModernPitchEngine::CorrectionController::scaleLockRevisionThresholdCents(const Parameters& parameters,
+                                                                                float strictness,
+                                                                                float vibratoProtection) noexcept
+{
+    const double minStep = sanitisedMinStepCents(parameters);
+    const double baseTolerance = minStep * 0.45;
+    const double vibratoAllowance = minStep * 0.50 * static_cast<double>(vibratoProtection);
+    const double tightTolerance = std::min(baseTolerance, minStep * 0.28);
+    const double hardTolerance = tightTolerance + (baseTolerance - tightTolerance) * (1.0 - strictness);
+
+    return parameters.hardLockActive
+        ? hardTolerance + vibratoAllowance
+        : baseTolerance + vibratoAllowance;
+}
+
+double ModernPitchEngine::CorrectionController::scaleLockTransitionThresholdCents(const Parameters& parameters,
+                                                                                  float strictness,
+                                                                                  float vibratoProtection) noexcept
+{
+    const double revisionThreshold = scaleLockRevisionThresholdCents(parameters, strictness, vibratoProtection);
+    return revisionThreshold + 6.0;
+}
+
+double ModernPitchEngine::CorrectionController::guardScaleLockTarget(double candidateLog2,
+                                                                     const PitchObservation& observation,
+                                                                     const Parameters& parameters,
+                                                                     double minStepCents,
+                                                                     float strictness,
+                                                                     bool hardScaleLock) noexcept
+{
+    if (!targetValid_ || !hardScaleLock)
+    {
+        revisionCandidateValid_ = false;
+        return candidateLog2;
+    }
+
+    const double jumpCents = std::abs((candidateLog2 - targetLog2_) * 1200.0);
+    const double vibratoProtection = clamp01(parameters.vibratoPreserve);
+    const double dynamicThreshold = scaleLockRevisionThresholdCents(parameters, strictness, static_cast<float>(vibratoProtection));
+
+    if (jumpCents > dynamicThreshold)
+    {
+        if (!revisionCandidateValid_ || std::abs((candidateLog2 - revisionCandidateLog2_) * 1200.0) > 2.0)
+        {
+            revisionCandidateLog2_ = candidateLog2;
+            revisionCandidateCount_ = 1;
+            revisionCandidateValid_ = true;
+        }
+        else
+        {
+            ++revisionCandidateCount_;
+        }
+
+        const int requiredConfirmations = 2 + static_cast<int>(strictness * 2.0f);
+        if (revisionCandidateCount_ >= requiredConfirmations)
+        {
+            revisionCandidateValid_ = false;
+            return candidateLog2;
+        }
+
+        return targetLog2_;
+    }
+
+    revisionCandidateValid_ = false;
+    return candidateLog2;
 }
 
 float ModernPitchEngine::CorrectionController::getFormantStability() const noexcept
@@ -1694,6 +1781,18 @@ slParams.hardLock = hardScaleLock;
 
     double newTargetLog2 = quantizer.chooseTargetLog2(pitchCentreLog2_, hysteresisCents);
 
+    if (parameters.scaleLock)
+    {
+        const double effectiveMinStep = sanitisedMinStepCents(parameters);
+        newTargetLog2 = guardScaleLockTarget(newTargetLog2,
+                                             observation,
+                                             parameters,
+                                             effectiveMinStep,
+                                             lockStrictness,
+                                             hardScaleLock);
+        quantizer.forceTargetLog2(newTargetLog2);
+    }
+
     // Defensive register lock. Scale degrees repeat every octave, therefore
     // the selected target must always be the octave-equivalent target nearest
     // to the tracked pitch centre. This prevents a stale octave state or a
@@ -1709,10 +1808,20 @@ slParams.hardLock = hardScaleLock;
     // per-sample correction trajectory. The downstream TransitionManager uses
     // it to arm the second synthesis layer exactly once per note decision.
     // 18 cents keeps microtonal steps eligible while rejecting detector jitter.
-    if (!targetValid_ || targetJumpCents > 18.0)
+    double revisionThreshold = 18.0;
+    double transitionThreshold = 48.0;
+
+    if (parameters.scaleLock)
+    {
+        const double vibratoProtection = clamp01(parameters.vibratoPreserve);
+        revisionThreshold = scaleLockRevisionThresholdCents(parameters, lockStrictness, static_cast<float>(vibratoProtection));
+        transitionThreshold = scaleLockTransitionThresholdCents(parameters, lockStrictness, static_cast<float>(vibratoProtection));
+    }
+
+    if (!targetValid_ || targetJumpCents > revisionThreshold)
         ++targetRevision_;
 
-    if (targetValid_ && targetJumpCents > 48.0
+    if (targetValid_ && targetJumpCents > transitionThreshold
         && state_ != TrackingState::attack)
     {
         const double transitionMs = std::max(1.0f, parameters.transitionTimeMs);
@@ -1822,6 +1931,14 @@ slParams.hardLock = hardScaleLock;
                             * consensusGate
                             * spectralGate
                             * polyphonyGate);
+
+    if (parameters.scaleLock)
+    {
+        const float slConfidence = clamp01(currentConfidence_ + 0.15f * lockStrictness);
+        const float slGate = 0.50f + 0.50f * slConfidence;
+        authorityTarget_ = clamp01(authorityTarget_ * slGate);
+        wetMixTarget_ = clamp01(wetMixTarget_ * slGate);
+    }
 
     ++stableObservationCount_;
     if (state_ == TrackingState::unvoiced || state_ == TrackingState::release)
@@ -1965,8 +2082,15 @@ void ModernPitchEngine::TransitionManager::reset() noexcept
     publishedBlend_ = 0.0f;
 }
 
-double ModernPitchEngine::TransitionManager::transitionThresholdCents() const noexcept
+double ModernPitchEngine::TransitionManager::transitionThresholdCents(const Parameters& parameters) const noexcept
 {
+    if (parameters.scaleLock)
+    {
+        const float lockStrictness = parameters.hardLockActive ? clamp01(parameters.lockStrictness) : 0.0f;
+        const double vibratoProtection = clamp01(parameters.vibratoPreserve);
+        return CorrectionController::scaleLockTransitionThresholdCents(parameters, lockStrictness, static_cast<float>(vibratoProtection));
+    }
+
     // Adjacent microtonal targets must remain eligible, while fluctuations
     // smaller than a quarter tone are better handled by the primary trajectory.
     switch (latencyMode_)
@@ -2133,7 +2257,7 @@ ModernPitchEngine::TransitionManager::processSample(
 
             const double requiredJump = pendingForceTransition_
                 ? 1.0
-                : transitionThresholdCents();
+                : transitionThresholdCents(parameters);
 
             if (musicalState
                 && transitionCooldownSamples_ <= 0
@@ -2145,7 +2269,7 @@ ModernPitchEngine::TransitionManager::processSample(
                 pendingForceTransition_ = false;
             }
             else if ((!pendingForceTransition_
-                      && std::abs(jumpCents) < transitionThresholdCents())
+                      && std::abs(jumpCents) < transitionThresholdCents(parameters))
                      || (trackingState == TrackingState::unvoiced
                          && wetMix < 0.01f))
             {

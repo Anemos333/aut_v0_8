@@ -25,42 +25,56 @@ namespace ScaleLock
         return s - std::floor(s);
     }
 
-    double Processor::calculateHysteresis(const Parameters& params) const
+    double Processor::smoothStep01(double x) noexcept
     {
-        // Quality = neutral. Live and UltraLive reduce hysteresis moderately.
-        // Avoid the old very aggressive 0.33 collapse for dense scales.
-        double modeFactor = 1.0;
-        if (params.latencyMode <= 0)
-            modeFactor = 0.55;       // UltraLive / Experimental
-        else if (params.latencyMode == 1)
-            modeFactor = 0.78;       // Live
+        x = std::clamp(x, 0.0, 1.0);
+        return x * x * (3.0 - 2.0 * x);
+    }
 
-        const double tempoFactor = params.tempoLockActive ? 1.25 : 1.0;
-
-        const double confidence = std::clamp(static_cast<double>(params.confidence), 0.0, 1.0);
-        const double confidenceFactor = 0.55 + 0.45 * confidence;
-
+    double Processor::sanitisedMinStepCents(const Parameters& params) noexcept
+    {
         double minStep = static_cast<double>(params.minScaleStepCents);
-        if (! std::isfinite(minStep) || minStep <= 0.0)
+        if (!std::isfinite(minStep) || minStep <= 0.0)
         {
             const int safeSize = std::max(1, params.scaleSize);
             minStep = 1200.0 / static_cast<double>(safeSize);
         }
-        minStep = std::clamp(minStep, 0.1, 1200.0);
 
-        double hysteresis = static_cast<double>(params.userHysteresis)
-            * modeFactor
-            * tempoFactor
-            * confidenceFactor;
+        return std::clamp(minStep, 0.1, 1200.0);
+    }
 
-        // Main microtonal safety rule: never allow lock hysteresis to consume
-        // almost half or more of the smallest adjacent scale interval.
+    double Processor::calculateHysteresis(const Parameters& params) const
+    {
+        const double minStep = sanitisedMinStepCents(params);
+        const double userHysteresis = std::clamp(static_cast<double>(params.userHysteresis),
+                                                 0.0,
+                                                 80.0);
+
+        const double confidence = std::clamp(static_cast<double>(params.confidence), 0.0, 1.0);
         const double strictness = std::clamp(static_cast<double>(params.strictness), 0.0, 1.0);
-const double hardFactor = params.hardLock
-    ? (0.45 - 0.17 * strictness)   // strict=1 => max 28% del passo minimo
-    : 0.45;
 
-hysteresis = std::min(hysteresis, minStep * hardFactor);
+        // In hard Scale Lock non vogliamo che una confidence non perfetta renda il
+        // lock molle. La confidence resta una protezione, ma meno punitiva.
+        const double confidenceFactor = params.hardLock
+            ? (0.82 + 0.18 * confidence)
+            : (0.55 + 0.45 * confidence);
+
+        const double tempoFactor = params.tempoLockActive ? 1.15 : 1.0;
+
+        // Strictness non riduce il cap geometrico: un Hysteresis alto deve restare
+        // più sticky. La sicurezza microtonale è garantita dal limite < metà passo.
+        const double scaleSafeCap = minStep * 0.45;
+
+        const double strictnessAssist = params.hardLock
+            ? (1.0 + 0.12 * strictness)
+            : 1.0;
+
+        double hysteresis = userHysteresis
+            * confidenceFactor
+            * tempoFactor
+            * strictnessAssist;
+
+        hysteresis = std::min(hysteresis, scaleSafeCap);
         return std::clamp(hysteresis, 0.0, 100.0);
     }
 
@@ -68,37 +82,50 @@ hysteresis = std::min(hysteresis, minStep * hardFactor);
                                                 double effectiveHysteresis,
                                                 const Parameters& params) const
     {
-        if (params.vibratoAmount <= 0.0f)
+        const double requested = std::clamp(static_cast<double>(params.vibratoAmount), 0.0, 1.0);
+        if (requested <= 0.0)
             return 0.0;
 
-        double targetBoundarySafety = 1.0;
+        const double minStep = sanitisedMinStepCents(params);
+        const double confidence = std::clamp(static_cast<double>(params.confidence), 0.0, 1.0);
+        const double breathiness = std::clamp(static_cast<double>(params.breathiness), 0.0, 1.0);
+        const double stability = std::clamp(static_cast<double>(params.stability), 0.0, 1.0);
+        const double periodicity = std::clamp(static_cast<double>(params.periodicity), 0.0, 1.0);
+        const double strictness = std::clamp(static_cast<double>(params.strictness), 0.0, 1.0);
 
-        if (effectiveHysteresis > 1.0e-6)
-        {
-            const double absVibrato = std::abs(vibratoComponent);
-            const double softLimit = effectiveHysteresis * 0.8;
-            const double fadeWidth = std::max(1.0e-6, effectiveHysteresis * 0.2);
+        const double periodicTrust = smoothStep01((periodicity - 0.42) / 0.42);
+        const double stableTrust = smoothStep01((stability - 0.28) / 0.50);
+        const double breathTrust = 1.0 - smoothStep01((breathiness - 0.35) / 0.45);
 
-            if (absVibrato > softLimit)
-            {
-                targetBoundarySafety = std::clamp(
-                    1.0 - (absVibrato - softLimit) / fadeWidth,
-                    0.0, 1.0);
-            }
-        }
+        const double confidenceTrust = params.hardLock
+            ? (0.70 + 0.30 * confidence)
+            : confidence;
 
-        double baseVibrato = vibratoComponent
-            * static_cast<double>(params.vibratoAmount)
-            * static_cast<double>(params.stability)
-            * static_cast<double>(params.periodicity)
-            * targetBoundarySafety;
+        // Con scale dense il vibrato preservato deve restare dentro una frazione
+        // sicura del passo minimo, altrimenti ricrea il flip tra due target.
+        const double maxPreservedCents = minStep * (0.18 + 0.24 * requested);
+        const double strictSafety = params.hardLock
+            ? (1.0 - 0.12 * strictness)
+            : 1.0;
 
-        baseVibrato *= (1.0 + static_cast<double>(params.humanize)
-            * 0.5 * static_cast<double>(params.stability));
-        baseVibrato *= static_cast<double>(params.confidence);
-        baseVibrato *= (1.0 - static_cast<double>(params.breathiness));
+        const double clampedResidual = std::clamp(vibratoComponent,
+                                                  -maxPreservedCents * strictSafety,
+                                                   maxPreservedCents * strictSafety);
 
-        return baseVibrato;
+        double preserved = clampedResidual
+            * requested
+            * periodicTrust
+            * stableTrust
+            * breathTrust
+            * confidenceTrust;
+
+        // Humanize può ammorbidire appena il gesto, ma non deve gonfiare il vibrato
+        // oltre il limite microtonale.
+        preserved *= (1.0 + 0.10 * std::clamp(static_cast<double>(params.humanize), 0.0, 1.0));
+
+        return std::clamp(preserved,
+                          -maxPreservedCents * strictSafety,
+                           maxPreservedCents * strictSafety);
     }
 
     double Processor::updateNoteDelaySamples(double targetLog2,
