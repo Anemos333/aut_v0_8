@@ -445,7 +445,7 @@ private:
         [[nodiscard]] float getVoicing() const noexcept { return currentVoicing_; }
         [[nodiscard]] float getFormantStability() const noexcept;
 
-    private:
+    
         void enterState(TrackingState newState, int durationSamples = 0) noexcept;
         void updateVoicingLatch(bool observationUsable,
                                 float voicing,
