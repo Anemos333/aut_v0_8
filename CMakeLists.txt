@@ -71,6 +71,7 @@ target_sources(MicrotonalAutotune
         Source/ModernPitchEngine.cpp
         Source/ScaleLock.cpp
         Source/Tempo.cpp
+        Source/Preset.cpp
       
 )
 
