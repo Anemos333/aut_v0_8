@@ -1,5 +1,6 @@
 #include "PluginEditor.h"
 #include "ScaleDefinitions.h"
+#include "Preset.h"
 #include "BinaryData.h"
 #include <cmath>
 
@@ -144,7 +145,17 @@ MicrotonalAutotuneAudioProcessorEditor::MicrotonalAutotuneAudioProcessorEditor (
                                                           BinaryData::sfondo2_jpgSize);
 
 
+     PresetSelectorLabel.setText ("Preset:", juce::dontSendNotification);
+    PresetSelectorLabel.setFont (juce::FontOptions (14.0f, juce::Font::bold));
+    PresetSelectorLabel.setColour (juce::Label::textColourId, juce::Colours::white);
+    PresetSelectorLabel.setJustificationType (juce::Justification::centredRight);
+    addAndMakeVisible (PresetSelectorLabel);
 
+    PresetSelector.setJustificationType (juce::Justification::centredLeft);
+    PresetSelector.onChange = [this]() { onScaleSelected(); };
+    addAndMakeVisible (PresetSelector);
+
+    buildScaleMenu();
     // ==================== Scale Selector ====================
     scaleSelectorLabel.setText ("Scala:", juce::dontSendNotification);
     scaleSelectorLabel.setFont (juce::FontOptions (14.0f, juce::Font::bold));
@@ -156,7 +167,7 @@ MicrotonalAutotuneAudioProcessorEditor::MicrotonalAutotuneAudioProcessorEditor (
     scaleSelector.onChange = [this]() { onScaleSelected(); };
     addAndMakeVisible (scaleSelector);
 
-    buildScaleMenu();
+    buildPresetMenu();
 
     // ==================== Root Note Selector ====================
     rootNoteSelectorLabel.setText ("Nota:", juce::dontSendNotification);
