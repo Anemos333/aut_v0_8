@@ -50,14 +50,14 @@ CustomScaleEditor::CustomScaleEditor (MicrotonalAutotuneAudioProcessor& processo
     spacingLabel.setColour (juce::Label::textColourId, juce::Colours::white);
     addAndMakeVisible (spacingLabel);
 
-    exponentLabel.setText ("Curva a > 4:", juce::dontSendNotification);
+    exponentLabel.setText ("Curva a < 4:", juce::dontSendNotification);
     exponentLabel.setFont (juce::FontOptions (13.0f));
     exponentLabel.setColour (juce::Label::textColourId, juce::Colours::white);
     addAndMakeVisible (exponentLabel);
 
     exponentEditor.setFont (juce::FontOptions (13.0f));
     exponentEditor.setMultiLine (false);
-    exponentEditor.setText ("5.0", juce::dontSendNotification);
+    exponentEditor.setText ("2.0", juce::dontSendNotification);
     exponentEditor.setInputRestrictions (6, "0123456789.");
     exponentEditor.onTextChange = [this]() { updateInfoLabel(); };
     addAndMakeVisible (exponentEditor);
@@ -341,7 +341,7 @@ void CustomScaleEditor::generateScaleFromControls()
 
             case SpacingMode::exponential:
                 // Bounded exponential: musically usable, no enormous exp(33) range.
-                weight = std::exp (4.0 * t);
+                weight = std::exp (0.5 * t);
                 break;
 
             case SpacingMode::logarithmic:
@@ -412,10 +412,10 @@ void CustomScaleEditor::updateExponentControlState()
 double CustomScaleEditor::getExponentFromEditor() const
 {
     double exponent = exponentEditor.getText().getDoubleValue();
-    if (! std::isfinite (exponent) || exponent <= 4.0)
-        exponent = 5.0;
+    if (! std::isfinite (exponent) || exponent >= 4.0)
+        exponent = 3.0;
 
-    return juce::jlimit (4.01, 12.0, exponent);
+    return juce::jlimit (1.2, 3.9, exponent);
 }
 
 int CustomScaleEditor::getSelectedIntervalCount() const
