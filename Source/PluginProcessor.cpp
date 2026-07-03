@@ -947,7 +947,7 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
                         numSamples,
                         analogMode,
                         outGain);
-
+}
 //==============================================================================
 void MicrotonalAutotuneAudioProcessor::processBlockBypassed (juce::AudioBuffer<float>& buffer,
                                                               juce::MidiBuffer&)
