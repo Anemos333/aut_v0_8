@@ -632,6 +632,8 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
     float vibratoPreserve = apvts.getRawParameterValue ("vibratoPreserve")->load() / 100.0f; // 0-1
     bool analogMode = apvts.getRawParameterValue ("analogMode")->load() > 0.5f;
     float outVolumeDb = apvts.getRawParameterValue ("outVolume")->load();
+    bool analogMode = apvts.getRawParameterValue ("analogMode")->load() > 0.5f;
+float outVolumeDb = apvts.getRawParameterValue ("outVolume")->load();
 
     int mode = juce::jlimit (0, 3, processingMode.load (std::memory_order_relaxed));
 
@@ -645,7 +647,48 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
 
     const float amount = amountPct / 100.0f;
     const float humanizeVal = humanizePct / 100.0f;
+    const float outGain = juce::Decibels::decibelsToGain(outVolumeDb);
 
+const auto fastSoftClip = [] (float x) -> float
+{
+    if (x < -3.0f) return -1.0f;
+    if (x >  3.0f) return  1.0f;
+
+    const float x2 = x * x;
+    return x * (27.0f + x2) / (27.0f + 9.0f * x2);
+};
+
+const auto outputSafetySoftCeiling = [] (float x) -> float
+{
+    // Stateless safety only. This is not Scale Lock logic and should not depend
+    // on scaleLock. It prevents occasional reconstructed peaks from becoming
+    // hard digital clips after analog/gain.
+    constexpr float threshold = 0.985f;
+    constexpr float softness = 0.30f;
+
+    const float ax = std::abs(x);
+    if (ax <= threshold)
+        return x;
+
+    const float over = ax - threshold;
+    const float compressed = threshold + over / (1.0f + softness * over);
+    return std::copysign(compressed, x);
+};
+
+const auto applyOutputStageToSample = [analogMode, outGain, fastSoftClip, outputSafetySoftCeiling] (float value) -> float
+{
+    value = (! std::isfinite(value) || std::fpclassify(value) == FP_SUBNORMAL)
+        ? 0.0f
+        : juce::jlimit(-32.0f, 32.0f, value);
+
+    if (analogMode)
+        value = fastSoftClip(value);
+
+    value *= outGain;
+    value = outputSafetySoftCeiling(value);
+
+    return std::isfinite(value) ? juce::jlimit(-32.0f, 32.0f, value) : 0.0f;
+};
     for (int channel = 0; channel < totalNumInputChannels; ++channel)
     {
         float* data = buffer.getWritePointer (channel);
@@ -695,16 +738,17 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
         releaseScaleSnapshot (snapshotIndex);
         
         // Modifica B: Analog output + gain for modern mode
-        if (scaleLock)
-        {
-            float outGain = juce::Decibels::decibelsToGain(outVolumeDb);
-            // Fast polynomial soft-clipper (Padé approximant for tanh)
-            auto fastSoftClip = [](float x) -> float {
-                if (x < -3.0f) return -1.0f;
-                if (x > 3.0f) return 1.0f;
-                float x2 = x * x;
-                return x * (27.0f + x2) / (27.0f + 9.0f * x2);
-            };
+       // Output stage for modern modes.
+// Independent of Scale Lock: scaleLock changes note targeting, not output colour.
+for (int channel = 0; channel < totalNumInputChannels; ++channel)
+{
+    float* data = buffer.getWritePointer(channel);
+
+    for (int sample = 0; sample < numSamples; ++sample)
+        data[sample] = applyOutputStageToSample(data[sample]);
+}
+
+return;
             
             for (int channel = 0; channel < totalNumInputChannels; ++channel)
             {
@@ -833,12 +877,8 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
 
     // Output stage: Analog saturation + Output Gain (shared with modern path)
     {
-        float outGain = juce::Decibels::decibelsToGain (outVolumeDb);
-        auto fastSoftClip = [](float x) -> float {
-            if (x < -3.0f) return -1.0f;
-            if (x > 3.0f) return 1.0f;
-            float x2 = x * x;
-            return x * (27.0f + x2) / (27.0f + 9.0f * x2);
+        for (int i = 0; i < numSamples; ++i)
+    outputData[i] = applyOutputStageToSample(outputData[i]);
         };
         auto scaleLockSoftCompressor = [] (float x) -> float
 {
