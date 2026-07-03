@@ -137,6 +137,20 @@ private:
 
     // ModernPitchEngine-based live pitch processor (Quality/Live/Experimental modes)
     LivePitchProcessor livePitchProcessor;
+static constexpr int maxAnalogOutputChannels = 2;
+
+    std::array<juce::dsp::IIR::Filter<float>, maxAnalogOutputChannels> analogLowShelfFilters_;
+    std::array<juce::dsp::IIR::Filter<float>, maxAnalogOutputChannels> analogHighShelfFilters_;
+    bool analogOutputWasActive_ = false;
+
+    void updateAnalogOutputFilters();
+    void resetAnalogOutputFilters() noexcept;
+
+    void processOutputStage(juce::AudioBuffer<float>& buffer,
+                            int numChannels,
+                            int numSamples,
+                            bool analogMode,
+                            float outGain) noexcept;
 
     // Cached block size for mode changes
     int lastSamplesPerBlock = 512;
