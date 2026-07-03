@@ -876,10 +876,10 @@ return;
     }
 
     // Output stage: Analog saturation + Output Gain (shared with modern path)
-    {
+
         for (int i = 0; i < numSamples; ++i)
     outputData[i] = applyOutputStageToSample(outputData[i]);
-        };
+    
         auto scaleLockSoftCompressor = [] (float x) -> float
 {
     // Curva stateless molto morbida: non pompa, non richiede membri nuovi,
