@@ -750,20 +750,7 @@ for (int channel = 0; channel < totalNumInputChannels; ++channel)
 
 return;
             
-            for (int channel = 0; channel < totalNumInputChannels; ++channel)
-            {
-                float* data = buffer.getWritePointer (channel);
-                for (int sample = 0; sample < numSamples; ++sample)
-                {
-                    float value = data[sample];
-                    if (analogMode) {
-                        value = fastSoftClip(value); // efficient symmetric soft clip
-                    }
-                    data[sample] = value * outGain;
-                }
-            }
-        }
-        return;
+          
     }
 
     // ==================== SLOW MODE (original YIN processing — unchanged) ====================
