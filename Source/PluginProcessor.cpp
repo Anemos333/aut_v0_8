@@ -9,6 +9,46 @@ namespace
     void setParameterNotifyingHost (juce::AudioProcessorValueTreeState& apvts,
                                     const char* parameterId,
                                     float plainValue)
+    constexpr float analogLowShelfHz = 75.0f;
+    constexpr float analogHighShelfHz = 4800.0f;
+    constexpr float analogLowShelfGainDb = -2.0f;
+    constexpr float analogHighShelfGainDb = -1.5f;
+    constexpr float analogShelfQ = 0.70710678f;
+
+    float sanitiseOutputSample(float value) noexcept
+    {
+        if (! std::isfinite(value) || std::fpclassify(value) == FP_SUBNORMAL)
+            return 0.0f;
+
+        return juce::jlimit(-32.0f, 32.0f, value);
+    }
+
+    float fastSoftClip(float x) noexcept
+    {
+        x = sanitiseOutputSample(x);
+
+        if (x < -3.0f) return -1.0f;
+        if (x >  3.0f) return  1.0f;
+
+        const float x2 = x * x;
+        return x * (27.0f + x2) / (27.0f + 9.0f * x2);
+    }
+
+    float outputSafetySoftCeiling(float x) noexcept
+    {
+        x = sanitiseOutputSample(x);
+
+        constexpr float threshold = 0.985f;
+        constexpr float softness = 0.30f;
+
+        const float ax = std::abs(x);
+        if (ax <= threshold)
+            return x;
+
+        const float over = ax - threshold;
+        const float compressed = threshold + over / (1.0f + softness * over);
+        return std::copysign(compressed, x);
+    }
     {
         if (auto* parameter = apvts.getParameter (parameterId))
         {
@@ -153,6 +193,8 @@ void MicrotonalAutotuneAudioProcessor::prepareToPlay (double sampleRate, int sam
 {
     currentSampleRate = std::isfinite(sampleRate) ? std::max(8000.0, sampleRate)
                                                     : 44100.0;
+    updateAnalogOutputFilters();
+    analogOutputWasActive_ = false;
     lastSamplesPerBlock = std::max(1, samplesPerBlock);
     refreshScaleSnapshot();
     smoothedShiftRatio = 1.0;
@@ -218,6 +260,8 @@ void MicrotonalAutotuneAudioProcessor::releaseResources()
     yinBuffer.clear();
     yinAccumulator.clear();
     livePitchProcessor.reset();
+    resetAnalogOutputFilters();
+    analogOutputWasActive_ = false;
 }
 
 bool MicrotonalAutotuneAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -605,7 +649,85 @@ void MicrotonalAutotuneAudioProcessor::applyFactoryPreset (int index)
     setParameterNotifyingHost (apvts, "analogMode",         preset.analogMode ? 1.0f : 0.0f);
     setParameterNotifyingHost (apvts, "outVolume",          preset.outVolumeDb);
 }
+void MicrotonalAutotuneAudioProcessor::updateAnalogOutputFilters()
+{
+    const double sr = std::isfinite(currentSampleRate)
+        ? std::max(8000.0, currentSampleRate)
+        : 44100.0;
 
+    const auto lowShelfCoeffs = juce::dsp::IIR::Coefficients<float>::makeLowShelf(
+        sr,
+        analogLowShelfHz,
+        analogShelfQ,
+        juce::Decibels::decibelsToGain(analogLowShelfGainDb));
+
+    const auto highShelfCoeffs = juce::dsp::IIR::Coefficients<float>::makeHighShelf(
+        sr,
+        analogHighShelfHz,
+        analogShelfQ,
+        juce::Decibels::decibelsToGain(analogHighShelfGainDb));
+
+    for (int ch = 0; ch < maxAnalogOutputChannels; ++ch)
+    {
+        analogLowShelfFilters_[static_cast<std::size_t>(ch)].coefficients = lowShelfCoeffs;
+        analogHighShelfFilters_[static_cast<std::size_t>(ch)].coefficients = highShelfCoeffs;
+    }
+
+    resetAnalogOutputFilters();
+}
+
+void MicrotonalAutotuneAudioProcessor::resetAnalogOutputFilters() noexcept
+{
+    for (int ch = 0; ch < maxAnalogOutputChannels; ++ch)
+    {
+        analogLowShelfFilters_[static_cast<std::size_t>(ch)].reset();
+        analogHighShelfFilters_[static_cast<std::size_t>(ch)].reset();
+    }
+}
+void MicrotonalAutotuneAudioProcessor::processOutputStage(
+    juce::AudioBuffer<float>& buffer,
+    int numChannels,
+    int numSamples,
+    bool analogMode,
+    float outGain) noexcept
+{
+    numChannels = juce::jlimit(0, buffer.getNumChannels(), numChannels);
+    numSamples = juce::jlimit(0, buffer.getNumSamples(), numSamples);
+
+    if (numChannels <= 0 || numSamples <= 0)
+        return;
+
+    outGain = std::isfinite(outGain) ? juce::jlimit(0.0f, 8.0f, outGain) : 1.0f;
+
+    if (analogMode && ! analogOutputWasActive_)
+        resetAnalogOutputFilters();
+
+    for (int channel = 0; channel < numChannels; ++channel)
+    {
+        float* data = buffer.getWritePointer(channel);
+
+        for (int sample = 0; sample < numSamples; ++sample)
+        {
+            float value = sanitiseOutputSample(data[sample]);
+
+            if (analogMode)
+            {
+                value = fastSoftClip(value);
+
+                if (channel < maxAnalogOutputChannels)
+                {
+                    value = analogLowShelfFilters_[static_cast<std::size_t>(channel)].processSample(value);
+                    value = analogHighShelfFilters_[static_cast<std::size_t>(channel)].processSample(value);
+                }
+            }
+
+            value *= outGain;
+            data[sample] = outputSafetySoftCeiling(value);
+        }
+    }
+
+    analogOutputWasActive_ = analogMode;
+}
 //==============================================================================
 void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
 {
