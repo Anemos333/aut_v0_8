@@ -2629,8 +2629,46 @@ void ModernPitchEngine::SpectralVoiceShifter::prepare(double sampleRate,
     dryBreathLowPassCoefficient_ = static_cast<float>(
         1.0 - std::exp(-twoPi * 2800.0 / sampleRate_));
     crossfadeEnergyCoefficient_ = static_cast<float>(
-        1.0 - std::exp(-1.0 / (0.018 * sampleRate_)));
-    reset();
+    1.0 - std::exp(-1.0 / (0.018 * sampleRate_)));
+
+// Dry Trust Guard coefficients.
+// The dry branch may open a little more slowly, but it must close very quickly
+// when the empirical dry/wet test says that a double voice is forming.
+dryTrustOpenCoefficient_ = static_cast<float>(
+    1.0 - std::exp(-1.0 / (0.0045 * sampleRate_)));
+
+dryTrustCloseCoefficient_ = static_cast<float>(
+    1.0 - std::exp(-1.0 / (0.0028 * sampleRate_)));
+
+// Risk rises fast, recovers slowly: one bad double-voice event should make the
+// next few milliseconds stricter.
+dryLeakAttackCoefficient_ = static_cast<float>(
+    1.0 - std::exp(-1.0 / (0.0035 * sampleRate_)));
+
+dryLeakReleaseCoefficient_ = static_cast<float>(
+    1.0 - std::exp(-1.0 / (0.055 * sampleRate_)));
+
+// Musical continuity is a short memory used to make the 9 ms threshold dynamic.
+dryContinuityCoefficient_ = static_cast<float>(
+    1.0 - std::exp(-1.0 / (0.024 * sampleRate_)));
+
+// Envelope Shape Prior coefficients.
+// Fast envelope catches candidate dry attacks; slow envelope distinguishes
+// attacks from plateaus/noise beds. Peak decay gives a local reference without
+// lookahead.
+dryCandidateFastCoefficient_ = static_cast<float>(
+    1.0 - std::exp(-1.0 / (0.0016 * sampleRate_)));
+
+dryCandidateSlowCoefficient_ = static_cast<float>(
+    1.0 - std::exp(-1.0 / (0.020 * sampleRate_)));
+
+dryCandidatePeakDecayCoefficient_ = static_cast<float>(
+    1.0 - std::exp(-1.0 / (0.010 * sampleRate_)));
+
+dryCandidateShapeCoefficient_ = static_cast<float>(
+    1.0 - std::exp(-1.0 / (0.0025 * sampleRate_)));
+
+reset();
 }
 
 void ModernPitchEngine::SpectralVoiceShifter::clearLayerOutput(
@@ -2686,6 +2724,18 @@ void ModernPitchEngine::SpectralVoiceShifter::reset() noexcept
     wetDryCrossEnergy_ = 0.0f;
     wetLevelGain_ = 1.0f;
     wetCancellationGain_ = 1.0f;
+    dryTrust_ = 1.0f;
+dryTrustTarget_ = 1.0f;
+dryWetCoexistenceMs_ = 0.0f;
+dryWetContinuity_ = 1.0f;
+dryLeakRisk_ = 0.0f;
+dryTrustInstability_ = 0.0f;
+
+dryCandidateFastEnvelope_ = 0.0f;
+dryCandidateSlowEnvelope_ = 0.0f;
+dryCandidatePeakEnvelope_ = 0.0f;
+dryCandidateAgeMs_ = 1000.0f;
+dryCandidateShapeTrust_ = 1.0f;
     layerPrimaryEnergy_ = 0.0f;
     layerSecondaryEnergy_ = 0.0f;
     layerCrossEnergy_ = 0.0f;
@@ -3957,30 +4007,312 @@ float ModernPitchEngine::SpectralVoiceShifter::processSample(
     }
     wetLevelGain_ += 0.025f * (levelGainTarget - wetLevelGain_);
     const float levelMatchedShifted = sanitiseAudioSample(
-        safeShifted * wetLevelGain_);
+    safeShifted * wetLevelGain_);
 
-    const float inverseWet = 1.0f - wetMix_;
-    const float mixed = inverseWet * breathManagedDry
-                      + wetMix_ * levelMatchedShifted;
-    const float compensatedShiftedEnergy = wetShiftedEnergy_
-        * wetLevelGain_ * wetLevelGain_;
-    const float compensatedCrossEnergy = wetDryCrossEnergy_ * wetLevelGain_;
-    const float actualPower = inverseWet * inverseWet * wetDryEnergy_
-        + wetMix_ * wetMix_ * compensatedShiftedEnergy
-        + 2.0f * inverseWet * wetMix_ * compensatedCrossEnergy;
-    const float uncorrelatedPower = inverseWet * wetDryEnergy_
-        + wetMix_ * compensatedShiftedEnergy;
-    float targetCancellationGain = 1.0f;
-    if (wetMix_ > 0.001f && wetMix_ < 0.999f
-        && actualPower > 1.0e-12f
-        && uncorrelatedPower > actualPower)
-    {
-        targetCancellationGain = std::clamp(
-            std::sqrt(uncorrelatedPower / actualPower), 1.0f, 1.38f);
-    }
-    wetCancellationGain_ += 0.04f
-        * (targetCancellationGain - wetCancellationGain_);
-    const float output = sanitiseAudioSample(mixed * wetCancellationGain_);
+const float compensatedShiftedEnergy = wetShiftedEnergy_ * wetLevelGain_ * wetLevelGain_;
+const float compensatedCrossEnergy = wetDryCrossEnergy_ * wetLevelGain_;
+
+// -----------------------------------------------------------------------------
+// Dry Trust Guard V2
+// -----------------------------------------------------------------------------
+// wetMix_ remains the musical wet authority coming from the correction engine.
+// The dry branch is no longer the static complement of wetMix_. It is only a
+// candidate that must pass:
+//   1. theoretical usefulness test;
+//   2. envelope shape prior;
+//   3. empirical dry/wet coherence test with veto power.
+const float wetTrust = clamp01(wetMix_);
+
+const float dryEnergy = std::max(0.0f, wetDryEnergy_);
+const float wetEnergy = std::max(0.0f, compensatedShiftedEnergy);
+const float crossEnergy = compensatedCrossEnergy;
+
+const float dryPresent = smoothStep(1.0e-7f, 2.5e-5f, dryEnergy);
+const float wetPresent = smoothStep(1.0e-7f, 2.5e-5f, wetEnergy);
+const float bothPresent = dryPresent * wetPresent;
+
+float dryWetCorrelation = 1.0f;
+const float correlationDenominator = std::sqrt(
+    std::max(1.0e-20f, dryEnergy * wetEnergy));
+if (correlationDenominator > 1.0e-10f)
+{
+    dryWetCorrelation = std::clamp(
+        crossEnergy / correlationDenominator,
+        -1.0f,
+        1.0f);
+}
+
+// Signed coherence is intentionally used rather than abs(correlation):
+// a strong anti-phase relation is also dangerous because it causes cancellation.
+const float signedCoherence = clamp01(0.5f + 0.5f * dryWetCorrelation);
+const float decorrelation = 1.0f - signedCoherence;
+
+const float correctionDistance = correctionCents;
+const float pitchSeparation = smoothStep(4.0f, 38.0f, correctionDistance);
+
+const float voicedEvidence = clamp01(
+    harmonicNoiseContext.voicing
+    * harmonicNoiseContext.confidence
+    * (0.35f + 0.65f * harmonicNoiseContext.consensus));
+
+const float tonalEvidence = clamp01(
+    voicedEvidence
+    * (0.35f + 0.65f * smoothedHarmonicity_)
+    * (1.0f - 0.55f * smoothedNoisePathAmount_)
+    * (1.0f - 0.50f * smoothedPolyphony_));
+
+const float transientNeed = clamp01(transientSuppression_ * 1.35f);
+const float breathOrNoiseNeed = clamp01(
+    0.62f * smoothedBreathiness_
+    + 0.38f * smoothedNoisePathAmount_);
+const float wetUnreliableNeed = clamp01(1.0f - smoothedSpectralReliability_);
+const float unvoicedNeed = 1.0f - tonalEvidence;
+
+// -----------------------------------------------------------------------------
+// 1. Theoretical stage: this only proposes a dry candidate.
+// -----------------------------------------------------------------------------
+const float theoreticalDryNeed = clamp01(std::max(
+    transientNeed,
+    std::max(unvoicedNeed, std::max(breathOrNoiseNeed, wetUnreliableNeed))));
+
+// Keep the old musical behaviour when the wet path is naturally low, but do not
+// assume that dry == 1 - wet is valid on sustained tonal material.
+float candidateDryTrust = clamp01((1.0f - wetTrust) * (0.28f + 0.72f * theoreticalDryNeed));
+
+// On very short transients the dry can be useful even when wet is already rising.
+// This is bounded and will still be vetoed by the empirical stage if it turns
+// into a second voice.
+candidateDryTrust = std::max(
+    candidateDryTrust,
+    0.42f * transientNeed * (1.0f - 0.55f * tonalEvidence));
+
+// -----------------------------------------------------------------------------
+// 2. Envelope Shape Prior: does the dry candidate still look transient-like?
+// -----------------------------------------------------------------------------
+// This is deliberately not a true Gaussian fit. It is a causal, cheap prior:
+// fast envelope + slow envelope + peak age + modified Gaussian/power penalty.
+// It asks whether the proposed dry has become a plateau/noise bed rather than
+// a short bridge for transients/consonants.
+const float candidateDryAbs = std::abs(breathManagedDry) * candidateDryTrust;
+
+dryCandidateFastEnvelope_ += dryCandidateFastCoefficient_
+    * (candidateDryAbs - dryCandidateFastEnvelope_);
+dryCandidateSlowEnvelope_ += dryCandidateSlowCoefficient_
+    * (candidateDryAbs - dryCandidateSlowEnvelope_);
+
+const float envelopeRatio = dryCandidateFastEnvelope_
+    / (dryCandidateSlowEnvelope_ + 1.0e-8f);
+const float envelopeRise = smoothStep(1.18f, 2.40f, envelopeRatio);
+
+const float candidateAudible = smoothStep(0.00004f, 0.00120f, dryCandidateFastEnvelope_)
+    * smoothStep(0.018f, 0.11f, candidateDryTrust);
+
+// A real transient can refresh the age. Wind/noise alone should not keep
+// resetting the age forever, otherwise the dry gate would stay open.
+const float shapeRefreshEvidence = clamp01(
+    candidateAudible
+    * (0.62f * transientNeed + 0.38f * envelopeRise)
+    * (1.0f - 0.65f * breathOrNoiseNeed * (1.0f - transientNeed)));
+
+const float sampleMs = static_cast<float>(1000.0 / std::max(1.0, sampleRate_));
+
+if (shapeRefreshEvidence > 0.36f
+    && dryCandidateFastEnvelope_ >= 0.52f * dryCandidatePeakEnvelope_)
+{
+    dryCandidateAgeMs_ = 0.0f;
+    dryCandidatePeakEnvelope_ = std::max(
+        dryCandidatePeakEnvelope_,
+        dryCandidateFastEnvelope_);
+}
+else
+{
+    dryCandidateAgeMs_ = std::min(1000.0f, dryCandidateAgeMs_ + sampleMs);
+    dryCandidatePeakEnvelope_ += dryCandidatePeakDecayCoefficient_
+        * (0.0f - dryCandidatePeakEnvelope_);
+    dryCandidatePeakEnvelope_ = std::max(
+        dryCandidatePeakEnvelope_,
+        dryCandidateFastEnvelope_);
+}
+
+// Dynamic transient width. More tolerant for genuine attacks/unvoiced material,
+// stricter for tonal sustained correction and after recent leak risk.
+const float sigmaMs = std::clamp(
+    3.2f
+    + 3.6f * transientNeed
+    + 2.0f * unvoicedNeed
+    - 2.2f * dryLeakRisk_,
+    2.2f,
+    8.8f);
+
+const float graceMs = 1.2f + 2.8f * transientNeed + 1.2f * unvoicedNeed;
+const float shapeDeviation = std::max(0.0f, dryCandidateAgeMs_ - graceMs) / sigmaMs;
+const float shapeDeviation2 = shapeDeviation * shapeDeviation;
+const float modifiedGaussianTrust = 1.0f / (1.0f + shapeDeviation2 * shapeDeviation2);
+
+// Plateau means: it is no longer a sharp event, it still has level, and it has
+// lasted long enough to become perceptual. This is especially suspicious on
+// tonal material with correction active.
+const float peakRatio = dryCandidateFastEnvelope_ / (dryCandidatePeakEnvelope_ + 1.0e-8f);
+const float sustainedTail = smoothStep(0.20f, 0.58f, peakRatio)
+    * smoothStep(6.0f, 18.0f, dryCandidateAgeMs_);
+const float plateauEvidence = sustainedTail * (1.0f - 0.75f * envelopeRise);
+
+// Non-tonal material gets a small grace floor: sibilants and breaths should not
+// become hard-gated just because they are not Gaussian-shaped. The empirical
+// dry/wet test will still close them if they coexist with wet as a second voice.
+const float nonTonalGrace = clamp01(
+    (1.0f - tonalEvidence)
+    * (0.22f + 0.78f * std::max(breathOrNoiseNeed, transientNeed)));
+
+float dryShapeTrustTarget = std::max(
+    modifiedGaussianTrust,
+    0.44f * nonTonalGrace);
+
+dryShapeTrustTarget *= 1.0f - 0.72f * plateauEvidence * tonalEvidence;
+dryShapeTrustTarget = clamp01(dryShapeTrustTarget);
+
+dryCandidateShapeTrust_ += dryCandidateShapeCoefficient_
+    * (dryShapeTrustTarget - dryCandidateShapeTrust_);
+dryCandidateShapeTrust_ = clamp01(dryCandidateShapeTrust_);
+
+// The shape prior must not turn the plugin into a dry gate when wet is absent.
+// It mainly acts when a dry bridge would coexist with an audible wet path.
+const float shapePriorAuthority = smoothStep(0.08f, 0.30f, wetTrust)
+    * smoothStep(0.018f, 0.11f, candidateDryTrust);
+
+candidateDryTrust *= 1.0f - shapePriorAuthority * (1.0f - dryCandidateShapeTrust_);
+candidateDryTrust = clamp01(candidateDryTrust);
+
+// -----------------------------------------------------------------------------
+// 3. Empirical stage: does the proposed dry still describe the same event?
+// -----------------------------------------------------------------------------
+const float dryCandidatePresent = smoothStep(0.018f, 0.11f, candidateDryTrust);
+const float wetCandidatePresent = smoothStep(0.035f, 0.18f, wetTrust);
+
+const float immediateDoubleVoiceRisk = clamp01(
+    bothPresent
+    * dryCandidatePresent
+    * wetCandidatePresent
+    * tonalEvidence
+    * pitchSeparation
+    * decorrelation);
+
+const float dryTrustDelta = std::abs(candidateDryTrust - dryTrustTarget_);
+dryTrustInstability_ += dryLeakAttackCoefficient_
+    * (smoothStep(0.035f, 0.16f, dryTrustDelta) - dryTrustInstability_);
+
+const float instabilityRisk = clamp01(
+    dryTrustInstability_
+    * bothPresent
+    * tonalEvidence
+    * pitchSeparation);
+
+// Shape failure is not as decisive as the empirical double-voice test, but it
+// should make the leak detector stricter if wet and dry are already coexisting.
+const float shapeRisk = clamp01(
+    shapePriorAuthority
+    * (1.0f - dryCandidateShapeTrust_)
+    * bothPresent
+    * wetCandidatePresent
+    * (0.35f + 0.65f * tonalEvidence));
+
+const float rawLeakRisk = std::max(
+    immediateDoubleVoiceRisk,
+    std::max(0.60f * instabilityRisk, 0.48f * shapeRisk));
+
+const float leakCoefficient = rawLeakRisk > dryLeakRisk_
+    ? dryLeakAttackCoefficient_
+    : dryLeakReleaseCoefficient_;
+dryLeakRisk_ += leakCoefficient * (rawLeakRisk - dryLeakRisk_);
+dryLeakRisk_ = clamp01(dryLeakRisk_);
+
+// Continuity memory: if dry and wet have recently been coherent, the system can
+// tolerate a slightly longer bridge. If they have behaved badly, the threshold
+// becomes stricter than 9 ms.
+const float continuityTarget = bothPresent > 0.05f
+    ? clamp01(signedCoherence * (1.0f - 0.75f * rawLeakRisk))
+    : 1.0f;
+dryWetContinuity_ += dryContinuityCoefficient_
+    * (continuityTarget - dryWetContinuity_);
+dryWetContinuity_ = clamp01(dryWetContinuity_);
+
+const bool coexistenceIsMusicallySuspicious =
+    bothPresent > 0.12f
+    && dryCandidatePresent > 0.05f
+    && wetCandidatePresent > 0.05f
+    && tonalEvidence > 0.26f
+    && pitchSeparation > 0.18f;
+
+if (coexistenceIsMusicallySuspicious)
+{
+    dryWetCoexistenceMs_ += sampleMs * (0.35f + 0.65f * clamp01(rawLeakRisk + 0.25f));
+}
+else
+{
+    dryWetCoexistenceMs_ = std::max(0.0f, dryWetCoexistenceMs_ - 3.0f * sampleMs);
+}
+
+// 9 ms is the perceptual centre, not a fixed switch. Good recent continuity can
+// stretch it a little; bad recent behaviour and bad envelope shape make it
+// shorter and stricter.
+const float dynamicCoexistenceLimitMs = std::clamp(
+    9.0f
+    + 4.0f * (dryWetContinuity_ - 0.50f)
+    - 5.0f * dryLeakRisk_
+    - 2.0f * shapeRisk,
+    3.6f,
+    13.0f);
+
+const float timeRisk = smoothStep(
+    dynamicCoexistenceLimitMs,
+    dynamicCoexistenceLimitMs + 4.0f,
+    dryWetCoexistenceMs_);
+
+const float empiricalVeto = clamp01(std::max(dryLeakRisk_, timeRisk));
+const float empiricalDryValidity = 1.0f - empiricalVeto;
+
+// Experiment wins over theory.
+dryTrustTarget_ = clamp01(candidateDryTrust * empiricalDryValidity);
+
+const float dryTrustCoefficient = dryTrustTarget_ < dryTrust_
+    ? dryTrustCloseCoefficient_
+    : dryTrustOpenCoefficient_;
+dryTrust_ += dryTrustCoefficient * (dryTrustTarget_ - dryTrust_);
+if (dryTrust_ < 1.0e-6f)
+    dryTrust_ = 0.0f;
+
+const float mixed = dryTrust_ * breathManagedDry + wetTrust * levelMatchedShifted;
+
+// Correlation-aware compensation, but only when the dry branch is still trusted.
+// Do not boost a signal pair that the dry guard has already classified as a
+// double-voice/cancellation risk.
+const float dryGain = dryTrust_;
+const float wetGain = wetTrust;
+
+const float actualPower = dryGain * dryGain * dryEnergy
+    + wetGain * wetGain * wetEnergy
+    + 2.0f * dryGain * wetGain * crossEnergy;
+
+const float uncorrelatedPower = dryGain * dryEnergy
+    + wetGain * wetEnergy;
+
+float targetCancellationGain = 1.0f;
+if (empiricalDryValidity > 0.35f
+    && dryGain > 0.001f
+    && wetGain > 0.001f
+    && actualPower > 1.0e-12f
+    && uncorrelatedPower > actualPower)
+{
+    targetCancellationGain = std::clamp(
+        std::sqrt(uncorrelatedPower / actualPower),
+        1.0f,
+        1.24f);
+}
+
+wetCancellationGain_ += 0.04f * (targetCancellationGain - wetCancellationGain_);
+
+const float output = sanitiseAudioSample(mixed * wetCancellationGain_);
+   
 
     if (transition.commitSecondary && dualTransitionActive_)
     {
@@ -4026,6 +4358,18 @@ float ModernPitchEngine::SpectralVoiceShifter::processBypassedSample(
     wetDryCrossEnergy_ = 0.0f;
     wetLevelGain_ = 1.0f;
     wetCancellationGain_ = 1.0f;
+    dryTrust_ = 1.0f;
+dryTrustTarget_ = 1.0f;
+dryWetCoexistenceMs_ = 0.0f;
+dryWetContinuity_ = 1.0f;
+dryLeakRisk_ = 0.0f;
+dryTrustInstability_ = 0.0f;
+
+dryCandidateFastEnvelope_ = 0.0f;
+dryCandidateSlowEnvelope_ = 0.0f;
+dryCandidatePeakEnvelope_ = 0.0f;
+dryCandidateAgeMs_ = 1000.0f;
+dryCandidateShapeTrust_ = 1.0f;
     layerPrimaryEnergy_ = 0.0f;
     layerSecondaryEnergy_ = 0.0f;
     layerCrossEnergy_ = 0.0f;
