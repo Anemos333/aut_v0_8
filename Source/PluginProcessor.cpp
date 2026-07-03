@@ -942,39 +942,11 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
 
     // Output stage: Analog saturation + Output Gain (shared with modern path)
 
-        for (int i = 0; i < numSamples; ++i)
-    outputData[i] = applyOutputStageToSample(outputData[i]);
-    
-        auto scaleLockSoftCompressor = [] (float x) -> float
-{
-    // Curva stateless molto morbida: non pompa, non richiede membri nuovi,
-    // protegge solo i picchi sopra circa -3 dBFS.
-    constexpr float threshold = 0.7079458f; // circa -3 dBFS
-    constexpr float softness = 0.35f;       // basso = molto soft
-
-    const float ax = std::abs(x);
-    if (ax <= threshold)
-        return x;
-
-    const float over = ax - threshold;
-    const float compressed = threshold + over / (1.0f + softness * over);
-    return std::copysign(compressed, x);
-};
-
-        for (int i = 0; i < numSamples; ++i)
-        {
-            float value = outputData[i];
-            if (analogMode)
-                value = fastSoftClip (value);
-            outputData[i] = value * outGain;
-            outputData[i] = scaleLockSoftCompressor(outputData[i]);
-        }
-    }
-
-    // Copy mono result to all output channels
-    for (int ch = 1; ch < totalNumOutputChannels; ++ch)
-        buffer.copyFrom (ch, 0, buffer, 0, 0, numSamples);
-}
+     processOutputStage (buffer,
+                        1,
+                        numSamples,
+                        analogMode,
+                        outGain);
 
 //==============================================================================
 void MicrotonalAutotuneAudioProcessor::processBlockBypassed (juce::AudioBuffer<float>& buffer,
