@@ -1,4 +1,5 @@
 #include "ControlRoomPage.h"
+#include "NeumatonUILabels.h"
 
 namespace
 {
@@ -77,7 +78,7 @@ void ControlRoomPage::drawHeader (juce::Graphics& g, juce::Rectangle<int> area)
 
     g.setColour (p.ink);
     g.setFont (juce::FontOptions (22.0f, juce::Font::bold));
-    g.drawText ("Control Room", textArea.removeFromTop (30), juce::Justification::centred);
+    g.drawText (Neumaton::UI::Labels::Main::controlRoom, textArea.removeFromTop (30), juce::Justification::centred);
 
     g.setFont (juce::FontOptions (12.5f));
     g.setColour (p.ink.withAlpha (0.78f));
@@ -103,7 +104,7 @@ void ControlRoomPage::drawDiagnosticGrid (juce::Graphics& g, juce::Rectangle<int
     auto title = content.removeFromTop (24);
     g.setColour (p.ink);
     g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
-    g.drawText ("Detailed metering", title, juce::Justification::centredLeft);
+    g.drawText ("Detailed Metering", title, juce::Justification::centredLeft);
 
     const auto drawPair = [&] (juce::String nameA, float valueA, juce::Colour colourA,
                               juce::String nameB, float valueB, juce::Colour colourB)
@@ -116,11 +117,11 @@ void ControlRoomPage::drawDiagnosticGrid (juce::Graphics& g, juce::Rectangle<int
         content.removeFromTop (2);
     };
 
-    drawPair ("Confidence", metering_.confidence, p.blueGlow,
-              "Voicing", metering_.voicing, p.greenFluid);
-    drawPair ("Breath", metering_.breathiness, juce::Colour (0xFF5BC0EB),
-              "Harmonic", metering_.harmonicity, juce::Colour (0xFF9BE564));
-    drawPair ("Noise path", metering_.noisePath, juce::Colour (0xFFFFD166),
+    drawPair (Neumaton::UI::Labels::Meter::confidence, metering_.confidence, p.blueGlow,
+              Neumaton::UI::Labels::Meter::voicing, metering_.voicing, p.greenFluid);
+    drawPair (Neumaton::UI::Labels::Meter::breath, metering_.breathiness, juce::Colour (0xFF5BC0EB),
+              Neumaton::UI::Labels::Meter::harmonic, metering_.harmonicity, juce::Colour (0xFF9BE564));
+    drawPair (Neumaton::UI::Labels::Meter::noisePath, metering_.noisePath, juce::Colour (0xFFFFD166),
               "Poly", metering_.polyphony, juce::Colour (0xFFB892FF));
     drawPair ("Reliability", metering_.spectralReliability, p.brass,
               "Mask", metering_.maskStability, p.warningRed);
