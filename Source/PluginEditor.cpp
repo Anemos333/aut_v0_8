@@ -1,6 +1,8 @@
 #include "PluginEditor.h"
 #include "ScaleDefinitions.h"
+#include "NeumatonUILabels.h"
 #include "Preset.h"
+#include "NeumatonUILabels.h"
 #include "BinaryData.h"
 #include <cmath>
 
@@ -145,7 +147,7 @@ MicrotonalAutotuneAudioProcessorEditor::MicrotonalAutotuneAudioProcessorEditor (
                                                           BinaryData::sfondo2_jpgSize);
 
 
-    presetSelectorLabel.setText ("Preset:", juce::dontSendNotification);
+    presetSelectorLabel.setText (Neumaton::UI::Labels::Main::preset, juce::dontSendNotification);
 presetSelectorLabel.setFont (juce::FontOptions (14.0f, juce::Font::bold));
 presetSelectorLabel.setColour (juce::Label::textColourId, juce::Colours::white);
 presetSelectorLabel.setJustificationType (juce::Justification::centredRight);
@@ -157,7 +159,7 @@ addAndMakeVisible (presetSelector);
 
 buildPresetMenu();
     // ==================== Scale Selector ====================
-    scaleSelectorLabel.setText ("Scala:", juce::dontSendNotification);
+    scaleSelectorLabel.setText (Neumaton::UI::Labels::Main::scale, juce::dontSendNotification);
     scaleSelectorLabel.setFont (juce::FontOptions (14.0f, juce::Font::bold));
     scaleSelectorLabel.setColour (juce::Label::textColourId, juce::Colours::white);
     scaleSelectorLabel.setJustificationType (juce::Justification::centredRight);
@@ -170,7 +172,7 @@ buildPresetMenu();
     buildScaleMenu();
 
     // ==================== Root Note Selector ====================
-    rootNoteSelectorLabel.setText ("Nota:", juce::dontSendNotification);
+    rootNoteSelectorLabel.setText (Neumaton::UI::Labels::Main::rootNote, juce::dontSendNotification);
     rootNoteSelectorLabel.setFont (juce::FontOptions (14.0f, juce::Font::bold));
     rootNoteSelectorLabel.setColour (juce::Label::textColourId, juce::Colours::white);
     rootNoteSelectorLabel.setJustificationType (juce::Justification::centredRight);
@@ -203,7 +205,7 @@ buildPresetMenu();
     addAndMakeVisible (rootNoteSelector);
 
     // ==================== Processing Mode Selector ====================
-    modeSelectorLabel.setText ("Modo:", juce::dontSendNotification);
+    modeSelectorLabel.setText (Neumaton::UI::Labels::Main::mode, juce::dontSendNotification);
     modeSelectorLabel.setFont (juce::FontOptions (14.0f, juce::Font::bold));
     modeSelectorLabel.setColour (juce::Label::textColourId, juce::Colours::white);
     modeSelectorLabel.setJustificationType (juce::Justification::centredRight);
@@ -232,7 +234,7 @@ buildPresetMenu();
     };
     addAndMakeVisible (speedKnob);
 
-    speedLabel.setText ("Velocita (ms)", juce::dontSendNotification);
+    speedLabel.setText (Neumaton::UI::Labels::Main::response, juce::dontSendNotification);
     speedLabel.setFont (juce::FontOptions (14.0f, juce::Font::bold));
     speedLabel.setColour (juce::Label::textColourId, juce::Colours::white);
     speedLabel.setJustificationType (juce::Justification::centred);
@@ -249,7 +251,7 @@ buildPresetMenu();
     amountKnob.setTextValueSuffix (" %");
     addAndMakeVisible (amountKnob);
 
-    amountLabel.setText ("Amount", juce::dontSendNotification);
+    amountLabel.setText (Neumaton::UI::Labels::Main::correctionAmount, juce::dontSendNotification);
     amountLabel.setFont (juce::FontOptions (14.0f, juce::Font::bold));
     amountLabel.setColour (juce::Label::textColourId, juce::Colours::white);
     amountLabel.setJustificationType (juce::Justification::centred);
@@ -275,7 +277,7 @@ buildPresetMenu();
     };
     addAndMakeVisible (humanizeSlider);
 
-    humanizeLabel.setText ("Humanize", juce::dontSendNotification);
+    humanizeLabel.setText (Neumaton::UI::Labels::Main::humanize, juce::dontSendNotification);
     humanizeLabel.setFont (juce::FontOptions (14.0f, juce::Font::bold));
     humanizeLabel.setColour (juce::Label::textColourId, juce::Colours::white);
     humanizeLabel.setJustificationType (juce::Justification::centredLeft);
@@ -285,6 +287,7 @@ buildPresetMenu();
         processorRef.getAPVTS(), "humanize", humanizeSlider);
 
     // ==================== Modifica A: Scale Lock ====================
+    scaleLockButton.setButtonText (Neumaton::UI::Labels::Main::scaleLock);
     scaleLockButton.setColour(juce::ToggleButton::textColourId, juce::Colours::white);
     addAndMakeVisible(scaleLockButton);
     scaleLockAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
@@ -305,20 +308,21 @@ buildPresetMenu();
     lockHysteresisSlider.setColour (juce::Slider::trackColourId, juce::Colour (0xFFFF0066));
     lockHysteresisSlider.setColour (juce::Slider::thumbColourId, juce::Colours::white);
     addAndMakeVisible(lockHysteresisSlider);
-    lockHysteresisLabel.setText ("Lock Hysteresis", juce::dontSendNotification);
+    lockHysteresisLabel.setText (Neumaton::UI::Labels::Main::hold, juce::dontSendNotification);
     lockHysteresisLabel.setFont (juce::FontOptions (14.0f, juce::Font::bold));
     lockHysteresisLabel.setColour (juce::Label::textColourId, juce::Colours::white);
     lockHysteresisLabel.setJustificationType (juce::Justification::centredLeft);
     addAndMakeVisible(lockHysteresisLabel);
     lockHysteresisAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
         processorRef.getAPVTS(), "lockHysteresis", lockHysteresisSlider);
+
     vibratoPreserveSlider.setSliderStyle (juce::Slider::LinearHorizontal);
     vibratoPreserveSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 60, 20);
     vibratoPreserveSlider.setTextValueSuffix (" %");
     vibratoPreserveSlider.setColour (juce::Slider::trackColourId, juce::Colour (0xFFFF0066));
     vibratoPreserveSlider.setColour (juce::Slider::thumbColourId, juce::Colours::white);
     addAndMakeVisible(vibratoPreserveSlider);
-    vibratoPreserveLabel.setText ("Vibrato Preserve", juce::dontSendNotification);
+    vibratoPreserveLabel.setText (Neumaton::UI::Labels::Main::vibratoPreserve, juce::dontSendNotification);
     vibratoPreserveLabel.setFont (juce::FontOptions (14.0f, juce::Font::bold));
     vibratoPreserveLabel.setColour (juce::Label::textColourId, juce::Colours::white);
     vibratoPreserveLabel.setJustificationType (juce::Justification::centredLeft);
@@ -327,6 +331,7 @@ buildPresetMenu();
         processorRef.getAPVTS(), "vibratoPreserve", vibratoPreserveSlider);
 
     // ==================== Modifica B: Analog Mode ====================
+    analogModeButton.setButtonText (Neumaton::UI::Labels::Main::analogTexture);
     analogModeButton.setColour(juce::ToggleButton::textColourId, juce::Colours::white);
     addAndMakeVisible(analogModeButton);
     analogModeAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
@@ -338,7 +343,7 @@ buildPresetMenu();
     outVolumeSlider.setColour (juce::Slider::trackColourId, juce::Colour (0xFFFF9900));
     outVolumeSlider.setColour (juce::Slider::thumbColourId, juce::Colours::white);
     addAndMakeVisible(outVolumeSlider);
-    outVolumeLabel.setText ("Out Volume", juce::dontSendNotification);
+    outVolumeLabel.setText (Neumaton::UI::Labels::Main::output, juce::dontSendNotification);
     outVolumeLabel.setFont (juce::FontOptions (14.0f, juce::Font::bold));
     outVolumeLabel.setColour (juce::Label::textColourId, juce::Colours::white);
     outVolumeLabel.setJustificationType (juce::Justification::centredLeft);
@@ -347,6 +352,7 @@ buildPresetMenu();
         processorRef.getAPVTS(), "outVolume", outVolumeSlider);
 
     // ==================== Creative Tempo page ====================
+    tempoPageButton.setButtonText (Neumaton::UI::Labels::Main::tempoLab);
     tempoPageButton.onClick = [this]() { showTempoPage(); };
     tempoPageButton.setColour (juce::TextButton::buttonColourId,
                                juce::Colour (0xFF38405F));
@@ -354,6 +360,7 @@ buildPresetMenu();
                                juce::Colour (0xFF6C63FF));
     addAndMakeVisible (tempoPageButton);
 
+    tempoBackButton.setButtonText (Neumaton::UI::Labels::Tempo::back);
     tempoBackButton.onClick = [this]() { closeTempoPage(); };
     addAndMakeVisible (tempoBackButton);
 
@@ -372,7 +379,7 @@ buildPresetMenu();
     configureModeButton (tempoGlideButton, 1);
     configureModeButton (glideLockButton, 2);
 
-    tempoDivisionLabel.setText ("Divisione", juce::dontSendNotification);
+    tempoDivisionLabel.setText (Neumaton::UI::Labels::Tempo::division, juce::dontSendNotification);
     tempoDivisionLabel.setFont (juce::FontOptions (14.0f, juce::Font::bold));
     tempoDivisionLabel.setColour (juce::Label::textColourId, juce::Colours::white);
     tempoDivisionLabel.setJustificationType (juce::Justification::centred);
@@ -395,7 +402,7 @@ buildPresetMenu();
                                 juce::Colour (0xFF5BC0EB));
     tempoGlideLength.setColour (juce::Slider::thumbColourId, juce::Colours::white);
     addAndMakeVisible (tempoGlideLength);
-    tempoGlideLengthLabel.setText ("Durata glide", juce::dontSendNotification);
+    tempoGlideLengthLabel.setText (Neumaton::UI::Labels::Tempo::glideLength, juce::dontSendNotification);
     tempoGlideLengthLabel.setFont (juce::FontOptions (14.0f, juce::Font::bold));
     tempoGlideLengthLabel.setColour (juce::Label::textColourId, juce::Colours::white);
     tempoGlideLengthLabel.setJustificationType (juce::Justification::centred);
@@ -411,7 +418,7 @@ buildPresetMenu();
                                  juce::Colour (0xFFFFA24A));
     tempoLockStrength.setColour (juce::Slider::thumbColourId, juce::Colours::white);
     addAndMakeVisible (tempoLockStrength);
-    tempoLockStrengthLabel.setText ("Lock", juce::dontSendNotification);
+    tempoLockStrengthLabel.setText (Neumaton::UI::Labels::Tempo::lock, juce::dontSendNotification);
     tempoLockStrengthLabel.setFont (juce::FontOptions (14.0f, juce::Font::bold));
     tempoLockStrengthLabel.setColour (juce::Label::textColourId, juce::Colours::white);
     tempoLockStrengthLabel.setJustificationType (juce::Justification::centred);
@@ -420,6 +427,7 @@ buildPresetMenu();
         juce::AudioProcessorValueTreeState::SliderAttachment> (
             processorRef.getAPVTS(), "tempoLockStrength", tempoLockStrength);
 
+    tempoSmartOnset.setButtonText (Neumaton::UI::Labels::Tempo::smartOnset);
     tempoSmartOnset.setColour (juce::ToggleButton::textColourId, juce::Colours::white);
     addAndMakeVisible (tempoSmartOnset);
     tempoSmartOnsetAttachment = std::make_unique<
@@ -428,6 +436,7 @@ buildPresetMenu();
 
     setTempoControlsVisible (false);
     updateTempoModeButtons();
+    controlRoomButton.setButtonText (Neumaton::UI::Labels::Main::controlRoom);
     controlRoomButton.onClick = [this]() { showControlRoom(); };
     addAndMakeVisible (controlRoomButton);
     controlRoomPage.onBack = [this]() { closeControlRoom(); };
@@ -865,13 +874,13 @@ void MicrotonalAutotuneAudioProcessorEditor::drawMeterPanel (
 
     g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
     g.setColour (juce::Colours::white);
-    g.drawText ("Pitch: " + pitchText,
+    g.drawText (juce::String (Neumaton::UI::Labels::Meter::detectedPitch) + ": " + pitchText,
                 valueRow.removeFromLeft (content.getWidth() / 3),
                 juce::Justification::centredLeft);
-    g.drawText ("Target: " + targetText,
+    g.drawText (juce::String (Neumaton::UI::Labels::Meter::targetFrequency) + ": " + targetText,
                 valueRow.removeFromLeft (content.getWidth() / 3),
                 juce::Justification::centredLeft);
-    g.drawText ("Correction: "
+    g.drawText (juce::String (Neumaton::UI::Labels::Meter::correction) + ": "
                     + juce::String (displayedMetering.correctionCents, 1)
                     + " ct",
                 valueRow,
@@ -936,29 +945,29 @@ void MicrotonalAutotuneAudioProcessorEditor::drawMeterPanel (
     const int firstBarWidth = firstBarRow.getWidth() / 3;
     drawBar (firstBarRow.removeFromLeft (firstBarWidth),
              displayedMetering.confidence,
-             "Confidence",
+             Neumaton::UI::Labels::Meter::confidence,
              juce::Colour (0xFF6C63FF));
     drawBar (firstBarRow.removeFromLeft (firstBarWidth),
              displayedMetering.voicing,
-             "Voicing",
+             Neumaton::UI::Labels::Meter::voicing,
              juce::Colour (0xFF00C878));
     drawBar (firstBarRow,
              displayedMetering.consensus,
-             "Consensus",
+             Neumaton::UI::Labels::Meter::consensus,
              juce::Colour (0xFFFFA24A));
 
     const int secondBarWidth = secondBarRow.getWidth() / 3;
     drawBar (secondBarRow.removeFromLeft (secondBarWidth),
              displayedMetering.breathiness,
-             "Breath",
+             Neumaton::UI::Labels::Meter::breath,
              juce::Colour (0xFF5BC0EB));
     drawBar (secondBarRow.removeFromLeft (secondBarWidth),
              displayedMetering.harmonicity,
-             "Harmonic",
+             Neumaton::UI::Labels::Meter::harmonic,
              juce::Colour (0xFF9BE564));
     drawBar (secondBarRow,
              displayedMetering.noisePath,
-             "Noise path",
+             Neumaton::UI::Labels::Meter::noisePath,
              juce::Colour (0xFFFFD166));
 }
 
@@ -976,7 +985,7 @@ void MicrotonalAutotuneAudioProcessorEditor::drawTempoPage(
     auto title = status.removeFromTop (38);
     g.setColour (juce::Colours::white);
     g.setFont (juce::FontOptions (24.0f, juce::Font::bold));
-    g.drawText ("Creative Tempo", title, juce::Justification::centred);
+    g.drawText (Neumaton::UI::Labels::Tempo::pageTitle, title, juce::Justification::centred);
 
     status.removeFromTop (250);
     auto textRow = status.removeFromTop (28);
@@ -985,13 +994,13 @@ void MicrotonalAutotuneAudioProcessorEditor::drawTempoPage(
 
     juce::String syncText;
     if (processorRef.processingMode.load() == 0)
-        syncText = "Richiede Quality, Live o Experimental";
+        syncText = Neumaton::UI::Labels::Tempo::requiresMode;
     else if (!displayedMetering.tempoActive)
-        syncText = "Disattivato";
+        syncText = Neumaton::UI::Labels::Tempo::disabled;
     else if (displayedMetering.tempoHostSyncValid)
-        syncText = "Host sync";
+        syncText = Neumaton::UI::Labels::Tempo::hostSync;
     else
-        syncText = "BPM fallback / glide immediato";
+        syncText = Neumaton::UI::Labels::Tempo::bpmFallback;
 
     juce::String modeText = "Off";
     if (displayedMetering.tempoMode == CreativeTempo::Mode::tempoGlide)
@@ -1012,8 +1021,8 @@ void MicrotonalAutotuneAudioProcessorEditor::drawTempoPage(
         ? juce::Colour (0xFFFFA24A)
         : juce::Colour (0xFF9BE564));
     g.drawText (displayedMetering.tempoWaitingForGrid
-                    ? "Target in attesa del prossimo punto di lock"
-                    : "Target libero",
+                    ? Neumaton::UI::Labels::Tempo::waitingForGrid
+                    : Neumaton::UI::Labels::Tempo::targetFree,
                 waitingRow, juce::Justification::centred);
 
     auto phaseArea = status.removeFromTop (28).reduced (40, 7).toFloat();
