@@ -312,7 +312,6 @@ buildPresetMenu();
     addAndMakeVisible(lockHysteresisLabel);
     lockHysteresisAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
         processorRef.getAPVTS(), "lockHysteresis", lockHysteresisSlider);
-
     vibratoPreserveSlider.setSliderStyle (juce::Slider::LinearHorizontal);
     vibratoPreserveSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 60, 20);
     vibratoPreserveSlider.setTextValueSuffix (" %");
