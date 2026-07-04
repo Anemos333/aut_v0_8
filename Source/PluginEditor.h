@@ -3,6 +3,8 @@
 #include <JuceHeader.h>
 #include "PluginProcessor.h"
 #include "CustomScaleEditor.h"
+#include "NeumatonLabTheme.h"
+#include "ControlRoomPage.h"
 
 //==============================================================================
 class ModernLookAndFeel : public juce::LookAndFeel_V4
@@ -93,6 +95,11 @@ private:
     juce::Label modeSelectorLabel;
 juce::ComboBox presetSelector;
 juce::Label presetSelectorLabel;
+juce::TextButton controlRoomButton { "Control room" };
+  ControlRoomPage controlRoomPage;
+  bool showingControlRoom = false;
+   void showControlRoom();
+   void closeControlRoom();
 
     // Third page: creative tempo controls. This is intentionally separate
     // from the main processing-mode selector.
