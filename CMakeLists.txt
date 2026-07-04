@@ -72,6 +72,8 @@ target_sources(MicrotonalAutotune
         Source/ScaleLock.cpp
         Source/Tempo.cpp
         Source/Preset.cpp
+        Source/ControlRoomPage.cpp
+        Source/NeumatonLabTheme.cpp
       
 )
 
