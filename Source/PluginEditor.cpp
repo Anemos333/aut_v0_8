@@ -1121,7 +1121,30 @@ void MicrotonalAutotuneAudioProcessorEditor::paint (juce::Graphics& g)
     auto titleArea = lowerArea.removeFromBottom (38);
     auto meterArea = lowerArea.removeFromBottom (136).reduced (18, 4);
 
-    drawMeterPanel (g, meterArea);
+    auto lowerArea = getLocalBounds();
+auto titleArea = lowerArea.removeFromBottom (38);
+auto instrumentArea = lowerArea.removeFromBottom (118).reduced (18, 4);
+
+const int instrumentW = instrumentArea.getWidth() / 3;
+neumaton::lab::Painter::drawCorrectionGauge (
+    g,
+    instrumentArea.removeFromLeft (instrumentW).reduced (4),
+    displayedMetering.correctionCents);
+
+neumaton::lab::Painter::drawRadioTarget (
+    g,
+    instrumentArea.removeFromLeft (instrumentW).reduced (4),
+    displayedMetering.detectedPitchHz,
+    displayedMetering.targetPitchHz);
+
+neumaton::lab::Painter::drawConsensusGauge (
+    g,
+    instrumentArea.reduced (4),
+    displayedMetering.consensus);
+
+g.setColour (juce::Colours::white);
+g.setFont (juce::FontOptions (24.0f, juce::Font::bold));
+g.drawText ("Neumaton", titleArea, juce::Justification::centred);
 
     g.setColour (juce::Colours::white);
     g.setFont (juce::FontOptions (24.0f, juce::Font::bold));
