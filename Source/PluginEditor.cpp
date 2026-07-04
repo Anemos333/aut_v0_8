@@ -429,6 +429,11 @@ buildPresetMenu();
 
     setTempoControlsVisible (false);
     updateTempoModeButtons();
+    controlRoomButton.onClick = [this]() { showControlRoom(); };
+    addAndMakeVisible (controlRoomButton);
+    controlRoomPage.onBack = [this]() { closeControlRoom(); };
+    addChildComponent (controlRoomPage);
+
 
     // ==================== Window setup ====================
     setSize (640, 510);
@@ -462,6 +467,7 @@ void MicrotonalAutotuneAudioProcessorEditor::setMainControlsVisible(
     modeSelector.setVisible (shouldBeVisible);
     modeSelectorLabel.setVisible (shouldBeVisible);
     tempoPageButton.setVisible (shouldBeVisible);
+    controlRoomButton.setVisible (shouldBeVisible);
 
     scaleLockButton.setVisible (shouldBeVisible);
     analogModeButton.setVisible (shouldBeVisible);
@@ -475,6 +481,29 @@ void MicrotonalAutotuneAudioProcessorEditor::setMainControlsVisible(
     lockHysteresisLabel.setVisible (shouldBeVisible && lockIsOn);
     vibratoPreserveSlider.setVisible (shouldBeVisible && lockIsOn);
     vibratoPreserveLabel.setVisible (shouldBeVisible && lockIsOn);
+}
+void MicrotonalAutotuneAudioProcessorEditor::showControlRoom()
+{
+    if (showingScaleEditor)
+        return;
+
+    showingControlRoom = true;
+    showingTempoPage = false;
+    setMainControlsVisible (false);
+    setTempoControlsVisible (false);
+    controlRoomPage.setVisible (true);
+    controlRoomPage.setMetering (displayedMetering);
+    resized();
+    repaint();
+}
+
+void MicrotonalAutotuneAudioProcessorEditor::closeControlRoom()
+{
+    showingControlRoom = false;
+    controlRoomPage.setVisible (false);
+    setMainControlsVisible (true);
+    resized();
+    repaint();
 }
 
 void MicrotonalAutotuneAudioProcessorEditor::setTempoControlsVisible(
@@ -771,6 +800,8 @@ juce::String MicrotonalAutotuneAudioProcessorEditor::trackingStateToString (
 
 void MicrotonalAutotuneAudioProcessorEditor::timerCallback()
 {
+if (showingControlRoom)
+       controlRoomPage.setMetering (displayedMetering);    
     displayedMetering = processorRef.getPitchMetering();
     if (showingTempoPage)
         updateTempoModeButtons();
@@ -1001,7 +1032,9 @@ void MicrotonalAutotuneAudioProcessorEditor::paint (juce::Graphics& g)
 {
     if (showingScaleEditor)
         return;
-
+ if (showingControlRoom)
+        return;
+ 
     auto bounds = getLocalBounds().toFloat();
 
     if (bgImage.isValid())
@@ -1125,6 +1158,11 @@ void MicrotonalAutotuneAudioProcessorEditor::resized()
         customScaleEditorPage->setBounds (getLocalBounds());
         return;
     }
+     if (showingControlRoom)
+   {
+        controlRoomPage.setBounds (getLocalBounds());
+        return;
+    }
 
     if (showingTempoPage)
     {
@@ -1203,6 +1241,8 @@ auto secondRow = header.removeFromTop (30);
 // Pulsante Tempo laterale, alto quanto le due righe
 auto tempoArea = firstRow.getUnion (secondRow).removeFromRight (112);
 tempoPageButton.setBounds (tempoArea.reduced (4, 8));
+controlRoomButton.setBounds (area.removeFromRight (118).removeFromTop (30));
+area.removeFromRight (10);
 
 // Lascia spazio a destra per Tempo su entrambe le righe
 firstRow.removeFromRight (120);
