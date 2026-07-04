@@ -1117,10 +1117,7 @@ void MicrotonalAutotuneAudioProcessorEditor::paint (juce::Graphics& g)
 
     drawPanel (utilityPanel.expanded (14, 10));
 
-    auto lowerArea = getLocalBounds();
-    auto titleArea = lowerArea.removeFromBottom (38);
-    auto meterArea = lowerArea.removeFromBottom (136).reduced (18, 4);
-
+    
     auto lowerArea = getLocalBounds();
 auto titleArea = lowerArea.removeFromBottom (38);
 auto instrumentArea = lowerArea.removeFromBottom (118).reduced (18, 4);
