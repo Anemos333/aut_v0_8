@@ -261,10 +261,19 @@ buildPresetMenu();
         processorRef.getAPVTS(), "amount", amountKnob);
 
     // ==================== Humanize Slider ====================
-    humanizeSlider.setSliderStyle (juce::Slider::LinearHorizontal);
-    humanizeSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 60, 20);
+    // Human Drift is prepared as a small top-arc valve.
+    // Visual convention for the later skin:
+    // 0%   -> 135 degrees
+    // 50%  ->  90 degrees
+    // 100% ->  45 degrees
+    humanizeSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    humanizeSlider.setRotaryParameters (
+        -juce::MathConstants<float>::quarterPi,
+         juce::MathConstants<float>::quarterPi,
+         true);
+    humanizeSlider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
     humanizeSlider.setTextValueSuffix (" %");
-    humanizeSlider.setColour (juce::Slider::trackColourId, juce::Colour (0xFF00C878));
+    humanizeSlider.setColour (juce::Slider::rotarySliderFillColourId, juce::Colour (0xFF00C878));
     humanizeSlider.setColour (juce::Slider::thumbColourId, juce::Colours::white);
     humanizeSlider.textFromValueFunction = [](double val)
     {
@@ -1127,33 +1136,32 @@ void MicrotonalAutotuneAudioProcessorEditor::paint (juce::Graphics& g)
 
     
     auto lowerArea = getLocalBounds();
-auto titleArea = lowerArea.removeFromBottom (38);
-auto instrumentArea = lowerArea.removeFromBottom (118).reduced (18, 4);
+    auto titleArea = lowerArea.removeFromBottom (38);
+    auto titleTextArea = titleArea.reduced (24, 0);
+    titleTextArea.removeFromRight (136); // space for the Control Room button
 
-const int instrumentW = instrumentArea.getWidth() / 3;
-neumaton::lab::Painter::drawCorrectionGauge (
-    g,
-    instrumentArea.removeFromLeft (instrumentW).reduced (4),
-    displayedMetering.correctionCents);
+    auto instrumentArea = lowerArea.removeFromBottom (124).reduced (18, 4);
 
-neumaton::lab::Painter::drawRadioTarget (
-    g,
-    instrumentArea.removeFromLeft (instrumentW).reduced (4),
-    displayedMetering.detectedPitchHz,
-    displayedMetering.targetPitchHz);
+    const int instrumentW = instrumentArea.getWidth() / 3;
+    neumaton::lab::Painter::drawCorrectionGauge (
+        g,
+        instrumentArea.removeFromLeft (instrumentW).reduced (4),
+        displayedMetering.correctionCents);
 
-neumaton::lab::Painter::drawConsensusGauge (
-    g,
-    instrumentArea.reduced (4),
-    displayedMetering.consensus);
+    neumaton::lab::Painter::drawRadioTarget (
+        g,
+        instrumentArea.removeFromLeft (instrumentW).reduced (4),
+        displayedMetering.detectedPitchHz,
+        displayedMetering.targetPitchHz);
 
-g.setColour (juce::Colours::white);
-g.setFont (juce::FontOptions (24.0f, juce::Font::bold));
-g.drawText ("Neumaton", titleArea, juce::Justification::centred);
+    neumaton::lab::Painter::drawConsensusGauge (
+        g,
+        instrumentArea.reduced (4),
+        displayedMetering.consensus);
 
     g.setColour (juce::Colours::white);
     g.setFont (juce::FontOptions (24.0f, juce::Font::bold));
-    g.drawText ("Microtonal Autotune", titleArea, juce::Justification::centred);
+    g.drawText ("Neumaton", titleTextArea, juce::Justification::centred);
 
     int mode = processorRef.processingMode.load();
     if (mode > 0)
@@ -1253,86 +1261,72 @@ void MicrotonalAutotuneAudioProcessorEditor::resized()
 
     auto area = getLocalBounds().reduced (24, 18);
 
-    const int titleHeight = 38;
-    const int meterHeight = 136;
-    const int footerReserved = titleHeight + meterHeight + 10;
+    const bool lockOn = scaleLockButton.getToggleState();
 
-    area.removeFromBottom (footerReserved);
+    // Main-page conceptual grid:
+    // HEADER / MAIN VALVES / UTILITY STRIP / INSTRUMENT STRIP / TITLE.
+    auto headerArea = area.removeFromTop (78);
+    area.removeFromTop (10);
 
-    // ==================== Header ====================
-   // ==================== Header: Preset + Scala sopra, Root + Modo sotto ====================
-auto header = area.removeFromTop (78);
-
-auto firstRow = header.removeFromTop (30);
-auto secondRow = header.removeFromTop (30);
-
-// Pulsante Tempo laterale, alto quanto le due righe
-auto tempoArea = firstRow.getUnion (secondRow).removeFromRight (112);
-tempoPageButton.setBounds (tempoArea.reduced (4, 8));
-controlRoomButton.setBounds (area.removeFromRight (118).removeFromTop (30));
-area.removeFromRight (10);
-
-// Lascia spazio a destra per Tempo su entrambe le righe
-firstRow.removeFromRight (120);
-secondRow.removeFromRight (120);
-
-// Riga 1: Preset + Scala
-const int firstGap = 10;
-auto presetArea = firstRow.removeFromLeft ((firstRow.getWidth() - firstGap) / 2);
-firstRow.removeFromLeft (firstGap);
-auto scaleArea = firstRow;
-
-presetSelectorLabel.setBounds (presetArea.removeFromLeft (62));
-presetSelector.setBounds (presetArea.reduced (0, 1));
-
-scaleSelectorLabel.setBounds (scaleArea.removeFromLeft (54));
-scaleSelector.setBounds (scaleArea.reduced (0, 1));
-
-// Riga 2: Root note + Modalità
-const int secondGap = 10;
-auto noteArea = secondRow.removeFromLeft ((secondRow.getWidth() - secondGap) / 2);
-secondRow.removeFromLeft (secondGap);
-auto modeArea = secondRow;
-
-rootNoteSelectorLabel.setBounds (noteArea.removeFromLeft (54));
-rootNoteSelector.setBounds (noteArea.reduced (0, 1));
-
-modeSelectorLabel.setBounds (modeArea.removeFromLeft (54));
-modeSelector.setBounds (modeArea.reduced (0, 1));
-
-area.removeFromTop (12);
-
-    // ==================== Humanize sopra il meter ====================
-    auto humanizeRow = area.removeFromBottom (30);
-    humanizeLabel.setBounds (humanizeRow.removeFromLeft (86));
-    humanizeSlider.setBounds (humanizeRow.reduced (0, 3));
-
+    auto titleArea = area.removeFromBottom (38);
+    auto instrumentArea = area.removeFromBottom (124);
     area.removeFromBottom (8);
 
-    // ==================== Centro: knob + utility ====================
-    auto middle = area;
+    auto utilityArea = area.removeFromBottom (lockOn ? 72 : 42);
+    area.removeFromBottom (8);
 
-    const int utilityWidth = juce::jlimit (185, 280, middle.getWidth() / 3);
+    auto mainControlsArea = area;
 
-    auto utilityArea = middle.removeFromRight (utilityWidth);
-    middle.removeFromRight (16);
+    // ==================== Header: musical selection only ====================
+    auto firstRow = headerArea.removeFromTop (30);
+    auto secondRow = headerArea.removeFromTop (30);
 
-    auto knobArea = middle;
+    auto tempoArea = firstRow.getUnion (secondRow).removeFromRight (112);
+    tempoPageButton.setBounds (tempoArea.reduced (4, 8));
 
-    auto leftKnobArea = knobArea.removeFromLeft ((knobArea.getWidth() - 20) / 2);
-    knobArea.removeFromLeft (20);
-    auto rightKnobArea = knobArea;
+    firstRow.removeFromRight (120);
+    secondRow.removeFromRight (120);
 
-    const auto placeKnob = [] (juce::Slider& knob,
-                               juce::Label& label,
-                               juce::Rectangle<int> bounds)
+    const int firstGap = 10;
+    auto presetArea = firstRow.removeFromLeft ((firstRow.getWidth() - firstGap) / 2);
+    firstRow.removeFromLeft (firstGap);
+    auto scaleArea = firstRow;
+
+    presetSelectorLabel.setBounds (presetArea.removeFromLeft (62));
+    presetSelector.setBounds (presetArea.reduced (0, 1));
+
+    scaleSelectorLabel.setBounds (scaleArea.removeFromLeft (54));
+    scaleSelector.setBounds (scaleArea.reduced (0, 1));
+
+    const int secondGap = 10;
+    auto noteArea = secondRow.removeFromLeft ((secondRow.getWidth() - secondGap) / 2);
+    secondRow.removeFromLeft (secondGap);
+    auto modeArea = secondRow;
+
+    rootNoteSelectorLabel.setBounds (noteArea.removeFromLeft (54));
+    rootNoteSelector.setBounds (noteArea.reduced (0, 1));
+
+    modeSelectorLabel.setBounds (modeArea.removeFromLeft (54));
+    modeSelector.setBounds (modeArea.reduced (0, 1));
+
+    // ==================== Main valves ====================
+    auto controls = mainControlsArea.reduced (4, 0);
+    const int third = controls.getWidth() / 3;
+
+    auto responseArea = controls.removeFromLeft (third);
+    auto humanArea = controls.removeFromLeft (third);
+    auto amountArea = controls;
+
+    const auto placeLargeValve = [] (juce::Slider& knob,
+                                     juce::Label& label,
+                                     juce::Rectangle<int> bounds)
     {
-        bounds = bounds.reduced (4, 0);
+        bounds = bounds.reduced (6, 0);
 
         const int labelH = 24;
         const int availableH = juce::jmax (82, bounds.getHeight() - labelH);
         const int knobSize = juce::jlimit (
-            82, 140, juce::jmin (bounds.getWidth(), availableH));
+            90, 150, juce::jmin (bounds.getWidth(), availableH));
 
         const int x = bounds.getCentreX() - knobSize / 2;
         const int y = bounds.getY()
@@ -1345,30 +1339,58 @@ area.removeFromTop (12);
                          labelH);
     };
 
-    placeKnob (speedKnob,  speedLabel,  leftKnobArea);
-    placeKnob (amountKnob, amountLabel, rightKnobArea);
+    const auto placeSmallValve = [] (juce::Slider& knob,
+                                     juce::Label& label,
+                                     juce::Rectangle<int> bounds)
+    {
+        bounds = bounds.reduced (8, 0);
 
-    // ==================== Utility column ====================
-    const bool lockOn = scaleLockButton.getToggleState();
+        const int labelH = 24;
+        const int availableH = juce::jmax (58, bounds.getHeight() - labelH);
+        const int knobSize = juce::jlimit (
+            62, 84, juce::jmin (bounds.getWidth(), availableH));
 
-    auto utility = utilityArea.reduced (2, 2);
+        const int x = bounds.getCentreX() - knobSize / 2;
+        const int y = bounds.getY()
+            + juce::jmax (0, (bounds.getHeight() - labelH - knobSize) / 2);
+
+        knob.setBounds (x, y, knobSize, knobSize);
+        label.setBounds (bounds.getX(),
+                         y + knobSize + 2,
+                         bounds.getWidth(),
+                         labelH);
+    };
+
+    placeLargeValve (speedKnob, speedLabel, responseArea);
+    placeSmallValve (humanizeSlider, humanizeLabel, humanArea);
+    placeLargeValve (amountKnob, amountLabel, amountArea);
+
+    // ==================== Utility strip ====================
+    auto utility = utilityArea.reduced (4, 2);
+    auto utilityTop = utility.removeFromTop (30);
 
     scaleLockButton.setBounds (
-        utility.removeFromTop (26).removeFromLeft (150));
+        utilityTop.removeFromLeft (124).reduced (2, 2));
+
+    analogModeButton.setBounds (
+        utilityTop.removeFromLeft (154).reduced (2, 2));
+
+    auto outputArea = utilityTop.reduced (8, 2);
+    outVolumeLabel.setBounds (outputArea.removeFromLeft (68));
+    outVolumeSlider.setBounds (outputArea);
 
     if (lockOn)
     {
-        utility.removeFromTop (8);
-
-        auto hystRow = utility.removeFromTop (24);
-        lockHysteresisLabel.setBounds (hystRow.removeFromLeft (122));
-        lockHysteresisSlider.setBounds (hystRow);
-
         utility.removeFromTop (6);
+        auto lockRow = utility.removeFromTop (28);
 
-        auto vibRow = utility.removeFromTop (24);
-        vibratoPreserveLabel.setBounds (vibRow.removeFromLeft (122));
-        vibratoPreserveSlider.setBounds (vibRow);
+        auto holdArea = lockRow.removeFromLeft (lockRow.getWidth() / 2).reduced (4, 2);
+        lockHysteresisLabel.setBounds (holdArea.removeFromLeft (52));
+        lockHysteresisSlider.setBounds (holdArea);
+
+        auto vibArea = lockRow.reduced (4, 2);
+        vibratoPreserveLabel.setBounds (vibArea.removeFromLeft (118));
+        vibratoPreserveSlider.setBounds (vibArea);
     }
     else
     {
@@ -1378,17 +1400,14 @@ area.removeFromTop (12);
         vibratoPreserveSlider.setBounds (juce::Rectangle<int>());
     }
 
-    utility.removeFromTop (8);
-
-    analogModeButton.setBounds (
-        utility.removeFromTop (26).removeFromLeft (150));
-
-    utility.removeFromTop (8);
-
-    auto outRow = utility.removeFromTop (24);
-    outVolumeLabel.setBounds (outRow.removeFromLeft (92));
-    outVolumeSlider.setBounds (outRow);
+    // ==================== Instrument strip navigation ====================
+    // Control Room belongs to the diagnostic/instrument area, not to the
+    // musical-selection header.
+    juce::ignoreUnused (instrumentArea);
+    controlRoomButton.setBounds (
+        titleArea.removeFromRight (128).reduced (4, 5));
 }
+
 
 void MicrotonalAutotuneAudioProcessorEditor::onRootNoteSelected()
 {
