@@ -8,7 +8,7 @@
 namespace
 {
 constexpr double pi = 3.1415926535897932384626433832795;
-constexpr double quarterPi = pi/4.0;
+double quarterPi = pi/4.0;
 }
 //==============================================================================
 ModernLookAndFeel::ModernLookAndFeel()
