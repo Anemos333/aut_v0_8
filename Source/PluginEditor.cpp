@@ -5,7 +5,11 @@
 #include "NeumatonUILabels.h"
 #include "BinaryData.h"
 #include <cmath>
-
+namespace
+{
+constexpr double pi = 3.1415926535897932384626433832795;
+constexpr double quarterPi = pi/4.0;
+}
 //==============================================================================
 ModernLookAndFeel::ModernLookAndFeel()
 {
@@ -266,7 +270,7 @@ buildPresetMenu();
     // 0%   -> 135 degrees
     // 50%  ->  90 degrees
     // 100% ->  45 degrees
-    constexpr double quarterPi = pi/4.0;
+    
     humanizeSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     humanizeSlider.setRotaryParameters (
         -juce::MathConstants<float>::quarterPi,
