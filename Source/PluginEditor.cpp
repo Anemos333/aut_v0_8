@@ -273,8 +273,8 @@ buildPresetMenu();
     
     humanizeSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     humanizeSlider.setRotaryParameters (
-        -juce::MathConstants<float>::quarterPi,
-         juce::MathConstants<float>::quarterPi,
+        -juce::MathConstants<float>::pi/4.0f,
+         juce::MathConstants<float>::pi/4.0f,
          true);
     humanizeSlider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
     humanizeSlider.setTextValueSuffix (" %");
