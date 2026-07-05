@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.22)
 
 
-project(Neumaton::Ergastirion
+project(Neumaton_Ergastirion
     VERSION 0.8.0
     LANGUAGES C CXX
 )
