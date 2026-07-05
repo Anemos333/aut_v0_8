@@ -266,6 +266,7 @@ buildPresetMenu();
     // 0%   -> 135 degrees
     // 50%  ->  90 degrees
     // 100% ->  45 degrees
+    constexpr double quarterPi = pi/4.0;
     humanizeSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     humanizeSlider.setRotaryParameters (
         -juce::MathConstants<float>::quarterPi,
