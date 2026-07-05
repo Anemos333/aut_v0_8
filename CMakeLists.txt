@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.22)
 
 
-project(MicrotonalAutotune
-    VERSION 1.0.0
+project(Neumaton::Ergastirion
+    VERSION 0.8.0
     LANGUAGES C CXX
 )
 
@@ -42,7 +42,7 @@ juce_add_binary_data(BinaryData
 )
 
 # Plugin target — VST3 only
-juce_add_plugin(MicrotonalAutotune
+juce_add_plugin(Neumaton
     COMPANY_NAME "AnemosMusic"
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT FALSE
@@ -56,12 +56,12 @@ juce_add_plugin(MicrotonalAutotune
     PLUGIN_CODE Matv
     FORMATS VST3 AU
     # PRODUCT_NAME "Microtonal Autotune"
-    PRODUCT_NAME "Microtonal Autotune"
+    PRODUCT_NAME "Neumaton"
 )
 
-juce_generate_juce_header(MicrotonalAutotune)
+juce_generate_juce_header(Neumaton)
 
-target_sources(MicrotonalAutotune
+target_sources(Neumaton
     PRIVATE
         Source/PluginProcessor.cpp
         Source/PluginEditor.cpp
@@ -77,14 +77,14 @@ target_sources(MicrotonalAutotune
       
 )
 
-target_compile_definitions(MicrotonalAutotune
+target_compile_definitions(Neumaton
     PUBLIC
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
         JUCE_VST3_CAN_REPLACE_VST2=0
 )
 
-target_link_libraries(MicrotonalAutotune
+target_link_libraries(Neumaton
     PRIVATE
         BinaryData
         juce::juce_audio_basics
