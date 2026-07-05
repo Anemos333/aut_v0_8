@@ -1428,43 +1428,7 @@ void MicrotonalAutotuneAudioProcessorEditor::resized()
 }
 
 
-void MicrotonalAutotuneAudioProcessorEditor::onRootNoteSelected()#include "PluginEditor.h"
-#include "ScaleDefinitions.h"
-#include "NeumatonUILabels.h"
-#include "Preset.h"
-#include "NeumatonUILabels.h"
-#include "BinaryData.h"
-#include <cmath>
-namespace
-{
-constexpr double pi = 3.1415926535897932384626433832795;
-double quarterPi = pi/4.0;
-}
-//==============================================================================
-ModernLookAndFeel::ModernLookAndFeel()
-{
-    setColour(juce::Slider::thumbColourId, juce::Colour(0xFFFFFFFF));
-    setColour(juce::Slider::rotarySliderFillColourId, juce::Colour(0xFF6C63FF));
-    setColour(juce::Slider::rotarySliderOutlineColourId, juce::Colour(0xFF2A2D40));
-    setColour(juce::ComboBox::backgroundColourId, juce::Colour(0xFF1E2135));
-    setColour(juce::ComboBox::outlineColourId, juce::Colour(0xFF38405F));
-    setColour(juce::PopupMenu::backgroundColourId, juce::Colour(0xFF1E2135));
-    setColour(juce::PopupMenu::highlightedBackgroundColourId, juce::Colour(0xFF6C63FF));
-    setColour(juce::TextButton::buttonColourId, juce::Colour(0xFF2A3048));
-    setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xFF6C63FF));
-    setColour(juce::TextButton::textColourOffId, juce::Colours::white);
-     
-}
-
-void ModernLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int width, int height, float sliderPos,
-                                          const float rotaryStartAngle, const float rotaryEndAngle, juce::Slider& slider)
-{
-    auto outline = slider.findColour (juce::Slider::rotarySliderOutlineColourId);
-    auto fill    = slider.findColour (juce::Slider::rotarySliderFillColourId);
-
-    auto bounds = juce::Rectangle<int> (x, y, width, height).toFloat().reduced (10);
-    auto radius = juce::jmin (bounds.getWidth(), bounds.getHeight()) / 2.0f;
-
+void MicrotonalAutotuneAudioProcessorEditor::onRootNoteSelected()
 {
     int selectedId = rootNoteSelector.getSelectedId();
     if (selectedId > 0)
