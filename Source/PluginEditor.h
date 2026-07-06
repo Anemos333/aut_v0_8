@@ -5,7 +5,7 @@
 #include "CustomScaleEditor.h"
 #include "NeumatonLabTheme.h"
 #include "ControlRoomPage.h"
-#include "HumeaDriftLookAndFeel.h"
+#include "HumanDriftLookAndFeel.h"
 
 //==============================================================================
 class ModernLookAndFeel : public juce::LookAndFeel_V4
