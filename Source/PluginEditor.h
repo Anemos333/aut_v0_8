@@ -5,6 +5,7 @@
 #include "CustomScaleEditor.h"
 #include "NeumatonLabTheme.h"
 #include "ControlRoomPage.h"
+#include "HumeaDriftLookAndFeel.h"
 
 //==============================================================================
 class ModernLookAndFeel : public juce::LookAndFeel_V4
@@ -41,6 +42,7 @@ public:
     void customScaleEditorClosed() override;
 
 private:
+    ModernLookAndFeel modernLookAndFeel;
     ModernLookAndFeel modernLookAndFeel;
     MicrotonalAutotuneAudioProcessor& processorRef;
 
