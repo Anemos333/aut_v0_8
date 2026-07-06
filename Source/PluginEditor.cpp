@@ -347,9 +347,9 @@ buildPresetMenu();
         processorRef.getAPVTS(), "analogMode", analogModeButton);
 
     // Output belongs to the final output stage.
-    // It is prepared as a small volume knob rather than a horizontal fader.
+    // It is prepared as a compact visible volume knob.
     outVolumeSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-    outVolumeSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 54, 18);
+    outVolumeSlider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
     outVolumeSlider.setTextValueSuffix (" dB");
     outVolumeSlider.setColour (juce::Slider::rotarySliderFillColourId, juce::Colour (0xFFFF9900));
     outVolumeSlider.setColour (juce::Slider::thumbColourId, juce::Colours::white);
@@ -1289,11 +1289,10 @@ void MicrotonalAutotuneAudioProcessorEditor::resized()
 
     // La utility strip appartiene ancora al gesto audio, ma deve stare più in basso
     // e non mordere i pannelli dei due controlli principali.
-    // Il cruscotto è stato ridotto di 20 px: 15 px restano come respiro sotto,
-    // quindi la utility bar scende di circa 5 px netti.
-    area.removeFromBottom (15);
+    // Scendiamo ancora: meno gap verso il cruscotto, più respiro dai rubinetti.
+    area.removeFromBottom (4);
     auto utilityArea = area.removeFromBottom (72);
-    area.removeFromBottom (16); // separazione dai rubinetti principali
+    area.removeFromBottom (27); // separazione dai rubinetti principali
 
     auto mainControlsArea = area;
 
@@ -1391,33 +1390,33 @@ void MicrotonalAutotuneAudioProcessorEditor::resized()
     // Two modules:
     // - left module: roughly 3/4, Scale Lock and its dependent controls
     // - right module: roughly 1/4, final Output Stage
-    constexpr int moduleGap = 2;
+    constexpr int moduleGap = 6;
 
     const int outputModuleW = juce::jlimit (
-        132, 168, utility.getWidth() / 4 - moduleGap);
+        142, 170, utility.getWidth() / 4);
 
     auto outputModule = utility.removeFromRight (outputModuleW);
     utility.removeFromRight (moduleGap);
     auto lockModule = utility;
 
     // ---- Scale Lock module ----
-    auto lockTop = lockModule.removeFromTop (30);
+    auto lockRow = lockModule.removeFromTop (30);
 
     scaleLockButton.setBounds (
-        lockTop.removeFromLeft (124).reduced (2, 2));
+        lockRow.removeFromLeft (124).reduced (2, 2));
 
     if (lockOn)
     {
-        lockModule.removeFromTop (6);
-        auto lockRow = lockModule.removeFromTop (28);
+        lockRow.removeFromLeft (8);
 
-        auto holdArea = lockRow.removeFromLeft (lockRow.getWidth() / 2).reduced (4, 2);
+        auto holdArea = lockRow.reduced (4, 2);
         lockHysteresisLabel.setBounds (holdArea.removeFromLeft (52));
         lockHysteresisSlider.setBounds (holdArea);
 
-        auto vibArea = lockRow.reduced (4, 2);
-        vibratoPreserveLabel.setBounds (vibArea.removeFromLeft (118));
-        vibratoPreserveSlider.setBounds (vibArea);
+        lockModule.removeFromTop (6);
+        auto vibratoRow = lockModule.removeFromTop (28).reduced (4, 2);
+        vibratoPreserveLabel.setBounds (vibratoRow.removeFromLeft (118));
+        vibratoPreserveSlider.setBounds (vibratoRow);
     }
     else
     {
@@ -1430,16 +1429,16 @@ void MicrotonalAutotuneAudioProcessorEditor::resized()
     // ---- Output Stage module ----
     auto outputStage = outputModule.reduced (4, 2);
 
-    auto analogRow = outputStage.removeFromTop (26);
+    auto analogRow = outputStage.removeFromTop (24);
     analogModeButton.setBounds (analogRow.reduced (2, 1));
 
-    outputStage.removeFromTop (3);
+    outputStage.removeFromTop (6);
 
     auto outRow = outputStage;
     outVolumeLabel.setBounds (outRow.removeFromLeft (52).reduced (0, 2));
 
     const int outputKnobSize = juce::jlimit (
-        34, 44, juce::jmin (outRow.getWidth(), outRow.getHeight()));
+        34, 40, juce::jmin (outRow.getWidth(), outRow.getHeight()));
 
     outVolumeSlider.setBounds (
         outRow.withSizeKeepingCentre (outputKnobSize, outputKnobSize));
