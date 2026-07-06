@@ -1390,7 +1390,7 @@ void MicrotonalAutotuneAudioProcessorEditor::resized()
     // Two modules:
     // - left module: roughly 3/4, Scale Lock and its dependent controls
     // - right module: roughly 1/4, final Output Stage
-    constexpr int moduleGap = 6;
+    constexpr int moduleGap = 14; // slightly clearer separation between utility modules
 
     const int outputModuleW = juce::jlimit (
         142, 170, utility.getWidth() / 4);
@@ -1415,7 +1415,7 @@ void MicrotonalAutotuneAudioProcessorEditor::resized()
 
         lockModule.removeFromTop (6);
         auto vibratoRow = lockModule.removeFromTop (28).reduced (4, 2);
-        vibratoPreserveLabel.setBounds (vibratoRow.removeFromLeft (118));
+        vibratoPreserveLabel.setBounds (vibratoRow.removeFromLeft (184)); // align slider start with Hold
         vibratoPreserveSlider.setBounds (vibratoRow);
     }
     else
