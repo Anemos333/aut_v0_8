@@ -2,7 +2,7 @@
 #include "ScaleDefinitions.h"
 #include "NeumatonUILabels.h"
 #include "Preset.h"
-#include "NeumatonUILabels.h"
+#include "HumanDriftLookAndFeel.h"
 #include "BinaryData.h"
 #include <cmath>
 
@@ -268,8 +268,8 @@ buildPresetMenu();
     // 100% ->  45 degrees
     humanizeSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     humanizeSlider.setRotaryParameters (
-        -juce::MathConstants<float>::quarterPi,
-         juce::MathConstants<float>::quarterPi,
+        -juce::MathConstants<float>::pi/4.0f,
+         juce::MathConstants<float>::pi/4.0f,
          true);
     humanizeSlider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
     humanizeSlider.setTextValueSuffix (" %");
