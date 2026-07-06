@@ -268,13 +268,15 @@ buildPresetMenu();
     // 100% ->  45 degrees
     humanizeSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     humanizeSlider.setRotaryParameters (
-        -juce::MathConstants<float>::pi/4.0f,
-         juce::MathConstants<float>::pi/4.0f,
+        -juce::MathConstants<float>::quarterPi,
+         juce::MathConstants<float>::quarterPi,
          true);
     humanizeSlider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
     humanizeSlider.setTextValueSuffix (" %");
     humanizeSlider.setColour (juce::Slider::rotarySliderFillColourId, juce::Colour (0xFF00C878));
     humanizeSlider.setColour (juce::Slider::thumbColourId, juce::Colours::white);
+    humanizeSlider.setLookAndFeel (&humanDriftLookAndFeel);
+    humanizeSlider.setMouseCursor (juce::MouseCursor::PointingHandCursor);
     humanizeSlider.textFromValueFunction = [](double val)
     {
         juce::String text (val, 1);
@@ -289,7 +291,7 @@ buildPresetMenu();
     humanizeLabel.setText (Neumaton::UI::Labels::Main::humanize, juce::dontSendNotification);
     humanizeLabel.setFont (juce::FontOptions (14.0f, juce::Font::bold));
     humanizeLabel.setColour (juce::Label::textColourId, juce::Colours::white);
-    humanizeLabel.setJustificationType (juce::Justification::centredLeft);
+    humanizeLabel.setJustificationType (juce::Justification::centred);
     addAndMakeVisible (humanizeLabel);
 
     humanizeAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
@@ -465,6 +467,7 @@ buildPresetMenu();
 
 MicrotonalAutotuneAudioProcessorEditor::~MicrotonalAutotuneAudioProcessorEditor()
 {
+    humanizeSlider.setLookAndFeel (nullptr);
     setLookAndFeel(nullptr);
     stopTimer();
 }
