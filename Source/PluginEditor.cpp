@@ -2,7 +2,6 @@
 #include "ScaleDefinitions.h"
 #include "NeumatonUILabels.h"
 #include "Preset.h"
-#include "HumanDriftLookAndFeel.h"
 #include "BinaryData.h"
 #include <cmath>
 
