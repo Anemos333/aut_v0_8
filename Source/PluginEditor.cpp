@@ -1120,19 +1120,24 @@ void MicrotonalAutotuneAudioProcessorEditor::paint (juce::Graphics& g)
     drawPanel (speedKnob.getBounds().getUnion (speedLabel.getBounds()).expanded (18, 14));
     drawPanel (amountKnob.getBounds().getUnion (amountLabel.getBounds()).expanded (18, 14));
 
-    auto utilityPanel = scaleLockButton.getBounds()
-        .getUnion (analogModeButton.getBounds())
-        .getUnion (outVolumeSlider.getBounds())
-        .getUnion (outVolumeLabel.getBounds());
+    auto scaleLockPanel = scaleLockButton.getBounds();
 
     if (scaleLockButton.getToggleState())
-        utilityPanel = utilityPanel
+        scaleLockPanel = scaleLockPanel
             .getUnion (lockHysteresisSlider.getBounds())
             .getUnion (lockHysteresisLabel.getBounds())
             .getUnion (vibratoPreserveSlider.getBounds())
             .getUnion (vibratoPreserveLabel.getBounds());
 
-    drawPanel (utilityPanel.expanded (14, 10));
+    drawPanel (scaleLockPanel.expanded (14, 10));
+
+    // Output stage: separate from the musical lock controls.
+    // This will later become a distinct final valve / output module.
+    auto outputStagePanel = analogModeButton.getBounds()
+        .getUnion (outVolumeSlider.getBounds())
+        .getUnion (outVolumeLabel.getBounds());
+
+    drawPanel (outputStagePanel.expanded (14, 10));
 
     
     auto lowerArea = getLocalBounds();
@@ -1282,9 +1287,10 @@ void MicrotonalAutotuneAudioProcessorEditor::resized()
 
     // La utility strip appartiene ancora al gesto audio, ma deve stare più in basso
     // e non mordere i pannelli dei due controlli principali.
-    area.removeFromBottom (2); // piccolo respiro tra utility e cruscotto
+    // Il gap col cruscotto resta minimo: la separazione sarà soprattutto grafica.
+    area.removeFromBottom (0);
     auto utilityArea = area.removeFromBottom (lockOn ? 72 : 42);
-    area.removeFromBottom (16); // più separazione dai rubinetti principali
+    area.removeFromBottom (16); // separazione dai rubinetti principali
 
     auto mainControlsArea = area;
 
@@ -1380,13 +1386,20 @@ void MicrotonalAutotuneAudioProcessorEditor::resized()
     auto utility = utilityArea.reduced (4, 2);
     auto utilityTop = utility.removeFromTop (30);
 
+    // Left: Scale Lock module.
     scaleLockButton.setBounds (
         utilityTop.removeFromLeft (124).reduced (2, 2));
 
-    analogModeButton.setBounds (
-        utilityTop.removeFromLeft (154).reduced (2, 2));
+    utilityTop.removeFromLeft (18); // visual separation between modules
 
-    auto outputArea = utilityTop.reduced (8, 2);
+    // Right: output stage module.
+    auto outputStage = utilityTop.reduced (4, 2);
+    analogModeButton.setBounds (
+        outputStage.removeFromLeft (150).reduced (0, 0));
+
+    outputStage.removeFromLeft (8);
+
+    auto outputArea = outputStage;
     outVolumeLabel.setBounds (outputArea.removeFromLeft (68));
     outVolumeSlider.setBounds (outputArea);
 
