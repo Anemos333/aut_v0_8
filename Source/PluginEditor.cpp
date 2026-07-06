@@ -275,7 +275,7 @@ buildPresetMenu();
     humanizeSlider.setTextValueSuffix (" %");
     humanizeSlider.setColour (juce::Slider::rotarySliderFillColourId, juce::Colour (0xFF00C878));
     humanizeSlider.setColour (juce::Slider::thumbColourId, juce::Colours::white);
-    humanizeSlider.setLookAndFeel (&humanDriftLookAndFeel);
+    humanizeSlider.setLookAndFeel (&HumanDriftLookAndFeel);
     humanizeSlider.setMouseCursor (juce::MouseCursor::PointingHandCursor);
     humanizeSlider.textFromValueFunction = [](double val)
     {
