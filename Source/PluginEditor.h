@@ -43,7 +43,7 @@ public:
 
 private:
     ModernLookAndFeel modernLookAndFeel;
-    ModernLookAndFeel modernLookAndFeel;
+    HumanDriftLookAndFeel humanDriftLookAndFeel;
     MicrotonalAutotuneAudioProcessor& processorRef;
 
     // Background image
