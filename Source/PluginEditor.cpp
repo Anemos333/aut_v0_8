@@ -1362,7 +1362,7 @@ void MicrotonalAutotuneAudioProcessorEditor::resized()
     const int maxByHeight = bounds.getHeight() - labelH - 2;
 
     const int knobSize = juce::jlimit (
-        116, 138, juce::jmin (maxByWidth, maxByHeight));
+        122, 148, juce::jmin (maxByWidth, maxByHeight));
 
     // Baseline comune: il controllo si appoggia verso il basso,
     // non viene centrato verticalmente.
