@@ -60,10 +60,12 @@ void MainValveLookAndFeel::drawRotarySlider (juce::Graphics& g,
 
     // Main controls are intentionally heavier than Human Drift, but the outer
     // travel bar stays thin so the valve does not become a generic synth knob.
-    const float outerRadius = size * 0.455f;
-    const float bodyRadius  = size * 0.330f;
-    const float capRadius   = size * 0.185f;
-    const float arcRadius   = size * 0.415f;
+    const float frameRadius = size * 0.455f;
+const float arcRadius   = size * 0.410f;
+
+// Corpo più piccolo: lascia aria tra perno artigianale e cornice moderna.
+const float bodyRadius  = size * 0.165f;
+const float capRadius   = size * 0.125f;
 
     const auto accent = slider.findColour (juce::Slider::rotarySliderFillColourId);
     const auto thumb  = slider.findColour (juce::Slider::thumbColourId);
@@ -78,9 +80,23 @@ void MainValveLookAndFeel::drawRotarySlider (juce::Graphics& g,
     // Soft physical shadow. This replaces the previous translucent rectangular
     // backing: the control now rests directly on the future background drawing.
     g.setColour (juce::Colours::black.withAlpha (0.34f));
-    g.fillEllipse (juce::Rectangle<float> (outerRadius * 2.0f, outerRadius * 2.0f)
+    g.fillEllipse (juce::Rectangle<float> (frameRadius * 2.0f, frameRadius * 2.0f)
         .withCentre (centre.translated (0.0f, size * 0.040f)));
+// Coloured outer frame: modern/futuristic layer.
+// The brass body is inside; the coloured frame belongs to the machine UI.
+auto frame = juce::Rectangle<float> (frameRadius * 2.0f, frameRadius * 2.0f)
+    .withCentre (centre);
 
+g.setColour (accent.withAlpha (0.22f));
+g.fillEllipse (frame);
+
+g.setColour (accent.withAlpha (0.92f));
+g.drawEllipse (frame.reduced (0.7f),
+               juce::jmax (2.0f, size * 0.022f));
+
+g.setColour (juce::Colours::white.withAlpha (0.20f));
+g.drawEllipse (frame.reduced (3.0f),
+               juce::jmax (0.8f, size * 0.006f));
     // Thin outer track: futuristic information layer.
     juce::Path backgroundArc;
     backgroundArc.addCentredArc (centre.x,
@@ -108,18 +124,18 @@ void MainValveLookAndFeel::drawRotarySlider (juce::Graphics& g,
                              angle,
                              true);
 
-    g.setColour (accent.withAlpha (0.25f));
-    g.strokePath (valueArc,
-                  juce::PathStrokeType (juce::jmax (3.0f, size * 0.036f),
-                                        juce::PathStrokeType::curved,
-                                        juce::PathStrokeType::rounded));
+   // Coloured value arc: thicker and brighter than Human Drift.
+g.setColour (accent.withAlpha (0.30f));
+g.strokePath (valueArc,
+              juce::PathStrokeType (juce::jmax (4.0f, size * 0.046f),
+                                    juce::PathStrokeType::curved,
+                                    juce::PathStrokeType::rounded));
 
-    g.setColour (accent.withAlpha (0.95f));
-    g.strokePath (valueArc,
-                  juce::PathStrokeType (juce::jmax (1.4f, size * 0.018f),
-                                        juce::PathStrokeType::curved,
-                                        juce::PathStrokeType::rounded));
-
+g.setColour (accent.brighter (0.35f).withAlpha (0.98f));
+g.strokePath (valueArc,
+              juce::PathStrokeType (juce::jmax (2.2f, size * 0.026f),
+                                    juce::PathStrokeType::curved,
+                                    juce::PathStrokeType::rounded));
     // Edge ticks: green / white / red as a small navigation-light code.
     for (int i = 0; i <= 8; ++i)
     {
@@ -167,34 +183,37 @@ void MainValveLookAndFeel::drawRotarySlider (juce::Graphics& g,
     // Single tongue valve handle, plus a short rounded tail behind it.
     // The path is drawn pointing upward; rotating by 'angle' keeps it aligned
     // with JUCE's rotary polar convention.
-    juce::Path handle;
+   juce::Path handle;
 
-    const float tongueW = bodyRadius * 0.62f;
-    const float tongueTop = -bodyRadius * 1.34f;
-    const float tongueBottom = -bodyRadius * 0.08f;
+// Linguetta principale: più meccanica, con punta.
+// Il path punta verso l'alto; la rotazione del controllo la orienta.
+const float baseW   = bodyRadius * 0.58f;
+const float neckW   = bodyRadius * 0.40f;
+const float tipW    = bodyRadius * 0.18f;
+const float baseY   = bodyRadius * 0.02f;
+const float neckY   = -bodyRadius * 0.95f;
+const float tipY    = -bodyRadius * 1.52f;
 
-    handle.addRoundedRectangle (-tongueW * 0.5f,
-                                tongueTop,
-                                tongueW,
-                                tongueBottom - tongueTop,
-                                tongueW * 0.28f);
+// Corpo della linguetta, leggermente rastremato.
+handle.startNewSubPath (-baseW * 0.5f, baseY);
+handle.lineTo (-neckW * 0.5f, neckY);
+handle.lineTo (-tipW  * 0.5f, tipY);
+handle.quadraticTo (0.0f, tipY - bodyRadius * 0.16f,
+                    tipW * 0.5f, tipY);
+handle.lineTo (neckW * 0.5f, neckY);
+handle.lineTo (baseW * 0.5f, baseY);
+handle.closeSubPath();
 
-    const float paddleW = tongueW * 1.22f;
-    const float paddleH = bodyRadius * 0.34f;
-    handle.addRoundedRectangle (-paddleW * 0.5f,
-                                tongueTop - paddleH * 0.18f,
-                                paddleW,
-                                paddleH,
-                                paddleH * 0.35f);
+// Piccola coda tonda dietro il perno.
+// Serve a farla sembrare una valvola fisica e non solo una lancetta.
+const float tailW = bodyRadius * 0.34f;
+const float tailH = bodyRadius * 0.44f;
 
-    const float tailW = tongueW * 0.36f;
-    const float tailH = bodyRadius * 0.44f;
-    handle.addRoundedRectangle (-tailW * 0.5f,
-                                bodyRadius * 0.18f,
-                                tailW,
-                                tailH,
-                                tailW * 0.50f);
-
+handle.addRoundedRectangle (-tailW * 0.5f,
+                            bodyRadius * 0.22f,
+                            tailW,
+                            tailH,
+                            tailW * 0.50f);
     auto handleTransform = juce::AffineTransform::rotation (angle)
         .translated (centre.x, centre.y);
 
