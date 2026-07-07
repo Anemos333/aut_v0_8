@@ -4,8 +4,8 @@
 #include "PluginProcessor.h"
 #include "CustomScaleEditor.h"
 #include "NeumatonLabTheme.h"
-#include "ControlRoomPage.h"
 #include "HumanDriftLookAndFeel.h"
+#include "ControlRoomPage.h"
 
 //==============================================================================
 class ModernLookAndFeel : public juce::LookAndFeel_V4
@@ -44,6 +44,7 @@ public:
 private:
     ModernLookAndFeel modernLookAndFeel;
     HumanDriftLookAndFeel humanDriftLookAndFeel;
+    neumaton::lab::MainValveLookAndFeel mainValveLookAndFeel;
     MicrotonalAutotuneAudioProcessor& processorRef;
 
     // Background image
