@@ -26,6 +26,20 @@ struct Palette
 
 [[nodiscard]] const Palette& palette() noexcept;
 
+class MainValveLookAndFeel final : public juce::LookAndFeel_V4
+{
+public:
+    void drawRotarySlider (juce::Graphics& g,
+                           int x,
+                           int y,
+                           int width,
+                           int height,
+                           float sliderPos,
+                           const float rotaryStartAngle,
+                           const float rotaryEndAngle,
+                           juce::Slider& slider) override;
+};
+
 class Painter final
 {
 public:
