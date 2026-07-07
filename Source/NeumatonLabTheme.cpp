@@ -103,6 +103,15 @@ g.drawEllipse (frame.reduced (3.0f),
                juce::jmax (0.8f, size * 0.006f));
 
    // Coloured value arc: thicker and brighter than Human Drift.
+    juce::Path valueArc;
+    valueArc.addCentredArc (centre.x,
+                             centre.y,
+                             arcRadius,
+                             arcRadius,
+                             0.0f,
+                             rotaryStartAngle,
+                             angle,
+                             true);
 g.setColour (p.brassDark.withAlpha (0.92f));
 g.strokePath (valueArc,
               juce::PathStrokeType (juce::jmax (4.0f, size * 0.046f),
