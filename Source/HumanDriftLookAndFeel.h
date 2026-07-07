@@ -143,7 +143,7 @@ public:
 if (i == 0)
     tickColour = juce::Colour (0xFF39FF7A); // 0: green
 else if (i == 2)
-    tickColour = juce::Colours::white.withAlpha (0.95f); // 50: white
+    tickColour = juce::Colour (0xFF2444D9); // 50: white
 else if (i == 4)
     tickColour = juce::Colour (0xFFFF3B3B); // 100: red
 
