@@ -46,7 +46,7 @@ public:
         const auto brassMid   = juce::Colour (0xFFB88A3A);
         const auto brassLight = juce::Colour (0xFFE6C57A);
         const auto ink        = juce::Colour (0xFF10131D);
-        const auto glassGreen = juce::Colour (0xFF00C878);
+        const auto glassGreen = juce::Colour (0xFF39FF7A);
         const auto softGreen  = juce::Colour (0xFF8CE8B2);
 
         const auto polar = [centre] (float a, float r)
@@ -138,7 +138,16 @@ public:
             const float innerTickR = arcRadius - (major ? size * 0.105f : size * 0.075f);
             const float outerTickR = arcRadius + (major ? size * 0.020f : size * 0.005f);
 
-            g.setColour ((major ? brassLight : brassMid).withAlpha (major ? 0.95f : 0.55f));
+            juce::Colour tickColour = brassMid.withAlpha (0.55f);
+
+if (i == 0)
+    tickColour = juce::Colour (0xFF39FF7A); // 0: green
+else if (i == 2)
+    tickColour = juce::Colours::white.withAlpha (0.95f); // 50: white
+else if (i == 4)
+    tickColour = juce::Colour (0xFFFF3B3B); // 100: red
+
+g.setColour (tickColour);
             g.drawLine (juce::Line<float> (polar (tickAngle, innerTickR),
                                            polar (tickAngle, outerTickR)),
                         major ? juce::jmax (1.3f, size * 0.018f)
@@ -147,16 +156,33 @@ public:
 
         // The valve handle. It is intentionally simpler than the future final
         // faucet: it already communicates "small valve" and turns correctly.
-        juce::Path handle;
-        const float handleW = juce::jmax (4.0f, size * 0.075f);
-        const float handleTop = -knobRadius * 1.03f;
-        const float handleBottom = knobRadius * 0.28f;
+       juce::Path handle;
 
-        handle.addRoundedRectangle (-handleW * 0.5f,
-                                    handleTop,
-                                    handleW,
-                                    handleBottom - handleTop,
-                                    handleW * 0.5f);
+const float wingW = knobRadius * 1.18f;
+const float wingH = knobRadius * 0.38f;
+const float bridgeW = knobRadius * 0.62f;
+const float bridgeH = knobRadius * 0.28f;
+
+// ponte centrale
+handle.addRoundedRectangle (-bridgeW * 0.5f,
+                            -bridgeH * 0.5f,
+                             bridgeW,
+                             bridgeH,
+                             bridgeH * 0.45f);
+
+// ala sinistra
+handle.addRoundedRectangle (-wingW,
+                            -wingH * 0.5f,
+                             wingW * 0.70f,
+                             wingH,
+                             wingH * 0.28f);
+
+// ala destra
+handle.addRoundedRectangle (wingW * 0.30f,
+                            -wingH * 0.5f,
+                             wingW * 0.70f,
+                             wingH,
+                             wingH * 0.28f);
 
         auto handleTransform = juce::AffineTransform::rotation (angle)
             .translated (centre.x, centre.y);
@@ -195,21 +221,29 @@ public:
         g.drawEllipse (pin.reduced (0.5f), juce::jmax (1.0f, size * 0.012f));
 
         // Small value mark. It helps because Human Drift has no text box.
-        if (size >= 60.0f)
-        {
-            const int valuePercent = juce::jlimit (
-                0, 100, static_cast<int> (std::round (slider.getValue())));
+        const bool showValue = slider.isMouseOverOrDragging();
 
-            auto valueArea = cap.reduced (knobRadius * 0.10f).toNearestInt();
+if (showValue && size >= 58.0f)
+{
+    const int valuePercent = juce::jlimit (
+        0, 100, static_cast<int> (std::round (slider.getValue())));
 
-            g.setFont (juce::FontOptions (juce::jlimit (8.0f, 10.5f, size * 0.13f),
-                                           juce::Font::bold));
-            g.setColour (juce::Colours::white.withAlpha (0.90f));
-            g.drawFittedText (juce::String (valuePercent) + "%",
-                              valueArea,
-                              juce::Justification::centred,
-                              1);
-        }
+    auto valueBubble = juce::Rectangle<float> (38.0f, 16.0f)
+        .withCentre (centre.translated (0.0f, size * 0.34f));
+
+    g.setColour (juce::Colour (0xDD10131D));
+    g.fillRoundedRectangle (valueBubble, 5.0f);
+
+    g.setColour (glassGreen.withAlpha (0.85f));
+    g.drawRoundedRectangle (valueBubble.reduced (0.5f), 5.0f, 1.0f);
+
+    g.setFont (juce::FontOptions (10.5f, juce::Font::bold));
+    g.setColour (juce::Colours::white.withAlpha (0.95f));
+    g.drawFittedText (juce::String (valuePercent) + "%",
+                      valueBubble.toNearestInt(),
+                      juce::Justification::centred,
+                      1);
+}
 
         // Tiny 0 / 50 / 100 labels only when the control has enough room.
         // They are deliberately quiet: the tick geometry must stay more important
