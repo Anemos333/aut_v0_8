@@ -184,8 +184,9 @@ handle.addRoundedRectangle (wingW * 0.30f,
                              wingH,
                              wingH * 0.28f);
 
-        auto handleTransform = juce::AffineTransform::rotation (angle)
-            .translated (centre.x, centre.y);
+        auto handleTransform = juce::AffineTransform::rotation (
+        angle - juce::MathConstants<float>::halfPi)
+        .translated (centre.x, centre.y);
 
         g.setColour (juce::Colours::black.withAlpha (0.28f));
         g.fillPath (handle, handleTransform.translated (0.0f, 1.4f));
