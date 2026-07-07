@@ -224,7 +224,7 @@ buildPresetMenu();
     speedKnob.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     speedKnob.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 80, 20);
    speedKnob.setColour (juce::Slider::rotarySliderFillColourId,
-                     juce::Colour (0xFF54B8FF));
+                     juce::Colour (0xFF79572A));
     speedKnob.setColour (juce::Slider::thumbColourId, juce::Colours::white);
     speedKnob.setLookAndFeel (&mainValveLookAndFeel);
     speedKnob.setMouseCursor (juce::MouseCursor::PointingHandCursor);
@@ -250,7 +250,7 @@ buildPresetMenu();
     amountKnob.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     amountKnob.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 80, 20);
     amountKnob.setColour (juce::Slider::rotarySliderFillColourId,
-                      juce::Colour (0xFFFF4A4A));
+                      juce::Colour (0xFF79572A));
     amountKnob.setColour (juce::Slider::thumbColourId, juce::Colours::white);
     amountKnob.setLookAndFeel (&mainValveLookAndFeel);
     amountKnob.setMouseCursor (juce::MouseCursor::PointingHandCursor);
