@@ -125,13 +125,13 @@ g.drawEllipse (frame.reduced (3.0f),
                              true);
 
    // Coloured value arc: thicker and brighter than Human Drift.
-g.setColour (accent.withAlpha (0.30f));
+g.setColour (p.brassDark.withAlpha (0.92f));
 g.strokePath (valueArc,
               juce::PathStrokeType (juce::jmax (4.0f, size * 0.046f),
                                     juce::PathStrokeType::curved,
                                     juce::PathStrokeType::rounded));
 
-g.setColour (accent.brighter (0.35f).withAlpha (0.98f));
+g.setColour (p.brassDark.withAlpha (0.92f));
 g.strokePath (valueArc,
               juce::PathStrokeType (juce::jmax (2.2f, size * 0.026f),
                                     juce::PathStrokeType::curved,
