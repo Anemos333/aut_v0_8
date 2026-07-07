@@ -33,6 +33,217 @@ const Palette& palette() noexcept
     return p;
 }
 
+
+void MainValveLookAndFeel::drawRotarySlider (juce::Graphics& g,
+                                             int x,
+                                             int y,
+                                             int width,
+                                             int height,
+                                             float sliderPos,
+                                             const float rotaryStartAngle,
+                                             const float rotaryEndAngle,
+                                             juce::Slider& slider)
+{
+    auto bounds = juce::Rectangle<int> (x, y, width, height)
+        .toFloat()
+        .reduced (5.0f);
+
+    if (bounds.isEmpty())
+        return;
+
+    const auto& p = palette();
+
+    const float size = juce::jmin (bounds.getWidth(), bounds.getHeight());
+    const auto centre = bounds.getCentre();
+
+    const float angle = rotaryStartAngle + sliderPos * (rotaryEndAngle - rotaryStartAngle);
+
+    // Main controls are intentionally heavier than Human Drift, but the outer
+    // travel bar stays thin so the valve does not become a generic synth knob.
+    const float outerRadius = size * 0.455f;
+    const float bodyRadius  = size * 0.330f;
+    const float capRadius   = size * 0.185f;
+    const float arcRadius   = size * 0.415f;
+
+    const auto accent = slider.findColour (juce::Slider::rotarySliderFillColourId);
+    const auto thumb  = slider.findColour (juce::Slider::thumbColourId);
+
+    const auto polar = [centre] (float a, float r)
+    {
+        return juce::Point<float> (
+            centre.x + r * std::cos (a - juce::MathConstants<float>::halfPi),
+            centre.y + r * std::sin (a - juce::MathConstants<float>::halfPi));
+    };
+
+    // Soft physical shadow. This replaces the previous translucent rectangular
+    // backing: the control now rests directly on the future background drawing.
+    g.setColour (juce::Colours::black.withAlpha (0.34f));
+    g.fillEllipse (juce::Rectangle<float> (outerRadius * 2.0f, outerRadius * 2.0f)
+        .withCentre (centre.translated (0.0f, size * 0.040f)));
+
+    // Thin outer track: futuristic information layer.
+    juce::Path backgroundArc;
+    backgroundArc.addCentredArc (centre.x,
+                                  centre.y,
+                                  arcRadius,
+                                  arcRadius,
+                                  0.0f,
+                                  rotaryStartAngle,
+                                  rotaryEndAngle,
+                                  true);
+
+    g.setColour (juce::Colour (0xFF252A34).withAlpha (0.92f));
+    g.strokePath (backgroundArc,
+                  juce::PathStrokeType (juce::jmax (2.0f, size * 0.022f),
+                                        juce::PathStrokeType::curved,
+                                        juce::PathStrokeType::rounded));
+
+    juce::Path valueArc;
+    valueArc.addCentredArc (centre.x,
+                             centre.y,
+                             arcRadius,
+                             arcRadius,
+                             0.0f,
+                             rotaryStartAngle,
+                             angle,
+                             true);
+
+    g.setColour (accent.withAlpha (0.25f));
+    g.strokePath (valueArc,
+                  juce::PathStrokeType (juce::jmax (3.0f, size * 0.036f),
+                                        juce::PathStrokeType::curved,
+                                        juce::PathStrokeType::rounded));
+
+    g.setColour (accent.withAlpha (0.95f));
+    g.strokePath (valueArc,
+                  juce::PathStrokeType (juce::jmax (1.4f, size * 0.018f),
+                                        juce::PathStrokeType::curved,
+                                        juce::PathStrokeType::rounded));
+
+    // Edge ticks: green / white / red as a small navigation-light code.
+    for (int i = 0; i <= 8; ++i)
+    {
+        const float t = static_cast<float> (i) / 8.0f;
+        const float tickAngle = rotaryStartAngle + t * (rotaryEndAngle - rotaryStartAngle);
+        const bool major = (i == 0 || i == 4 || i == 8);
+
+        juce::Colour tickColour = p.brass.withAlpha (major ? 0.58f : 0.28f);
+
+        if (i == 0)
+            tickColour = juce::Colour (0xFF39FF7A);
+        else if (i == 4)
+            tickColour = juce::Colours::white.withAlpha (0.95f);
+        else if (i == 8)
+            tickColour = p.warningRed.withAlpha (0.95f);
+
+        const float innerR = arcRadius - (major ? size * 0.055f : size * 0.036f);
+        const float outerR = arcRadius + (major ? size * 0.018f : size * 0.006f);
+
+        g.setColour (tickColour);
+        g.drawLine ({ polar (tickAngle, innerR), polar (tickAngle, outerR) },
+                    major ? juce::jmax (1.4f, size * 0.012f)
+                          : juce::jmax (0.9f, size * 0.008f));
+    }
+
+    // Brass body: artisanal / physical layer.
+    auto body = juce::Rectangle<float> (bodyRadius * 2.0f, bodyRadius * 2.0f)
+        .withCentre (centre);
+
+    juce::ColourGradient bodyGradient (
+        p.brass.brighter (0.22f), body.getX(), body.getY(),
+        p.brassDark.darker (0.18f), body.getRight(), body.getBottom(),
+        true);
+
+    g.setGradientFill (bodyGradient);
+    g.fillEllipse (body);
+
+    g.setColour (p.brassDark.withAlpha (0.92f));
+    g.drawEllipse (body.reduced (0.5f), juce::jmax (1.1f, size * 0.014f));
+
+    auto innerPlate = body.reduced (size * 0.060f);
+    g.setColour (juce::Colour (0xFF17120D).withAlpha (0.46f));
+    g.drawEllipse (innerPlate, juce::jmax (1.0f, size * 0.010f));
+
+    // Single tongue valve handle, plus a short rounded tail behind it.
+    // The path is drawn pointing upward; rotating by 'angle' keeps it aligned
+    // with JUCE's rotary polar convention.
+    juce::Path handle;
+
+    const float tongueW = bodyRadius * 0.62f;
+    const float tongueTop = -bodyRadius * 1.34f;
+    const float tongueBottom = -bodyRadius * 0.08f;
+
+    handle.addRoundedRectangle (-tongueW * 0.5f,
+                                tongueTop,
+                                tongueW,
+                                tongueBottom - tongueTop,
+                                tongueW * 0.28f);
+
+    const float paddleW = tongueW * 1.22f;
+    const float paddleH = bodyRadius * 0.34f;
+    handle.addRoundedRectangle (-paddleW * 0.5f,
+                                tongueTop - paddleH * 0.18f,
+                                paddleW,
+                                paddleH,
+                                paddleH * 0.35f);
+
+    const float tailW = tongueW * 0.36f;
+    const float tailH = bodyRadius * 0.44f;
+    handle.addRoundedRectangle (-tailW * 0.5f,
+                                bodyRadius * 0.18f,
+                                tailW,
+                                tailH,
+                                tailW * 0.50f);
+
+    auto handleTransform = juce::AffineTransform::rotation (angle)
+        .translated (centre.x, centre.y);
+
+    g.setColour (juce::Colours::black.withAlpha (0.30f));
+    g.fillPath (handle, handleTransform.translated (0.0f, 1.5f));
+
+    juce::ColourGradient handleGradient (
+        p.brass.brighter (0.34f), centre.x - bodyRadius, centre.y - bodyRadius,
+        p.brassDark, centre.x + bodyRadius, centre.y + bodyRadius,
+        false);
+
+    g.setGradientFill (handleGradient);
+    g.fillPath (handle, handleTransform);
+
+    g.setColour (p.brassDark.withAlpha (0.94f));
+    g.strokePath (handle,
+                  juce::PathStrokeType (juce::jmax (1.0f, size * 0.010f)),
+                  handleTransform);
+
+    // Central cap.
+    auto cap = juce::Rectangle<float> (capRadius * 2.0f, capRadius * 2.0f)
+        .withCentre (centre);
+
+    juce::ColourGradient capGradient (
+        p.brass.brighter (0.35f), cap.getX(), cap.getY(),
+        p.brassDark.darker (0.10f), cap.getRight(), cap.getBottom(),
+        true);
+
+    g.setGradientFill (capGradient);
+    g.fillEllipse (cap);
+
+    g.setColour (p.brassDark.withAlpha (0.95f));
+    g.drawEllipse (cap.reduced (0.5f), juce::jmax (1.0f, size * 0.012f));
+
+    auto screwSlot = juce::Rectangle<float> (capRadius * 1.22f, juce::jmax (2.0f, capRadius * 0.22f))
+        .withCentre (centre);
+
+    g.setColour (juce::Colour (0xFF16120D).withAlpha (0.65f));
+    g.fillRoundedRectangle (screwSlot, screwSlot.getHeight() * 0.5f);
+
+    // Small bright position bead at the end of the information arc.
+    auto bead = polar (angle, arcRadius);
+    g.setColour (accent.withAlpha (0.28f));
+    g.fillEllipse (juce::Rectangle<float> (size * 0.085f, size * 0.085f).withCentre (bead));
+    g.setColour (thumb.withAlpha (0.92f));
+    g.fillEllipse (juce::Rectangle<float> (size * 0.045f, size * 0.045f).withCentre (bead));
+}
+
+
 void Painter::drawBackground (juce::Graphics& g,
                               juce::Rectangle<int> bounds,
                               const juce::Image& placeholderBackground)
