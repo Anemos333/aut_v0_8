@@ -1347,49 +1347,61 @@ void MicrotonalAutotuneAudioProcessorEditor::resized()
     auto humanArea = controls.removeFromLeft (third);
     auto amountArea = controls;
 
-    const auto placeLargeValve = [] (juce::Slider& knob,
-                                     juce::Label& label,
-                                     juce::Rectangle<int> bounds)
-    {
-        bounds = bounds.reduced (6, 0);
+   const auto placeLargeValve = [] (juce::Slider& knob,
+                                 juce::Label& label,
+                                 juce::Rectangle<int> bounds)
+{
+    bounds = bounds.reduced (4, 0);
 
-        const int labelH = 24;
-        const int availableH = juce::jmax (82, bounds.getHeight() - labelH);
-        const int knobSize = juce::jlimit (
-            90, 150, juce::jmin (bounds.getWidth(), availableH));
+    const int labelH = 24;
 
-        const int x = bounds.getCentreX() - knobSize / 2;
-        const int y = bounds.getY()
-            + juce::jmax (0, (bounds.getHeight() - labelH - knobSize) / 2);
+    // Più grande di Human Drift, ma con limite prudente per 640x510.
+    const int maxByWidth  = bounds.getWidth() - 8;
+    const int maxByHeight = bounds.getHeight() - labelH - 2;
 
-        knob.setBounds (x, y, knobSize, knobSize);
-        label.setBounds (bounds.getX(),
-                         y + knobSize + 2,
-                         bounds.getWidth(),
-                         labelH);
-    };
+    const int knobSize = juce::jlimit (
+        116, 138, juce::jmin (maxByWidth, maxByHeight));
 
-    const auto placeSmallValve = [] (juce::Slider& knob,
-                                     juce::Label& label,
-                                     juce::Rectangle<int> bounds)
-    {
-        bounds = bounds.reduced (8, 0);
+    // Baseline comune: il controllo si appoggia verso il basso,
+    // non viene centrato verticalmente.
+    const int labelY = bounds.getBottom() - labelH;
+    const int knobY  = labelY - knobSize - 2;
+    const int knobX  = bounds.getCentreX() - knobSize / 2;
 
-        const int labelH = 24;
-        const int availableH = juce::jmax (58, bounds.getHeight() - labelH);
-        const int knobSize = juce::jlimit (
-            62, 84, juce::jmin (bounds.getWidth(), availableH));
+    knob.setBounds (knobX, knobY, knobSize, knobSize);
 
-        const int x = bounds.getCentreX() - knobSize / 2;
-        const int y = bounds.getY()
-            + juce::jmax (0, (bounds.getHeight() - labelH - knobSize) / 2);
+    label.setBounds (bounds.getX(),
+                     labelY,
+                     bounds.getWidth(),
+                     labelH);
+};
 
-        knob.setBounds (x, y, knobSize, knobSize);
-        label.setBounds (bounds.getX(),
-                         y + knobSize + 2,
-                         bounds.getWidth(),
-                         labelH);
-    };
+   const auto placeSmallValve = [] (juce::Slider& knob,
+                                 juce::Label& label,
+                                 juce::Rectangle<int> bounds)
+{
+    bounds = bounds.reduced (8, 0);
+
+    const int labelH = 24;
+
+    const int maxByWidth  = bounds.getWidth() - 8;
+    const int maxByHeight = bounds.getHeight() - labelH - 2;
+
+    const int knobSize = juce::jlimit (
+        68, 84, juce::jmin (maxByWidth, maxByHeight));
+
+    // Stessa baseline dei controlli grandi.
+    const int labelY = bounds.getBottom() - labelH;
+    const int knobY  = labelY - knobSize - 2;
+    const int knobX  = bounds.getCentreX() - knobSize / 2;
+
+    knob.setBounds (knobX, knobY, knobSize, knobSize);
+
+    label.setBounds (bounds.getX(),
+                     labelY,
+                     bounds.getWidth(),
+                     labelH);
+};
 
     placeLargeValve (speedKnob, speedLabel, responseArea);
     placeSmallValve (humanizeSlider, humanizeLabel, humanArea);
