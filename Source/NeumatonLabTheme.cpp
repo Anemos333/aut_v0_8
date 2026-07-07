@@ -84,6 +84,8 @@ const float capRadius   = size * 0.125f;
         .withCentre (centre.translated (0.0f, size * 0.040f)));
 // Coloured outer frame: modern/futuristic layer.
 // The brass body is inside; the coloured frame belongs to the machine UI.
+// Coloured outer frame: modern/futuristic layer.
+// The brass body is inside; the coloured frame belongs to the machine UI.
 auto frame = juce::Rectangle<float> (frameRadius * 2.0f, frameRadius * 2.0f)
     .withCentre (centre);
 
@@ -97,16 +99,7 @@ g.drawEllipse (frame.reduced (0.7f),
 g.setColour (juce::Colours::white.withAlpha (0.20f));
 g.drawEllipse (frame.reduced (3.0f),
                juce::jmax (0.8f, size * 0.006f));
-    // Thin outer track: futuristic information layer.
-    juce::Path backgroundArc;
-    backgroundArc.addCentredArc (centre.x,
-                                  centre.y,
-                                  arcRadius,
-                                  arcRadius,
-                                  0.0f,
-                                  rotaryStartAngle,
-                                  rotaryEndAngle,
-                                  true);
+
 
     g.setColour (juce::Colour (0xFF252A34).withAlpha (0.92f));
     g.strokePath (backgroundArc,
