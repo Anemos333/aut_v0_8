@@ -5,6 +5,16 @@
 #include "NeumatonUILabels.h"
 #include "BinaryData.h"
 #include <cmath>
+#include "NeumatonLabTheme.h"
+
+namespace neumaton::lab
+{
+namespace
+{
+[[nodiscard]] float safeNormalise (float value) noexcept
+{
+    return juce::jlimit (0.0f, 1.0f, std::isfinite (value) ? value : 0.0f);
+}
 
 //==============================================================================
 ModernLookAndFeel::ModernLookAndFeel()
@@ -1340,19 +1350,9 @@ void MicrotonalAutotuneAudioProcessorEditor::resized()
 
     // ==================== Main valves ====================
     auto controls = mainControlsArea.reduced (4, 0);
-#include "NeumatonLabTheme.h"
-
-#include <cmath>
-
-namespace neumaton::lab
-{
-namespace
-{
-[[nodiscard]] float safeNormalise (float value) noexcept
-{
-    return juce::jlimit (0.0f, 1.0f, std::isfinite (value) ? value : 0.0f);
 }
-} // namespace
+
+// namespace
 
 const Palette& palette() noexcept
 {
