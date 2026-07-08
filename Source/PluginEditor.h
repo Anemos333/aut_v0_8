@@ -62,7 +62,6 @@ neumaton::lab::LabLeverToggleLookAndFeel analogLeverLookAndFeel {
         0.92f   // leverScale
     }
 };
-};
     MicrotonalAutotuneAudioProcessor& processorRef;
 
     // Background image
