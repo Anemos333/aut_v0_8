@@ -39,6 +39,27 @@ public:
                            const float rotaryEndAngle,
                            juce::Slider& slider) override;
 };
+class LabLeverToggleLookAndFeel final : public juce::LookAndFeel_V4
+{
+public:
+    struct Options
+    {
+        bool compact = false;      // utile per Analog Texture
+        bool dangerOff = false;    // se vuoi OFF più “spento”
+        float leverScale = 1.0f;   // piccolo controllo di grandezza
+    };
+
+    LabLeverToggleLookAndFeel();
+    explicit LabLeverToggleLookAndFeel (Options optionsToUse);
+
+    void drawToggleButton (juce::Graphics& g,
+                           juce::ToggleButton& button,
+                           bool shouldDrawButtonAsHighlighted,
+                           bool shouldDrawButtonAsDown) override;
+
+private:
+    Options options;
+};
 class OutputKnobLookAndFeel final : public juce::LookAndFeel_V4
 {
 public:
