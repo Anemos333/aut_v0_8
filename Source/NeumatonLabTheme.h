@@ -100,7 +100,8 @@ public:
         float thumbScale      = 1.0f;  // grandezza cursore
     };
 
-    explicit UtilityRailSliderLookAndFeel (Options optionsToUse = {});
+    UtilityRailSliderLookAndFeel();
+    explicit UtilityRailSliderLookAndFeel (Options optionsToUse);
 
     void drawLinearSlider (juce::Graphics& g,
                            int x,
