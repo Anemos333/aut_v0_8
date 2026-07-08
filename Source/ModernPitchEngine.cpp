@@ -3960,7 +3960,6 @@ float ModernPitchEngine::SpectralVoiceShifter::processSample(
         processFrame(currentSample,
                      transition,
                      smoothedFormantPreservation_,
-            safeParameters.humanize,
                      harmonicNoiseContext,
                      forcePhaseReset);
     }
@@ -4340,25 +4339,31 @@ const float timeRisk = smoothStep(
 
 const float empiricalVeto = clamp01(std::max(dryLeakRisk_, timeRisk));
 const float empiricalDryValidity = 1.0f - empiricalVeto;
-    const float humanize = clamp01(parameters.humanize);
+
+const float humanize01 = clamp01(humanize);
 
 float humanizedDryCeiling = 1.0f;
 
-if (humanize <= 0.10f)
+if (humanize01 <= 0.10f)
 {
     humanizedDryCeiling = 0.0f;
 }
-else if (humanize <= 0.40f)
+else if (humanize01 <= 0.40f)
 {
-    const float t = (humanize - 0.10f) / 0.30f; // 0..1
+    const float t = (humanize01 - 0.10f) / 0.30f; // 0..1
     humanizedDryCeiling = 0.18f * std::pow(t, 1.7f);
 }
 else
 {
-    const float t = (humanize - 0.40f) / 0.60f; // 0..1
+    const float t = (humanize01 - 0.40f) / 0.60f; // 0..1
     humanizedDryCeiling = 0.18f + 0.82f * t;
 }
 
+dryTrustTarget_ = clamp01(candidateDryTrust
+                         * empiricalDryValidity
+                         * humanizedDryCeiling);
+
+// Experiment wins over theory.
 dryTrustTarget_ = clamp01(candidateDryTrust
                          * empiricalDryValidity
                          * humanizedDryCeiling);
@@ -4934,8 +4939,8 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
             {
                 float& sample = channelData[static_cast<std::size_t>(channel)][sampleIndex];
                 sample = shifters_[static_cast<std::size_t>(channel)].processSample(
-                    sample, transition, wetMix, formant,
-                    harmonicNoiseContext, forcePhaseReset);
+    sample, transition, wetMix, formant, safeParameters.humanize,
+    harmonicNoiseContext, forcePhaseReset);
             }
         }
         else
@@ -4944,8 +4949,8 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
             {
                 float& sample = channelData[static_cast<std::size_t>(channel)][sampleIndex];
                 sample = shifters_[static_cast<std::size_t>(channel)].processSample(
-                    sample, transition, wetMix, formant,
-                    harmonicNoiseContext, forcePhaseReset);
+    sample, transition, wetMix, formant, safeParameters.humanize,
+    harmonicNoiseContext, forcePhaseReset);
             }
         }
     }
