@@ -264,8 +264,7 @@ void LabLeverToggleLookAndFeel::drawToggleButton (
     bool shouldDrawButtonAsHighlighted,
     bool shouldDrawButtonAsDown)
 {
-    const auto bounds = button.getLocalBounds().toFloat().reduced (1.0f);
-
+    auto bounds = button.getLocalBounds().toFloat().reduced (1.0f);
     if (bounds.isEmpty())
         return;
 
