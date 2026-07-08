@@ -66,7 +66,6 @@ public:
 private:
     Options options;
 };
-neumaton::lab::UtilityRailSliderLookAndFeel utilityRailLookAndFeel; 
 class Painter final
 {
 public:
