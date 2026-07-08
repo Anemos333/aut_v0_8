@@ -45,6 +45,7 @@ private:
     ModernLookAndFeel modernLookAndFeel;
     HumanDriftLookAndFeel humanDriftLookAndFeel;
     neumaton::lab::MainValveLookAndFeel mainValveLookAndFeel;
+    neumaton::lab::OutputKnobLookAndFeel outputKnobLookAndFeel;
     neumaton::lab::UtilityRailSliderLookAndFeel utilityRailLookAndFeel {
     neumaton::lab::UtilityRailSliderLookAndFeel::Options {
         false,  // perspectiveScale
