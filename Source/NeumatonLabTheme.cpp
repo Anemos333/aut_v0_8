@@ -322,9 +322,11 @@ auto textBox  = remaining.reduced (2.0f, 0.0f);
     g.fillRoundedRectangle (plate.translated (0.0f, 1.2f), 5.0f);
 
     juce::ColourGradient plateGradient (
-        juce::Colour (0xFF2A2117), plate.getX(), plate.getY(),
-        juce::Colour (0xFF0D0E11), plate.getRight(), plate.getBottom(),
-        true);
+    juce::Colour (0xFF2A2117),
+    plate.getTopLeft(),
+    juce::Colour (0xFF0D0E11),
+    plate.getBottomRight(),
+    true);
 
     g.setGradientFill (plateGradient);
     g.fillRoundedRectangle (plate, 5.0f);
