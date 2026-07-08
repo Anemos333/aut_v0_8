@@ -536,6 +536,8 @@ private:
             std::uint64_t targetRevision,
             TrackingState trackingState,
             float wetMix,
+            float tonalEvidence,
+            float correctionDistanceCents,
             const Parameters& parameters,
             bool forceTransition = false) noexcept;
 
@@ -737,6 +739,7 @@ private:
         bool wetGateOpen_ = false;
         bool dualTransitionActive_ = false;
         bool secondaryStartPending_ = false;
+        bool bypassStatePrimed_ = false;
         int activeLayerIndex_ = 0;
         int secondaryLayerIndex_ = 1;
         int envelopeFrameCounter_ = 0;
@@ -845,6 +848,7 @@ float dryCandidateShapeCoefficient_ = 1.0f;
     int latencySamples_ = 256;
     LatencyMode latencyMode_ = LatencyMode::live;
     StereoMode currentStereoMode_ = StereoMode::linkedMidSide;
+    bool bypassActive_ = false;
 
     MultiRatePitchTracker pitchTracker_;
     BiquadLowPass detectorConditioner_;
