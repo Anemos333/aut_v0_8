@@ -599,12 +599,13 @@ private:
         void reset() noexcept;
 
         [[nodiscard]] float processSample(
-            float inputSample,
-            const TransitionManager::Command& transition,
-            float desiredWetMix,
-            float formantPreservation,
-            const HarmonicNoiseContext& harmonicNoiseContext,
-            bool forcePhaseReset) noexcept;
+    float inputSample,
+    const TransitionManager::Command& transition,
+    float desiredWetMix,
+    float formantPreservation,
+    float humanize,
+    const HarmonicNoiseContext& harmonicNoiseContext,
+    bool forcePhaseReset) noexcept;
         [[nodiscard]] float processBypassedSample(float inputSample) noexcept;
 
         [[nodiscard]] int getLatencySamples() const noexcept { return frameSize_; }
