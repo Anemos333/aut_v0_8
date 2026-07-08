@@ -269,23 +269,6 @@ void LabLeverToggleLookAndFeel::drawToggleButton (
 if (bounds.isEmpty())
     return;
 
-const auto& p = palette();
-
-const bool isOn = button.getToggleState();
-const bool active = shouldDrawButtonAsHighlighted || shouldDrawButtonAsDown;
-
-const auto accent = button.findColour (juce::ToggleButton::tickColourId);
-const auto textColour = button.findColour (juce::ToggleButton::textColourId);
-
-const auto brassLight = juce::Colour (0xFFD8B06A);
-const auto brassMid   = juce::Colour (0xFFB58A4A);
-const auto brassDark  = juce::Colour (0xFF6E4B24);
-const auto baseDark   = juce::Colour (0xFF15120E);
-
-// Area: leva a sinistra, testo a destra.
-const float leverBoxW = options.compact
-    ? juce::jmin (40.0f, bounds.getWidth() * 0.38f)
-    : juce::jmin (46.0f, bounds.getWidth() * 0.36f);
 
 auto remaining = bounds;
 
