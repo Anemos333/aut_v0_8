@@ -305,7 +305,11 @@ buildPresetMenu();
 
     // ==================== Modifica A: Scale Lock ====================
     scaleLockButton.setButtonText (Neumaton::UI::Labels::Main::scaleLock);
-    scaleLockButton.setColour(juce::ToggleButton::textColourId, juce::Colours::white);
+   scaleLockButton.setLookAndFeel (&scaleLockLeverLookAndFeel);
+scaleLockButton.setColour (juce::ToggleButton::tickColourId,
+                           juce::Colour (0xFF39FF7A));
+scaleLockButton.setColour (juce::ToggleButton::textColourId,
+                           juce::Colours::white);
     addAndMakeVisible(scaleLockButton);
     scaleLockAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
         processorRef.getAPVTS(), "scaleLock", scaleLockButton);
@@ -356,7 +360,11 @@ buildPresetMenu();
 
     // ==================== Modifica B: Analog Mode ====================
     analogModeButton.setButtonText (Neumaton::UI::Labels::Main::analogTexture);
-    analogModeButton.setColour(juce::ToggleButton::textColourId, juce::Colours::white);
+    analogModeButton.setLookAndFeel (&analogLeverLookAndFeel);
+analogModeButton.setColour (juce::ToggleButton::tickColourId,
+                            juce::Colour (0xFFFFA02B));
+analogModeButton.setColour (juce::ToggleButton::textColourId,
+                            juce::Colours::white);
     addAndMakeVisible(analogModeButton);
     analogModeAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>(
         processorRef.getAPVTS(), "analogMode", analogModeButton);
@@ -490,6 +498,8 @@ MicrotonalAutotuneAudioProcessorEditor::~MicrotonalAutotuneAudioProcessorEditor(
     lockHysteresisSlider.setLookAndFeel (nullptr);
     vibratoPreserveSlider.setLookAndFeel (nullptr);
     outVolumeSlider.setLookAndFeel (nullptr);
+    scaleLockButton.setLookAndFeel (nullptr);
+analogModeButton.setLookAndFeel (nullptr);
     setLookAndFeel(nullptr);
     stopTimer();
 }
