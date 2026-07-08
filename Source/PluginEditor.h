@@ -53,6 +53,7 @@ private:
         true,   // strongGlow
         1.0f    // thumbScale
     }
+};
 neumaton::lab::LabLeverToggleLookAndFeel scaleLockLeverLookAndFeel;
 
 neumaton::lab::LabLeverToggleLookAndFeel analogLeverLookAndFeel {
