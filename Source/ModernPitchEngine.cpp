@@ -4338,9 +4338,31 @@ const float timeRisk = smoothStep(
 
 const float empiricalVeto = clamp01(std::max(dryLeakRisk_, timeRisk));
 const float empiricalDryValidity = 1.0f - empiricalVeto;
+    const float humanize = clamp01(parameters.humanize);
+
+float humanizedDryCeiling = 1.0f;
+
+if (humanize <= 0.10f)
+{
+    humanizedDryCeiling = 0.0f;
+}
+else if (humanize <= 0.40f)
+{
+    const float t = (humanize - 0.10f) / 0.30f; // 0..1
+    humanizedDryCeiling = 0.18f * std::pow(t, 1.7f);
+}
+else
+{
+    const float t = (humanize - 0.40f) / 0.60f; // 0..1
+    humanizedDryCeiling = 0.18f + 0.82f * t;
+}
+
+dryTrustTarget_ = clamp01(candidateDryTrust
+                         * empiricalDryValidity
+                         * humanizedDryCeiling);
 
 // Experiment wins over theory.
-dryTrustTarget_ = clamp01(candidateDryTrust * empiricalDryValidity);
+
 
 const float dryTrustCoefficient = dryTrustTarget_ < dryTrust_
     ? dryTrustCloseCoefficient_
