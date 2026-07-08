@@ -264,16 +264,10 @@ void LabLeverToggleLookAndFeel::drawToggleButton (
     bool shouldDrawButtonAsHighlighted,
     bool shouldDrawButtonAsDown)
 {
-    auto bounds = button.getLocalBounds().toFloat().reduced (1.0f);
+    const auto bounds = button.getLocalBounds().toFloat().reduced (1.0f);
 
-if (bounds.isEmpty())
-    return;
-
-
-auto remaining = bounds;
-
-auto leverBox = remaining.removeFromLeft (leverBoxW).reduced (2.0f, 2.0f);
-auto textBox  = remaining.reduced (2.0f, 0.0f);
+    if (bounds.isEmpty())
+        return;
 
     const auto& p = palette();
 
@@ -305,11 +299,9 @@ auto textBox  = remaining.reduced (2.0f, 0.0f);
     g.fillRoundedRectangle (plate.translated (0.0f, 1.2f), 5.0f);
 
     juce::ColourGradient plateGradient (
-    juce::Colour (0xFF2A2117),
-    plate.getTopLeft(),
-    juce::Colour (0xFF0D0E11),
-    plate.getBottomRight(),
-    true);
+        juce::Colour (0xFF2A2117), plate.getX(), plate.getY(),
+        juce::Colour (0xFF0D0E11), plate.getRight(), plate.getBottom(),
+        true);
 
     g.setGradientFill (plateGradient);
     g.fillRoundedRectangle (plate, 5.0f);
@@ -422,11 +414,11 @@ auto textBox  = remaining.reduced (2.0f, 0.0f);
 
     if (isOn)
     {
-        g.setColour (accent.withAlpha (0.39f));
+        g.setColour (accent.withAlpha (0.26f));
         g.fillEllipse (
             juce::Rectangle<float> (lampR * 4.2f, lampR * 4.2f)
                 .withCentre (lampCentre));
-        accent.brighter (0.45f)
+
         g.setColour (accent.withAlpha (0.95f));
     }
     else
