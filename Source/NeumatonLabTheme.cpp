@@ -248,6 +248,173 @@ handle.addRoundedRectangle (-tailW * 0.5f,
     g.setColour (thumb.withAlpha (0.92f));
     g.fillEllipse (juce::Rectangle<float> (size * 0.045f, size * 0.045f).withCentre (bead));
 }
+void OutputKnobLookAndFeel::drawRotarySlider (juce::Graphics& g,
+                                              int x,
+                                              int y,
+                                              int width,
+                                              int height,
+                                              float sliderPos,
+                                              const float rotaryStartAngle,
+                                              const float rotaryEndAngle,
+                                              juce::Slider& slider)
+{
+    auto bounds = juce::Rectangle<int> (x, y, width, height)
+        .toFloat()
+        .reduced (2.0f);
+
+    if (bounds.isEmpty())
+        return;
+
+    const float size = juce::jmin (bounds.getWidth(), bounds.getHeight());
+    const auto centre = bounds.getCentre();
+
+    const float angle = rotaryStartAngle
+        + sliderPos * (rotaryEndAngle - rotaryStartAngle);
+
+    const auto accent = slider.findColour (
+        juce::Slider::rotarySliderFillColourId);
+
+    const auto metalLight = juce::Colour (0xFFB9B0A2);
+    const auto metalMid   = juce::Colour (0xFF6E6A64);
+    const auto metalDark  = juce::Colour (0xFF252525);
+    const auto rubber     = juce::Colour (0xFF101114);
+    const auto amber      = accent.brighter (0.25f);
+
+    const float outerRadius = size * 0.46f;
+    const float gripRadius  = size * 0.38f;
+    const float capRadius   = size * 0.22f;
+    const float arcRadius   = size * 0.43f;
+
+    const auto polar = [centre] (float a, float r)
+    {
+        return juce::Point<float> (
+            centre.x + r * std::cos (a - juce::MathConstants<float>::halfPi),
+            centre.y + r * std::sin (a - juce::MathConstants<float>::halfPi));
+    };
+
+    // Ombra: il pot deve sembrare montato sul pannello, non disegnato sopra.
+    g.setColour (juce::Colours::black.withAlpha (0.38f));
+    g.fillEllipse (
+        juce::Rectangle<float> (outerRadius * 2.0f, outerRadius * 2.0f)
+            .withCentre (centre.translated (0.0f, size * 0.045f)));
+
+    // Ghiera esterna metallica.
+    auto outer = juce::Rectangle<float> (outerRadius * 2.0f,
+                                         outerRadius * 2.0f)
+        .withCentre (centre);
+
+    juce::ColourGradient outerGradient (
+        metalLight, outer.getX(), outer.getY(),
+        metalDark,  outer.getRight(), outer.getBottom(),
+        true);
+
+    g.setGradientFill (outerGradient);
+    g.fillEllipse (outer);
+
+    g.setColour (juce::Colours::black.withAlpha (0.55f));
+    g.drawEllipse (outer.reduced (0.4f), juce::jmax (1.0f, size * 0.022f));
+
+    // Arco di valore: ambra, abbastanza moderno ma non “magico”.
+    juce::Path backgroundArc;
+    backgroundArc.addCentredArc (centre.x,
+                                  centre.y,
+                                  arcRadius,
+                                  arcRadius,
+                                  0.0f,
+                                  rotaryStartAngle,
+                                  rotaryEndAngle,
+                                  true);
+
+    g.setColour (juce::Colour (0xFF2A2C30).withAlpha (0.90f));
+    g.strokePath (backgroundArc,
+                  juce::PathStrokeType (juce::jmax (2.0f, size * 0.040f),
+                                        juce::PathStrokeType::curved,
+                                        juce::PathStrokeType::rounded));
+
+    juce::Path valueArc;
+    valueArc.addCentredArc (centre.x,
+                             centre.y,
+                             arcRadius,
+                             arcRadius,
+                             0.0f,
+                             rotaryStartAngle,
+                             angle,
+                             true);
+
+    g.setColour (amber.withAlpha (0.30f));
+    g.strokePath (valueArc,
+                  juce::PathStrokeType (juce::jmax (3.0f, size * 0.060f),
+                                        juce::PathStrokeType::curved,
+                                        juce::PathStrokeType::rounded));
+
+    g.setColour (amber.withAlpha (0.95f));
+    g.strokePath (valueArc,
+                  juce::PathStrokeType (juce::jmax (1.7f, size * 0.034f),
+                                        juce::PathStrokeType::curved,
+                                        juce::PathStrokeType::rounded));
+
+    // Corpo centrale scuro, tipo potenziometro/pedale.
+    auto grip = juce::Rectangle<float> (gripRadius * 2.0f,
+                                        gripRadius * 2.0f)
+        .withCentre (centre);
+
+    juce::ColourGradient gripGradient (
+        juce::Colour (0xFF34373D), grip.getX(), grip.getY(),
+        rubber,                   grip.getRight(), grip.getBottom(),
+        true);
+
+    g.setGradientFill (gripGradient);
+    g.fillEllipse (grip);
+
+    g.setColour (juce::Colours::black.withAlpha (0.75f));
+    g.drawEllipse (grip.reduced (0.5f), juce::jmax (1.0f, size * 0.018f));
+
+    // Piccole scanalature da potenziometro.
+    for (int i = 0; i < 18; ++i)
+    {
+        const float t = static_cast<float> (i) / 18.0f;
+        const float a = t * juce::MathConstants<float>::twoPi;
+
+        const auto p1 = polar (a, gripRadius * 0.83f);
+        const auto p2 = polar (a, gripRadius * 0.98f);
+
+        g.setColour (juce::Colours::white.withAlpha (0.10f));
+        g.drawLine ({ p1, p2 }, juce::jmax (0.55f, size * 0.007f));
+    }
+
+    // Indicatore principale: tacca bianca + piccolo glow ambra.
+    const auto indicatorOuter = polar (angle, gripRadius * 0.82f);
+    const auto indicatorInner = polar (angle, gripRadius * 0.34f);
+
+    g.setColour (amber.withAlpha (0.25f));
+    g.drawLine ({ indicatorInner, indicatorOuter },
+                juce::jmax (3.0f, size * 0.070f));
+
+    g.setColour (juce::Colours::white.withAlpha (0.92f));
+    g.drawLine ({ indicatorInner, indicatorOuter },
+                juce::jmax (1.2f, size * 0.026f));
+
+    // Cap centrale metallico.
+    auto cap = juce::Rectangle<float> (capRadius * 2.0f,
+                                       capRadius * 2.0f)
+        .withCentre (centre);
+
+    juce::ColourGradient capGradient (
+        metalLight.brighter (0.15f), cap.getX(), cap.getY(),
+        metalMid.darker (0.15f),     cap.getRight(), cap.getBottom(),
+        true);
+
+    g.setGradientFill (capGradient);
+    g.fillEllipse (cap);
+
+    g.setColour (juce::Colours::black.withAlpha (0.60f));
+    g.drawEllipse (cap.reduced (0.4f), juce::jmax (0.8f, size * 0.014f));
+
+    // Puntino centrale scuro: dettaglio da hardware.
+    auto pin = cap.reduced (capRadius * 0.52f);
+    g.setColour (juce::Colour (0xFF161616).withAlpha (0.85f));
+    g.fillEllipse (pin);
+}
 UtilityRailSliderLookAndFeel::UtilityRailSliderLookAndFeel()
     : UtilityRailSliderLookAndFeel (Options{})
 {
