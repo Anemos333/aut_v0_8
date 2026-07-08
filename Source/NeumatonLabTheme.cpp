@@ -12,221 +12,7 @@ namespace
     return juce::jlimit (0.0f, 1.0f, std::isfinite (value) ? value : 0.0f);
 }
 } // namespace
-UtilityRailSliderLookAndFeel::UtilityRailSliderLookAndFeel (
-    Options optionsToUse)
-    : options (optionsToUse)
-{
-}
 
-void UtilityRailSliderLookAndFeel::drawLinearSlider (
-    juce::Graphics& g,
-    int x,
-    int y,
-    int width,
-    int height,
-    float sliderPos,
-    float minSliderPos,
-    float maxSliderPos,
-    const juce::Slider::SliderStyle style,
-    juce::Slider& slider)
-{
-    juce::ignoreUnused (minSliderPos, maxSliderPos);
-
-    if (style != juce::Slider::LinearHorizontal)
-    {
-        juce::LookAndFeel_V4::drawLinearSlider (
-            g, x, y, width, height,
-            sliderPos, minSliderPos, maxSliderPos,
-            style, slider);
-        return;
-    }
-
-    auto area = juce::Rectangle<float> (x, y, width, height)
-        .reduced (1.0f, 1.0f);
-
-    if (area.getWidth() <= 8.0f || area.getHeight() <= 8.0f)
-        return;
-
-    const auto& p = palette();
-
-    const auto brassLight = juce::Colour (0xFFD8B06A);
-    const auto brassMid   = juce::Colour (0xFFB58A4A);
-    const auto brassDark  = juce::Colour (0xFF6E4B24);
-    const auto wearDark   = juce::Colour (0xFF493019);
-
-    const auto activeColour = slider.findColour (
-        juce::Slider::trackColourId).brighter (options.strongGlow ? 0.45f : 0.18f);
-
-    const bool active = slider.isMouseOverOrDragging();
-
-    // Cursore: abbastanza grande da sembrare un oggetto fisico,
-    // ma non così grande da rubare spazio alla scala.
-    const float thumbW = juce::jlimit (
-        16.0f, 26.0f, area.getHeight() * 0.92f * options.thumbScale);
-
-    const float thumbH = juce::jlimit (
-        10.0f, 18.0f, area.getHeight() * 0.58f * options.thumbScale);
-
-    const float pointerH = juce::jlimit (
-        4.0f, 8.0f, area.getHeight() * 0.22f * options.thumbScale);
-
-    // Il rail è leggermente inset: così il cursore non esce dai bordi.
-    auto rail = area.reduced (thumbW * 0.48f, 0.0f);
-    rail = rail.withY (area.getBottom() - 8.0f)
-               .withHeight (juce::jlimit (4.0f, 6.0f, area.getHeight() * 0.18f));
-
-    const float pos = juce::jlimit (rail.getX(), rail.getRight(), sliderPos);
-
-    // ---------------------------------------------------------------------
-    // 1. Ombra e binario fisico
-    // ---------------------------------------------------------------------
-    g.setColour (juce::Colours::black.withAlpha (0.26f));
-    g.fillRoundedRectangle (rail.translated (0.0f, 1.4f), 3.0f);
-
-    juce::ColourGradient railGradient (
-        juce::Colour (0xFF2A2117), rail.getX(), rail.getY(),
-        juce::Colour (0xFF6A4A26), rail.getX(), rail.getBottom(),
-        false);
-
-    g.setGradientFill (railGradient);
-    g.fillRoundedRectangle (rail, 3.0f);
-
-    g.setColour (brassMid.withAlpha (0.72f));
-    g.drawRoundedRectangle (rail.reduced (0.4f), 3.0f, 0.9f);
-
-    // Linea attiva: la parte "futuristica" dentro il rail meccanico.
-    auto activeRail = rail.reduced (1.5f, rail.getHeight() * 0.26f);
-    activeRail.setRight (pos);
-
-    if (activeRail.getWidth() > 1.0f)
-    {
-        g.setColour (activeColour.withAlpha (options.strongGlow ? 0.82f : 0.62f));
-        g.fillRoundedRectangle (activeRail, 2.0f);
-
-        if (options.strongGlow || active)
-        {
-            g.setColour (activeColour.withAlpha (0.24f));
-            g.fillRoundedRectangle (activeRail.expanded (0.0f, 1.4f), 2.5f);
-        }
-    }
-
-    // ---------------------------------------------------------------------
-    // 2. Scala graduata
-    // ---------------------------------------------------------------------
-    const float scaleBottomY = rail.getY() - 2.0f;
-
-    for (int i = 0; i <= 20; ++i)
-    {
-        const float t = static_cast<float> (i) / 20.0f;
-
-        // Variante prospettica: utile più avanti per Tempo Mode.
-        // Le tacche al centro sembrano più vicine, quelle ai lati più lontane.
-        const float distanceFromCentre = std::abs (t - 0.5f) * 2.0f;
-        const float perspective = options.perspectiveScale
-            ? (1.0f - 0.48f * distanceFromCentre)
-            : 1.0f;
-
-        const float tickX = rail.getX() + t * rail.getWidth();
-
-        const bool major = (i % 5 == 0);
-        const float baseTickH = major ? 9.0f : 5.0f;
-        const float tickH = baseTickH * perspective;
-
-        const float alpha = (major ? 0.58f : 0.30f) * perspective;
-
-        // Piccolo abbassamento laterale nella modalità prospettica:
-        // suggerisce che la scala entri sotto il banco.
-        const float yOffset = options.perspectiveScale
-            ? distanceFromCentre * 2.0f
-            : 0.0f;
-
-        g.setColour (juce::Colours::white.withAlpha (alpha));
-        g.drawLine (tickX,
-                    scaleBottomY - tickH + yOffset,
-                    tickX,
-                    scaleBottomY + yOffset,
-                    major ? 1.1f : 0.75f);
-    }
-
-    if (options.showEndLabels && area.getWidth() > 90.0f)
-    {
-        g.setFont (juce::FontOptions (8.0f, juce::Font::plain));
-        g.setColour (juce::Colours::white.withAlpha (0.58f));
-
-        auto leftText = juce::Rectangle<float> (
-            rail.getX() - 8.0f,
-            area.getY(),
-            20.0f,
-            10.0f).toNearestInt();
-
-        auto rightText = juce::Rectangle<float> (
-            rail.getRight() - 12.0f,
-            area.getY(),
-            28.0f,
-            10.0f).toNearestInt();
-
-        g.drawFittedText ("0", leftText, juce::Justification::centred, 1);
-        g.drawFittedText ("100", rightText, juce::Justification::centred, 1);
-    }
-
-    // ---------------------------------------------------------------------
-    // 3. Cursore: rettangolo + freccetta
-    // ---------------------------------------------------------------------
-    const float thumbY = rail.getCentreY() - thumbH * 0.50f;
-    auto thumbBody = juce::Rectangle<float> (
-        pos - thumbW * 0.5f,
-        thumbY,
-        thumbW,
-        thumbH);
-
-    juce::Path pointer;
-    pointer.startNewSubPath (pos, thumbBody.getY() - pointerH);
-    pointer.lineTo (pos - thumbW * 0.30f, thumbBody.getY() + 1.0f);
-    pointer.lineTo (pos + thumbW * 0.30f, thumbBody.getY() + 1.0f);
-    pointer.closeSubPath();
-
-    // Ombra del cursore.
-    g.setColour (juce::Colours::black.withAlpha (0.30f));
-    g.fillRoundedRectangle (thumbBody.translated (0.0f, 1.3f), 2.5f);
-    g.fillPath (pointer, juce::AffineTransform::translation (0.0f, 1.2f));
-
-    // Corpo ottone.
-    juce::ColourGradient thumbGradient (
-        brassLight, thumbBody.getX(), thumbBody.getY(),
-        brassDark,  thumbBody.getRight(), thumbBody.getBottom(),
-        true);
-
-    g.setGradientFill (thumbGradient);
-    g.fillRoundedRectangle (thumbBody, 2.5f);
-    g.fillPath (pointer);
-
-    // Zona centrale usurata: come se il pezzo fosse stato spostato col dito.
-    auto wear = thumbBody.reduced (thumbW * 0.26f, thumbH * 0.22f);
-
-    g.setColour (wearDark.withAlpha (0.56f));
-    g.fillRoundedRectangle (wear, 1.8f);
-
-    // Piccola lucidatura sopra e bordo.
-    g.setColour (juce::Colours::white.withAlpha (0.16f));
-    g.drawLine (thumbBody.getX() + 2.0f,
-                thumbBody.getY() + 2.0f,
-                thumbBody.getRight() - 2.0f,
-                thumbBody.getY() + 2.0f,
-                0.8f);
-
-    g.setColour (brassDark.withAlpha (0.90f));
-    g.drawRoundedRectangle (thumbBody.reduced (0.4f), 2.5f, 0.9f);
-
-    g.setColour (brassLight.withAlpha (0.88f));
-    g.strokePath (pointer, juce::PathStrokeType (0.8f));
-
-    // Stato attivo: non mostra un valore, ma rende il cursore più leggibile.
-    if (active)
-    {
-        g.setColour (activeColour.withAlpha (0.36f));
-        g.drawRoundedRectangle (thumbBody.expanded (2.0f, 1.5f), 3.2f, 1.1f);
-    }
-}
 const Palette& palette() noexcept
 {
     static const Palette p {
@@ -462,7 +248,221 @@ handle.addRoundedRectangle (-tailW * 0.5f,
     g.setColour (thumb.withAlpha (0.92f));
     g.fillEllipse (juce::Rectangle<float> (size * 0.045f, size * 0.045f).withCentre (bead));
 }
+UtilityRailSliderLookAndFeel::UtilityRailSliderLookAndFeel (
+    Options optionsToUse)
+    : options (optionsToUse)
+{
+}
 
+void UtilityRailSliderLookAndFeel::drawLinearSlider (
+    juce::Graphics& g,
+    int x,
+    int y,
+    int width,
+    int height,
+    float sliderPos,
+    float minSliderPos,
+    float maxSliderPos,
+    const juce::Slider::SliderStyle style,
+    juce::Slider& slider)
+{
+    juce::ignoreUnused (minSliderPos, maxSliderPos);
+
+    if (style != juce::Slider::LinearHorizontal)
+    {
+        juce::LookAndFeel_V4::drawLinearSlider (
+            g, x, y, width, height,
+            sliderPos, minSliderPos, maxSliderPos,
+            style, slider);
+        return;
+    }
+
+    auto area = juce::Rectangle<float> (x, y, width, height)
+        .reduced (1.0f, 1.0f);
+
+    if (area.getWidth() <= 8.0f || area.getHeight() <= 8.0f)
+        return;
+
+    const auto& p = palette();
+
+    const auto brassLight = juce::Colour (0xFFD8B06A);
+    const auto brassMid   = juce::Colour (0xFFB58A4A);
+    const auto brassDark  = juce::Colour (0xFF6E4B24);
+    const auto wearDark   = juce::Colour (0xFF493019);
+
+    const auto activeColour = slider.findColour (
+        juce::Slider::trackColourId).brighter (options.strongGlow ? 0.45f : 0.18f);
+
+    const bool active = slider.isMouseOverOrDragging();
+
+    // Cursore: abbastanza grande da sembrare un oggetto fisico,
+    // ma non così grande da rubare spazio alla scala.
+    const float thumbW = juce::jlimit (
+        16.0f, 26.0f, area.getHeight() * 0.92f * options.thumbScale);
+
+    const float thumbH = juce::jlimit (
+        10.0f, 18.0f, area.getHeight() * 0.58f * options.thumbScale);
+
+    const float pointerH = juce::jlimit (
+        4.0f, 8.0f, area.getHeight() * 0.22f * options.thumbScale);
+
+    // Il rail è leggermente inset: così il cursore non esce dai bordi.
+    auto rail = area.reduced (thumbW * 0.48f, 0.0f);
+    rail = rail.withY (area.getBottom() - 8.0f)
+               .withHeight (juce::jlimit (4.0f, 6.0f, area.getHeight() * 0.18f));
+
+    const float pos = juce::jlimit (rail.getX(), rail.getRight(), sliderPos);
+
+    // ---------------------------------------------------------------------
+    // 1. Ombra e binario fisico
+    // ---------------------------------------------------------------------
+    g.setColour (juce::Colours::black.withAlpha (0.26f));
+    g.fillRoundedRectangle (rail.translated (0.0f, 1.4f), 3.0f);
+
+    juce::ColourGradient railGradient (
+        juce::Colour (0xFF2A2117), rail.getX(), rail.getY(),
+        juce::Colour (0xFF6A4A26), rail.getX(), rail.getBottom(),
+        false);
+
+    g.setGradientFill (railGradient);
+    g.fillRoundedRectangle (rail, 3.0f);
+
+    g.setColour (brassMid.withAlpha (0.72f));
+    g.drawRoundedRectangle (rail.reduced (0.4f), 3.0f, 0.9f);
+
+    // Linea attiva: la parte "futuristica" dentro il rail meccanico.
+    auto activeRail = rail.reduced (1.5f, rail.getHeight() * 0.26f);
+    activeRail.setRight (pos);
+
+    if (activeRail.getWidth() > 1.0f)
+    {
+        g.setColour (activeColour.withAlpha (options.strongGlow ? 0.82f : 0.62f));
+        g.fillRoundedRectangle (activeRail, 2.0f);
+
+        if (options.strongGlow || active)
+        {
+            g.setColour (activeColour.withAlpha (0.24f));
+            g.fillRoundedRectangle (activeRail.expanded (0.0f, 1.4f), 2.5f);
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // 2. Scala graduata
+    // ---------------------------------------------------------------------
+    const float scaleBottomY = rail.getY() - 2.0f;
+
+    for (int i = 0; i <= 20; ++i)
+    {
+        const float t = static_cast<float> (i) / 20.0f;
+
+        // Variante prospettica: utile più avanti per Tempo Mode.
+        // Le tacche al centro sembrano più vicine, quelle ai lati più lontane.
+        const float distanceFromCentre = std::abs (t - 0.5f) * 2.0f;
+        const float perspective = options.perspectiveScale
+            ? (1.0f - 0.48f * distanceFromCentre)
+            : 1.0f;
+
+        const float tickX = rail.getX() + t * rail.getWidth();
+
+        const bool major = (i % 5 == 0);
+        const float baseTickH = major ? 9.0f : 5.0f;
+        const float tickH = baseTickH * perspective;
+
+        const float alpha = (major ? 0.58f : 0.30f) * perspective;
+
+        // Piccolo abbassamento laterale nella modalità prospettica:
+        // suggerisce che la scala entri sotto il banco.
+        const float yOffset = options.perspectiveScale
+            ? distanceFromCentre * 2.0f
+            : 0.0f;
+
+        g.setColour (juce::Colours::white.withAlpha (alpha));
+        g.drawLine (tickX,
+                    scaleBottomY - tickH + yOffset,
+                    tickX,
+                    scaleBottomY + yOffset,
+                    major ? 1.1f : 0.75f);
+    }
+
+    if (options.showEndLabels && area.getWidth() > 90.0f)
+    {
+        g.setFont (juce::FontOptions (8.0f, juce::Font::plain));
+        g.setColour (juce::Colours::white.withAlpha (0.58f));
+
+        auto leftText = juce::Rectangle<float> (
+            rail.getX() - 8.0f,
+            area.getY(),
+            20.0f,
+            10.0f).toNearestInt();
+
+        auto rightText = juce::Rectangle<float> (
+            rail.getRight() - 12.0f,
+            area.getY(),
+            28.0f,
+            10.0f).toNearestInt();
+
+        g.drawFittedText ("0", leftText, juce::Justification::centred, 1);
+        g.drawFittedText ("100", rightText, juce::Justification::centred, 1);
+    }
+
+    // ---------------------------------------------------------------------
+    // 3. Cursore: rettangolo + freccetta
+    // ---------------------------------------------------------------------
+    const float thumbY = rail.getCentreY() - thumbH * 0.50f;
+    auto thumbBody = juce::Rectangle<float> (
+        pos - thumbW * 0.5f,
+        thumbY,
+        thumbW,
+        thumbH);
+
+    juce::Path pointer;
+    pointer.startNewSubPath (pos, thumbBody.getY() - pointerH);
+    pointer.lineTo (pos - thumbW * 0.30f, thumbBody.getY() + 1.0f);
+    pointer.lineTo (pos + thumbW * 0.30f, thumbBody.getY() + 1.0f);
+    pointer.closeSubPath();
+
+    // Ombra del cursore.
+    g.setColour (juce::Colours::black.withAlpha (0.30f));
+    g.fillRoundedRectangle (thumbBody.translated (0.0f, 1.3f), 2.5f);
+    g.fillPath (pointer, juce::AffineTransform::translation (0.0f, 1.2f));
+
+    // Corpo ottone.
+    juce::ColourGradient thumbGradient (
+        brassLight, thumbBody.getX(), thumbBody.getY(),
+        brassDark,  thumbBody.getRight(), thumbBody.getBottom(),
+        true);
+
+    g.setGradientFill (thumbGradient);
+    g.fillRoundedRectangle (thumbBody, 2.5f);
+    g.fillPath (pointer);
+
+    // Zona centrale usurata: come se il pezzo fosse stato spostato col dito.
+    auto wear = thumbBody.reduced (thumbW * 0.26f, thumbH * 0.22f);
+
+    g.setColour (wearDark.withAlpha (0.56f));
+    g.fillRoundedRectangle (wear, 1.8f);
+
+    // Piccola lucidatura sopra e bordo.
+    g.setColour (juce::Colours::white.withAlpha (0.16f));
+    g.drawLine (thumbBody.getX() + 2.0f,
+                thumbBody.getY() + 2.0f,
+                thumbBody.getRight() - 2.0f,
+                thumbBody.getY() + 2.0f,
+                0.8f);
+
+    g.setColour (brassDark.withAlpha (0.90f));
+    g.drawRoundedRectangle (thumbBody.reduced (0.4f), 2.5f, 0.9f);
+
+    g.setColour (brassLight.withAlpha (0.88f));
+    g.strokePath (pointer, juce::PathStrokeType (0.8f));
+
+    // Stato attivo: non mostra un valore, ma rende il cursore più leggibile.
+    if (active)
+    {
+        g.setColour (activeColour.withAlpha (0.36f));
+        g.drawRoundedRectangle (thumbBody.expanded (2.0f, 1.5f), 3.2f, 1.1f);
+    }
+}
 
 void Painter::drawBackground (juce::Graphics& g,
                               juce::Rectangle<int> bounds,
