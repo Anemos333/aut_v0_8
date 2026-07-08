@@ -366,8 +366,12 @@ buildPresetMenu();
     outVolumeSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     outVolumeSlider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
     outVolumeSlider.setTextValueSuffix (" dB");
-    outVolumeSlider.setColour (juce::Slider::rotarySliderFillColourId, juce::Colour (0xFFFF9900));
-    outVolumeSlider.setColour (juce::Slider::thumbColourId, juce::Colours::white);
+    outVolumeSlider.setLookAndFeel (&outputKnobLookAndFeel);
+outVolumeSlider.setColour (juce::Slider::rotarySliderFillColourId,
+                           juce::Colour (0xFFFFA02B));
+outVolumeSlider.setColour (juce::Slider::thumbColourId,
+                           juce::Colours::white);
+   
     addAndMakeVisible(outVolumeSlider);
     outVolumeLabel.setText (Neumaton::UI::Labels::Main::output, juce::dontSendNotification);
     outVolumeLabel.setFont (juce::FontOptions (14.0f, juce::Font::bold));
@@ -485,6 +489,7 @@ MicrotonalAutotuneAudioProcessorEditor::~MicrotonalAutotuneAudioProcessorEditor(
     humanizeSlider.setLookAndFeel (nullptr);
     lockHysteresisSlider.setLookAndFeel (nullptr);
     vibratoPreserveSlider.setLookAndFeel (nullptr);
+    outVolumeSlider.setLookAndFeel (nullptr);
     setLookAndFeel(nullptr);
     stopTimer();
 }
