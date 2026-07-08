@@ -59,6 +59,41 @@ namespace
         const float compressed = threshold + over / (1.0f + softness * over);
         return std::copysign (compressed, x);
     }
+
+    [[nodiscard]] float musicalRetuneFloorMs (int mode) noexcept
+    {
+        // 1 = Quality, 2 = Live, 3 = Experimental.  These are musical slew-rate
+        // floors, not latency changes: the frame size and reported latency stay
+        // untouched.  They only prevent the controller from asking the phase
+        // vocoder to render sub-millisecond pitch jumps on sustained tone.
+        switch (mode)
+        {
+            case 1:  return 9.0f;  // Quality: safest sustained-vocal floor.
+            case 2:  return 6.0f;  // Live: still fast, but not zipper-fast.
+            case 3:  return 4.5f;  // Experimental/Ultra: aggressive floor.
+            default: return 0.0f;
+        }
+    }
+
+    [[nodiscard]] float constrainRetuneSpeedMs (float speedMs,
+                                                int mode,
+                                                bool scaleLock) noexcept
+    {
+        speedMs = std::isfinite (speedMs)
+            ? juce::jlimit (0.0f, 500.0f, speedMs)
+            : 50.0f;
+
+        // Preserve the existing aggressive UI law for hard Scale Lock and
+        // Experimental, then apply a musical lower bound so the default can no
+        // longer collapse to ~0.7 ms.
+        if (scaleLock || mode == 3)
+            speedMs *= (7.0f / 500.0f);
+
+        if (mode > 0)
+            speedMs = std::max (speedMs, musicalRetuneFloorMs (mode));
+
+        return juce::jlimit (0.0f, 500.0f, speedMs);
+    }
 }
 
 //==============================================================================
@@ -758,10 +793,7 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
     
     int mode = juce::jlimit (0, 3, processingMode.load (std::memory_order_relaxed));
 
-    speedMs = std::isfinite (speedMs) ? juce::jlimit (0.0f, 500.0f, speedMs) : 50.0f;
-    if (scaleLock || mode == 3) {
-        speedMs = speedMs * (7.0f / 500.0f); // Map 0-500 to 0-7 ms
-    }
+    speedMs = constrainRetuneSpeedMs (speedMs, mode, scaleLock);
     
     amountPct = std::isfinite (amountPct) ? juce::jlimit (0.0f, 100.0f, amountPct) : 0.0f;
     humanizePct = std::isfinite (humanizePct) ? juce::jlimit (0.0f, 100.0f, humanizePct) : 20.0f;
