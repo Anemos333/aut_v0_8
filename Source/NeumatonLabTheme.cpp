@@ -414,11 +414,11 @@ void LabLeverToggleLookAndFeel::drawToggleButton (
 
     if (isOn)
     {
-        g.setColour (accent.withAlpha (0.26f));
+        g.setColour (accent.withAlpha (0.39f));
         g.fillEllipse (
             juce::Rectangle<float> (lampR * 4.2f, lampR * 4.2f)
                 .withCentre (lampCentre));
-
+        accent.brighter (0.45f)
         g.setColour (accent.withAlpha (0.95f));
     }
     else
