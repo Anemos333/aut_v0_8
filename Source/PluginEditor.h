@@ -45,7 +45,14 @@ private:
     ModernLookAndFeel modernLookAndFeel;
     HumanDriftLookAndFeel humanDriftLookAndFeel;
     neumaton::lab::MainValveLookAndFeel mainValveLookAndFeel;
-    neumaton::lab::UtilityRailSliderLookAndFeel utilityRailLookAndFeel;
+    neumaton::lab::UtilityRailSliderLookAndFeel utilityRailLookAndFeel {
+    neumaton::lab::UtilityRailSliderLookAndFeel::Options {
+        false,  // perspectiveScale
+        false,  // showEndLabels
+        true,   // strongGlow
+        1.0f    // thumbScale
+    }
+};
     MicrotonalAutotuneAudioProcessor& processorRef;
 
     // Background image
