@@ -248,6 +248,11 @@ handle.addRoundedRectangle (-tailW * 0.5f,
     g.setColour (thumb.withAlpha (0.92f));
     g.fillEllipse (juce::Rectangle<float> (size * 0.045f, size * 0.045f).withCentre (bead));
 }
+UtilityRailSliderLookAndFeel::UtilityRailSliderLookAndFeel()
+    : UtilityRailSliderLookAndFeel (Options{})
+{
+}
+
 UtilityRailSliderLookAndFeel::UtilityRailSliderLookAndFeel (
     Options optionsToUse)
     : options (optionsToUse)
