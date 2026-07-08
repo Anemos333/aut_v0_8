@@ -86,9 +86,23 @@ namespace
         // Preserve the existing aggressive UI law for hard Scale Lock and
         // Experimental, then apply a musical lower bound so the default can no
         // longer collapse to ~0.7 ms.
-        if (scaleLock || mode == 3)
-            speedMs *= (7.0f / 500.0f);
+       if (scaleLock || mode == 3)
+{
+    const float norm = juce::jlimit (0.0f, 1.0f, speedMs / 500.0f);
+    const float curved = std::pow (norm, 1.35f);
 
+    const float minMs = musicalRetuneFloorMs (mode);
+    const float maxMs =
+        mode == 1 ? 45.0f :
+        mode == 2 ? 24.0f :
+                    14.0f;
+
+    speedMs = minMs + curved * (maxMs - minMs);
+}
+else if (mode > 0)
+{
+    speedMs = std::max (speedMs, musicalRetuneFloorMs (mode));
+}
         if (mode > 0)
             speedMs = std::max (speedMs, musicalRetuneFloorMs (mode));
 
