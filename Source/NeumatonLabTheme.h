@@ -39,33 +39,7 @@ public:
                            const float rotaryEndAngle,
                            juce::Slider& slider) override;
 };
-class UtilityRailSliderLookAndFeel final : public juce::LookAndFeel_V4
-{
-public:
-    struct Options
-    {
-        bool perspectiveScale = false; // per Tempo Mode, non per utility bar
-        bool showEndLabels    = false; // mostra 0 e 100
-        bool strongGlow       = false; // più futuristico/elettrico
-        float thumbScale      = 1.0f;  // grandezza cursore
-    };
 
-    explicit UtilityRailSliderLookAndFeel (Options optionsToUse = {});
-
-    void drawLinearSlider (juce::Graphics& g,
-                           int x,
-                           int y,
-                           int width,
-                           int height,
-                           float sliderPos,
-                           float minSliderPos,
-                           float maxSliderPos,
-                           const juce::Slider::SliderStyle style,
-                           juce::Slider& slider) override;
-
-private:
-    Options options;
-};
 class Painter final
 {
 public:
@@ -114,5 +88,32 @@ public:
     [[nodiscard]] static float frequencyToLogPosition (float hz,
                                                        float minimumHz,
                                                        float maximumHz) noexcept;
+};
+class UtilityRailSliderLookAndFeel final : public juce::LookAndFeel_V4
+{
+public:
+    struct Options
+    {
+        bool perspectiveScale = false; // per Tempo Mode, non per utility bar
+        bool showEndLabels    = false; // mostra 0 e 100
+        bool strongGlow       = false; // più futuristico/elettrico
+        float thumbScale      = 1.0f;  // grandezza cursore
+    };
+
+    explicit UtilityRailSliderLookAndFeel (Options optionsToUse = {});
+
+    void drawLinearSlider (juce::Graphics& g,
+                           int x,
+                           int y,
+                           int width,
+                           int height,
+                           float sliderPos,
+                           float minSliderPos,
+                           float maxSliderPos,
+                           const juce::Slider::SliderStyle style,
+                           juce::Slider& slider) override;
+
+private:
+    Options options;
 };
 } // namespace neumaton::lab
