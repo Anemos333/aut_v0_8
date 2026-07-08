@@ -53,6 +53,15 @@ private:
         true,   // strongGlow
         1.0f    // thumbScale
     }
+neumaton::lab::LabLeverToggleLookAndFeel scaleLockLeverLookAndFeel;
+
+neumaton::lab::LabLeverToggleLookAndFeel analogLeverLookAndFeel {
+    neumaton::lab::LabLeverToggleLookAndFeel::Options {
+        true,   // compact
+        false,  // dangerOff
+        0.92f   // leverScale
+    }
+};
 };
     MicrotonalAutotuneAudioProcessor& processorRef;
 
