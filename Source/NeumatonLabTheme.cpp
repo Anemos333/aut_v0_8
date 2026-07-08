@@ -248,6 +248,214 @@ handle.addRoundedRectangle (-tailW * 0.5f,
     g.setColour (thumb.withAlpha (0.92f));
     g.fillEllipse (juce::Rectangle<float> (size * 0.045f, size * 0.045f).withCentre (bead));
 }
+LabLeverToggleLookAndFeel::LabLeverToggleLookAndFeel()
+    : LabLeverToggleLookAndFeel (Options{})
+{
+}
+
+LabLeverToggleLookAndFeel::LabLeverToggleLookAndFeel (Options optionsToUse)
+    : options (optionsToUse)
+{
+}
+
+void LabLeverToggleLookAndFeel::drawToggleButton (
+    juce::Graphics& g,
+    juce::ToggleButton& button,
+    bool shouldDrawButtonAsHighlighted,
+    bool shouldDrawButtonAsDown)
+{
+    const auto bounds = button.getLocalBounds().toFloat().reduced (1.0f);
+
+    if (bounds.isEmpty())
+        return;
+
+    const auto& p = palette();
+
+    const bool isOn = button.getToggleState();
+    const bool active = shouldDrawButtonAsHighlighted || shouldDrawButtonAsDown;
+
+    const auto accent = button.findColour (juce::ToggleButton::tickColourId);
+    const auto textColour = button.findColour (juce::ToggleButton::textColourId);
+
+    const auto brassLight = juce::Colour (0xFFD8B06A);
+    const auto brassMid   = juce::Colour (0xFFB58A4A);
+    const auto brassDark  = juce::Colour (0xFF6E4B24);
+    const auto baseDark   = juce::Colour (0xFF15120E);
+
+    // Area: leva a sinistra, testo a destra.
+    const float leverBoxW = options.compact
+        ? juce::jmin (40.0f, bounds.getWidth() * 0.38f)
+        : juce::jmin (46.0f, bounds.getWidth() * 0.36f);
+
+    auto leverBox = bounds.removeFromLeft (leverBoxW).reduced (2.0f, 2.0f);
+    auto textBox  = bounds.reduced (2.0f, 0.0f);
+
+    // ---------------------------------------------------------------------
+    // 1. Placca di base
+    // ---------------------------------------------------------------------
+    auto plate = leverBox.reduced (1.0f);
+
+    g.setColour (juce::Colours::black.withAlpha (0.28f));
+    g.fillRoundedRectangle (plate.translated (0.0f, 1.2f), 5.0f);
+
+    juce::ColourGradient plateGradient (
+        juce::Colour (0xFF2A2117), plate.getX(), plate.getY(),
+        juce::Colour (0xFF0D0E11), plate.getRight(), plate.getBottom(),
+        true);
+
+    g.setGradientFill (plateGradient);
+    g.fillRoundedRectangle (plate, 5.0f);
+
+    g.setColour ((isOn ? accent : brassDark).withAlpha (isOn ? 0.70f : 0.48f));
+    g.drawRoundedRectangle (plate.reduced (0.5f), 5.0f, 1.0f);
+
+    // ---------------------------------------------------------------------
+    // 2. Fessura / corsa della leva
+    // ---------------------------------------------------------------------
+    const auto centre = plate.getCentre();
+
+    const float slotH = plate.getHeight() * 0.68f;
+    const float slotW = juce::jmax (5.0f, plate.getWidth() * 0.20f);
+
+    auto slot = juce::Rectangle<float> (slotW, slotH)
+        .withCentre (centre);
+
+    g.setColour (juce::Colours::black.withAlpha (0.62f));
+    g.fillRoundedRectangle (slot, slotW * 0.45f);
+
+    g.setColour (juce::Colours::white.withAlpha (0.08f));
+    g.drawRoundedRectangle (slot.reduced (0.4f), slotW * 0.45f, 0.8f);
+
+    // ---------------------------------------------------------------------
+    // 3. Leva inclinata
+    // ---------------------------------------------------------------------
+    // OFF: inclinata verso il basso.
+    // ON:  inclinata verso l'alto.
+    const float pivotY = plate.getCentreY() + plate.getHeight() * 0.22f;
+    const float pivotX = plate.getCentreX();
+
+    const float leverLength = plate.getHeight() * 0.54f * options.leverScale;
+    const float leverAngle = isOn ? -0.48f : 0.48f;
+
+    const auto pivot = juce::Point<float> (pivotX, pivotY);
+    const auto end = pivot + juce::Point<float> (
+        std::sin (leverAngle) * leverLength,
+       -std::cos (leverAngle) * leverLength);
+
+    // Glow/stato sotto la leva.
+    if (isOn)
+    {
+        g.setColour (accent.withAlpha (0.22f));
+        g.drawLine ({ pivot, end }, juce::jmax (5.0f, plate.getWidth() * 0.13f));
+    }
+
+    // Asta metallica.
+    g.setColour (juce::Colours::black.withAlpha (0.35f));
+    g.drawLine ({ pivot.translated (0.0f, 1.0f),
+                  end.translated (0.0f, 1.0f) },
+                juce::jmax (3.2f, plate.getWidth() * 0.08f));
+
+    juce::ColourGradient leverGradient (
+        brassLight, end.x, end.y,
+        brassDark, pivot.x, pivot.y,
+        false);
+
+    g.setGradientFill (leverGradient);
+    g.drawLine ({ pivot, end },
+                juce::jmax (2.4f, plate.getWidth() * 0.065f));
+
+    // Pomello terminale.
+    const float tipR = juce::jmax (4.0f, plate.getWidth() * 0.105f);
+
+    g.setColour (juce::Colours::black.withAlpha (0.35f));
+    g.fillEllipse (
+        juce::Rectangle<float> (tipR * 2.0f, tipR * 2.0f)
+            .withCentre (end.translated (0.0f, 1.0f)));
+
+    juce::ColourGradient tipGradient (
+        brassLight.brighter (0.15f), end.x - tipR, end.y - tipR,
+        brassDark,                   end.x + tipR, end.y + tipR,
+        true);
+
+    g.setGradientFill (tipGradient);
+    g.fillEllipse (
+        juce::Rectangle<float> (tipR * 2.0f, tipR * 2.0f)
+            .withCentre (end));
+
+    g.setColour (brassDark.withAlpha (0.95f));
+    g.drawEllipse (
+        juce::Rectangle<float> (tipR * 2.0f, tipR * 2.0f)
+            .withCentre (end)
+            .reduced (0.4f),
+        0.8f);
+
+    // Fulcro.
+    const float pivotR = juce::jmax (4.5f, plate.getWidth() * 0.115f);
+
+    g.setColour (baseDark.withAlpha (0.88f));
+    g.fillEllipse (
+        juce::Rectangle<float> (pivotR * 2.0f, pivotR * 2.0f)
+            .withCentre (pivot));
+
+    g.setColour (brassMid.withAlpha (0.90f));
+    g.drawEllipse (
+        juce::Rectangle<float> (pivotR * 2.0f, pivotR * 2.0f)
+            .withCentre (pivot)
+            .reduced (0.5f),
+        1.0f);
+
+    // ---------------------------------------------------------------------
+    // 4. Piccola luce di stato
+    // ---------------------------------------------------------------------
+    const float lampR = juce::jmax (2.3f, plate.getWidth() * 0.055f);
+    auto lampCentre = juce::Point<float> (
+        plate.getRight() - lampR * 2.0f,
+        plate.getY() + lampR * 2.0f);
+
+    if (isOn)
+    {
+        g.setColour (accent.withAlpha (0.26f));
+        g.fillEllipse (
+            juce::Rectangle<float> (lampR * 4.2f, lampR * 4.2f)
+                .withCentre (lampCentre));
+
+        g.setColour (accent.withAlpha (0.95f));
+    }
+    else
+    {
+        g.setColour (juce::Colour (0xFF2B2B2B));
+    }
+
+    g.fillEllipse (
+        juce::Rectangle<float> (lampR * 2.0f, lampR * 2.0f)
+            .withCentre (lampCentre));
+
+    g.setColour (juce::Colours::white.withAlpha (isOn ? 0.55f : 0.12f));
+    g.drawEllipse (
+        juce::Rectangle<float> (lampR * 2.0f, lampR * 2.0f)
+            .withCentre (lampCentre)
+            .reduced (0.3f),
+        0.7f);
+
+    // ---------------------------------------------------------------------
+    // 5. Testo
+    // ---------------------------------------------------------------------
+    const float textAlpha = button.isEnabled()
+        ? (isOn ? 0.96f : 0.72f)
+        : 0.35f;
+
+    g.setFont (juce::FontOptions (
+        options.compact ? 11.0f : 12.0f,
+        juce::Font::bold));
+
+    g.setColour ((isOn ? accent.brighter (0.20f) : textColour)
+        .withAlpha (textAlpha));
+
+    g.drawFittedText (button.getButtonText(),
+                      textBox.toNearestInt(),
+                      juce::Justification::centredLeft,
+                      1);
+}
 void OutputKnobLookAndFeel::drawRotarySlider (juce::Graphics& g,
                                               int x,
                                               int y,
