@@ -42,6 +42,17 @@ constexpr float minimumDetectorRms = 0.0012f;
     return x * x * (3.0f - 2.0f * x);
 }
 
+[[nodiscard]] float retuneFloorForLatencyMode(ModernPitchEngine::LatencyMode mode) noexcept
+{
+    switch (mode)
+    {
+        case ModernPitchEngine::LatencyMode::ultraLive: return 4.5f;
+        case ModernPitchEngine::LatencyMode::live:      return 6.0f;
+        case ModernPitchEngine::LatencyMode::quality:   return 9.0f;
+    }
+    return 6.0f;
+}
+
 [[nodiscard]] double wrapCorrectionToNearestOctave(double cents) noexcept
 {
     if (!std::isfinite(cents))
@@ -2092,15 +2103,17 @@ double ModernPitchEngine::TransitionManager::transitionThresholdCents(const Para
     }
 
     // Adjacent microtonal targets must remain eligible, while fluctuations
-    // smaller than a quarter tone are better handled by the primary trajectory.
+    // smaller than a true musical step are better handled by the primary
+    // trajectory.  The dynamic gate in processSample() raises this further on
+    // confident sustained vowels with high wet authority.
     switch (latencyMode_)
     {
-        case LatencyMode::ultraLive: return 24.0;
-        case LatencyMode::live:      return 28.0;
-        case LatencyMode::quality:   return 32.0;
+        case LatencyMode::ultraLive: return 36.0;
+        case LatencyMode::live:      return 40.0;
+        case LatencyMode::quality:   return 44.0;
     }
 
-    return 28.0;
+    return 40.0;
 }
 
 int ModernPitchEngine::TransitionManager::crossfadeLengthSamples(
@@ -2202,6 +2215,8 @@ ModernPitchEngine::TransitionManager::processSample(
     std::uint64_t targetRevision,
     TrackingState trackingState,
     float wetMix,
+    float tonalEvidence,
+    float correctionDistanceCents,
     const Parameters& parameters,
     bool forceTransition) noexcept
 {
@@ -2255,9 +2270,18 @@ ModernPitchEngine::TransitionManager::processSample(
             const bool musicalState = trackingState != TrackingState::unvoiced
                                    && trackingState != TrackingState::release;
 
-            const double requiredJump = pendingForceTransition_
+            const double baseRequiredJump = pendingForceTransition_
                 ? 1.0
                 : transitionThresholdCents(parameters);
+            const float tonalGate = smoothStep(0.35f, 0.82f, tonalEvidence);
+            const float wetGate = smoothStep(0.42f, 0.86f, wetMix);
+            const float microTransitionGate = 1.0f
+                - smoothStep(42.0f, 96.0f, correctionDistanceCents);
+            const double dynamicMicroLift = (!pendingForceTransition_
+                                             && !parameters.scaleLock)
+                ? 18.0 * static_cast<double>(tonalGate * wetGate * microTransitionGate)
+                : 0.0;
+            const double requiredJump = baseRequiredJump + dynamicMicroLift;
 
             if (musicalState
                 && transitionCooldownSamples_ <= 0
@@ -2269,7 +2293,7 @@ ModernPitchEngine::TransitionManager::processSample(
                 pendingForceTransition_ = false;
             }
             else if ((!pendingForceTransition_
-                      && std::abs(jumpCents) < transitionThresholdCents(parameters))
+                      && std::abs(jumpCents) < requiredJump)
                      || (trackingState == TrackingState::unvoiced
                          && wetMix < 0.01f))
             {
@@ -2716,6 +2740,7 @@ void ModernPitchEngine::SpectralVoiceShifter::reset() noexcept
     wetGateOpen_ = false;
     dualTransitionActive_ = false;
     secondaryStartPending_ = false;
+    bypassStatePrimed_ = false;
     activeLayerIndex_ = 0;
     secondaryLayerIndex_ = 1;
     wetMix_ = 0.0f;
@@ -3770,8 +3795,12 @@ void ModernPitchEngine::SpectralVoiceShifter::processFrame(
                             || !analysisPhaseInitialised_;
     phaseResetPending_ = false;
 
+    const float spectralPhaseTrust = clamp01(
+        0.50f * smoothedSpectralReliability_
+        + 0.30f * smoothedHarmonicity_
+        + 0.20f * (1.0f - smoothedPolyphony_));
     const float phaseAnchor = resetAnalysis ? 0.0f
-        : 0.32f * smoothStep(0.24f, 0.72f, spectralFlux);
+        : 0.22f * smoothStep(0.24f, 0.72f, spectralFlux) * spectralPhaseTrust;
     const double expectedPhaseScale = twoPi * static_cast<double>(hopSize_)
                                     / static_cast<double>(frameSize_);
     const double binFromPhaseScale = static_cast<double>(frameSize_)
@@ -3794,6 +3823,15 @@ void ModernPitchEngine::SpectralVoiceShifter::processFrame(
                 - expectedAdvance);
             trueSourceBin += phaseDeviation * binFromPhaseScale;
         }
+
+        const float binReliability = clamp01(
+            0.40f * smoothedSpectralReliability_
+            + 0.35f * smoothedHarmonicity_
+            + 0.25f * harmonicNoiseContext.consensus);
+        const double maximumBinDrift = 0.16 + 0.34 * static_cast<double>(binReliability);
+        trueSourceBin = std::clamp(trueSourceBin,
+                                   static_cast<double>(sourceBin) - maximumBinDrift,
+                                   static_cast<double>(sourceBin) + maximumBinDrift);
 
         trueSourceBins_[static_cast<std::size_t>(sourceBin)] = trueSourceBin;
     }
@@ -3875,7 +3913,7 @@ float ModernPitchEngine::SpectralVoiceShifter::blendLayers(
         && uncorrelatedPower > actualPower)
     {
         targetGain = std::clamp(std::sqrt(uncorrelatedPower / actualPower),
-                                1.0f, 1.30f);
+                                1.0f, 1.18f);
     }
     layerCancellationGain_ += 0.08f
         * (targetGain - layerCancellationGain_);
@@ -3893,6 +3931,8 @@ float ModernPitchEngine::SpectralVoiceShifter::processSample(
     inputSample = sanitiseAudioSample(inputSample);
     if (frameSize_ <= 0 || inputRing_.empty())
         return inputSample;
+
+    bypassStatePrimed_ = false;
 
     const std::int64_t currentSample = inputSampleCounter_;
     const int inputIndex = static_cast<int>(currentSample & inputRingMask_);
@@ -4086,6 +4126,25 @@ candidateDryTrust = std::max(
     candidateDryTrust,
     0.42f * transientNeed * (1.0f - 0.55f * tonalEvidence));
 
+// On sustained corrected vowels the wet path must dominate.  Dry remains free
+// for consonants, breath, transients and unreliable/noisy frames, but a confident
+// tonal correction above a few cents closes the dry candidate before it can form
+// a second audible fundamental.
+const float sustainedCorrectedTone = clamp01(
+    tonalEvidence
+    * wetTrust
+    * pitchSeparation
+    * (1.0f - 0.72f * transientNeed)
+    * (1.0f - 0.58f * breathOrNoiseNeed));
+candidateDryTrust *= 1.0f - 0.92f * sustainedCorrectedTone;
+const float tonalDryCeiling = clamp01(
+    0.07f
+    + 0.70f * transientNeed
+    + 0.55f * unvoicedNeed
+    + 0.36f * breathOrNoiseNeed
+    + 0.18f * (1.0f - pitchSeparation));
+candidateDryTrust = std::min(candidateDryTrust, tonalDryCeiling);
+
 // -----------------------------------------------------------------------------
 // 2. Envelope Shape Prior: does the dry candidate still look transient-like?
 // -----------------------------------------------------------------------------
@@ -4196,6 +4255,13 @@ const float immediateDoubleVoiceRisk = clamp01(
     * tonalEvidence
     * pitchSeparation
     * decorrelation);
+const float sustainedDoubleVoiceRisk = clamp01(
+    bothPresent
+    * dryCandidatePresent
+    * wetCandidatePresent
+    * sustainedCorrectedTone
+    * smoothStep(16.0f, 56.0f, correctionDistance)
+    * smoothStep(0.40f, 0.86f, wetTrust));
 
 const float dryTrustDelta = std::abs(candidateDryTrust - dryTrustTarget_);
 dryTrustInstability_ += dryLeakAttackCoefficient_
@@ -4218,7 +4284,8 @@ const float shapeRisk = clamp01(
 
 const float rawLeakRisk = std::max(
     immediateDoubleVoiceRisk,
-    std::max(0.60f * instabilityRisk, 0.48f * shapeRisk));
+    std::max(0.86f * sustainedDoubleVoiceRisk,
+             std::max(0.60f * instabilityRisk, 0.48f * shapeRisk)));
 
 const float leakCoefficient = rawLeakRisk > dryLeakRisk_
     ? dryLeakAttackCoefficient_
@@ -4259,9 +4326,10 @@ const float dynamicCoexistenceLimitMs = std::clamp(
     9.0f
     + 4.0f * (dryWetContinuity_ - 0.50f)
     - 5.0f * dryLeakRisk_
-    - 2.0f * shapeRisk,
-    3.6f,
-    13.0f);
+    - 2.0f * shapeRisk
+    - 4.5f * sustainedDoubleVoiceRisk,
+    2.8f,
+    11.0f);
 
 const float timeRisk = smoothStep(
     dynamicCoexistenceLimitMs,
@@ -4297,7 +4365,8 @@ const float uncorrelatedPower = dryGain * dryEnergy
     + wetGain * wetEnergy;
 
 float targetCancellationGain = 1.0f;
-if (empiricalDryValidity > 0.35f
+if (empiricalDryValidity > 0.55f
+    && sustainedDoubleVoiceRisk < 0.25f
     && dryGain > 0.001f
     && wetGain > 0.001f
     && actualPower > 1.0e-12f
@@ -4306,7 +4375,7 @@ if (empiricalDryValidity > 0.35f
     targetCancellationGain = std::clamp(
         std::sqrt(uncorrelatedPower / actualPower),
         1.0f,
-        1.24f);
+        1.12f);
 }
 
 wetCancellationGain_ += 0.04f * (targetCancellationGain - wetCancellationGain_);
@@ -4346,47 +4415,51 @@ float ModernPitchEngine::SpectralVoiceShifter::processBypassedSample(
     const float delayedDry = readInputSample(currentSample - frameSize_);
     ++inputSampleCounter_;
 
-    analysisPhaseInitialised_ = false;
-    phaseResetPending_ = true;
-    envelopeInitialised_ = false;
-    dualTransitionActive_ = false;
-    secondaryStartPending_ = false;
-    wetGateOpen_ = false;
-    wetMix_ = 0.0f;
-    wetDryEnergy_ = 0.0f;
-    wetShiftedEnergy_ = 0.0f;
-    wetDryCrossEnergy_ = 0.0f;
-    wetLevelGain_ = 1.0f;
-    wetCancellationGain_ = 1.0f;
-    dryTrust_ = 1.0f;
-dryTrustTarget_ = 1.0f;
-dryWetCoexistenceMs_ = 0.0f;
-dryWetContinuity_ = 1.0f;
-dryLeakRisk_ = 0.0f;
-dryTrustInstability_ = 0.0f;
+    if (!bypassStatePrimed_)
+    {
+        analysisPhaseInitialised_ = false;
+        phaseResetPending_ = true;
+        envelopeInitialised_ = false;
+        dualTransitionActive_ = false;
+        secondaryStartPending_ = false;
+        wetGateOpen_ = false;
+        wetMix_ = 0.0f;
+        wetDryEnergy_ = 0.0f;
+        wetShiftedEnergy_ = 0.0f;
+        wetDryCrossEnergy_ = 0.0f;
+        wetLevelGain_ = 1.0f;
+        wetCancellationGain_ = 1.0f;
+        dryTrust_ = 1.0f;
+        dryTrustTarget_ = 1.0f;
+        dryWetCoexistenceMs_ = 0.0f;
+        dryWetContinuity_ = 1.0f;
+        dryLeakRisk_ = 0.0f;
+        dryTrustInstability_ = 0.0f;
+        dryCandidateFastEnvelope_ = 0.0f;
+        dryCandidateSlowEnvelope_ = 0.0f;
+        dryCandidatePeakEnvelope_ = 0.0f;
+        dryCandidateAgeMs_ = 1000.0f;
+        dryCandidateShapeTrust_ = 1.0f;
+        layerPrimaryEnergy_ = 0.0f;
+        layerSecondaryEnergy_ = 0.0f;
+        layerCrossEnergy_ = 0.0f;
+        layerCancellationGain_ = 1.0f;
+        transientSuppression_ = 0.0f;
+        smoothedBreathiness_ = 0.0f;
+        smoothedHarmonicity_ = 1.0f;
+        smoothedNoisePathAmount_ = 0.0f;
+        smoothedNoiseGain_ = 1.0f;
+        currentNoiseReductionDb_ = 0.0f;
+        smoothedPolyphony_ = 0.0f;
+        smoothedSpectralReliability_ = 1.0f;
+        smoothedMaskStability_ = 1.0f;
+        dryBreathLowPass_ = 0.0f;
+        breathProtection_ = 0.0f;
+        breathPersistenceMs_ = 0.0f;
+        noiseDominanceMs_ = 0.0f;
+        bypassStatePrimed_ = true;
+    }
 
-dryCandidateFastEnvelope_ = 0.0f;
-dryCandidateSlowEnvelope_ = 0.0f;
-dryCandidatePeakEnvelope_ = 0.0f;
-dryCandidateAgeMs_ = 1000.0f;
-dryCandidateShapeTrust_ = 1.0f;
-    layerPrimaryEnergy_ = 0.0f;
-    layerSecondaryEnergy_ = 0.0f;
-    layerCrossEnergy_ = 0.0f;
-    layerCancellationGain_ = 1.0f;
-    transientSuppression_ = 0.0f;
-    smoothedBreathiness_ = 0.0f;
-    smoothedHarmonicity_ = 1.0f;
-    smoothedNoisePathAmount_ = 0.0f;
-    smoothedNoiseGain_ = 1.0f;
-    currentNoiseReductionDb_ = 0.0f;
-    smoothedPolyphony_ = 0.0f;
-    smoothedSpectralReliability_ = 1.0f;
-    smoothedMaskStability_ = 1.0f;
-    dryBreathLowPass_ = 0.0f;
-    breathProtection_ = 0.0f;
-    breathPersistenceMs_ = 0.0f;
-    noiseDominanceMs_ = 0.0f;
     return delayedDry;
 }
 
@@ -4515,6 +4588,7 @@ void ModernPitchEngine::reset() noexcept
     meterTempoHostSync_.store(false, std::memory_order_relaxed);
     meterTempoMode_.store(static_cast<int>(CreativeTempo::Mode::off),
                           std::memory_order_relaxed);
+    bypassActive_ = false;
     meterSequence_.store(2u, std::memory_order_release);
 }
 
@@ -4542,6 +4616,8 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
     Parameters safeParameters = parameters;
     safeParameters.amount = clamp01(finiteOr(safeParameters.amount, 0.0f));
     safeParameters.retuneTimeMs = std::clamp(finiteOr(safeParameters.retuneTimeMs, 50.0f), 0.0f, 500.0f);
+    safeParameters.retuneTimeMs = std::max(safeParameters.retuneTimeMs,
+                                           retuneFloorForLatencyMode(latencyMode_));
     safeParameters.transitionTimeMs = std::clamp(finiteOr(safeParameters.transitionTimeMs, 35.0f), 0.0f, 2000.0f);
     safeParameters.preserveVibrato = clamp01(finiteOr(safeParameters.preserveVibrato, 0.70f));
     safeParameters.humanize = clamp01(finiteOr(safeParameters.humanize, 0.20f));
@@ -4593,6 +4669,8 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
     if (numberOfSamples <= 0 || numberOfChannels <= 0)
         return;
 
+    bypassActive_ = false;
+
     tempoController_.beginBlock(hostTempoPosition,
                                 safeParameters.tempo,
                                 numberOfSamples);
@@ -4610,8 +4688,43 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
     }
 
     currentStereoMode_ = safeParameters.stereoMode;
+    bool stereoAutoFallback = false;
+    if (currentStereoMode_ == StereoMode::linkedMidSide && numberOfChannels >= 2)
+    {
+        double leftEnergy = 0.0;
+        double rightEnergy = 0.0;
+        double crossEnergy = 0.0;
+        double midEnergy = 0.0;
+        double sideEnergy = 0.0;
+        for (int sample = 0; sample < numberOfSamples; ++sample)
+        {
+            const double left = channelData[0][sample];
+            const double right = channelData[1][sample];
+            const double mid = 0.5 * (left + right);
+            const double side = 0.5 * (left - right);
+            leftEnergy += left * left;
+            rightEnergy += right * right;
+            crossEnergy += left * right;
+            midEnergy += mid * mid;
+            sideEnergy += side * side;
+        }
+
+        const double stereoPower = midEnergy + sideEnergy;
+        const float sideRatio = stereoPower > 1.0e-16
+            ? static_cast<float>(sideEnergy / stereoPower)
+            : 0.0f;
+        const float lrCorrelation = (leftEnergy > 1.0e-16 && rightEnergy > 1.0e-16)
+            ? static_cast<float>(crossEnergy / std::sqrt(leftEnergy * rightEnergy))
+            : 1.0f;
+
+        // linked mid/side is stable for mostly centred mono sources.  Wide
+        // doubles, choruses and decorrelated stereo material are safer as
+        // dual-mono because a shared mid shifter can make the image breathe.
+        stereoAutoFallback = sideRatio > 0.34f || lrCorrelation < 0.22f;
+    }
     const bool useMidSide = currentStereoMode_ == StereoMode::linkedMidSide
-                         && numberOfChannels >= 2;
+                         && numberOfChannels >= 2
+                         && !stereoAutoFallback;
 
     PitchObservation observation;
     bool forcePhaseReset = false;
@@ -4743,12 +4856,23 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
             sampleIndex,
             safeParameters.tempo,
             safeParameters.transitionTimeMs);
+        const float transitionTonalEvidence = clamp01(
+            latestVoicing
+            * latestConfidence
+            * (0.35f + 0.65f * latestConsensus)
+            * (0.35f + 0.65f * latestHarmonicity)
+            * (1.0f - 0.55f * latestNoisePath)
+            * (1.0f - 0.50f * latestPolyphony));
+        const float transitionCorrectionDistanceCents = static_cast<float>(
+            std::abs(tempoDecision.destinationCents));
         const auto transition = transitionManager_.processSample(
             tempoDecision.controllerCents,
             tempoDecision.destinationCents,
             tempoDecision.targetRevision,
             trackingState,
             wetMix,
+            transitionTonalEvidence,
+            transitionCorrectionDistanceCents,
             transitionParameters,
             tempoDecision.forceTransition);
         const float formant = clamp01(safeParameters.formantPreservation
@@ -4921,11 +5045,15 @@ void ModernPitchEngine::processBypassed(juce::AudioBuffer<float>& buffer)
             data[sample] = sanitiseAudioSample(data[sample]);
     }
 
-    correctionController_.reset();
-    transitionManager_.reset();
-    tempoController_.reset();
-    noteAgeTargetHz_ = 0.0f;
-    noteAgeSamples_ = 0;
+    if (!bypassActive_)
+    {
+        correctionController_.reset();
+        transitionManager_.reset();
+        tempoController_.reset();
+        noteAgeTargetHz_ = 0.0f;
+        noteAgeSamples_ = 0;
+        bypassActive_ = true;
+    }
 
     const bool useMidSide = currentStereoMode_ == StereoMode::linkedMidSide
                          && numberOfChannels >= 2;
