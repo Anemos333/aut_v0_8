@@ -319,10 +319,14 @@ buildPresetMenu();
         repaint();
     };
 
+
     lockHysteresisSlider.setSliderStyle (juce::Slider::LinearHorizontal);
     lockHysteresisSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 60, 20);
     lockHysteresisSlider.setTextValueSuffix (" c");
-    lockHysteresisSlider.setColour (juce::Slider::trackColourId, juce::Colour (0xFFFF0066));
+    lockHysteresisSlider.setLookAndFeel (&utilityRailLookAndFeel);
+    lockHysteresisSlider.setColour (
+    juce::Slider::trackColourId,
+    juce::Colour (0xFFFF4FB3)); // magenta tecnico// verde vivo / organico
     lockHysteresisSlider.setColour (juce::Slider::thumbColourId, juce::Colours::white);
     addAndMakeVisible(lockHysteresisSlider);
     lockHysteresisLabel.setText (Neumaton::UI::Labels::Main::hold, juce::dontSendNotification);
@@ -336,7 +340,10 @@ buildPresetMenu();
     vibratoPreserveSlider.setSliderStyle (juce::Slider::LinearHorizontal);
     vibratoPreserveSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 60, 20);
     vibratoPreserveSlider.setTextValueSuffix (" %");
-    vibratoPreserveSlider.setColour (juce::Slider::trackColourId, juce::Colour (0xFFFF0066));
+    vibratoPreserveSlider.setLookAndFeel (&utilityRailLookAndFeel);
+    vibratoPreserveSlider.setColour (
+    juce::Slider::trackColourId,
+    juce::Colour (0xFF39FF7A)); 
     vibratoPreserveSlider.setColour (juce::Slider::thumbColourId, juce::Colours::white);
     addAndMakeVisible(vibratoPreserveSlider);
     vibratoPreserveLabel.setText (Neumaton::UI::Labels::Main::vibratoPreserve, juce::dontSendNotification);
@@ -476,6 +483,8 @@ MicrotonalAutotuneAudioProcessorEditor::~MicrotonalAutotuneAudioProcessorEditor(
     speedKnob.setLookAndFeel (nullptr);
     amountKnob.setLookAndFeel (nullptr);
     humanizeSlider.setLookAndFeel (nullptr);
+    lockHysteresisSlider.setLookAndFeel (nullptr);
+    vibratoPreserveSlider.setLookAndFeel (nullptr);
     setLookAndFeel(nullptr);
     stopTimer();
 }
