@@ -3925,6 +3925,7 @@ float ModernPitchEngine::SpectralVoiceShifter::processSample(
     const TransitionManager::Command& transition,
     float desiredWetMix,
     float formantPreservation,
+    float humanize,
     const HarmonicNoiseContext& harmonicNoiseContext,
     bool forcePhaseReset) noexcept
 {
@@ -3959,6 +3960,7 @@ float ModernPitchEngine::SpectralVoiceShifter::processSample(
         processFrame(currentSample,
                      transition,
                      smoothedFormantPreservation_,
+            safeParameters.humanize,
                      harmonicNoiseContext,
                      forcePhaseReset);
     }
@@ -4921,6 +4923,7 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
                                                                   transition,
                                                                   wetMix,
                                                                   formant,
+            safeParameters.humanize,
                                                                   harmonicNoiseContext,
                                                                   forcePhaseReset);
             const float delayedSide = auxiliaryDelays_[0].process(side);
