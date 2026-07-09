@@ -1982,16 +1982,20 @@ slParams.hardLock = hardScaleLock;
     wetMixTarget_ = std::max(wetMixTarget_, hardWetTarget);
 
     if (parameters.scaleLock)
-    {
-        // NEUMATON_ASSERTIVE_AUDITORS_V2_INTERNAL_SCALELOCK_GATE_BLEND
-        const float slConfidence = clamp01(currentConfidence_ + 0.15f * lockStrictness);
-        const float slGate = 0.50f + 0.50f * slConfidence;
-        const float hardBlend = hardCorrectionIntent;
-        authorityTarget_ = clamp01(authorityTarget_
-            * (1.0f - hardBlend + hardBlend * slGate));
-        wetMixTarget_ = clamp01(wetMixTarget_
-            * (1.0f - hardBlend + hardBlend * slGate));
-    }
+{
+    const float slConfidence = clamp01(currentConfidence_ + 0.15f * lockStrictness);
+    const float slGate = 0.50f + 0.50f * slConfidence;
+
+    const float hardBlend = hardCorrectionIntent;
+
+    // hardBlend = 0  -> comportamento precedente: usa slGate
+    // hardBlend = 1  -> comportamento assertivo: non abbassare ulteriormente
+    const float assertiveSlGate = 1.0f;
+    const float blendedSlGate = slGate + hardBlend * (assertiveSlGate - slGate);
+
+    authorityTarget_ = clamp01(authorityTarget_ * blendedSlGate);
+    wetMixTarget_ = clamp01(wetMixTarget_ * blendedSlGate);
+}
 
     ++stableObservationCount_;
     if (state_ == TrackingState::unvoiced || state_ == TrackingState::release)
@@ -4473,8 +4477,16 @@ if (postGateEnergy > 1.0e-8f && preGateEnergy > postGateEnergy)
         1.18f);
 }
 
-wetRedistributionGain_ += 0.04f * harmonicNoiseContext.hardCorrectionIntent
+const float wetRecoveryAttack = 0.04f * harmonicNoiseContext.hardCorrectionIntent;
+const float wetRecoveryRelease = 0.025f;
+
+const float wetRecoveryCoeff = targetRedistributionGain > wetRedistributionGain_
+    ? wetRecoveryAttack
+    : wetRecoveryRelease;
+
+wetRedistributionGain_ += wetRecoveryCoeff
     * (targetRedistributionGain - wetRedistributionGain_);
+
 wetRedistributionGain_ = std::clamp(wetRedistributionGain_, 1.0f, 1.18f);
 
 const float rawWetArtifactRisk = clamp01(
