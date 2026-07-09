@@ -4557,152 +4557,71 @@ else
     dryWetCoexistenceMs_ = std::max(0.0f, dryWetCoexistenceMs_ - 3.0f * sampleMs);
 }
 
-// 9 ms is the perceptual centre, not a fixed switch. Good recent continuity can
-// stretch it a little; bad recent behaviour and bad envelope shape make it
-// shorter and stricter.
-const float dynamicCoexistenceLimitMs = std::clamp(
-    9.0f
-    + 4.0f * (dryWetContinuity_ - 0.50f)
-    - 5.0f * dryLeakRisk_
-    - 2.0f * shapeRisk
-    - 4.5f * sustainedDoubleVoiceRisk,
-    2.8f,
-    11.0f);
-
-const float timeRisk = smoothStep(
-    dynamicCoexistenceLimitMs,
-    dynamicCoexistenceLimitMs + 4.0f,
-    dryWetCoexistenceMs_);
-
-const float empiricalVeto = clamp01(std::max(dryLeakRisk_, timeRisk));
-const float empiricalDryValidity = 1.0f - empiricalVeto;
-
-// Experiment wins over theory.
-dryTrustTarget_ = clamp01(candidateDryTrust * empiricalDryValidity);
-
-// NEUMATON_ASSERTIVE_AUDITORS_V2_INTERNAL_TONAL_DRY_VETO
-// Final override: tonal dry has no presumption of innocence.  This is placed
-// immediately before dryTrust_ smoothing so it remains robust across local
-// variants of the earlier dryTrustTarget_ calculation.
-const float nonTonalAllowance = clamp01(
-    0.80f * breathOrNoiseNeed
-    + 0.75f * transientNeed
-    + 0.55f * unvoicedNeed);
-const float tonalResidualEvidence = clamp01(
-    dryCandidatePresent
-    * wetCandidatePresent
-    * tonalEvidence
-    * pitchSeparation
-    * smoothStep(0.38f, 0.78f, wetTrust)
-    * smoothStep(10.0f, 42.0f, correctionDistance)
-    * (1.0f - nonTonalAllowance));
-const float durationEvidence = smoothStep(4.0f, 9.0f, dryWetCoexistenceMs_);
-const float rawTonalDryVeto = clamp01(
-    tonalResidualEvidence
-    * durationEvidence
-    * harmonicNoiseContext.hardCorrectionIntent);
-
-const float vetoAttack = 0.18f;
-const float vetoRelease = 0.025f;
-const float vetoCoeff = rawTonalDryVeto > tonalDryVeto_ ? vetoAttack : vetoRelease;
-tonalDryVeto_ += vetoCoeff * (rawTonalDryVeto - tonalDryVeto_);
-tonalDryVeto_ = clamp01(tonalDryVeto_);
-
-dryTrustTarget_ = clamp01(dryTrustTarget_ * (1.0f - tonalDryVeto_));
-
-const float dryTrustCoefficient = dryTrustTarget_ < dryTrust_
-    ? dryTrustCloseCoefficient_
-    : dryTrustOpenCoefficient_;
-dryTrust_ += dryTrustCoefficient * (dryTrustTarget_ - dryTrust_);
-if (dryTrust_ < 1.0e-6f)
-    dryTrust_ = 0.0f;
-
-// NEUMATON_ASSERTIVE_AUDITORS_V2_INTERNAL_WET_RECOVERY
-const float preGateEnergy = candidateDryTrust * dryEnergy
-    + wetTrust * wetEnergy;
-const float postGateEnergy = dryTrust_ * dryEnergy
-    + wetTrust * wetEnergy;
-float targetRedistributionGain = 1.0f;
-if (postGateEnergy > 1.0e-8f && preGateEnergy > postGateEnergy)
-{
-    targetRedistributionGain = std::clamp(
-        std::sqrt(preGateEnergy / postGateEnergy),
-        1.0f,
-        1.18f);
-}
-
-const float wetRecoveryAttack = 0.04f * std::max(
-    harmonicNoiseContext.hardCorrectionIntent,
-    smoothStep(0.75f, 6.0f, correctionDistance));
-const float wetRecoveryRelease = 0.025f;
-const float wetRecoveryCoeff = targetRedistributionGain > wetRedistributionGain_
-    ? wetRecoveryAttack
-    : wetRecoveryRelease;
-
-wetRedistributionGain_ += wetRecoveryCoeff
-    * (targetRedistributionGain - wetRedistributionGain_);
-wetRedistributionGain_ = std::clamp(wetRedistributionGain_, 1.0f, 1.18f);
-
-const float rawWetArtifactRisk = clamp01(
-    harmonicNoiseContext.hardCorrectionIntent
-    * tonalResidualEvidence
-    * durationEvidence
-    * (1.0f - smoothStep(0.62f, 0.92f, wetTrust)));
-const float wetVetoCoeff = rawWetArtifactRisk > wetArtifactVeto_ ? 0.11f : 0.018f;
-wetArtifactVeto_ += wetVetoCoeff * (rawWetArtifactRisk - wetArtifactVeto_);
-wetArtifactVeto_ = clamp01(wetArtifactVeto_);
-
-const float auditedWet = wetRedistributionGain_
-    * (1.0f - 0.18f * wetArtifactVeto_)
-    * levelMatchedShifted;
-
-// NEUMATON_FULL_SPECTRUM_TRANSPORT_V2_OUTPUT_CONTRACT
-// Correction is not a wet/dry parallel effect.  When a meaningful correction is
-// active, dry is no longer allowed to act as a residual audio layer.  It remains
-// only as a latency-aligned bypass/transition bridge when no correction is
-// being transported.
+// NEUMATON_FULL_SPECTRUM_TRANSPORT_V3_RECONSTRUCTED_OUTPUT
+// After spectral reconstruction, dry is no longer an audible branch.
+// The original signal may still be analysed above for envelope, energy,
+// continuity and debugging, but it is not summed into the output.
+//
+// Neumaton is a full-spectrum pitch transport stage:
+//   easy/stable material   -> transported by the harmonic path
+//   difficult/residual material -> transported by the residual rebuild path
+//
+// There is no "dry mercy" after this point.  If the sound needs more body,
+// compensate the reconstructed wet spectrum; do not reopen an uncorrected
+// residual layer.
 const float correctionTransportContract = clamp01(std::max(
     harmonicNoiseContext.hardCorrectionIntent,
     smoothStep(0.75f, 6.0f, correctionDistance)
         * smoothStep(0.12f, 0.42f, harmonicNoiseContext.confidence)
         * smoothStep(0.10f, 0.55f, harmonicNoiseContext.voicing)));
 
-const float effectiveDryTrust = dryTrust_ * (1.0f - correctionTransportContract);
-const float effectiveWetTrust = std::max(wetTrust, correctionTransportContract);
+// Force legacy dry-state memories closed at the output boundary.  They may
+// still be updated earlier as analysis features, but they do not control an
+// audible branch anymore.
+dryTrustTarget_ = 0.0f;
+dryTrust_ = 0.0f;
+tonalDryVeto_ = 1.0f;
 
-const float mixed = effectiveDryTrust * breathManagedDry
-                  + effectiveWetTrust * auditedWet;
+// Use dry only as an energy/timbre reference.  It is not added as audio.
+float referenceEnergy = std::max(wetEnergy, dryEnergy);
+referenceEnergy = std::max(referenceEnergy, 0.50f * (wetEnergy + dryEnergy));
 
-// Correlation-aware compensation, but only when the dry bridge is still active.
-// In correction-active regions, the output is the reconstructed transported
-// spectrum, not dry + wet.
-const float dryGain = effectiveDryTrust;
-const float wetGain = effectiveWetTrust;
+const float correctedWetEnergy = std::max(1.0e-8f, wetEnergy);
 
-const float actualPower = dryGain * dryGain * dryEnergy
-    + wetGain * wetGain * wetEnergy
-    + 2.0f * dryGain * wetGain * crossEnergy;
-
-const float uncorrelatedPower = dryGain * dryEnergy
-    + wetGain * wetEnergy;
-
-float targetCancellationGain = 1.0f;
-if (empiricalDryValidity > 0.55f
-    && sustainedDoubleVoiceRisk < 0.25f
-    && dryGain > 0.001f
-    && wetGain > 0.001f
-    && actualPower > 1.0e-12f
-    && uncorrelatedPower > actualPower)
+float targetRedistributionGain = 1.0f;
+if (referenceEnergy > correctedWetEnergy)
 {
-    targetCancellationGain = std::clamp(
-        std::sqrt(uncorrelatedPower / actualPower),
+    targetRedistributionGain = std::clamp(
+        std::sqrt(referenceEnergy / correctedWetEnergy),
         1.0f,
-        1.12f);
+        1.24f);
 }
 
-wetCancellationGain_ += 0.04f * (targetCancellationGain - wetCancellationGain_);
+// Since the dry branch is no longer available to fill body/energy, recovery is
+// allowed to be a little stronger than the previous wet/dry redistribution, but
+// it still remains bounded and smoothed.
+const float wetRecoveryAttack = 0.055f + 0.055f * correctionTransportContract;
+const float wetRecoveryRelease = 0.030f;
+const float wetRecoveryCoeff = targetRedistributionGain > wetRedistributionGain_
+    ? wetRecoveryAttack
+    : wetRecoveryRelease;
 
-const float output = sanitiseAudioSample(mixed * wetCancellationGain_);
+wetRedistributionGain_ += wetRecoveryCoeff
+    * (targetRedistributionGain - wetRedistributionGain_);
+wetRedistributionGain_ = std::clamp(wetRedistributionGain_, 1.0f, 1.24f);
+
+// Wet artifact veto used to be based on dry/wet coexistence.  In the new
+// architecture, coexistence is not an output concept, so decay this memory to
+// zero instead of attenuating the reconstructed spectrum.
+wetArtifactVeto_ += 0.018f * (0.0f - wetArtifactVeto_);
+wetArtifactVeto_ = clamp01(wetArtifactVeto_);
+
+// Cancellation compensation was meaningful for dry+wet summing.  With a single
+// reconstructed output it should return to unity.
+wetCancellationGain_ += 0.04f * (1.0f - wetCancellationGain_);
+
+const float reconstructedWet = wetRedistributionGain_ * levelMatchedShifted;
+const float output = sanitiseAudioSample(reconstructedWet * wetCancellationGain_);
    
 
     if (transition.commitSecondary && dualTransitionActive_)
