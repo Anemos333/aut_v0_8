@@ -173,6 +173,11 @@ private:
         float consensus = 0.0f;
         float onsetStrength = 0.0f;
         float breathReduction = 0.50f;
+        // NEUMATON_ASSERTIVE_AUDITORS_V2_INTERNAL_HARMONIC_CONTEXT
+        // Internal, non-user-facing auditor intent. Derived from Amount, Speed,
+        // Scale Lock and requested correction size inside the audio path.
+        float correctionAssertiveness = 0.0f;
+        float hardCorrectionIntent = 0.0f;
         TrackingState trackingState = TrackingState::unvoiced;
         float noteAgeSeconds = 0.0f;
     };
@@ -599,13 +604,12 @@ private:
         void reset() noexcept;
 
         [[nodiscard]] float processSample(
-    float inputSample,
-    const TransitionManager::Command& transition,
-    float desiredWetMix,
-    float formantPreservation,
-    float humanize,
-    const HarmonicNoiseContext& harmonicNoiseContext,
-    bool forcePhaseReset) noexcept;
+            float inputSample,
+            const TransitionManager::Command& transition,
+            float desiredWetMix,
+            float formantPreservation,
+            const HarmonicNoiseContext& harmonicNoiseContext,
+            bool forcePhaseReset) noexcept;
         [[nodiscard]] float processBypassedSample(float inputSample) noexcept;
 
         [[nodiscard]] int getLatencySamples() const noexcept { return frameSize_; }
@@ -762,6 +766,14 @@ private:
         float dryTrust_ = 1.0f;
 float dryTrustTarget_ = 1.0f;
 float dryWetCoexistenceMs_ = 0.0f;
+// NEUMATON_ASSERTIVE_AUDITORS_V2_INTERNAL_SHIFTER_STATE
+float tonalDryVeto_ = 0.0f;
+float wetArtifactVeto_ = 0.0f;
+float wetRedistributionGain_ = 1.0f;
+float frameTonalConfidence_ = 0.0f;
+float frameCorrectionAssertiveness_ = 0.0f;
+float frameHardCorrectionIntent_ = 0.0f;
+float frameDetectedPitchHz_ = 0.0f;
 float dryWetContinuity_ = 1.0f;
 float dryLeakRisk_ = 0.0f;
 float dryTrustInstability_ = 0.0f;
