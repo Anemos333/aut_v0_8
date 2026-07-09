@@ -42,6 +42,42 @@ constexpr float minimumDetectorRms = 0.0012f;
     return x * x * (3.0f - 2.0f * x);
 }
 
+
+[[nodiscard]] float neumatonCorrectionSeverityFromAmountSpeed(float amount01,
+                                                              float retuneTimeMs) noexcept
+{
+    // Internal severity S(amount, speed). Humanize intentionally does not enter.
+    // Amount 100 / Speed 0 -> 1.0: strict reconstructive correction.
+    // Around Amount 30 / Speed 200 -> 0.0: previous cautious behaviour.
+    const float safeAmount = std::clamp(amount01, 0.0f, 1.0f);
+    const float safeSpeedMs = std::isfinite(retuneTimeMs)
+        ? std::clamp(retuneTimeMs, 0.0f, 500.0f)
+        : 200.0f;
+
+    const float amountDrive = std::clamp((safeAmount - 0.30f) / 0.70f,
+                                         0.0f,
+                                         1.0f);
+    const float speedDrive = std::clamp((200.0f - safeSpeedMs) / 200.0f,
+                                        0.0f,
+                                        1.0f);
+
+    const auto logPower = [](float x, float exponent) noexcept -> float
+    {
+        x = std::clamp(x, 0.0f, 1.0f);
+        const float logged = std::log1p(9.0f * x) / std::log(10.0f);
+        return std::pow(std::clamp(logged, 0.0f, 1.0f), exponent);
+    };
+
+    const float amountTerm = logPower(amountDrive, 1.55f);
+    const float speedTerm = logPower(speedDrive, 1.25f);
+    const float linearTerm = amountDrive * speedDrive;
+
+    return std::clamp(0.72f * amountTerm * speedTerm
+                      + 0.28f * linearTerm,
+                      0.0f,
+                      1.0f);
+}
+
 [[nodiscard]] float retuneFloorForLatencyMode(ModernPitchEngine::LatencyMode mode) noexcept
 {
     switch (mode)
@@ -1944,23 +1980,18 @@ slParams.hardLock = hardScaleLock;
                             * spectralGate
                             * polyphonyGate);
 
-    // NEUMATON_ASSERTIVE_AUDITORS_V2_INTERNAL_HARD_CORRECTION_INTENT
-    // Amount and Speed also describe how much the user wants the corrected wet
-    // path to dominate. This is intentionally sublinear: the new assertive
-    // behaviour is fully present near Amount=100 / Speed=0, but fades back to
-    // the previous cautious behaviour around Amount=30 / Speed=200 ms.
-    const float amount01ForAuthority = clamp01(parameters.amount);
-    const float amountAssertiveness = std::pow(
-        clamp01((amount01ForAuthority - 0.30f) / 0.70f),
-        0.65f);
-    const float speedAssertiveness = std::pow(
-        1.0f - clamp01(parameters.retuneTimeMs / 200.0f),
-        0.55f);
-    const float correctionAssertiveness = clamp01(amountAssertiveness * speedAssertiveness);
+    // NEUMATON_RECONSTRUCTIVE_WET_V1_SEVERITY
+    // Amount and Speed define correction severity, not just correction depth.
+    // Humanize is intentionally excluded: Humanize shapes naturalness, while
+    // S(amount, speed) decides whether the whole wet spectrum must be rebuilt
+    // toward the requested target.
+    const float correctionAssertiveness = neumatonCorrectionSeverityFromAmountSpeed(
+        parameters.amount,
+        parameters.retuneTimeMs);
     const float largeCorrectionIntent = smoothStep(
         20.0f, 65.0f, static_cast<float>(std::abs(desiredCorrectionCents_)));
     const float scaleLockAuthority = parameters.scaleLock
-        ? std::max(0.65f, correctionAssertiveness)
+        ? std::max(0.82f, correctionAssertiveness)
         : correctionAssertiveness;
     const float hardCorrectionIntent = clamp01(scaleLockAuthority * largeCorrectionIntent);
 
@@ -1982,20 +2013,16 @@ slParams.hardLock = hardScaleLock;
     wetMixTarget_ = std::max(wetMixTarget_, hardWetTarget);
 
     if (parameters.scaleLock)
-{
-    const float slConfidence = clamp01(currentConfidence_ + 0.15f * lockStrictness);
-    const float slGate = 0.50f + 0.50f * slConfidence;
-
-    const float hardBlend = hardCorrectionIntent;
-
-    // hardBlend = 0  -> comportamento precedente: usa slGate
-    // hardBlend = 1  -> comportamento assertivo: non abbassare ulteriormente
-    const float assertiveSlGate = 1.0f;
-    const float blendedSlGate = slGate + hardBlend * (assertiveSlGate - slGate);
-
-    authorityTarget_ = clamp01(authorityTarget_ * blendedSlGate);
-    wetMixTarget_ = clamp01(wetMixTarget_ * blendedSlGate);
-}
+    {
+        // NEUMATON_ASSERTIVE_AUDITORS_V2_INTERNAL_SCALELOCK_GATE_BLEND
+        const float slConfidence = clamp01(currentConfidence_ + 0.15f * lockStrictness);
+        const float slGate = 0.50f + 0.50f * slConfidence;
+        const float hardBlend = hardCorrectionIntent;
+        authorityTarget_ = clamp01(authorityTarget_
+            * (1.0f - hardBlend + hardBlend * slGate));
+        wetMixTarget_ = clamp01(wetMixTarget_
+            * (1.0f - hardBlend + hardBlend * slGate));
+    }
 
     ++stableObservationCount_;
     if (state_ == TrackingState::unvoiced || state_ == TrackingState::release)
@@ -3462,9 +3489,21 @@ void ModernPitchEngine::SpectralVoiceShifter::updateHarmonicNoiseAnalysis(
             + profile_.breathMaskAirReduction * highBandProtection;
         const float breathMaskScale = 1.0f
             - breathProtection_ * maskReduction;
+
+        // NEUMATON_RECONSTRUCTIVE_WET_V1_ASSERTIVE_MASK
+        // In assertive correction, breath protection must not automatically
+        // declassify high, tonal, F0-related material as residual/noise.  True
+        // breath still passes through the residual reconstruction logic later.
+        const float assertiveTonalMaskProtection = clamp01(
+            context.hardCorrectionIntent
+            * periodicEvidence
+            * (0.45f + 0.55f * context.consensus)
+            * (1.0f - 0.72f * transientEvidence));
+        const float protectedBreathMaskScale = breathMaskScale
+            + assertiveTonalMaskProtection * (1.0f - breathMaskScale);
         const float targetMask = clamp01(
             harmonicMaskScratch_[index]
-            * std::clamp(breathMaskScale, 0.28f, 1.0f));
+            * std::clamp(protectedBreathMaskScale, 0.28f, 1.0f));
 
         // Low-confidence frames must not redraw the complete mask.  Retain the
         // previous spectral classification and allow only bounded, mode-aware
@@ -3682,49 +3721,140 @@ void ModernPitchEngine::SpectralVoiceShifter::synthesiseLayer(
             continue;
 
         float harmonicWeight = clamp01(harmonicMask_[sourceIndex]);
-        // NEUMATON_ASSERTIVE_AUDITORS_V2_INTERNAL_MASK_AUDITOR
-        // Validate the mask, but do not make it globally more aggressive. Only
-        // predicted harmonics in a clearly tonal frame get a floor.
+
+        // NEUMATON_RECONSTRUCTIVE_WET_V1_MASK_AUDITOR
+        // The mask is no longer a wet/dry splitter.  It decides how easy a bin is
+        // to reconstruct as a stable harmonic.  In assertive correction, tonal
+        // material up to Nyquist is pulled toward the shifted wet spectrum instead
+        // of being left behind as an unshifted residual layer.
         const float sourceBinHzForAudit = binFrequency(static_cast<int>(sourceIndex));
-        float harmonicFloor = 0.0f;
-        if (frameDetectedPitchHz_ > 0.0f && sourceBinHzForAudit > frameDetectedPitchHz_ * 0.55f)
+        const auto harmonicProximityToPitch =
+            [](float frequencyHz, float pitchHz) noexcept -> float
         {
-            const float harmonicNumber = sourceBinHzForAudit / frameDetectedPitchHz_;
+            if (pitchHz <= 0.0f || frequencyHz <= pitchHz * 0.55f)
+                return 0.0f;
+
+            const float harmonicNumber = frequencyHz / pitchHz;
             const float nearestHarmonic = std::round(harmonicNumber);
+            if (nearestHarmonic < 1.0f || nearestHarmonic > 256.0f)
+                return 0.0f;
+
             const float harmonicDistance = std::abs(harmonicNumber - nearestHarmonic);
-            const bool nearPredictedHarmonic = nearestHarmonic >= 1.0f
-                && nearestHarmonic <= 64.0f
-                && harmonicDistance <= 0.10f;
-            if (nearPredictedHarmonic)
-                harmonicFloor = 0.25f * frameTonalConfidence_
-                    * frameHardCorrectionIntent_;
-        }
-        harmonicWeight = std::max(harmonicWeight, harmonicFloor);
+            return 1.0f - smoothStep(0.028f, 0.105f, harmonicDistance);
+        };
+
+        const float sourcePitchHz = frameDetectedPitchHz_;
+        const float targetPitchHz = sourcePitchHz > 0.0f
+            ? sourcePitchHz * static_cast<float>(safeRatio)
+            : 0.0f;
+        const float sourceHarmonicProximity = harmonicProximityToPitch(
+            sourceBinHzForAudit,
+            sourcePitchHz);
+        const float targetHarmonicProximity = harmonicProximityToPitch(
+            sourceBinHzForAudit,
+            targetPitchHz);
+
+        const float assertiveHarmonicFloor = 0.36f
+            * frameTonalConfidence_
+            * frameHardCorrectionIntent_
+            * sourceHarmonicProximity;
+        harmonicWeight = std::max(harmonicWeight, assertiveHarmonicFloor);
+        harmonicWeight = clamp01(harmonicWeight);
         const float noiseWeight = 1.0f - harmonicWeight;
 
-        // The aperiodic residual stays at its original bin and analysis phase.
-        // Both dual-synthesis layers receive exactly the same residual, so a
-        // note transition cannot stretch or repitch the singer's breath.
-        // V5 applies a smooth, frequency-shaped attenuation only here: low
-        // bands retain body while the air band receives the full de-breath
-        // gain.  No extra FFT/IFFT or audio delay is introduced.
+        const double targetPosition = static_cast<double>(sourceBin) * safeRatio;
+        if (targetPosition > static_cast<double>(positiveBins) + 1.0)
+            continue;
+
+        // NEUMATON_RECONSTRUCTIVE_WET_V1_RESIDUAL_REBUILD
+        // Residual is no longer an unshifted dry layer.  It is a harder-to-shift
+        // component.  Only DC and strongly non-pitchable, white-noise-like residue
+        // remain effectively unshifted; consonants and noisy voiced material are
+        // reconstructed toward the corrected wet target with gentler formant use.
         if (noiseWeight > 1.0e-5f)
         {
             const float frequencyHz = binFrequency(sourceBin);
             const float bandStrength = 0.16f
                 + 0.84f * smoothStep(850.0f, 6200.0f, frequencyHz);
-            const float residualGain = 1.0f
+            const float normalResidualGain = 1.0f
                 - bandStrength * (1.0f - smoothedNoiseGain_);
-            layer.spectrum[sourceIndex] += fftBuffer_[sourceIndex]
-                * (noiseWeight * residualGain);
+
+            const float dcEvidence = sourceBin == 0 ? 1.0f : 0.0f;
+            const float whiteNoiseEvidence = clamp01(
+                smoothedBreathiness_
+                * (1.0f - frameTonalConfidence_)
+                * (1.0f - sourceHarmonicProximity)
+                * (0.55f + 0.45f * smoothStep(2400.0f, 7600.0f, frequencyHz)));
+            const float nonPitchableResidue = clamp01(
+                std::max(dcEvidence, whiteNoiseEvidence));
+
+            const float pitchableResidue = 1.0f - nonPitchableResidue;
+            const float residualFollow = clamp01(
+                pitchableResidue
+                * (0.28f + 0.72f * frameHardCorrectionIntent_)
+                * (0.40f + 0.60f * frameTonalConfidence_));
+            const double residualRatio = 1.0
+                + static_cast<double>(residualFollow) * (safeRatio - 1.0);
+            const double residualTargetPosition = static_cast<double>(sourceBin)
+                * residualRatio;
+
+            if (residualTargetPosition <= static_cast<double>(positiveBins) + 1.0)
+            {
+                const float sourceEnvelope = std::max(
+                    1.0e-8f,
+                    spectralEnvelope_[sourceIndex]);
+                const float residualTargetEnvelope = std::max(
+                    1.0e-8f,
+                    interpolateEnvelope(residualTargetPosition));
+                const float residualEnvelopeRatio = std::clamp(
+                    residualTargetEnvelope / sourceEnvelope,
+                    0.70f,
+                    1.45f);
+                const float residualFormantGain = 1.0f
+                    + 0.35f * safeFormant
+                        * (lookupFormantGain(residualEnvelopeRatio, safeFormant) - 1.0f);
+
+                const double residualPhase = residualFollow > 0.36f && !initialiseLayer
+                    ? layer.synthesisPhases[sourceIndex]
+                    : static_cast<double>(analysisPhases_[sourceIndex]);
+                float residualSine = 0.0f;
+                float residualCosine = 1.0f;
+                fastSinCos(residualPhase, residualSine, residualCosine);
+
+                const float residualMagnitude = magnitude
+                    * noiseWeight
+                    * normalResidualGain
+                    * residualFormantGain
+                    * energyScale;
+                const Complex residualPolar(residualMagnitude * residualCosine,
+                                            residualMagnitude * residualSine);
+
+                const int residualBin0 = static_cast<int>(std::floor(residualTargetPosition));
+                const float residualFraction = static_cast<float>(
+                    residualTargetPosition - static_cast<double>(residualBin0));
+                float residualLowerWeight = 1.0f - residualFraction;
+                float residualUpperWeight = residualFraction;
+                const float residualWeightPower = residualLowerWeight * residualLowerWeight
+                    + residualUpperWeight * residualUpperWeight;
+                const float residualWeightNormalisation = residualWeightPower > 1.0e-12f
+                    ? 1.0f / std::sqrt(residualWeightPower)
+                    : 1.0f;
+                residualLowerWeight *= residualWeightNormalisation;
+                residualUpperWeight *= residualWeightNormalisation;
+
+                if (residualBin0 >= 0 && residualBin0 <= positiveBins)
+                    layer.spectrum[static_cast<std::size_t>(residualBin0)] +=
+                        residualPolar * residualLowerWeight;
+
+                const int residualBin1 = residualBin0 + 1;
+                if (residualBin1 >= 0 && residualBin1 <= positiveBins)
+                    layer.spectrum[static_cast<std::size_t>(residualBin1)] +=
+                        residualPolar * residualUpperWeight;
+            }
         }
 
         const float harmonicMagnitude = magnitude * harmonicWeight;
         if (harmonicMagnitude <= 1.0e-12f)
-            continue;
-
-        const double targetPosition = static_cast<double>(sourceBin) * safeRatio;
-        if (targetPosition > static_cast<double>(positiveBins) + 1.0)
             continue;
 
         const int peak = nearestPeak_[sourceIndex];
@@ -4477,16 +4607,8 @@ if (postGateEnergy > 1.0e-8f && preGateEnergy > postGateEnergy)
         1.18f);
 }
 
-const float wetRecoveryAttack = 0.04f * harmonicNoiseContext.hardCorrectionIntent;
-const float wetRecoveryRelease = 0.025f;
-
-const float wetRecoveryCoeff = targetRedistributionGain > wetRedistributionGain_
-    ? wetRecoveryAttack
-    : wetRecoveryRelease;
-
-wetRedistributionGain_ += wetRecoveryCoeff
+wetRedistributionGain_ += 0.04f * harmonicNoiseContext.hardCorrectionIntent
     * (targetRedistributionGain - wetRedistributionGain_);
-
 wetRedistributionGain_ = std::clamp(wetRedistributionGain_, 1.0f, 1.18f);
 
 const float rawWetArtifactRisk = clamp01(
@@ -5038,22 +5160,17 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
         const float formant = clamp01(safeParameters.formantPreservation
             * correctionController_.getFormantStability());
         
-        // NEUMATON_ASSERTIVE_AUDITORS_V2_INTERNAL_CONTEXT_SET
-        const float amountAssertivenessForAuditors = std::pow(
-            clamp01((clamp01(safeParameters.amount) - 0.30f) / 0.70f),
-            0.65f);
-        const float speedAssertivenessForAuditors = std::pow(
-            1.0f - clamp01(safeParameters.retuneTimeMs / 200.0f),
-            0.55f);
-        const float correctionAssertivenessForAuditors = clamp01(
-            amountAssertivenessForAuditors * speedAssertivenessForAuditors);
+        // NEUMATON_RECONSTRUCTIVE_WET_V1_CONTEXT_SET
+        const float correctionAssertivenessForAuditors = neumatonCorrectionSeverityFromAmountSpeed(
+            safeParameters.amount,
+            safeParameters.retuneTimeMs);
         const float largeCorrectionIntentForAuditors = smoothStep(
             20.0f,
             65.0f,
             static_cast<float>(std::abs(
                 correctionController_.getSynthesisTargetCorrectionCents())));
         const float scaleLockAuthorityForAuditors = safeParameters.scaleLock
-            ? std::max(0.65f, correctionAssertivenessForAuditors)
+            ? std::max(0.82f, correctionAssertivenessForAuditors)
             : correctionAssertivenessForAuditors;
         const float hardCorrectionIntentForAuditors = clamp01(
             scaleLockAuthorityForAuditors * largeCorrectionIntentForAuditors);
