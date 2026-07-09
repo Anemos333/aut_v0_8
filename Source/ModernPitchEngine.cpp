@@ -1936,6 +1936,7 @@ slParams.hardLock = hardScaleLock;
         1.5f, 10.0f, static_cast<float>(std::abs(desiredCorrectionCents_)));
     const float transientAttenuation = 1.0f
         - clamp01(parameters.transientProtection) * currentOnsetStrength_;
+
     wetMixTarget_ = clamp01((voicedLatched_ ? smoothedVoicing_ : 0.0f)
                             * correctionNeed
                             * transientAttenuation
@@ -1943,12 +1944,53 @@ slParams.hardLock = hardScaleLock;
                             * spectralGate
                             * polyphonyGate);
 
+    // NEUMATON_ASSERTIVE_AUDITORS_V2_INTERNAL_HARD_CORRECTION_INTENT
+    // Amount and Speed also describe how much the user wants the corrected wet
+    // path to dominate. This is intentionally sublinear: the new assertive
+    // behaviour is fully present near Amount=100 / Speed=0, but fades back to
+    // the previous cautious behaviour around Amount=30 / Speed=200 ms.
+    const float amount01ForAuthority = clamp01(parameters.amount);
+    const float amountAssertiveness = std::pow(
+        clamp01((amount01ForAuthority - 0.30f) / 0.70f),
+        0.65f);
+    const float speedAssertiveness = std::pow(
+        1.0f - clamp01(parameters.retuneTimeMs / 200.0f),
+        0.55f);
+    const float correctionAssertiveness = clamp01(amountAssertiveness * speedAssertiveness);
+    const float largeCorrectionIntent = smoothStep(
+        20.0f, 65.0f, static_cast<float>(std::abs(desiredCorrectionCents_)));
+    const float scaleLockAuthority = parameters.scaleLock
+        ? std::max(0.65f, correctionAssertiveness)
+        : correctionAssertiveness;
+    const float hardCorrectionIntent = clamp01(scaleLockAuthority * largeCorrectionIntent);
+
+    // In assertive settings, consensus/spectral/polyphony gates remain safety
+    // rails, but they must not make a clearly requested correction timid.
+    const float voicedGateForAuthority = voicedLatched_ ? smoothedVoicing_ : 0.0f;
+    const float hardSafetyGate = clamp01(
+        voicedGateForAuthority
+        * confidenceGate
+        * (0.70f + 0.30f * observation.consensus)
+        * (1.0f - 0.45f * smoothStep(0.35f, 0.80f, spectralPolyphony_)));
+    const float hardTransientGate = 1.0f
+        - 0.35f * clamp01(parameters.transientProtection) * currentOnsetStrength_;
+
+    const float hardAuthorityTarget = clamp01(hardCorrectionIntent * hardSafetyGate);
+    const float hardWetTarget = clamp01(hardCorrectionIntent * hardSafetyGate * hardTransientGate);
+
+    authorityTarget_ = std::max(authorityTarget_, hardAuthorityTarget);
+    wetMixTarget_ = std::max(wetMixTarget_, hardWetTarget);
+
     if (parameters.scaleLock)
     {
+        // NEUMATON_ASSERTIVE_AUDITORS_V2_INTERNAL_SCALELOCK_GATE_BLEND
         const float slConfidence = clamp01(currentConfidence_ + 0.15f * lockStrictness);
         const float slGate = 0.50f + 0.50f * slConfidence;
-        authorityTarget_ = clamp01(authorityTarget_ * slGate);
-        wetMixTarget_ = clamp01(wetMixTarget_ * slGate);
+        const float hardBlend = hardCorrectionIntent;
+        authorityTarget_ = clamp01(authorityTarget_
+            * (1.0f - hardBlend + hardBlend * slGate));
+        wetMixTarget_ = clamp01(wetMixTarget_
+            * (1.0f - hardBlend + hardBlend * slGate));
     }
 
     ++stableObservationCount_;
@@ -2752,6 +2794,14 @@ void ModernPitchEngine::SpectralVoiceShifter::reset() noexcept
     dryTrust_ = 1.0f;
 dryTrustTarget_ = 1.0f;
 dryWetCoexistenceMs_ = 0.0f;
+// NEUMATON_ASSERTIVE_AUDITORS_V2_INTERNAL_RESET_STATES
+tonalDryVeto_ = 0.0f;
+wetArtifactVeto_ = 0.0f;
+wetRedistributionGain_ = 1.0f;
+frameTonalConfidence_ = 0.0f;
+frameCorrectionAssertiveness_ = 0.0f;
+frameHardCorrectionIntent_ = 0.0f;
+frameDetectedPitchHz_ = 0.0f;
 dryWetContinuity_ = 1.0f;
 dryLeakRisk_ = 0.0f;
 dryTrustInstability_ = 0.0f;
@@ -3627,7 +3677,25 @@ void ModernPitchEngine::SpectralVoiceShifter::synthesiseLayer(
         if (magnitude <= 1.0e-12f)
             continue;
 
-        const float harmonicWeight = clamp01(harmonicMask_[sourceIndex]);
+        float harmonicWeight = clamp01(harmonicMask_[sourceIndex]);
+        // NEUMATON_ASSERTIVE_AUDITORS_V2_INTERNAL_MASK_AUDITOR
+        // Validate the mask, but do not make it globally more aggressive. Only
+        // predicted harmonics in a clearly tonal frame get a floor.
+        const float sourceBinHzForAudit = binFrequency(static_cast<int>(sourceIndex));
+        float harmonicFloor = 0.0f;
+        if (frameDetectedPitchHz_ > 0.0f && sourceBinHzForAudit > frameDetectedPitchHz_ * 0.55f)
+        {
+            const float harmonicNumber = sourceBinHzForAudit / frameDetectedPitchHz_;
+            const float nearestHarmonic = std::round(harmonicNumber);
+            const float harmonicDistance = std::abs(harmonicNumber - nearestHarmonic);
+            const bool nearPredictedHarmonic = nearestHarmonic >= 1.0f
+                && nearestHarmonic <= 64.0f
+                && harmonicDistance <= 0.10f;
+            if (nearPredictedHarmonic)
+                harmonicFloor = 0.25f * frameTonalConfidence_
+                    * frameHardCorrectionIntent_;
+        }
+        harmonicWeight = std::max(harmonicWeight, harmonicFloor);
         const float noiseWeight = 1.0f - harmonicWeight;
 
         // The aperiodic residual stays at its original bin and analysis phase.
@@ -3840,6 +3908,18 @@ void ModernPitchEngine::SpectralVoiceShifter::processFrame(
                                 spectralFlux,
                                 harmonicNoiseContext);
 
+    // NEUMATON_ASSERTIVE_AUDITORS_V2_INTERNAL_FRAME_AUDITOR_CONTEXT
+    frameDetectedPitchHz_ = harmonicNoiseContext.detectedPitchHz;
+    frameCorrectionAssertiveness_ = clamp01(harmonicNoiseContext.correctionAssertiveness);
+    frameHardCorrectionIntent_ = clamp01(harmonicNoiseContext.hardCorrectionIntent);
+    const float auditTransientSuppression = clamp01(harmonicNoiseContext.onsetStrength);
+    frameTonalConfidence_ = clamp01(
+        harmonicNoiseContext.confidence
+        * harmonicNoiseContext.voicing
+        * harmonicNoiseContext.consensus
+        * (1.0f - 0.65f * smoothedPolyphony_)
+        * (1.0f - 0.80f * auditTransientSuppression));
+
     auto& primary = layers_[static_cast<std::size_t>(activeLayerIndex_)];
     synthesiseLayer(primary,
                     frameEndSample,
@@ -3925,7 +4005,6 @@ float ModernPitchEngine::SpectralVoiceShifter::processSample(
     const TransitionManager::Command& transition,
     float desiredWetMix,
     float formantPreservation,
-    float humanize,
     const HarmonicNoiseContext& harmonicNoiseContext,
     bool forcePhaseReset) noexcept
 {
@@ -4340,36 +4419,38 @@ const float timeRisk = smoothStep(
 const float empiricalVeto = clamp01(std::max(dryLeakRisk_, timeRisk));
 const float empiricalDryValidity = 1.0f - empiricalVeto;
 
-const float humanize01 = clamp01(humanize);
-
-float humanizedDryCeiling = 1.0f;
-
-if (humanize01 <= 0.10f)
-{
-    humanizedDryCeiling = 0.0f;
-}
-else if (humanize01 <= 0.40f)
-{
-    const float t = (humanize01 - 0.10f) / 0.30f; // 0..1
-    humanizedDryCeiling = 0.18f * std::pow(t, 1.7f);
-}
-else
-{
-    const float t = (humanize01 - 0.40f) / 0.60f; // 0..1
-    humanizedDryCeiling = 0.18f + 0.82f * t;
-}
-
-dryTrustTarget_ = clamp01(candidateDryTrust
-                         * empiricalDryValidity
-                         * humanizedDryCeiling);
-
 // Experiment wins over theory.
-dryTrustTarget_ = clamp01(candidateDryTrust
-                         * empiricalDryValidity
-                         * humanizedDryCeiling);
+dryTrustTarget_ = clamp01(candidateDryTrust * empiricalDryValidity);
 
-// Experiment wins over theory.
+// NEUMATON_ASSERTIVE_AUDITORS_V2_INTERNAL_TONAL_DRY_VETO
+// Final override: tonal dry has no presumption of innocence.  This is placed
+// immediately before dryTrust_ smoothing so it remains robust across local
+// variants of the earlier dryTrustTarget_ calculation.
+const float nonTonalAllowance = clamp01(
+    0.80f * breathOrNoiseNeed
+    + 0.75f * transientNeed
+    + 0.55f * unvoicedNeed);
+const float tonalResidualEvidence = clamp01(
+    dryCandidatePresent
+    * wetCandidatePresent
+    * tonalEvidence
+    * pitchSeparation
+    * smoothStep(0.38f, 0.78f, wetTrust)
+    * smoothStep(10.0f, 42.0f, correctionDistance)
+    * (1.0f - nonTonalAllowance));
+const float durationEvidence = smoothStep(4.0f, 9.0f, dryWetCoexistenceMs_);
+const float rawTonalDryVeto = clamp01(
+    tonalResidualEvidence
+    * durationEvidence
+    * harmonicNoiseContext.hardCorrectionIntent);
 
+const float vetoAttack = 0.18f;
+const float vetoRelease = 0.025f;
+const float vetoCoeff = rawTonalDryVeto > tonalDryVeto_ ? vetoAttack : vetoRelease;
+tonalDryVeto_ += vetoCoeff * (rawTonalDryVeto - tonalDryVeto_);
+tonalDryVeto_ = clamp01(tonalDryVeto_);
+
+dryTrustTarget_ = clamp01(dryTrustTarget_ * (1.0f - tonalDryVeto_));
 
 const float dryTrustCoefficient = dryTrustTarget_ < dryTrust_
     ? dryTrustCloseCoefficient_
@@ -4378,7 +4459,37 @@ dryTrust_ += dryTrustCoefficient * (dryTrustTarget_ - dryTrust_);
 if (dryTrust_ < 1.0e-6f)
     dryTrust_ = 0.0f;
 
-const float mixed = dryTrust_ * breathManagedDry + wetTrust * levelMatchedShifted;
+// NEUMATON_ASSERTIVE_AUDITORS_V2_INTERNAL_WET_RECOVERY
+const float preGateEnergy = candidateDryTrust * dryEnergy
+    + wetTrust * wetEnergy;
+const float postGateEnergy = dryTrust_ * dryEnergy
+    + wetTrust * wetEnergy;
+float targetRedistributionGain = 1.0f;
+if (postGateEnergy > 1.0e-8f && preGateEnergy > postGateEnergy)
+{
+    targetRedistributionGain = std::clamp(
+        std::sqrt(preGateEnergy / postGateEnergy),
+        1.0f,
+        1.18f);
+}
+
+wetRedistributionGain_ += 0.04f * harmonicNoiseContext.hardCorrectionIntent
+    * (targetRedistributionGain - wetRedistributionGain_);
+wetRedistributionGain_ = std::clamp(wetRedistributionGain_, 1.0f, 1.18f);
+
+const float rawWetArtifactRisk = clamp01(
+    harmonicNoiseContext.hardCorrectionIntent
+    * tonalResidualEvidence
+    * durationEvidence
+    * (1.0f - smoothStep(0.62f, 0.92f, wetTrust)));
+const float wetVetoCoeff = rawWetArtifactRisk > wetArtifactVeto_ ? 0.11f : 0.018f;
+wetArtifactVeto_ += wetVetoCoeff * (rawWetArtifactRisk - wetArtifactVeto_);
+wetArtifactVeto_ = clamp01(wetArtifactVeto_);
+
+const float auditedWet = wetRedistributionGain_
+    * (1.0f - 0.18f * wetArtifactVeto_)
+    * levelMatchedShifted;
+const float mixed = dryTrust_ * breathManagedDry + wetTrust * auditedWet;
 
 // Correlation-aware compensation, but only when the dry branch is still trusted.
 // Do not boost a signal pair that the dry guard has already classified as a
@@ -4461,6 +4572,14 @@ float ModernPitchEngine::SpectralVoiceShifter::processBypassedSample(
         dryTrust_ = 1.0f;
         dryTrustTarget_ = 1.0f;
         dryWetCoexistenceMs_ = 0.0f;
+        // NEUMATON_ASSERTIVE_AUDITORS_V2_INTERNAL_RESET_STATES
+        tonalDryVeto_ = 0.0f;
+        wetArtifactVeto_ = 0.0f;
+        wetRedistributionGain_ = 1.0f;
+        frameTonalConfidence_ = 0.0f;
+        frameCorrectionAssertiveness_ = 0.0f;
+        frameHardCorrectionIntent_ = 0.0f;
+        frameDetectedPitchHz_ = 0.0f;
         dryWetContinuity_ = 1.0f;
         dryLeakRisk_ = 0.0f;
         dryTrustInstability_ = 0.0f;
@@ -4906,6 +5025,27 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
             tempoDecision.forceTransition);
         const float formant = clamp01(safeParameters.formantPreservation
             * correctionController_.getFormantStability());
+        
+        // NEUMATON_ASSERTIVE_AUDITORS_V2_INTERNAL_CONTEXT_SET
+        const float amountAssertivenessForAuditors = std::pow(
+            clamp01((clamp01(safeParameters.amount) - 0.30f) / 0.70f),
+            0.65f);
+        const float speedAssertivenessForAuditors = std::pow(
+            1.0f - clamp01(safeParameters.retuneTimeMs / 200.0f),
+            0.55f);
+        const float correctionAssertivenessForAuditors = clamp01(
+            amountAssertivenessForAuditors * speedAssertivenessForAuditors);
+        const float largeCorrectionIntentForAuditors = smoothStep(
+            20.0f,
+            65.0f,
+            static_cast<float>(std::abs(
+                correctionController_.getSynthesisTargetCorrectionCents())));
+        const float scaleLockAuthorityForAuditors = safeParameters.scaleLock
+            ? std::max(0.65f, correctionAssertivenessForAuditors)
+            : correctionAssertivenessForAuditors;
+        const float hardCorrectionIntentForAuditors = clamp01(
+            scaleLockAuthorityForAuditors * largeCorrectionIntentForAuditors);
+
         const HarmonicNoiseContext harmonicNoiseContext {
             latestPitchHz,
             latestConfidence,
@@ -4913,6 +5053,8 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
             latestConsensus,
             latestOnsetStrength,
             clamp01(safeParameters.breathReduction),
+            correctionAssertivenessForAuditors,
+            hardCorrectionIntentForAuditors,
             trackingState,
             noteAgeSeconds
         };
@@ -4928,7 +5070,6 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
                                                                   transition,
                                                                   wetMix,
                                                                   formant,
-            safeParameters.humanize,
                                                                   harmonicNoiseContext,
                                                                   forcePhaseReset);
             const float delayedSide = auxiliaryDelays_[0].process(side);
@@ -4939,8 +5080,8 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
             {
                 float& sample = channelData[static_cast<std::size_t>(channel)][sampleIndex];
                 sample = shifters_[static_cast<std::size_t>(channel)].processSample(
-    sample, transition, wetMix, formant, safeParameters.humanize,
-    harmonicNoiseContext, forcePhaseReset);
+                    sample, transition, wetMix, formant,
+                    harmonicNoiseContext, forcePhaseReset);
             }
         }
         else
@@ -4949,8 +5090,8 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
             {
                 float& sample = channelData[static_cast<std::size_t>(channel)][sampleIndex];
                 sample = shifters_[static_cast<std::size_t>(channel)].processSample(
-    sample, transition, wetMix, formant, safeParameters.humanize,
-    harmonicNoiseContext, forcePhaseReset);
+                    sample, transition, wetMix, formant,
+                    harmonicNoiseContext, forcePhaseReset);
             }
         }
     }
