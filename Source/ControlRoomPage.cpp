@@ -178,15 +178,15 @@ void ControlRoomPage::drawDiagnosticGrid (juce::Graphics& g, juce::Rectangle<int
     const int coreW = usableW * 28 / 100;
     const int outputW = usableW - inputW - senseW - referenceW - coreW;
 
-    const auto takeNode = [&route, gap] (int width) mutable
-    {
-        auto r = route.removeFromLeft (width);
+   auto takeNode = [&route, gap] (int width) -> juce::Rectangle<int>
+{
+    auto r = route.removeFromLeft (width);
 
-        if (route.getWidth() > 0)
-            route.removeFromLeft (gap);
+    if (route.getWidth() > 0)
+        route.removeFromLeft (gap);
 
-        return r;
-    };
+    return r;
+};
 
     auto inputNode = takeNode (inputW);
     auto senseNode = takeNode (senseW);
@@ -407,6 +407,33 @@ void ControlRoomPage::drawDiagnosticGrid (juce::Graphics& g, juce::Rectangle<int
     auto textureBus = bottomBand.reduced (4, 2);
     textureBus.setLeft (senseNode.getX() + senseNode.getWidth() / 3);
     textureBus.setRight (outputNode.getRight());
+    const auto centreLeft = [] (juce::Rectangle<int> r)
+{
+    return juce::Point<float> (
+        static_cast<float> (r.getX()),
+        static_cast<float> (r.getCentreY()));
+};
+
+const auto centreRight = [] (juce::Rectangle<int> r)
+{
+    return juce::Point<float> (
+        static_cast<float> (r.getRight()),
+        static_cast<float> (r.getCentreY()));
+};
+
+const auto centreTop = [] (juce::Rectangle<int> r)
+{
+    return juce::Point<float> (
+        static_cast<float> (r.getCentreX()),
+        static_cast<float> (r.getY()));
+};
+
+const auto centreBottom = [] (juce::Rectangle<int> r)
+{
+    return juce::Point<float> (
+        static_cast<float> (r.getCentreX()),
+        static_cast<float> (r.getBottom()));
+};
 
     // ---------------------------------------------------------------------
     // Draw links first, so nodes sit on top.
