@@ -1153,22 +1153,24 @@ void Painter::drawRadioTarget (juce::Graphics& g,
     // Più trasparente: deve sembrare uno strumento appoggiato al banco.
     drawPanel (g, f, 10.0f, 0.46f);
 
-    auto area = bounds.reduced (14, 10);
-    auto title = area.removeFromTop (20);
+   auto area = bounds.reduced (14, 10);
+auto title = area.removeFromTop (22);
 
-    g.setColour (p.ink.withAlpha (0.92f));
-    g.setFont (juce::FontOptions (12.5f, juce::Font::bold));
-    g.drawText ("Target tuning", title, juce::Justification::centred);
+// Non disegniamo ancora il titolo: lo ridisegniamo alla fine,
+// sopra vetro e cornice, così non viene coperto.
+area.removeFromTop (3);
 
-    auto rail = area.reduced (4, 18).withHeight (20);
-    rail.setCentre (area.getCentre());
+auto rail = area.reduced (10, 18).withHeight (16);
+rail.setCentre (area.getCentre());
+rail.translate (0, 4);
 
-    auto railF = rail.toFloat();
-    auto frame = rail.expanded (9, 12).toFloat();
+auto railF = rail.toFloat();
 
+// Cornice più sottile: prima era expanded (9, 12), troppo invadente.
+auto frame = rail.expanded (5, 7).toFloat();
     // Ombra sotto la cornice.
     g.setColour (juce::Colours::black.withAlpha (0.32f));
-    g.fillRoundedRectangle (frame.translated (0.0f, 1.6f), 7.0f);
+    g.fillRoundedRectangle (frame.translated (0.0f, 1.2f), 5.5f);
 
     // Cornice ottone: laboratorio/liutaio.
     juce::ColourGradient frameGradient (
@@ -1181,14 +1183,15 @@ void Painter::drawRadioTarget (juce::Graphics& g,
         true);
 
     g.setGradientFill (frameGradient);
-    g.fillRoundedRectangle (frame, 7.0f);
+    g.fillRoundedRectangle (frame, 5.5f);
 
-    g.setColour (p.brassDark.withAlpha (0.92f));
-    g.drawRoundedRectangle (frame.reduced (0.5f), 7.0f, 1.1f);
+g.setColour (p.brassDark.withAlpha (0.82f));
+g.drawRoundedRectangle (frame.reduced (0.5f), 5.5f, 0.8f);
 
-    g.setColour (juce::Colours::white.withAlpha (0.13f));
-    g.drawRoundedRectangle (frame.reduced (2.0f), 5.5f, 0.8f);
+g.setColour (juce::Colours::white.withAlpha (0.10f));
+g.drawRoundedRectangle (frame.reduced (1.6f), 4.5f, 0.65f);
 
+  
     // Fessura interna, più analogica/radio.
     juce::ColourGradient railGradient (
         juce::Colour (0xFF07090D),
@@ -1297,6 +1300,7 @@ void Painter::drawRadioTarget (juce::Graphics& g,
 
     // Vetro sopra tutto il controllo.
     auto glass = frame.reduced (2.0f);
+    
 
     juce::ColourGradient glassGradient (
         juce::Colours::white.withAlpha (0.13f),
@@ -1314,6 +1318,10 @@ void Painter::drawRadioTarget (juce::Graphics& g,
     g.drawRoundedRectangle (glass.reduced (0.7f), 7.0f, 0.8f);
 
     // Testo Hz.
+    // Titolo sopra cornice e vetro.
+g.setColour (p.ink.withAlpha (0.94f));
+g.setFont (juce::FontOptions (12.5f, juce::Font::bold));
+g.drawText ("Target tuning", title, juce::Justification::centred);
     auto text = area.removeFromBottom (18);
 
     g.setColour (p.ink.withAlpha (0.88f));
