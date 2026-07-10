@@ -46,22 +46,28 @@ void ControlRoomPage::paint (juce::Graphics& g)
     area.removeFromTop (10);
 
     auto topMeters = area.removeFromTop (138);
-    const int meterW = topMeters.getWidth() / 3;
-    Painter::drawCorrectionGauge (g,
-                                  topMeters.removeFromLeft (meterW).reduced (4),
-                                  metering_.correctionCents);
-    Painter::drawRadioTarget (g,
-                              topMeters.removeFromLeft (meterW).reduced (4),
-                              metering_.detectedPitchHz,
-                              metering_.targetPitchHz);
-  Painter::drawConsensusGauge ( g,
-                                  juce::Rectangle<int> bounds,
-                                  float consensus,
-                                  float glowConsensus)
+const int meterW = topMeters.getWidth() / 3;
 
-}
-    area.removeFromTop (12);
-    drawDiagnosticGrid (g, area);
+Painter::drawCorrectionGauge (
+    g,
+    topMeters.removeFromLeft (meterW).reduced (4),
+    static_cast<float> (metering_.correctionCents),
+    static_cast<float> (metering_.correctionCents));
+
+Painter::drawRadioTarget (
+    g,
+    topMeters.removeFromLeft (meterW).reduced (4),
+    static_cast<float> (metering_.detectedPitchHz),
+    static_cast<float> (metering_.targetPitchHz));
+
+Painter::drawConsensusGauge (
+    g,
+    topMeters.reduced (4),
+    static_cast<float> (metering_.consensus),
+    static_cast<float> (metering_.consensus));
+
+area.removeFromTop (12);
+drawDiagnosticGrid (g, area);
 }
 
 void ControlRoomPage::resized()
