@@ -180,6 +180,11 @@ private:
         float hardCorrectionIntent = 0.0f;
         TrackingState trackingState = TrackingState::unvoiced;
         float noteAgeSeconds = 0.0f;
+        // NEUMATON_TARGET_HARMONIC_CONDITIONER_V5_CONTEXT
+        // These do not reopen dry/wet behaviour.  They only shape the spectral
+        // reconstruction conditioner after full-spectrum transport.
+        float humanize = 0.0f;
+        bool scaleLock = false;
     };
 
     class BiquadLowPass
@@ -773,6 +778,10 @@ float wetRedistributionGain_ = 1.0f;
 float frameTonalConfidence_ = 0.0f;
 float frameCorrectionAssertiveness_ = 0.0f;
 float frameHardCorrectionIntent_ = 0.0f;
+// NEUMATON_TARGET_HARMONIC_CONDITIONER_V5_STATE
+float frameHumanize_ = 0.0f;
+float frameNaturalConditionerDrive_ = 0.0f;
+bool frameScaleLockActive_ = false;
 float frameDetectedPitchHz_ = 0.0f;
 float dryWetContinuity_ = 1.0f;
 float dryLeakRisk_ = 0.0f;
