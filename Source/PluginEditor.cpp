@@ -857,6 +857,25 @@ void MicrotonalAutotuneAudioProcessorEditor::timerCallback()
 if (showingControlRoom)
        controlRoomPage.setMetering (displayedMetering);    
     displayedMetering = processorRef.getPitchMetering();
+    const auto smoothTowards = [] (float current, float target, float amount)
+{
+    if (! std::isfinite (target))
+        target = 0.0f;
+
+    return current + (target - current) * amount;
+};
+
+// Valori piccoli = effetto più lento / slow motion.
+// 0.065 è un buon punto di partenza.
+visualCorrectionGlowCents_ = smoothTowards (
+    visualCorrectionGlowCents_,
+    static_cast<float> (displayedMetering.correctionCents),
+    0.065f);
+
+visualConsensusGlow_ = smoothTowards (
+    visualConsensusGlow_,
+    static_cast<float> (displayedMetering.consensus),
+    0.065f);
     if (showingTempoPage)
         updateTempoModeButtons();
 
@@ -1196,10 +1215,10 @@ void MicrotonalAutotuneAudioProcessorEditor::paint (juce::Graphics& g)
     targetArea = targetArea.reduced (2, 2);
 
     neumaton::lab::Painter::drawCorrectionGauge (
-        g,
-        correctionArea,
-        displayedMetering.correctionCents);
-
+    g,
+    correctionArea,
+    static_cast<float> (displayedMetering.correctionCents),
+    visualCorrectionGlowCents_);
     neumaton::lab::Painter::drawRadioTarget (
         g,
         targetArea,
@@ -1207,9 +1226,10 @@ void MicrotonalAutotuneAudioProcessorEditor::paint (juce::Graphics& g)
         displayedMetering.targetPitchHz);
 
     neumaton::lab::Painter::drawConsensusGauge (
-        g,
-        consensusArea,
-        displayedMetering.consensus);
+    g,
+    consensusArea,
+    static_cast<float> (displayedMetering.consensus),
+    visualConsensusGlow_);
 
     g.setColour (juce::Colours::white);
     g.setFont (juce::FontOptions (24.0f, juce::Font::bold));
