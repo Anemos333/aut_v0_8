@@ -903,7 +903,8 @@ void Painter::drawNeedleMeter (juce::Graphics& g,
                                const juce::String& title,
                                const juce::String& valueText,
                                juce::Colour accent,
-                               bool redWarning)
+                               bool redWarning,
+                               bool bipolarGlow)
 {
     normalisedValue = safeNormalise (normalisedValue);
     glowNormalisedValue = safeNormalise (glowNormalisedValue);
@@ -959,17 +960,30 @@ void Painter::drawNeedleMeter (juce::Graphics& g,
 
     // Arco luminoso ruotato di 90° in senso orario.
     // Se visivamente ruota dalla parte sbagliata, cambia +halfPi in -halfPi.
-    const float glowRotation = juce::MathConstants<float>::halfPi;
+   // Arco luminoso ruotato di 90° in senso orario.
+// Per Correction parte dal centro: 0 cent.
+// Per Consensus parte dall'inizio scala, come un normale meter 0..100.
+const float glowRotation = juce::MathConstants<float>::halfPi;
 
-    juce::Path glowArc;
-    glowArc.addCentredArc (centre.x,
-                           centre.y,
-                           radius,
-                           radius,
-                           0.0f,
-                           start + glowRotation,
-                           glowAngle + glowRotation,
-                           true);
+const float zeroAngle = juce::jmap (0.5f, start, end);
+
+const float glowStartAngle = bipolarGlow ? zeroAngle : start;
+const float glowEndAngle   = glowAngle;
+
+// Se la correzione è negativa, glowEndAngle è prima del centro.
+// Usiamo min/max per disegnare comunque il segmento tra 0 e valore.
+const float arcFrom = juce::jmin (glowStartAngle, glowEndAngle);
+const float arcTo   = juce::jmax (glowStartAngle, glowEndAngle);
+
+juce::Path glowArc;
+glowArc.addCentredArc (centre.x,
+                       centre.y,
+                       radius,
+                       radius,
+                       0.0f,
+                       arcFrom + glowRotation,
+                       arcTo + glowRotation,
+                       true);
 
     g.setColour (lightColour.withAlpha (0.25f));
     g.strokePath (glowArc,
@@ -1103,7 +1117,8 @@ void Painter::drawCorrectionGauge (juce::Graphics& g,
                      "Correction",
                      juce::String (correctionCents, 1) + " ct",
                      palette().warningRed,
-                     redWarning);
+                     redWarning,
+                     true);
 }
 
 void Painter::drawConsensusGauge (juce::Graphics& g,
@@ -1121,7 +1136,8 @@ void Painter::drawConsensusGauge (juce::Graphics& g,
                      "Consensus",
                      juce::String (normalised * 100.0f, 0) + "%",
                      palette().blueGlow,
-                     false);
+                     false,
+                      false);
 }
 float Painter::frequencyToLogPosition (float hz,
                                        float minimumHz,
