@@ -87,19 +87,23 @@ public:
                            float alpha = 1.0f);
 
     static void drawNeedleMeter (juce::Graphics& g,
-                                 juce::Rectangle<float> bounds,
-                                 float normalisedValue,
-                                 const juce::String& title,
-                                 const juce::String& valueText,
-                                 juce::Colour accent);
+                             juce::Rectangle<float> bounds,
+                             float normalisedValue,
+                             float glowNormalisedValue,
+                             const juce::String& title,
+                             const juce::String& valueText,
+                             juce::Colour accent,
+                             bool redWarning);
 
-    static void drawCorrectionGauge (juce::Graphics& g,
-                                     juce::Rectangle<int> bounds,
-                                     float correctionCents);
+static void drawCorrectionGauge (juce::Graphics& g,
+                                 juce::Rectangle<int> bounds,
+                                 float correctionCents,
+                                 float glowCorrectionCents);
 
-    static void drawConsensusGauge (juce::Graphics& g,
-                                    juce::Rectangle<int> bounds,
-                                    float consensus);
+static void drawConsensusGauge (juce::Graphics& g,
+                                juce::Rectangle<int> bounds,
+                                float consensus,
+                                float glowConsensus);
 
     static void drawRadioTarget (juce::Graphics& g,
                                  juce::Rectangle<int> bounds,
