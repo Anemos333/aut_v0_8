@@ -899,18 +899,35 @@ void Painter::drawPanel (juce::Graphics& g,
 void Painter::drawNeedleMeter (juce::Graphics& g,
                                juce::Rectangle<float> bounds,
                                float normalisedValue,
+                               float glowNormalisedValue,
                                const juce::String& title,
                                const juce::String& valueText,
-                               juce::Colour accent)
+                               juce::Colour accent,
+                               bool redWarning)
 {
     normalisedValue = safeNormalise (normalisedValue);
+    glowNormalisedValue = safeNormalise (glowNormalisedValue);
+
     const auto& p = palette();
-    drawPanel (g, bounds, 10.0f, 0.95f);
+
+    const auto electricBlue = juce::Colour (0xFF20D8FF);
+    const auto syntheticViolet = juce::Colour (0xFF9B5CFF);
+    const auto warningRed = juce::Colour (0xFFFF2A4A);
+
+    auto lightColour = electricBlue.interpolatedWith (
+        syntheticViolet,
+        glowNormalisedValue);
+
+    if (redWarning)
+        lightColour = lightColour.interpolatedWith (warningRed, 0.38f);
+
+    // Più trasparente: il quadrante deve appoggiarsi sul disegno.
+    drawPanel (g, bounds, 10.0f, 0.42f);
 
     auto meter = bounds.reduced (10.0f, 8.0f);
     auto titleArea = meter.removeFromTop (18.0f);
 
-    g.setColour (p.ink);
+    g.setColour (p.ink.withAlpha (0.90f));
     g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
     g.drawText (title, titleArea.toNearestInt(), juce::Justification::centred);
 
@@ -920,75 +937,192 @@ void Painter::drawNeedleMeter (juce::Graphics& g,
 
     constexpr float start = juce::MathConstants<float>::pi * 1.15f;
     constexpr float end   = juce::MathConstants<float>::pi * 1.85f;
-    const float angle = juce::jmap (normalisedValue, start, end);
 
+    const float angle = juce::jmap (normalisedValue, start, end);
+    const float glowAngle = juce::jmap (glowNormalisedValue, start, end);
+
+    // Arco base, quasi inciso nel vetro.
     juce::Path arc;
     arc.addCentredArc (centre.x, centre.y, radius, radius, 0.0f, start, end, true);
-    g.setColour (p.brassDark.withAlpha (0.85f));
-    g.strokePath (arc, juce::PathStrokeType (5.0f,
-                                             juce::PathStrokeType::curved,
-                                             juce::PathStrokeType::rounded));
 
-    juce::Path activeArc;
-    activeArc.addCentredArc (centre.x, centre.y, radius, radius, 0.0f, start, angle, true);
-    g.setColour (accent.withAlpha (0.90f));
-    g.strokePath (activeArc, juce::PathStrokeType (4.0f,
-                                                   juce::PathStrokeType::curved,
-                                                   juce::PathStrokeType::rounded));
+    g.setColour (p.brassDark.withAlpha (0.72f));
+    g.strokePath (arc,
+                  juce::PathStrokeType (5.0f,
+                                        juce::PathStrokeType::curved,
+                                        juce::PathStrokeType::rounded));
 
+    g.setColour (juce::Colours::white.withAlpha (0.10f));
+    g.strokePath (arc,
+                  juce::PathStrokeType (1.2f,
+                                        juce::PathStrokeType::curved,
+                                        juce::PathStrokeType::rounded));
+
+    // Arco luminoso ruotato di 90° in senso orario.
+    // Se visivamente ruota dalla parte sbagliata, cambia +halfPi in -halfPi.
+    const float glowRotation = juce::MathConstants<float>::halfPi;
+
+    juce::Path glowArc;
+    glowArc.addCentredArc (centre.x,
+                           centre.y,
+                           radius,
+                           radius,
+                           0.0f,
+                           start + glowRotation,
+                           glowAngle + glowRotation,
+                           true);
+
+    g.setColour (lightColour.withAlpha (0.25f));
+    g.strokePath (glowArc,
+                  juce::PathStrokeType (8.0f,
+                                        juce::PathStrokeType::curved,
+                                        juce::PathStrokeType::rounded));
+
+    g.setColour (lightColour.withAlpha (0.88f));
+    g.strokePath (glowArc,
+                  juce::PathStrokeType (3.0f,
+                                        juce::PathStrokeType::curved,
+                                        juce::PathStrokeType::rounded));
+
+    // Tacche.
     for (int i = 0; i <= 8; ++i)
     {
         const float tickNorm = static_cast<float> (i) / 8.0f;
         const float tickAngle = juce::jmap (tickNorm, start, end);
-        const auto outer = centre + juce::Point<float> (std::cos (tickAngle), std::sin (tickAngle)) * radius;
-        const auto inner = centre + juce::Point<float> (std::cos (tickAngle), std::sin (tickAngle)) * (radius - (i % 2 == 0 ? 10.0f : 6.0f));
-        g.setColour (p.ink.withAlpha (0.55f));
-        g.drawLine ({ inner, outer }, i % 2 == 0 ? 1.4f : 0.8f);
+
+        const bool major = (i % 2 == 0);
+        const float tickLen = major ? 10.0f : 6.0f;
+
+        const auto outer = centre
+            + juce::Point<float> (std::cos (tickAngle), std::sin (tickAngle)) * radius;
+
+        const auto inner = centre
+            + juce::Point<float> (std::cos (tickAngle), std::sin (tickAngle)) * (radius - tickLen);
+
+        g.setColour (p.ink.withAlpha (major ? 0.62f : 0.34f));
+        g.drawLine (juce::Line<float> (inner, outer), major ? 1.3f : 0.75f);
     }
 
-    const auto needleEnd = centre + juce::Point<float> (std::cos (angle), std::sin (angle)) * (radius - 13.0f);
-    g.setColour (accent.withAlpha (0.22f));
-    g.drawLine ({ centre, needleEnd }, 7.0f);
-    g.setColour (p.warningRed);
-    g.drawLine ({ centre, needleEnd }, 2.2f);
+    // Lancetta più caratteristica: non più una semplice linea.
+    const auto dir = juce::Point<float> (std::cos (angle), std::sin (angle));
+    const auto normal = juce::Point<float> (-dir.y, dir.x);
+
+    const auto needleTip  = centre + dir * (radius - 12.0f);
+    const auto needleBase = centre + dir * 8.0f;
+    const auto needleBack = centre - dir * 5.0f;
+
+    juce::Path needle;
+    needle.startNewSubPath (needleTip.x, needleTip.y);
+    needle.lineTo ((needleBase + normal * 3.2f).x,
+                   (needleBase + normal * 3.2f).y);
+    needle.lineTo (needleBack.x, needleBack.y);
+    needle.lineTo ((needleBase - normal * 3.2f).x,
+                   (needleBase - normal * 3.2f).y);
+    needle.closeSubPath();
+
+    g.setColour (lightColour.withAlpha (0.20f));
+    g.drawLine (juce::Line<float> (centre, needleTip), 8.0f);
+
+    juce::ColourGradient needleGradient (
+        juce::Colours::white.withAlpha (0.95f),
+        needleTip.x,
+        needleTip.y,
+        lightColour.withAlpha (0.85f),
+        centre.x,
+        centre.y,
+        false);
+
+    g.setGradientFill (needleGradient);
+    g.fillPath (needle);
+
+    g.setColour ((redWarning ? warningRed : accent).withAlpha (redWarning ? 0.58f : 0.32f));
+    g.strokePath (needle, juce::PathStrokeType (1.2f));
+
+    // Perno centrale.
+    g.setColour (juce::Colours::black.withAlpha (0.34f));
+    g.fillEllipse (juce::Rectangle<float> (13.0f, 13.0f)
+        .withCentre (centre.translated (0.0f, 1.0f)));
+
     g.setColour (p.brass);
     g.fillEllipse (juce::Rectangle<float> (11.0f, 11.0f).withCentre (centre));
 
+    g.setColour (p.brassDark.withAlpha (0.88f));
+    g.drawEllipse (juce::Rectangle<float> (11.0f, 11.0f)
+        .withCentre (centre)
+        .reduced (0.5f),
+        0.9f);
+
+    // Vetro/lente sopra il quadrante.
+    auto lens = bounds.reduced (3.0f);
+
+    juce::ColourGradient lensGradient (
+        juce::Colours::white.withAlpha (0.15f),
+        lens.getX(),
+        lens.getY(),
+        juce::Colours::transparentWhite,
+        lens.getX(),
+        lens.getBottom(),
+        false);
+
+    g.setGradientFill (lensGradient);
+    g.fillRoundedRectangle (lens, 10.0f);
+
+    g.setColour (juce::Colours::white.withAlpha (0.15f));
+    g.drawRoundedRectangle (lens.reduced (0.7f), 10.0f, 0.9f);
+
+    // Testo.
     g.setColour (p.ink.withAlpha (0.88f));
     g.setFont (juce::FontOptions (11.0f));
     g.drawText (valueText,
                 bounds.withTrimmedTop (bounds.getHeight() - 22.0f).toNearestInt(),
                 juce::Justification::centred);
 }
-
 void Painter::drawCorrectionGauge (juce::Graphics& g,
                                    juce::Rectangle<int> bounds,
-                                   float correctionCents)
+                                   float correctionCents,
+                                   float glowCorrectionCents)
 {
-    const float limited = juce::jlimit (-100.0f, 100.0f,
-                                       std::isfinite (correctionCents) ? correctionCents : 0.0f);
+    const float limited = juce::jlimit (
+        -100.0f,
+        100.0f,
+        std::isfinite (correctionCents) ? correctionCents : 0.0f);
+
+    const float glowLimited = juce::jlimit (
+        -100.0f,
+        100.0f,
+        std::isfinite (glowCorrectionCents) ? glowCorrectionCents : 0.0f);
+
     const float normalised = juce::jmap (limited, -100.0f, 100.0f, 0.0f, 1.0f);
+    const float glowNormalised = juce::jmap (glowLimited, -100.0f, 100.0f, 0.0f, 1.0f);
+
+    const bool redWarning = std::abs (limited) > 30.0f;
+
     drawNeedleMeter (g,
                      bounds.toFloat(),
                      normalised,
+                     glowNormalised,
                      "Correction",
                      juce::String (correctionCents, 1) + " ct",
-                     palette().warningRed);
+                     palette().warningRed,
+                     redWarning);
 }
 
 void Painter::drawConsensusGauge (juce::Graphics& g,
                                   juce::Rectangle<int> bounds,
-                                  float consensus)
+                                  float consensus,
+                                  float glowConsensus)
 {
     const float normalised = safeNormalise (consensus);
+    const float glowNormalised = safeNormalise (glowConsensus);
+
     drawNeedleMeter (g,
                      bounds.toFloat(),
                      normalised,
+                     glowNormalised,
                      "Consensus",
                      juce::String (normalised * 100.0f, 0) + "%",
-                     palette().greenFluid);
+                     palette().blueGlow,
+                     false);
 }
-
 float Painter::frequencyToLogPosition (float hz,
                                        float minimumHz,
                                        float maximumHz) noexcept
