@@ -3846,6 +3846,14 @@ void ModernPitchEngine::SpectralVoiceShifter::synthesiseLayer(
             const bool ultraLiveFrame = frameSize_ <= 160;
             const bool liveFrame = frameSize_ > 160 && frameSize_ <= 320;
 
+            // NEUMATON_MODE_SPECIFIC_RECONSTRUCTION_V51_PROFILE
+            // V5's conditioner remains unchanged, but the underlying difficult-
+            // material rebuilder now has three explicit register-safety profiles.
+            // Quality may trust the harmonic-family model.  Live keeps the ratio
+            // transport dominant unless evidence is strong.  Experimental treats
+            // family reconstruction as a small local magnet, not as a register
+            // authority, because 128-sample frames can otherwise reinforce a
+            // subharmonic/octave-down grid.
             const float modePhaseTrust = ultraLiveFrame ? 0.46f
                                         : liveFrame      ? 0.64f
                                                          : 0.86f;
@@ -3858,6 +3866,18 @@ void ModernPitchEngine::SpectralVoiceShifter::synthesiseLayer(
             const float modeFamilyPull = ultraLiveFrame ? 0.35f
                                        : liveFrame      ? 0.52f
                                                         : 0.72f;
+            const float modeMaxFamilyBlend = ultraLiveFrame ? 0.18f
+                                          : liveFrame      ? 0.36f
+                                                           : 0.72f;
+            const float modeOctaveGuardStartCents = ultraLiveFrame ? 190.0f
+                                                  : liveFrame      ? 280.0f
+                                                                   : 420.0f;
+            const float modeOctaveGuardEndCents = ultraLiveFrame ? 420.0f
+                                                : liveFrame      ? 610.0f
+                                                                 : 820.0f;
+            const float modeOctaveRepairTrust = ultraLiveFrame ? 0.42f
+                                             : liveFrame      ? 0.66f
+                                                              : 0.92f;
 
             const float bandStrength = 0.16f
                 + 0.84f * smoothStep(850.0f, 6200.0f, frequencyHz);
@@ -3910,15 +3930,59 @@ void ModernPitchEngine::SpectralVoiceShifter::synthesiseLayer(
                     // pitch.  The plain ratio target remains the fallback.
                     const double offsetScale = 0.35
                         + 0.65 * std::clamp(safeRatio, 0.50, 2.00);
-                    const double familyTargetHz = targetHarmonicHz
+                    const double rawFamilyTargetHz = targetHarmonicHz
                         + localOffsetHz * offsetScale;
                     const double ratioTargetHz = static_cast<double>(sourceBinHzForAudit)
                         * safeRatio;
 
-                    const double familyBlend = static_cast<double>(
-                        modeFamilyPull * familyReconstructionTrust);
+                    // NEUMATON_MODE_SPECIFIC_RECONSTRUCTION_V51_OCTAVE_GUARD
+                    // The plain ratio transport is the register anchor.  The
+                    // harmonic-family target may refine the local neighbourhood,
+                    // but first it is aligned to the octave nearest to the ratio
+                    // target.  This is especially important in Live/Experimental,
+                    // where 256/128-sample windows can provide too little context
+                    // and a subharmonic family can sound like a whole octave down.
+                    double alignedFamilyTargetHz = ratioTargetHz;
+                    float familyRegisterSafety = 0.0f;
+                    if (std::isfinite(rawFamilyTargetHz)
+                        && rawFamilyTargetHz > 1.0e-6
+                        && std::isfinite(ratioTargetHz)
+                        && ratioTargetHz > 1.0e-6)
+                    {
+                        const double rawFamilyLog2 = safeLog2(rawFamilyTargetHz);
+                        const double ratioTargetLog2 = safeLog2(ratioTargetHz);
+                        const double alignedFamilyLog2 = alignTargetToNearestOctave(
+                            rawFamilyLog2,
+                            ratioTargetLog2);
+                        alignedFamilyTargetHz = std::exp2(alignedFamilyLog2);
+
+                        const float alignedDistanceCents = static_cast<float>(
+                            std::abs(1200.0 * (alignedFamilyLog2 - ratioTargetLog2)));
+                        const float rawRegisterDistanceCents = static_cast<float>(
+                            std::abs(1200.0 * (rawFamilyLog2 - ratioTargetLog2)));
+
+                        const float closeRegister = 1.0f - smoothStep(
+                            modeOctaveGuardStartCents,
+                            modeOctaveGuardEndCents,
+                            alignedDistanceCents);
+                        const float requiredOctaveRepair = smoothStep(
+                            760.0f,
+                            1120.0f,
+                            rawRegisterDistanceCents);
+                        familyRegisterSafety = clamp01(
+                            closeRegister
+                            * (1.0f - requiredOctaveRepair
+                               + requiredOctaveRepair * modeOctaveRepairTrust));
+                    }
+
+                    const float rawFamilyBlend = modeFamilyPull
+                        * familyReconstructionTrust
+                        * familyRegisterSafety;
+                    const double familyBlend = static_cast<double>(std::min(
+                        rawFamilyBlend,
+                        modeMaxFamilyBlend));
                     const double rebuiltTargetHz = ratioTargetHz
-                        + familyBlend * (familyTargetHz - ratioTargetHz);
+                        + familyBlend * (alignedFamilyTargetHz - ratioTargetHz);
 
                     residualTargetPosition = rebuiltTargetHz / binWidthHzForTransport;
                 }
@@ -3984,12 +4048,39 @@ void ModernPitchEngine::SpectralVoiceShifter::synthesiseLayer(
                 float residualCosine = 1.0f;
                 fastSinCos(residualPhase, residualSine, residualCosine);
 
-                const float residualMagnitude = magnitude
+                // NEUMATON_TARGET_HARMONIC_CONDITIONER_V5_RESIDUAL_DEPOSIT
+                // Lightweight spectral-domain conditioner for difficult material.
+                // This is not a FIR, not a convolver in the time domain, and not a
+                // new latency path.  It behaves like a tiny target-harmonic
+                // neighbourhood transplant: natural presets spread a controlled
+                // part of the already-transported residual into nearby corrected
+                // harmonic bins, while extreme hard-tune presets remain direct and
+                // synthetic.
+                const float naturalConditionerDrive = frameNaturalConditionerDrive_;
+                const float localDifficultMaterial = clamp01(noiseWeight);
+                const float targetFamilyConfidence = clamp01(
+                    0.42f * targetSpectrumEase
+                    + 0.34f * familyReconstructionTrust
+                    + 0.24f * frameTonalConfidence_);
+                const float conditionerStrength = clamp01(
+                    naturalConditionerDrive
+                    * localDifficultMaterial
+                    * (0.30f + 0.70f * targetFamilyConfidence)
+                    * (ultraLiveFrame ? 0.58f : liveFrame ? 0.78f : 1.00f));
+
+                const float residualMagnitudeBase = magnitude
                     * noiseWeight
                     * residualTransportGain
                     * residualFormantGain
                     * energyScale
                     * modeEnergyConservatism;
+
+                // Keep total energy controlled: the conditioner borrows a small
+                // amount from the main deposit instead of becoming a parallel gain
+                // boost.  Quality can use a wider neighbourhood; live modes remain
+                // intentionally tighter.
+                const float mainRetain = 1.0f - 0.16f * conditionerStrength;
+                const float residualMagnitude = residualMagnitudeBase * mainRetain;
 
                 const Complex residualPolar(residualMagnitude * residualCosine,
                                             residualMagnitude * residualSine);
@@ -4019,6 +4110,106 @@ void ModernPitchEngine::SpectralVoiceShifter::synthesiseLayer(
                 if (residualBin1 >= 0 && residualBin1 <= positiveBins)
                     layer.spectrum[static_cast<std::size_t>(residualBin1)] +=
                         residualPolar * residualUpperWeight;
+
+                if (conditionerStrength > 1.0e-4f && sourceBin > 0)
+                {
+                    double conditionerCentrePosition = residualTargetPosition;
+
+                    if (targetPitchHz > 0.0f && binWidthHzForTransport > 0.0)
+                    {
+                        const double targetHz = residualTargetPosition * binWidthHzForTransport;
+                        // NEUMATON_MODE_SPECIFIC_RECONSTRUCTION_V51_CONDITIONER_GRID
+                        // Keep V5's conditioner amount/taps intact, but choose an
+                        // octave-safe target grid.  In 128/256-sample modes, if
+                        // the current grid and the +1 octave grid fit equally
+                        // well, prefer the upper grid slightly to avoid reinforcing
+                        // a subharmonic/octave-down reconstruction.
+                        double bestGridCentreHz = 0.0;
+                        double bestGridCost = std::numeric_limits<double>::infinity();
+                        bool foundGridCentre = false;
+
+                        for (int octaveShift = -1; octaveShift <= 1; ++octaveShift)
+                        {
+                            const double candidatePitchHz = std::ldexp(
+                                static_cast<double>(targetPitchHz),
+                                octaveShift);
+                            if (!std::isfinite(candidatePitchHz) || candidatePitchHz <= 1.0e-6)
+                                continue;
+
+                            const double harmonicFloat = targetHz / candidatePitchHz;
+                            const double nearestTargetHarmonic = std::round(harmonicFloat);
+                            if (nearestTargetHarmonic < 1.0 || nearestTargetHarmonic > 256.0)
+                                continue;
+
+                            const double candidateCentreHz = nearestTargetHarmonic
+                                * candidatePitchHz;
+                            const double distanceBins = std::abs(candidateCentreHz - targetHz)
+                                / std::max(1.0, binWidthHzForTransport);
+                            const double octavePrior = octaveShift < 0
+                                ? 0.34
+                                : (octaveShift > 0
+                                    ? (ultraLiveFrame ? -0.055 : liveFrame ? -0.028 : 0.018)
+                                    : 0.0);
+                            const double cost = distanceBins + octavePrior;
+
+                            if (cost < bestGridCost)
+                            {
+                                bestGridCost = cost;
+                                bestGridCentreHz = candidateCentreHz;
+                                foundGridCentre = true;
+                            }
+                        }
+
+                        if (foundGridCentre)
+                        {
+                            const double harmonicCentreBin = bestGridCentreHz
+                                / binWidthHzForTransport;
+                            const double centrePull = static_cast<double>(
+                                conditionerStrength
+                                * (ultraLiveFrame ? 0.18f : liveFrame ? 0.26f : 0.34f));
+                            conditionerCentrePosition += centrePull
+                                * (harmonicCentreBin - residualTargetPosition);
+                        }
+                    }
+
+                    const int conditionerCentreBin = static_cast<int>(
+                        std::lround(conditionerCentrePosition));
+                    const float conditionerMagnitude = residualMagnitudeBase
+                        * conditionerStrength
+                        * (ultraLiveFrame ? 0.055f : liveFrame ? 0.075f : 0.095f);
+                    const Complex conditionerPolar(conditionerMagnitude * residualCosine,
+                                                   conditionerMagnitude * residualSine);
+
+                    const float innerTap = ultraLiveFrame ? 0.46f : liveFrame ? 0.54f : 0.62f;
+                    const float outerTap = ultraLiveFrame ? 0.00f : liveFrame ? 0.00f : 0.24f;
+
+                    if (conditionerCentreBin >= 0 && conditionerCentreBin <= positiveBins)
+                        layer.spectrum[static_cast<std::size_t>(conditionerCentreBin)] +=
+                            conditionerPolar * innerTap;
+
+                    const int conditionerLowerBin = conditionerCentreBin - 1;
+                    if (conditionerLowerBin >= 0 && conditionerLowerBin <= positiveBins)
+                        layer.spectrum[static_cast<std::size_t>(conditionerLowerBin)] +=
+                            conditionerPolar * (0.5f * (1.0f - innerTap));
+
+                    const int conditionerUpperBin = conditionerCentreBin + 1;
+                    if (conditionerUpperBin >= 0 && conditionerUpperBin <= positiveBins)
+                        layer.spectrum[static_cast<std::size_t>(conditionerUpperBin)] +=
+                            conditionerPolar * (0.5f * (1.0f - innerTap));
+
+                    if (outerTap > 0.0f)
+                    {
+                        const int conditionerOuterLowerBin = conditionerCentreBin - 2;
+                        if (conditionerOuterLowerBin >= 0 && conditionerOuterLowerBin <= positiveBins)
+                            layer.spectrum[static_cast<std::size_t>(conditionerOuterLowerBin)] +=
+                                conditionerPolar * outerTap;
+
+                        const int conditionerOuterUpperBin = conditionerCentreBin + 2;
+                        if (conditionerOuterUpperBin >= 0 && conditionerOuterUpperBin <= positiveBins)
+                            layer.spectrum[static_cast<std::size_t>(conditionerOuterUpperBin)] +=
+                                conditionerPolar * outerTap;
+                    }
+                }
             }
         }
 
@@ -4215,6 +4406,24 @@ void ModernPitchEngine::SpectralVoiceShifter::processFrame(
     frameDetectedPitchHz_ = harmonicNoiseContext.detectedPitchHz;
     frameCorrectionAssertiveness_ = clamp01(harmonicNoiseContext.correctionAssertiveness);
     frameHardCorrectionIntent_ = clamp01(harmonicNoiseContext.hardCorrectionIntent);
+
+    // NEUMATON_TARGET_HARMONIC_CONDITIONER_V5_FRAME_DRIVE
+    // No FIR and no dry/wet branch: these values only determine how strongly
+    // difficult material is locally conditioned after it has already been moved
+    // into the corrected target spectrum.  Hard synthetic settings remain
+    // direct; more natural settings use a slightly richer target-neighbourhood
+    // reconstruction.
+    frameHumanize_ = clamp01(harmonicNoiseContext.humanize);
+    frameScaleLockActive_ = harmonicNoiseContext.scaleLock;
+    const float hardSyntheticDriveForConditioner = clamp01(
+        std::pow(frameCorrectionAssertiveness_, 1.70f)
+        * std::pow(1.0f - frameHumanize_, 1.35f)
+        * (frameScaleLockActive_ ? 1.18f : 0.92f));
+    frameNaturalConditionerDrive_ = clamp01(
+        std::pow(frameHumanize_, 0.85f)
+        * (1.0f - 0.72f * hardSyntheticDriveForConditioner)
+        * smoothStep(0.08f, 0.75f, frameCorrectionAssertiveness_));
+
     const float auditTransientSuppression = clamp01(harmonicNoiseContext.onsetStrength);
     frameTonalConfidence_ = clamp01(
         harmonicNoiseContext.confidence
@@ -4761,8 +4970,7 @@ wetArtifactVeto_ = clamp01(wetArtifactVeto_);
 wetCancellationGain_ += 0.045f * (1.0f - wetCancellationGain_);
 
 const float reconstructedWet = wetRedistributionGain_ * levelMatchedShifted;
-const float output = sanitiseAudioSample(reconstructedWet * wetCancellationGain_);
-    
+const float output = sanitiseAudioSample(reconstructedWet * wetCancellationGain_);const float output = sanitiseAudioSample(reconstructedWet * wetCancellationGain_);
    
 
     if (transition.commitSecondary && dualTransitionActive_)
@@ -5291,7 +5499,9 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
             correctionAssertivenessForAuditors,
             hardCorrectionIntentForAuditors,
             trackingState,
-            noteAgeSeconds
+            noteAgeSeconds,
+            clamp01(safeParameters.humanize),
+            safeParameters.scaleLock
         };
 
         if (useMidSide)
