@@ -54,10 +54,12 @@ void ControlRoomPage::paint (juce::Graphics& g)
                               topMeters.removeFromLeft (meterW).reduced (4),
                               metering_.detectedPitchHz,
                               metering_.targetPitchHz);
-    Painter::drawConsensusGauge (g,
-                                 topMeters.reduced (4),
-                                 metering_.consensus);
+  Painter::drawConsensusGauge ( g,
+                                  juce::Rectangle<int> bounds,
+                                  float consensus,
+                                  float glowConsensus)
 
+}
     area.removeFromTop (12);
     drawDiagnosticGrid (g, area);
 }
