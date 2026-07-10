@@ -407,28 +407,28 @@ void ControlRoomPage::drawDiagnosticGrid (juce::Graphics& g, juce::Rectangle<int
     auto textureBus = bottomBand.reduced (4, 2);
     textureBus.setLeft (senseNode.getX() + senseNode.getWidth() / 3);
     textureBus.setRight (outputNode.getRight());
-    const auto centreLeft = [] (juce::Rectangle<int> r)
+    const auto getCentreLeft = [] (juce::Rectangle<int> r)
 {
     return juce::Point<float> (
         static_cast<float> (r.getX()),
         static_cast<float> (r.getCentreY()));
 };
 
-const auto centreRight = [] (juce::Rectangle<int> r)
+const auto getCentreRight = [] (juce::Rectangle<int> r)
 {
     return juce::Point<float> (
         static_cast<float> (r.getRight()),
         static_cast<float> (r.getCentreY()));
 };
 
-const auto centreTop = [] (juce::Rectangle<int> r)
+const auto getCentreTop = [] (juce::Rectangle<int> r)
 {
     return juce::Point<float> (
         static_cast<float> (r.getCentreX()),
         static_cast<float> (r.getY()));
 };
 
-const auto centreBottom = [] (juce::Rectangle<int> r)
+const auto getCentreBottom = [] (juce::Rectangle<int> r)
 {
     return juce::Point<float> (
         static_cast<float> (r.getCentreX()),
