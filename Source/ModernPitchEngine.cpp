@@ -4970,7 +4970,8 @@ wetArtifactVeto_ = clamp01(wetArtifactVeto_);
 wetCancellationGain_ += 0.045f * (1.0f - wetCancellationGain_);
 
 const float reconstructedWet = wetRedistributionGain_ * levelMatchedShifted;
-const float output = sanitiseAudioSample(reconstructedWet * wetCancellationGain_);const float output = sanitiseAudioSample(reconstructedWet * wetCancellationGain_);
+const float output = sanitiseAudioSample(reconstructedWet * wetCancellationGain_);
+    
    
 
     if (transition.commitSecondary && dualTransitionActive_)
