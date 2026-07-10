@@ -1147,50 +1147,176 @@ void Painter::drawRadioTarget (juce::Graphics& g,
                                float maximumHz)
 {
     const auto& p = palette();
+
     auto f = bounds.toFloat();
-    drawPanel (g, f, 10.0f, 0.96f);
+
+    // Più trasparente: deve sembrare uno strumento appoggiato al banco.
+    drawPanel (g, f, 10.0f, 0.46f);
 
     auto area = bounds.reduced (14, 10);
     auto title = area.removeFromTop (20);
-    g.setColour (p.ink);
+
+    g.setColour (p.ink.withAlpha (0.92f));
     g.setFont (juce::FontOptions (12.5f, juce::Font::bold));
     g.drawText ("Target tuning", title, juce::Justification::centred);
 
-    auto rail = area.reduced (4, 18).withHeight (18);
+    auto rail = area.reduced (4, 18).withHeight (20);
     rail.setCentre (area.getCentre());
 
-    g.setColour (p.glass);
-    g.fillRoundedRectangle (rail.toFloat(), 4.0f);
-    g.setColour (p.glassEdge);
-    g.drawRoundedRectangle (rail.toFloat().reduced (0.5f), 4.0f, 1.0f);
+    auto railF = rail.toFloat();
+    auto frame = rail.expanded (9, 12).toFloat();
 
-    // Scala logaritmica: musicalmente è più coerente della posizione lineare in Hz.
-    for (int i = 0; i <= 4; ++i)
+    // Ombra sotto la cornice.
+    g.setColour (juce::Colours::black.withAlpha (0.32f));
+    g.fillRoundedRectangle (frame.translated (0.0f, 1.6f), 7.0f);
+
+    // Cornice ottone: laboratorio/liutaio.
+    juce::ColourGradient frameGradient (
+        p.brass.brighter (0.20f),
+        frame.getX(),
+        frame.getY(),
+        p.brassDark.darker (0.18f),
+        frame.getRight(),
+        frame.getBottom(),
+        true);
+
+    g.setGradientFill (frameGradient);
+    g.fillRoundedRectangle (frame, 7.0f);
+
+    g.setColour (p.brassDark.withAlpha (0.92f));
+    g.drawRoundedRectangle (frame.reduced (0.5f), 7.0f, 1.1f);
+
+    g.setColour (juce::Colours::white.withAlpha (0.13f));
+    g.drawRoundedRectangle (frame.reduced (2.0f), 5.5f, 0.8f);
+
+    // Fessura interna, più analogica/radio.
+    juce::ColourGradient railGradient (
+        juce::Colour (0xFF07090D),
+        railF.getX(),
+        railF.getY(),
+        juce::Colour (0xFF263149),
+        railF.getX(),
+        railF.getBottom(),
+        false);
+
+    g.setGradientFill (railGradient);
+    g.fillRoundedRectangle (railF, 4.0f);
+
+    g.setColour (p.glassEdge.withAlpha (0.72f));
+    g.drawRoundedRectangle (railF.reduced (0.5f), 4.0f, 0.9f);
+
+    // Tacche musicali: ottave e quinte.
+    const auto drawFreqTick = [&] (float hz,
+                                   float height,
+                                   float thickness,
+                                   juce::Colour colour)
     {
-        const float norm = static_cast<float> (i) / 4.0f;
-        const int x = rail.getX() + juce::roundToInt (norm * static_cast<float> (rail.getWidth()));
-        g.setColour (p.ink.withAlpha (i == 0 || i == 4 ? 0.70f : 0.38f));
-        g.drawVerticalLine (x, static_cast<float> (rail.getY() - 5), static_cast<float> (rail.getBottom() + 5));
+        if (hz < minimumHz || hz > maximumHz)
+            return;
+
+        const float norm = frequencyToLogPosition (hz, minimumHz, maximumHz);
+        const float tickX = railF.getX() + norm * railF.getWidth();
+
+        g.setColour (colour);
+        g.drawLine (tickX,
+                    railF.getCentreY() - height * 0.5f,
+                    tickX,
+                    railF.getCentreY() + height * 0.5f,
+                    thickness);
+    };
+
+    // Ottave: tacche principali.
+    for (float hz = minimumHz; hz <= maximumHz * 1.001f; hz *= 2.0f)
+    {
+        drawFreqTick (hz,
+                      railF.getHeight() + 13.0f,
+                      1.35f,
+                      p.ink.withAlpha (0.72f));
     }
 
+    // Quinte: tacche medie, meno invadenti.
+    for (float hz = minimumHz * 1.5f; hz <= maximumHz * 1.001f; hz *= 2.0f)
+    {
+        drawFreqTick (hz,
+                      railF.getHeight() + 6.0f,
+                      0.95f,
+                      p.brass.withAlpha (0.64f));
+    }
+
+    // Luce detected pitch: radio/sintetica.
     if (detectedHz > 0.0f)
     {
         const float detectedNorm = frequencyToLogPosition (detectedHz, minimumHz, maximumHz);
-        const int x = rail.getX() + juce::roundToInt (detectedNorm * static_cast<float> (rail.getWidth()));
-        g.setColour (p.blueGlow.withAlpha (0.45f));
-        g.drawVerticalLine (x, static_cast<float> (rail.getY() - 9), static_cast<float> (rail.getBottom() + 9));
+        const float x = railF.getX() + detectedNorm * railF.getWidth();
+
+        const auto detectedColour = juce::Colour (0xFF20D8FF)
+            .interpolatedWith (juce::Colour (0xFF9B5CFF), 0.35f);
+
+        g.setColour (detectedColour.withAlpha (0.18f));
+        g.fillRoundedRectangle (
+            juce::Rectangle<float> (11.0f, railF.getHeight() + 20.0f)
+                .withCentre ({ x, railF.getCentreY() }),
+            3.0f);
+
+        g.setColour (detectedColour.withAlpha (0.90f));
+        g.drawLine (x,
+                    railF.getY() - 10.0f,
+                    x,
+                    railF.getBottom() + 10.0f,
+                    1.4f);
     }
 
+    // Cursore target rosso: mantiene il gesto bello che già funziona,
+    // ma diventa più fisico.
     const float targetNorm = frequencyToLogPosition (targetHz, minimumHz, maximumHz);
-    const int targetX = rail.getX() + juce::roundToInt (targetNorm * static_cast<float> (rail.getWidth()));
-    auto cursor = juce::Rectangle<int> (targetX - 5, rail.getY() - 7, 10, rail.getHeight() + 14);
-    g.setColour (p.warningRed.withAlpha (0.94f));
-    g.fillRoundedRectangle (cursor.toFloat(), 2.0f);
-    g.setColour (juce::Colours::white.withAlpha (0.65f));
-    g.drawRoundedRectangle (cursor.toFloat().reduced (0.5f), 2.0f, 0.8f);
+    const float targetX = railF.getX() + targetNorm * railF.getWidth();
 
+    auto cursor = juce::Rectangle<float> (
+        targetX - 5.0f,
+        railF.getY() - 8.0f,
+        10.0f,
+        railF.getHeight() + 16.0f);
+
+    juce::ColourGradient cursorGradient (
+        juce::Colour (0xFFFF6B54),
+        cursor.getX(),
+        cursor.getY(),
+        juce::Colour (0xFF8E1717),
+        cursor.getRight(),
+        cursor.getBottom(),
+        true);
+
+    g.setGradientFill (cursorGradient);
+    g.fillRoundedRectangle (cursor, 2.0f);
+
+    g.setColour (juce::Colours::black.withAlpha (0.34f));
+    g.drawRoundedRectangle (cursor.reduced (0.2f), 2.0f, 1.0f);
+
+    g.setColour (juce::Colours::white.withAlpha (0.48f));
+    g.drawRoundedRectangle (cursor.reduced (0.8f), 1.5f, 0.75f);
+
+    // Vetro sopra tutto il controllo.
+    auto glass = frame.reduced (2.0f);
+
+    juce::ColourGradient glassGradient (
+        juce::Colours::white.withAlpha (0.13f),
+        glass.getX(),
+        glass.getY(),
+        juce::Colours::transparentWhite,
+        glass.getX(),
+        glass.getBottom(),
+        false);
+
+    g.setGradientFill (glassGradient);
+    g.fillRoundedRectangle (glass, 7.0f);
+
+    g.setColour (juce::Colours::white.withAlpha (0.12f));
+    g.drawRoundedRectangle (glass.reduced (0.7f), 7.0f, 0.8f);
+
+    // Testo Hz.
     auto text = area.removeFromBottom (18);
-    g.setColour (p.ink.withAlpha (0.86f));
+
+    g.setColour (p.ink.withAlpha (0.88f));
     g.setFont (juce::FontOptions (11.0f));
     g.drawText (targetHz > 0.0f ? juce::String (targetHz, 1) + " Hz" : "--",
                 text,
