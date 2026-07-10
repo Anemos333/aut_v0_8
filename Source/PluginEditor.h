@@ -173,6 +173,8 @@ void onPresetSelected();
     bool lastAnalogModeState_ = false;
 
     LivePitchProcessor::Metering displayedMetering;
+float visualCorrectionGlowCents_ = 0.0f;
+float visualConsensusGlow_ = 0.0f;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MicrotonalAutotuneAudioProcessorEditor)
 };
