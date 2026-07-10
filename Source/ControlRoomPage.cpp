@@ -407,32 +407,36 @@ void ControlRoomPage::drawDiagnosticGrid (juce::Graphics& g, juce::Rectangle<int
     auto textureBus = bottomBand.reduced (4, 2);
     textureBus.setLeft (senseNode.getX() + senseNode.getWidth() / 3);
     textureBus.setRight (outputNode.getRight());
-    const auto getCentreLeft = [] (juce::Rectangle<int> r)
+   const auto centreLeft = [] (juce::Rectangle<int> r) -> juce::Point<float>
 {
-    return juce::Point<float> (
+    return {
         static_cast<float> (r.getX()),
-        static_cast<float> (r.getCentreY()));
+        static_cast<float> (r.getCentreY())
+    };
 };
 
-const auto getCentreRight = [] (juce::Rectangle<int> r)
+const auto centreRight = [] (juce::Rectangle<int> r) -> juce::Point<float>
 {
-    return juce::Point<float> (
+    return {
         static_cast<float> (r.getRight()),
-        static_cast<float> (r.getCentreY()));
+        static_cast<float> (r.getCentreY())
+    };
 };
 
-const auto getCentreTop = [] (juce::Rectangle<int> r)
+const auto centreTop = [] (juce::Rectangle<int> r) -> juce::Point<float>
 {
-    return juce::Point<float> (
+    return {
         static_cast<float> (r.getCentreX()),
-        static_cast<float> (r.getY()));
+        static_cast<float> (r.getY())
+    };
 };
 
-const auto getCentreBottom = [] (juce::Rectangle<int> r)
+const auto centreBottom = [] (juce::Rectangle<int> r) -> juce::Point<float>
 {
-    return juce::Point<float> (
+    return {
         static_cast<float> (r.getCentreX()),
-        static_cast<float> (r.getBottom()));
+        static_cast<float> (r.getBottom())
+    };
 };
 
     // ---------------------------------------------------------------------
@@ -440,35 +444,36 @@ const auto getCentreBottom = [] (juce::Rectangle<int> r)
     // ---------------------------------------------------------------------
     const auto linkIntensity = safe01 ((metering_.confidence + metering_.voicing) * 0.5f);
 
-    drawLink (inputNode.toFloat().getCentreRight(),
-              senseNode.toFloat().getCentreLeft(),
-              electricBlue,
-              linkIntensity);
+   
+     drawLink (centreRight (inputNode),
+          centreLeft (senseNode),
+          electricBlue,
+          linkIntensity);
 
-    drawLink (senseNode.toFloat().getCentreRight(),
-              referenceNode.toFloat().getCentreLeft(),
-              electricBlue.interpolatedWith (syntheticViolet, 0.35f),
-              safe01 (metering_.confidence));
+drawLink (centreRight (senseNode),
+          centreLeft (referenceNode),
+          electricBlue.interpolatedWith (syntheticViolet, 0.35f),
+          safe01 (metering_.confidence));
 
-    drawLink (referenceNode.toFloat().getCentreRight(),
-              coreNode.toFloat().getCentreLeft(),
-              syntheticViolet,
-              safe01 (metering_.maskStability));
+drawLink (centreRight (referenceNode),
+          centreLeft (coreNode),
+          syntheticViolet,
+          safe01 (metering_.maskStability));
 
-    drawLink (coreNode.toFloat().getCentreRight(),
-              outputNode.toFloat().getCentreLeft(),
-              coreColour,
-              juce::jmax (correctionAmount, safe01 (metering_.wetMix)));
+drawLink (centreRight (coreNode),
+          centreLeft (outputNode),
+          coreColour,
+          juce::jmax (correctionAmount, safe01 (metering_.wetMix)));
 
-    drawLink (stabilityBus.toFloat().getCentreBottom(),
-              coreNode.toFloat().getCentre().translated (0.0f, -coreNode.getHeight() * 0.48f),
-              green,
-              safe01 ((metering_.consensus + metering_.maskStability) * 0.5f));
+drawLink (centreBottom (stabilityBus),
+          centreTop (coreNode),
+          green,
+          safe01 ((metering_.consensus + metering_.maskStability) * 0.5f));
 
-    drawLink (textureBus.toFloat().getCentreTop(),
-              coreNode.toFloat().getCentre().translated (0.0f, coreNode.getHeight() * 0.48f),
-              amber,
-              safe01 ((metering_.breathiness + metering_.noisePath + metering_.harmonicity) / 3.0f));
+drawLink (centreTop (textureBus),
+          centreBottom (coreNode),
+          amber,
+          safe01 ((metering_.breathiness + metering_.noisePath + metering_.harmonicity) / 3.0f));
 
     // ---------------------------------------------------------------------
     // Draw buses.
