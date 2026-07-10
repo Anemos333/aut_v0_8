@@ -93,7 +93,8 @@ public:
                              const juce::String& title,
                              const juce::String& valueText,
                              juce::Colour accent,
-                             bool redWarning);
+                             bool redWarning,
+                             bool bipolarGlow);
 
 static void drawCorrectionGauge (juce::Graphics& g,
                                  juce::Rectangle<int> bounds,
