@@ -101,6 +101,10 @@ public:
         float outputLedgerHealth = 0.0f;
         float outputPhaseCoherence = 0.0f;
         float outputReconstructionNeed = 0.0f;
+        // NEUMATON_V6_OUTPUT_DIAGNOSTICS_CALIBRATED
+        // 1 when the V6 output meters describe an active pitched frame.
+        // 0 means ignore Source/Target/Physical/Need for CSV statistics.
+        float outputMeterValid = 0.0f;
 
         bool dualSynthesisActive = false;
         int detectorSupport = 0;
@@ -643,6 +647,7 @@ private:
         [[nodiscard]] float getOutputLedgerHealth() const noexcept { return outputLedgerHealth_; }
         [[nodiscard]] float getOutputPhaseCoherence() const noexcept { return outputPhaseCoherence_; }
         [[nodiscard]] float getOutputReconstructionNeed() const noexcept { return outputReconstructionNeed_; }
+        [[nodiscard]] float getOutputMeterValid() const noexcept { return outputMeterValid_; }
 
     private:
         using Complex = std::complex<float>;
@@ -810,7 +815,8 @@ float outputTargetCoherence_ = 0.0f;
 float outputPhysicalHarmonicFit_ = 0.0f;
 float outputLedgerHealth_ = 100.0f;
 float outputPhaseCoherence_ = 0.0f;
-float outputReconstructionNeed_ = 100.0f;
+float outputReconstructionNeed_ = 0.0f;
+float outputMeterValid_ = 0.0f;
 float dryWetContinuity_ = 1.0f;
 float dryLeakRisk_ = 0.0f;
 float dryTrustInstability_ = 0.0f;
@@ -943,7 +949,8 @@ float dryCandidateShapeCoefficient_ = 1.0f;
     std::atomic<float> meterOutputPhysicalHarmonicFit_ { 0.0f };
     std::atomic<float> meterOutputLedgerHealth_ { 100.0f };
     std::atomic<float> meterOutputPhaseCoherence_ { 0.0f };
-    std::atomic<float> meterOutputReconstructionNeed_ { 100.0f };
+    std::atomic<float> meterOutputReconstructionNeed_ { 0.0f };
+    std::atomic<float> meterOutputMeterValid_ { 0.0f };
 
     std::atomic<bool> meterDualSynthesisActive_ { false };
     std::atomic<int> meterDetectorSupport_ { 0 };
