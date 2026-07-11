@@ -116,6 +116,18 @@ public:
         float outputOctaveConflict = 0.0f;
         float outputTransitionStress = 0.0f;
 
+        // NEUMATON_V6_1_SOURCE_MIRROR_SHADOW_LEDGER
+        // Shadow-only pre-IFFT consensus diagnostics. These do not affect
+        // audio yet; they measure how well the transported output spectrum
+        // matches the input spectrum expressed in target-F0 coordinates, and
+        // how much a future spectral ledger would need to intervene.
+        float outputSourceMirrorFit = 0.0f;
+        float outputDoubleFamilyRisk = 0.0f;
+        float outputLedgerDeficit = 0.0f;
+        float outputMemoryReliability = 0.0f;
+        float outputPreIfftConsensus = 0.0f;
+        float outputSelectiveReconstructionNeed = 0.0f;
+
         bool dualSynthesisActive = false;
         int detectorSupport = 0;
         int octaveState = 0;
@@ -658,12 +670,19 @@ private:
         [[nodiscard]] float getOutputPhaseCoherence() const noexcept { return outputPhaseCoherence_; }
         [[nodiscard]] float getOutputReconstructionNeed() const noexcept { return outputReconstructionNeed_; }
         [[nodiscard]] float getOutputMeterValid() const noexcept { return outputMeterValid_; }
+        [[nodiscard]] float getOutputSourceMirrorFit() const noexcept { return outputSourceMirrorFit_; }
+        [[nodiscard]] float getOutputDoubleFamilyRisk() const noexcept { return outputDoubleFamilyRisk_; }
+        [[nodiscard]] float getOutputLedgerDeficit() const noexcept { return outputLedgerDeficit_; }
+        [[nodiscard]] float getOutputMemoryReliability() const noexcept { return outputMemoryReliability_; }
+        [[nodiscard]] float getOutputPreIfftConsensus() const noexcept { return outputPreIfftConsensus_; }
+        [[nodiscard]] float getOutputSelectiveReconstructionNeed() const noexcept { return outputSelectiveReconstructionNeed_; }
 
     private:
         using Complex = std::complex<float>;
         static constexpr int sineTableSize = 4096;
         static constexpr int formantRatioTableSize = 256;
         static constexpr int formantLevelCount = 32;
+        static constexpr int v61HarmonicMemorySize = 64;
 
         struct SynthesisLayer
         {
@@ -827,6 +846,15 @@ float outputLedgerHealth_ = 100.0f;
 float outputPhaseCoherence_ = 0.0f;
 float outputReconstructionNeed_ = 0.0f;
 float outputMeterValid_ = 0.0f;
+// NEUMATON_V6_1_SOURCE_MIRROR_SHADOW_LEDGER_STATE
+float outputSourceMirrorFit_ = 0.0f;
+float outputDoubleFamilyRisk_ = 0.0f;
+float outputLedgerDeficit_ = 0.0f;
+float outputMemoryReliability_ = 0.0f;
+float outputPreIfftConsensus_ = 0.0f;
+float outputSelectiveReconstructionNeed_ = 0.0f;
+std::array<float, v61HarmonicMemorySize> v61HarmonicEnergyMemory_ {};
+std::array<float, v61HarmonicMemorySize> v61HarmonicReliabilityMemory_ {};
 float dryWetContinuity_ = 1.0f;
 float dryLeakRisk_ = 0.0f;
 float dryTrustInstability_ = 0.0f;
@@ -977,6 +1005,13 @@ float dryCandidateShapeCoefficient_ = 1.0f;
     std::atomic<float> meterOutputCorrectionVelocityCentsPerSecond_ { 0.0f };
     std::atomic<float> meterOutputOctaveConflict_ { 0.0f };
     std::atomic<float> meterOutputTransitionStress_ { 0.0f };
+    // NEUMATON_V6_1_SOURCE_MIRROR_SHADOW_LEDGER_ATOMICS
+    std::atomic<float> meterOutputSourceMirrorFit_ { 0.0f };
+    std::atomic<float> meterOutputDoubleFamilyRisk_ { 0.0f };
+    std::atomic<float> meterOutputLedgerDeficit_ { 0.0f };
+    std::atomic<float> meterOutputMemoryReliability_ { 0.0f };
+    std::atomic<float> meterOutputPreIfftConsensus_ { 0.0f };
+    std::atomic<float> meterOutputSelectiveReconstructionNeed_ { 0.0f };
 
     std::atomic<bool> meterDualSynthesisActive_ { false };
     std::atomic<int> meterDetectorSupport_ { 0 };
