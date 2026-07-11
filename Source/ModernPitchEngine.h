@@ -106,6 +106,16 @@ public:
         // 0 means ignore Source/Target/Physical/Need for CSV statistics.
         float outputMeterValid = 0.0f;
 
+        // NEUMATON_V6_TEMPORAL_OCTAVE_DIAGNOSTICS
+        // Temporal diagnostics for the output trajectory.  These do not
+        // alter audio; they help diagnose Live/Experimental octave jumps,
+        // target discontinuities and correction-speed stress.
+        float outputTemporalStability = 0.0f;
+        float outputTargetJumpCents = 0.0f;
+        float outputCorrectionVelocityCentsPerSecond = 0.0f;
+        float outputOctaveConflict = 0.0f;
+        float outputTransitionStress = 0.0f;
+
         bool dualSynthesisActive = false;
         int detectorSupport = 0;
         int octaveState = 0;
@@ -915,6 +925,17 @@ float dryCandidateShapeCoefficient_ = 1.0f;
     float noteAgeTargetHz_ = 0.0f;
     std::int64_t noteAgeSamples_ = 0;
 
+    // NEUMATON_V6_TEMPORAL_OCTAVE_DIAGNOSTICS_STATE
+    bool outputTemporalInitialised_ = false;
+    float outputTemporalPreviousTargetHz_ = 0.0f;
+    float outputTemporalPreviousDetectedHz_ = 0.0f;
+    float outputTemporalPreviousCorrectionCents_ = 0.0f;
+    float outputTemporalStability_ = 0.0f;
+    float outputTargetJumpCents_ = 0.0f;
+    float outputCorrectionVelocityCentsPerSecond_ = 0.0f;
+    float outputOctaveConflict_ = 0.0f;
+    float outputTransitionStress_ = 0.0f;
+
     // NEUMATON_V6_CSV_DIAGNOSTICS_STATE
     // Debug-only CSV logger state.  It does not affect audio or metering values.
     bool diagnosticCsvInitialised_ = false;
@@ -951,6 +972,11 @@ float dryCandidateShapeCoefficient_ = 1.0f;
     std::atomic<float> meterOutputPhaseCoherence_ { 0.0f };
     std::atomic<float> meterOutputReconstructionNeed_ { 0.0f };
     std::atomic<float> meterOutputMeterValid_ { 0.0f };
+    std::atomic<float> meterOutputTemporalStability_ { 0.0f };
+    std::atomic<float> meterOutputTargetJumpCents_ { 0.0f };
+    std::atomic<float> meterOutputCorrectionVelocityCentsPerSecond_ { 0.0f };
+    std::atomic<float> meterOutputOctaveConflict_ { 0.0f };
+    std::atomic<float> meterOutputTransitionStress_ { 0.0f };
 
     std::atomic<bool> meterDualSynthesisActive_ { false };
     std::atomic<int> meterDetectorSupport_ { 0 };
