@@ -2903,7 +2903,8 @@ outputTargetCoherence_ = 0.0f;
 outputPhysicalHarmonicFit_ = 0.0f;
 outputLedgerHealth_ = 100.0f;
 outputPhaseCoherence_ = 0.0f;
-outputReconstructionNeed_ = 100.0f;
+outputReconstructionNeed_ = 0.0f;
+outputMeterValid_ = 0.0f;
 dryWetContinuity_ = 1.0f;
 dryLeakRisk_ = 0.0f;
 dryTrustInstability_ = 0.0f;
@@ -3730,21 +3731,20 @@ void ModernPitchEngine::SpectralVoiceShifter::updateHarmonicNoiseAnalysis(
 }
 
 
+
 // NEUMATON_V6_OUTPUT_DIAGNOSTICS
+// NEUMATON_V6_OUTPUT_DIAGNOSTICS_CALIBRATED
 // Diagnostic-only spectral output meter.  It does not alter layer.spectrum.
 //
-// Important physical convention:
-//   the musical scale chooses the corrected fundamental f_target;
-//   harmonics are not quantised to the scale.  They are reconstructed/evaluated
-//   as a physical series above the new fundamental.
-//
-// For a general source spectral component f_in, the translated coordinate is:
-//   rho = f_in / f_detected
-//   f_expected_out = rho * f_target
-// For a pure harmonic f_in = n * f_detected, this reduces to:
-//   f_expected_out = n * f_target
-// The expression n * f_target * (f_detected / f_target) collapses to n*f_detected,
-// so it describes the old source register rather than the transported output.
+// V6.0c calibration notes:
+// - inactive/unpitched frames are explicitly marked invalid and do not report
+//   reconstruction_need=100;
+// - harmonic fit is evaluated with an FFT-bin-aware tolerance, because a
+//   256-sample or 128-sample frame cannot prove exact line placement;
+// - source correspondence samples a local spectral neighbourhood instead of
+//   one interpolated bin;
+// - the musical scale selects f_target, while harmonics remain a physical
+//   series above f_target, not separate notes in the scale.
 void ModernPitchEngine::SpectralVoiceShifter::updateV6OutputDiagnostics(
     const SynthesisLayer& layer,
     double safeRatio,
@@ -3762,18 +3762,24 @@ void ModernPitchEngine::SpectralVoiceShifter::updateV6OutputDiagnostics(
         return std::clamp(previous + coefficient * (target - previous), 0.0f, 100.0f);
     };
 
-    if (positiveBins <= 2
-        || sourcePitchHz <= 0.0f
-        || targetPitchHz <= 0.0f
-        || !std::isfinite(safeRatio)
-        || safeRatio <= 0.0)
+    const auto invalidateMeters = [&]() noexcept
     {
         outputSourceCorrespondence_ = smoothDiagnostic(outputSourceCorrespondence_, 0.0f);
         outputTargetCoherence_ = smoothDiagnostic(outputTargetCoherence_, 0.0f);
         outputPhysicalHarmonicFit_ = smoothDiagnostic(outputPhysicalHarmonicFit_, 0.0f);
         outputLedgerHealth_ = smoothDiagnostic(outputLedgerHealth_, 100.0f);
         outputPhaseCoherence_ = smoothDiagnostic(outputPhaseCoherence_, 0.0f);
-        outputReconstructionNeed_ = smoothDiagnostic(outputReconstructionNeed_, 100.0f);
+        outputReconstructionNeed_ = smoothDiagnostic(outputReconstructionNeed_, 0.0f);
+        outputMeterValid_ = 0.0f;
+    };
+
+    if (positiveBins <= 2
+        || sourcePitchHz <= 20.0f
+        || targetPitchHz <= 20.0f
+        || !std::isfinite(safeRatio)
+        || safeRatio <= 0.0)
+    {
+        invalidateMeters();
         return;
     }
 
@@ -3781,33 +3787,113 @@ void ModernPitchEngine::SpectralVoiceShifter::updateV6OutputDiagnostics(
         sampleRate_ / static_cast<double>(std::max(1, frameSize_)));
     const float energyScale = static_cast<float>(1.0 / std::sqrt(std::max(1.0e-6, safeRatio)));
 
-    const auto magnitudeAt = [&layer, positiveBins](double binPosition) noexcept -> float
+    const bool ultraLiveFrame = frameSize_ <= 160;
+    const bool liveFrame = frameSize_ > 160 && frameSize_ <= 320;
+
+    // Short frames have poor frequency resolution.  A valid physical-harmonic
+    // meter must evaluate compatibility with a target harmonic region, not exact
+    // mathematical line placement.
+    const float modeSigmaBins = ultraLiveFrame ? 1.55f
+                              : liveFrame      ? 1.15f
+                                               : 0.82f;
+    const float modeHardBandBins = ultraLiveFrame ? 3.10f
+                                 : liveFrame      ? 2.45f
+                                                  : 1.85f;
+    const float modeMagnitudeBandBins = ultraLiveFrame ? 1.80f
+                                      : liveFrame      ? 1.35f
+                                                       : 0.95f;
+
+    double sourceInputEnergy = 0.0;
+    for (int bin = 1; bin <= positiveBins; ++bin)
+    {
+        const float magnitude = magnitudes_[static_cast<std::size_t>(bin)];
+        sourceInputEnergy += static_cast<double>(magnitude) * static_cast<double>(magnitude);
+    }
+
+    double outputEnergy = 0.0;
+    for (int bin = 1; bin <= positiveBins; ++bin)
+    {
+        const float magnitude = std::abs(layer.spectrum[static_cast<std::size_t>(bin)]);
+        outputEnergy += static_cast<double>(magnitude) * static_cast<double>(magnitude);
+    }
+
+    const float tonalEvidenceForValidity = clamp01(
+        0.46f * frameTonalConfidence_
+        + 0.24f * smoothedHarmonicity_
+        + 0.18f * smoothedSpectralReliability_
+        + 0.12f * smoothedMaskStability_);
+
+    const bool activeMeterFrame = sourceInputEnergy > 1.0e-12
+        && outputEnergy > 1.0e-12
+        && tonalEvidenceForValidity > 0.10f;
+
+    if (!activeMeterFrame)
+    {
+        invalidateMeters();
+        return;
+    }
+
+    const auto outputMagnitudeAround = [&layer, positiveBins, modeMagnitudeBandBins](double binPosition) noexcept -> float
     {
         if (binPosition < 0.0 || binPosition > static_cast<double>(positiveBins))
             return 0.0f;
-        const int bin0 = static_cast<int>(std::floor(binPosition));
-        const int bin1 = std::min(positiveBins, bin0 + 1);
-        const float fraction = static_cast<float>(binPosition - static_cast<double>(bin0));
-        const float m0 = std::abs(layer.spectrum[static_cast<std::size_t>(bin0)]);
-        const float m1 = std::abs(layer.spectrum[static_cast<std::size_t>(bin1)]);
-        return m0 + fraction * (m1 - m0);
+
+        const int radius = static_cast<int>(std::ceil(modeMagnitudeBandBins * 2.0f));
+        const int centre = static_cast<int>(std::lround(binPosition));
+        double weightedEnergy = 0.0;
+        double weightSum = 0.0;
+
+        for (int offset = -radius; offset <= radius; ++offset)
+        {
+            const int bin = centre + offset;
+            if (bin < 0 || bin > positiveBins)
+                continue;
+
+            const double distanceBins = std::abs(static_cast<double>(bin) - binPosition);
+            const double sigma = std::max(0.35, static_cast<double>(modeMagnitudeBandBins));
+            const double weight = std::exp(-0.5 * (distanceBins / sigma) * (distanceBins / sigma));
+            const float magnitude = std::abs(layer.spectrum[static_cast<std::size_t>(bin)]);
+            weightedEnergy += weight * static_cast<double>(magnitude) * static_cast<double>(magnitude);
+            weightSum += weight;
+        }
+
+        return weightSum > 1.0e-12
+            ? static_cast<float>(std::sqrt(std::max(0.0, weightedEnergy / weightSum)))
+            : 0.0f;
     };
 
-    const auto complexAt = [&layer, positiveBins](double binPosition) noexcept -> Complex
+    const auto complexAround = [&layer, positiveBins, modeMagnitudeBandBins](double binPosition) noexcept -> Complex
     {
         if (binPosition < 0.0 || binPosition > static_cast<double>(positiveBins))
             return Complex {};
-        const int bin0 = static_cast<int>(std::floor(binPosition));
-        const int bin1 = std::min(positiveBins, bin0 + 1);
-        const float fraction = static_cast<float>(binPosition - static_cast<double>(bin0));
-        const Complex c0 = layer.spectrum[static_cast<std::size_t>(bin0)];
-        const Complex c1 = layer.spectrum[static_cast<std::size_t>(bin1)];
-        return c0 + (c1 - c0) * fraction;
+
+        const int radius = static_cast<int>(std::ceil(modeMagnitudeBandBins * 1.5f));
+        const int centre = static_cast<int>(std::lround(binPosition));
+        Complex weighted {};
+        double weightSum = 0.0;
+
+        for (int offset = -radius; offset <= radius; ++offset)
+        {
+            const int bin = centre + offset;
+            if (bin < 0 || bin > positiveBins)
+                continue;
+
+            const double distanceBins = std::abs(static_cast<double>(bin) - binPosition);
+            const double sigma = std::max(0.35, static_cast<double>(modeMagnitudeBandBins));
+            const double weight = std::exp(-0.5 * (distanceBins / sigma) * (distanceBins / sigma));
+            weighted += layer.spectrum[static_cast<std::size_t>(bin)]
+                * static_cast<float>(weight);
+            weightSum += weight;
+        }
+
+        return weightSum > 1.0e-12
+            ? weighted * static_cast<float>(1.0 / weightSum)
+            : Complex {};
     };
 
-    const auto harmonicProximity = [](float frequencyHz, float pitchHz) noexcept -> float
+    const auto harmonicProximity = [binWidthHz, modeSigmaBins, modeHardBandBins](float frequencyHz, float pitchHz) noexcept -> float
     {
-        if (pitchHz <= 0.0f || frequencyHz <= pitchHz * 0.55f)
+        if (pitchHz <= 0.0f || frequencyHz <= pitchHz * 0.45f)
             return 0.0f;
 
         const float harmonicNumber = frequencyHz / pitchHz;
@@ -3815,13 +3901,25 @@ void ModernPitchEngine::SpectralVoiceShifter::updateV6OutputDiagnostics(
         if (nearestHarmonic < 1.0f || nearestHarmonic > 256.0f)
             return 0.0f;
 
-        const float harmonicDistance = std::abs(harmonicNumber - nearestHarmonic);
-        return 1.0f - smoothStep(0.025f, 0.115f, harmonicDistance);
+        const double expectedHz = static_cast<double>(nearestHarmonic) * static_cast<double>(pitchHz);
+        const double distanceBins = std::abs(static_cast<double>(frequencyHz) - expectedHz)
+            / std::max(1.0, binWidthHz);
+
+        if (distanceBins >= static_cast<double>(modeHardBandBins))
+            return 0.0f;
+
+        const double sigma = std::max(0.35, static_cast<double>(modeSigmaBins));
+        return static_cast<float>(std::exp(-0.5 * (distanceBins / sigma) * (distanceBins / sigma)));
     };
 
-    double outputEnergy = 0.0;
     double targetHarmonicEnergy = 0.0;
     double oldSourceFamilyEnergy = 0.0;
+    double tonalOutputEnergy = 0.0;
+
+    const float sourceTargetSeparationCents = static_cast<float>(std::abs(
+        1200.0 * std::log2(std::max(1.0e-6f, targetPitchHz)
+                         / std::max(1.0e-6f, sourcePitchHz))));
+    const float oldFamilyPenaltyGate = smoothStep(35.0f, 120.0f, sourceTargetSeparationCents);
 
     for (int bin = 1; bin <= positiveBins; ++bin)
     {
@@ -3833,31 +3931,28 @@ void ModernPitchEngine::SpectralVoiceShifter::updateV6OutputDiagnostics(
 
         const float targetProximity = harmonicProximity(frequencyHz, targetPitchHz);
         const float oldSourceProximity = harmonicProximity(frequencyHz, sourcePitchHz);
-        outputEnergy += energy;
-        targetHarmonicEnergy += energy * static_cast<double>(targetProximity);
+        const float tonalWeight = std::max(targetProximity, oldSourceProximity);
 
-        // Only penalise the old source family when it is meaningfully different
-        // from the corrected target family.  For tiny corrections the two families
-        // naturally overlap.
-        const float sourceTargetSeparationCents = static_cast<float>(std::abs(
-            1200.0 * std::log2(std::max(1.0e-6f, targetPitchHz)
-                             / std::max(1.0e-6f, sourcePitchHz))));
-        const float oldFamilyPenaltyGate = smoothStep(28.0f, 95.0f, sourceTargetSeparationCents);
+        targetHarmonicEnergy += energy * static_cast<double>(targetProximity);
         oldSourceFamilyEnergy += energy
             * static_cast<double>(oldSourceProximity)
             * static_cast<double>(oldFamilyPenaltyGate)
             * static_cast<double>(1.0f - targetProximity);
+        tonalOutputEnergy += energy * static_cast<double>(std::max(0.18f, tonalWeight));
     }
 
-    const float physicalHarmonicFitRaw = outputEnergy > 1.0e-20
-        ? static_cast<float>(100.0 * targetHarmonicEnergy / outputEnergy)
+    // Use tonalOutputEnergy rather than full output energy.  Formants, breath and
+    // consonants are not harmonic-series errors and should not force the physical
+    // fit toward zero.
+    const float physicalHarmonicFitRaw = tonalOutputEnergy > 1.0e-20
+        ? static_cast<float>(100.0 * targetHarmonicEnergy / tonalOutputEnergy)
         : 0.0f;
 
-    const float oldFamilyConflict = outputEnergy > 1.0e-20
-        ? static_cast<float>(oldSourceFamilyEnergy / outputEnergy)
+    const float oldFamilyConflict = tonalOutputEnergy > 1.0e-20
+        ? static_cast<float>(oldSourceFamilyEnergy / tonalOutputEnergy)
         : 0.0f;
     const float targetCoherenceRaw = std::clamp(
-        physicalHarmonicFitRaw * (1.0f - 0.42f * oldFamilyConflict),
+        physicalHarmonicFitRaw * (1.0f - 0.58f * clamp01(oldFamilyConflict)),
         0.0f,
         100.0f);
 
@@ -3880,8 +3975,8 @@ void ModernPitchEngine::SpectralVoiceShifter::updateV6OutputDiagnostics(
             continue;
 
         // General transported coordinate: rho=f/f_detected, f_out=rho*f_target.
-        // For harmonic components this is exactly n*f_target; for formant-shaped
-        // partial neighbourhoods it keeps the local spectral coordinate.
+        // For harmonic components this reduces to n*f_target; for formant-shaped
+        // partial neighbourhoods it keeps the local relative spectral coordinate.
         const float relativeCoordinate = sourceFrequencyHz / std::max(1.0e-6f, sourcePitchHz);
         const double expectedOutputHz = static_cast<double>(relativeCoordinate)
             * static_cast<double>(targetPitchHz);
@@ -3889,9 +3984,9 @@ void ModernPitchEngine::SpectralVoiceShifter::updateV6OutputDiagnostics(
         if (expectedOutputBin < 1.0 || expectedOutputBin > static_cast<double>(positiveBins))
             continue;
 
-        const float outputMagnitude = magnitudeAt(expectedOutputBin);
+        const float outputMagnitude = outputMagnitudeAround(expectedOutputBin);
         const float expectedMagnitude = sourceMagnitude * energyScale;
-        const float sourceWeightShape = 0.16f + 0.84f * clamp01(harmonicMask_[sourceIndex]);
+        const float sourceWeightShape = 0.18f + 0.82f * clamp01(harmonicMask_[sourceIndex]);
         const double weight = static_cast<double>(sourceMagnitude)
             * static_cast<double>(sourceMagnitude)
             * static_cast<double>(sourceWeightShape);
@@ -3905,8 +4000,13 @@ void ModernPitchEngine::SpectralVoiceShifter::updateV6OutputDiagnostics(
 
         const float overBuildRatio = outputMagnitude / std::max(1.0e-8f, expectedMagnitude);
         const float underBuildRatio = expectedMagnitude / std::max(1.0e-8f, outputMagnitude);
-        const float excessPenalty = smoothStep(1.35f, 2.70f, overBuildRatio);
-        const float missingPenalty = 0.35f * smoothStep(2.10f, 5.20f, underBuildRatio);
+        const float excessPenalty = smoothStep(liveFrame || ultraLiveFrame ? 1.75f : 1.45f,
+                                               liveFrame || ultraLiveFrame ? 3.60f : 2.85f,
+                                               overBuildRatio);
+        const float missingPenalty = (liveFrame || ultraLiveFrame ? 0.24f : 0.34f)
+            * smoothStep(liveFrame || ultraLiveFrame ? 2.75f : 2.10f,
+                         liveFrame || ultraLiveFrame ? 6.00f : 5.00f,
+                         underBuildRatio);
         const float ledgerScore = 1.0f - std::clamp(excessPenalty + missingPenalty, 0.0f, 1.0f);
         ledgerScoreWeighted += weight * static_cast<double>(ledgerScore);
         ledgerWeight += weight;
@@ -3916,7 +4016,7 @@ void ModernPitchEngine::SpectralVoiceShifter::updateV6OutputDiagnostics(
         const double expectedPhase = propagatedPhases_[peakIndex]
             + wrapPhase(static_cast<double>(analysisPhases_[sourceIndex])
                       - static_cast<double>(analysisPhases_[peakIndex]));
-        const Complex outputComplex = complexAt(expectedOutputBin);
+        const Complex outputComplex = complexAround(expectedOutputBin);
         const float outputComplexMagnitude = std::abs(outputComplex);
         if (outputComplexMagnitude > 1.0e-7f)
         {
@@ -3940,9 +4040,13 @@ void ModernPitchEngine::SpectralVoiceShifter::updateV6OutputDiagnostics(
         ? static_cast<float>(100.0 * phaseScoreWeighted / phaseWeight)
         : 0.0f;
 
-    const float reconstructionNeedRaw = std::clamp(
+    // Need is meaningful only for valid active frames.  A silent/unpitched frame
+    // should be ignored in CSV statistics, not treated as a failed reconstruction.
+    const float validNeedGate = smoothStep(0.18f, 0.55f, tonalEvidenceForValidity);
+    const float reconstructionNeedRaw = validNeedGate * std::clamp(
         (100.0f - sourceCorrespondenceRaw)
-            * (0.35f + 0.65f * (targetCoherenceRaw / 100.0f)),
+            * (0.55f + 0.45f * (targetCoherenceRaw / 100.0f))
+            * (1.0f - 0.45f * (ledgerHealthRaw / 100.0f)),
         0.0f,
         100.0f);
 
@@ -3952,6 +4056,7 @@ void ModernPitchEngine::SpectralVoiceShifter::updateV6OutputDiagnostics(
     outputLedgerHealth_ = smoothDiagnostic(outputLedgerHealth_, ledgerHealthRaw);
     outputPhaseCoherence_ = smoothDiagnostic(outputPhaseCoherence_, phaseCoherenceRaw);
     outputReconstructionNeed_ = smoothDiagnostic(outputReconstructionNeed_, reconstructionNeedRaw);
+    outputMeterValid_ = 1.0f;
 }
 
 void ModernPitchEngine::SpectralVoiceShifter::synthesiseLayer(
@@ -5422,7 +5527,8 @@ void ModernPitchEngine::reset() noexcept
     meterOutputPhysicalHarmonicFit_.store(0.0f, std::memory_order_relaxed);
     meterOutputLedgerHealth_.store(100.0f, std::memory_order_relaxed);
     meterOutputPhaseCoherence_.store(0.0f, std::memory_order_relaxed);
-    meterOutputReconstructionNeed_.store(100.0f, std::memory_order_relaxed);
+    meterOutputReconstructionNeed_.store(0.0f, std::memory_order_relaxed);
+    meterOutputMeterValid_.store(0.0f, std::memory_order_relaxed);
     meterDualSynthesisActive_.store(false, std::memory_order_relaxed);
     meterDetectorSupport_.store(0, std::memory_order_relaxed);
     meterOctaveState_.store(0, std::memory_order_relaxed);
@@ -5489,7 +5595,7 @@ void ModernPitchEngine::appendV6DiagnosticsCsv(const Metering& meter,
             "correction_cents,confidence,voicing,harmonicity,breathiness,"
             "noise_path,spectral_reliability,mask_stability,consensus,"
             "tracking_state,octave_state,pending_octave_observations,"
-            "transition_blend,dual_synthesis,source_correspondence,"
+            "transition_blend,dual_synthesis,output_meter_valid,active_tonal_frame,source_correspondence,"
             "target_coherence,physical_harmonic_fit,ledger_health,"
             "phase_coherence,reconstruction_need\n";
 
@@ -5521,6 +5627,8 @@ void ModernPitchEngine::appendV6DiagnosticsCsv(const Metering& meter,
          << meter.pendingOctaveObservations << ','
          << juce::String(meter.transitionBlend, 6) << ','
          << (meter.dualSynthesisActive ? 1 : 0) << ','
+         << juce::String(meter.outputMeterValid, 6) << ','
+         << ((meter.detectedPitchHz > 20.0f && meter.confidence > 0.15f && meter.voicing > 0.15f) ? 1 : 0) << ','
          << juce::String(meter.outputSourceCorrespondence, 6) << ','
          << juce::String(meter.outputTargetCoherence, 6) << ','
          << juce::String(meter.outputPhysicalHarmonicFit, 6) << ','
@@ -5898,6 +6006,7 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
     float latestOutputLedgerHealth = 0.0f;
     float latestOutputPhaseCoherence = 0.0f;
     float latestOutputReconstructionNeed = 0.0f;
+    float latestOutputMeterValid = 0.0f;
     const int meteredShifters = useMidSide ? 1 : numberOfChannels;
     for (int channel = 0; channel < meteredShifters; ++channel)
     {
@@ -5915,6 +6024,7 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
         latestOutputLedgerHealth += shifter.getOutputLedgerHealth();
         latestOutputPhaseCoherence += shifter.getOutputPhaseCoherence();
         latestOutputReconstructionNeed += shifter.getOutputReconstructionNeed();
+        latestOutputMeterValid += shifter.getOutputMeterValid();
     }
     const float inverseMeteredShifters = 1.0f
         / static_cast<float>(std::max(1, meteredShifters));
@@ -5931,6 +6041,7 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
     latestOutputLedgerHealth *= inverseMeteredShifters;
     latestOutputPhaseCoherence *= inverseMeteredShifters;
     latestOutputReconstructionNeed *= inverseMeteredShifters;
+    latestOutputMeterValid *= inverseMeteredShifters;
     const float latestSustainedNoteSeconds = static_cast<float>(
         std::min(12.0, static_cast<double>(noteAgeSamples_) / sampleRate_));
     const auto tempoMeter = tempoController_.getMetering();
@@ -5969,6 +6080,8 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
                                       std::memory_order_relaxed);
     meterOutputReconstructionNeed_.store(latestOutputReconstructionNeed,
                                            std::memory_order_relaxed);
+    meterOutputMeterValid_.store(latestOutputMeterValid,
+                                 std::memory_order_relaxed);
     meterDualSynthesisActive_.store(
         transitionManager_.isDualSynthesisActive(),
         std::memory_order_relaxed);
@@ -6102,7 +6215,8 @@ void ModernPitchEngine::processBypassed(juce::AudioBuffer<float>& buffer)
     meterOutputPhysicalHarmonicFit_.store(0.0f, std::memory_order_relaxed);
     meterOutputLedgerHealth_.store(100.0f, std::memory_order_relaxed);
     meterOutputPhaseCoherence_.store(0.0f, std::memory_order_relaxed);
-    meterOutputReconstructionNeed_.store(100.0f, std::memory_order_relaxed);
+    meterOutputReconstructionNeed_.store(0.0f, std::memory_order_relaxed);
+    meterOutputMeterValid_.store(0.0f, std::memory_order_relaxed);
     meterDualSynthesisActive_.store(false, std::memory_order_relaxed);
     meterDetectorSupport_.store(0, std::memory_order_relaxed);
     meterOctaveState_.store(0, std::memory_order_relaxed);
@@ -6163,6 +6277,8 @@ ModernPitchEngine::Metering ModernPitchEngine::getMetering() const noexcept
         result.outputPhaseCoherence = meterOutputPhaseCoherence_.load(
             std::memory_order_relaxed);
         result.outputReconstructionNeed = meterOutputReconstructionNeed_.load(
+            std::memory_order_relaxed);
+        result.outputMeterValid = meterOutputMeterValid_.load(
             std::memory_order_relaxed);
         result.dualSynthesisActive = meterDualSynthesisActive_.load(
             std::memory_order_relaxed);
