@@ -2905,6 +2905,14 @@ outputLedgerHealth_ = 100.0f;
 outputPhaseCoherence_ = 0.0f;
 outputReconstructionNeed_ = 0.0f;
 outputMeterValid_ = 0.0f;
+outputSourceMirrorFit_ = 0.0f;
+outputDoubleFamilyRisk_ = 0.0f;
+outputLedgerDeficit_ = 0.0f;
+outputMemoryReliability_ = 0.0f;
+outputPreIfftConsensus_ = 0.0f;
+outputSelectiveReconstructionNeed_ = 0.0f;
+std::fill(v61HarmonicEnergyMemory_.begin(), v61HarmonicEnergyMemory_.end(), 0.0f);
+std::fill(v61HarmonicReliabilityMemory_.begin(), v61HarmonicReliabilityMemory_.end(), 0.0f);
 dryWetContinuity_ = 1.0f;
 dryLeakRisk_ = 0.0f;
 dryTrustInstability_ = 0.0f;
@@ -3771,6 +3779,12 @@ void ModernPitchEngine::SpectralVoiceShifter::updateV6OutputDiagnostics(
         outputPhaseCoherence_ = smoothDiagnostic(outputPhaseCoherence_, 0.0f);
         outputReconstructionNeed_ = smoothDiagnostic(outputReconstructionNeed_, 0.0f);
         outputMeterValid_ = 0.0f;
+        outputSourceMirrorFit_ = smoothDiagnostic(outputSourceMirrorFit_, 0.0f);
+        outputDoubleFamilyRisk_ = smoothDiagnostic(outputDoubleFamilyRisk_, 0.0f);
+        outputLedgerDeficit_ = smoothDiagnostic(outputLedgerDeficit_, 0.0f);
+        outputMemoryReliability_ = smoothDiagnostic(outputMemoryReliability_, 0.0f);
+        outputPreIfftConsensus_ = smoothDiagnostic(outputPreIfftConsensus_, 0.0f);
+        outputSelectiveReconstructionNeed_ = smoothDiagnostic(outputSelectiveReconstructionNeed_, 0.0f);
     };
 
     if (positiveBins <= 2
@@ -4051,6 +4065,172 @@ void ModernPitchEngine::SpectralVoiceShifter::updateV6OutputDiagnostics(
         100.0f);
 
     outputSourceCorrespondence_ = smoothDiagnostic(outputSourceCorrespondence_, sourceCorrespondenceRaw);
+
+    // NEUMATON_V6_1_SOURCE_MIRROR_SHADOW_LEDGER
+    // Shadow-only source mirror and spectral ledger preparation.
+    //
+    // The current renderer already produced a transported wet spectrum in
+    // layer.spectrum.  V6.1 does not rewrite it.  It builds an input-output
+    // comparison in relative harmonic coordinates and a causal timbre memory,
+    // so a later active ledger can decide what to reconstruct without returning
+    // to time-domain dry/wet logic.
+    const auto inputMagnitudeAroundV61 = [this, positiveBins, modeMagnitudeBandBins](double binPosition) noexcept -> float
+    {
+        if (binPosition < 0.0 || binPosition > static_cast<double>(positiveBins))
+            return 0.0f;
+
+        const int radius = static_cast<int>(std::ceil(modeMagnitudeBandBins * 2.0f));
+        const int centre = static_cast<int>(std::lround(binPosition));
+        double weightedEnergy = 0.0;
+        double weightSum = 0.0;
+
+        for (int offset = -radius; offset <= radius; ++offset)
+        {
+            const int bin = centre + offset;
+            if (bin < 0 || bin > positiveBins)
+                continue;
+
+            const double distanceBins = std::abs(static_cast<double>(bin) - binPosition);
+            const double sigma = std::max(0.35, static_cast<double>(modeMagnitudeBandBins));
+            const double weight = std::exp(-0.5 * (distanceBins / sigma) * (distanceBins / sigma));
+            const float magnitude = magnitudes_[static_cast<std::size_t>(bin)];
+            weightedEnergy += weight * static_cast<double>(magnitude) * static_cast<double>(magnitude);
+            weightSum += weight;
+        }
+
+        return weightSum > 1.0e-12
+            ? static_cast<float>(std::sqrt(std::max(0.0, weightedEnergy / weightSum)))
+            : 0.0f;
+    };
+
+    const float v61MemoryUpdateTrust = clamp01(
+        tonalEvidenceForValidity
+        * smoothedSpectralReliability_
+        * smoothedMaskStability_
+        * (1.0f - 0.64f * smoothedNoisePathAmount_)
+        * (1.0f - 0.58f * smoothedPolyphony_));
+    const float v61MemoryUpdateCoeff = 0.018f + 0.145f * v61MemoryUpdateTrust;
+    const float v61MemoryForgetCoeff = 0.0015f * (1.0f - v61MemoryUpdateTrust);
+
+    double v61MirrorNumerator = 0.0;
+    double v61MirrorDenominator = 0.0;
+    double v61DeficitNumerator = 0.0;
+    double v61DeficitDenominator = 0.0;
+    double v61MemoryReliabilityNumerator = 0.0;
+    double v61MemoryReliabilityDenominator = 0.0;
+
+    const int v61LastHarmonic = std::min(
+        v61HarmonicMemorySize - 1,
+        static_cast<int>(std::floor((static_cast<double>(positiveBins) * binWidthHz)
+                                    / std::max(1.0f, targetPitchHz))));
+
+    for (int harmonicIndex = 1; harmonicIndex <= v61LastHarmonic; ++harmonicIndex)
+    {
+        const double sourceHarmonicHz = static_cast<double>(harmonicIndex)
+            * static_cast<double>(sourcePitchHz);
+        const double targetHarmonicHz = static_cast<double>(harmonicIndex)
+            * static_cast<double>(targetPitchHz);
+        const double sourceBinPosition = sourceHarmonicHz / binWidthHz;
+        const double targetBinPosition = targetHarmonicHz / binWidthHz;
+        if (sourceBinPosition < 1.0 || sourceBinPosition > static_cast<double>(positiveBins)
+            || targetBinPosition < 1.0 || targetBinPosition > static_cast<double>(positiveBins))
+        {
+            continue;
+        }
+
+        const float inputMagnitude = inputMagnitudeAroundV61(sourceBinPosition);
+        const float outputMagnitude = outputMagnitudeAround(targetBinPosition);
+        if (inputMagnitude <= 1.0e-8f && outputMagnitude <= 1.0e-8f)
+            continue;
+
+        const double inputEnergy = static_cast<double>(inputMagnitude) * static_cast<double>(inputMagnitude)
+            * static_cast<double>(energyScale) * static_cast<double>(energyScale);
+        const double outputHarmonicEnergy = static_cast<double>(outputMagnitude) * static_cast<double>(outputMagnitude);
+
+        const double oldEnergyMemory = static_cast<double>(
+            v61HarmonicEnergyMemory_[static_cast<std::size_t>(harmonicIndex)]);
+        const double oldReliability = static_cast<double>(
+            v61HarmonicReliabilityMemory_[static_cast<std::size_t>(harmonicIndex)]);
+
+        if (inputEnergy > 1.0e-16 && v61MemoryUpdateTrust > 0.08f)
+        {
+            const double newEnergyMemory = oldEnergyMemory
+                + static_cast<double>(v61MemoryUpdateCoeff) * (inputEnergy - oldEnergyMemory);
+            const double newReliability = oldReliability
+                + static_cast<double>(v61MemoryUpdateCoeff) * (static_cast<double>(v61MemoryUpdateTrust) - oldReliability);
+            v61HarmonicEnergyMemory_[static_cast<std::size_t>(harmonicIndex)] =
+                static_cast<float>(std::max(0.0, newEnergyMemory));
+            v61HarmonicReliabilityMemory_[static_cast<std::size_t>(harmonicIndex)] =
+                static_cast<float>(std::clamp(newReliability, 0.0, 1.0));
+        }
+        else if (v61MemoryForgetCoeff > 0.0f)
+        {
+            v61HarmonicReliabilityMemory_[static_cast<std::size_t>(harmonicIndex)] =
+                std::max(0.0f,
+                    v61HarmonicReliabilityMemory_[static_cast<std::size_t>(harmonicIndex)]
+                    * (1.0f - v61MemoryForgetCoeff));
+        }
+
+        const float memoryReliability = clamp01(
+            v61HarmonicReliabilityMemory_[static_cast<std::size_t>(harmonicIndex)]);
+        const double rememberedEnergy = static_cast<double>(
+            v61HarmonicEnergyMemory_[static_cast<std::size_t>(harmonicIndex)]);
+        const double expectedEnergy = (memoryReliability > 0.08f)
+            ? (0.45 * inputEnergy + 0.55 * rememberedEnergy)
+            : inputEnergy;
+        if (expectedEnergy <= 1.0e-16)
+            continue;
+
+        const double harmonicWeight = expectedEnergy
+            * (0.35 + 0.65 * static_cast<double>(memoryReliability));
+        const double magnitudeSimilarity = std::min(outputHarmonicEnergy, expectedEnergy)
+            / std::max(std::max(outputHarmonicEnergy, expectedEnergy), 1.0e-16);
+        const double deficit = std::max(0.0, expectedEnergy - outputHarmonicEnergy);
+
+        v61MirrorNumerator += harmonicWeight * magnitudeSimilarity;
+        v61MirrorDenominator += harmonicWeight;
+        v61DeficitNumerator += deficit;
+        v61DeficitDenominator += expectedEnergy;
+        v61MemoryReliabilityNumerator += harmonicWeight * static_cast<double>(memoryReliability);
+        v61MemoryReliabilityDenominator += harmonicWeight;
+    }
+
+    const float sourceMirrorFitRaw = v61MirrorDenominator > 1.0e-18
+        ? static_cast<float>(100.0 * v61MirrorNumerator / v61MirrorDenominator)
+        : sourceCorrespondenceRaw;
+    const float ledgerDeficitRaw = v61DeficitDenominator > 1.0e-18
+        ? static_cast<float>(100.0 * v61DeficitNumerator / v61DeficitDenominator)
+        : 0.0f;
+    const float memoryReliabilityRaw = v61MemoryReliabilityDenominator > 1.0e-18
+        ? static_cast<float>(100.0 * v61MemoryReliabilityNumerator / v61MemoryReliabilityDenominator)
+        : 0.0f;
+
+    const float doubleFamilyRiskRaw = std::clamp(100.0f * clamp01(oldFamilyConflict), 0.0f, 100.0f);
+    const float preIfftConsensusRaw = std::clamp(
+        0.28f * targetCoherenceRaw
+        + 0.22f * physicalHarmonicFitRaw
+        + 0.18f * phaseCoherenceRaw
+        + 0.17f * ledgerHealthRaw
+        + 0.15f * sourceMirrorFitRaw
+        - 0.34f * doubleFamilyRiskRaw,
+        0.0f,
+        100.0f);
+    const float selectiveReconstructionNeedRaw = std::clamp(
+        0.42f * ledgerDeficitRaw
+        + 0.26f * (100.0f - sourceMirrorFitRaw)
+        + 0.18f * (100.0f - preIfftConsensusRaw)
+        + 0.14f * doubleFamilyRiskRaw,
+        0.0f,
+        100.0f);
+
+    outputSourceMirrorFit_ = smoothDiagnostic(outputSourceMirrorFit_, sourceMirrorFitRaw);
+    outputDoubleFamilyRisk_ = smoothDiagnostic(outputDoubleFamilyRisk_, doubleFamilyRiskRaw);
+    outputLedgerDeficit_ = smoothDiagnostic(outputLedgerDeficit_, ledgerDeficitRaw);
+    outputMemoryReliability_ = smoothDiagnostic(outputMemoryReliability_, memoryReliabilityRaw);
+    outputPreIfftConsensus_ = smoothDiagnostic(outputPreIfftConsensus_, preIfftConsensusRaw);
+    outputSelectiveReconstructionNeed_ = smoothDiagnostic(
+        outputSelectiveReconstructionNeed_, selectiveReconstructionNeedRaw);
+
     outputTargetCoherence_ = smoothDiagnostic(outputTargetCoherence_, targetCoherenceRaw);
     outputPhysicalHarmonicFit_ = smoothDiagnostic(outputPhysicalHarmonicFit_, physicalHarmonicFitRaw);
     outputLedgerHealth_ = smoothDiagnostic(outputLedgerHealth_, ledgerHealthRaw);
@@ -5543,6 +5723,12 @@ void ModernPitchEngine::reset() noexcept
     meterOutputCorrectionVelocityCentsPerSecond_.store(0.0f, std::memory_order_relaxed);
     meterOutputOctaveConflict_.store(0.0f, std::memory_order_relaxed);
     meterOutputTransitionStress_.store(0.0f, std::memory_order_relaxed);
+    meterOutputSourceMirrorFit_.store(0.0f, std::memory_order_relaxed);
+    meterOutputDoubleFamilyRisk_.store(0.0f, std::memory_order_relaxed);
+    meterOutputLedgerDeficit_.store(0.0f, std::memory_order_relaxed);
+    meterOutputMemoryReliability_.store(0.0f, std::memory_order_relaxed);
+    meterOutputPreIfftConsensus_.store(0.0f, std::memory_order_relaxed);
+    meterOutputSelectiveReconstructionNeed_.store(0.0f, std::memory_order_relaxed);
     meterDualSynthesisActive_.store(false, std::memory_order_relaxed);
     meterDetectorSupport_.store(0, std::memory_order_relaxed);
     meterOctaveState_.store(0, std::memory_order_relaxed);
@@ -5613,7 +5799,9 @@ void ModernPitchEngine::appendV6DiagnosticsCsv(const Metering& meter,
             "target_coherence,physical_harmonic_fit,ledger_health,"
             "phase_coherence,reconstruction_need,temporal_stability,"
             "target_jump_cents,correction_velocity_cps,octave_conflict,"
-            "transition_stress\n";
+            "transition_stress,source_mirror_fit,double_family_risk,"
+            "ledger_deficit,memory_reliability,pre_ifft_consensus,"
+            "selective_reconstruction_need\n";
 
         diagnosticCsvFile_.replaceWithText(headerLine, false, false, "\n");
         diagnosticCsvInitialised_ = diagnosticCsvFile_.existsAsFile();
@@ -6028,6 +6216,12 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
     float latestOutputPhaseCoherence = 0.0f;
     float latestOutputReconstructionNeed = 0.0f;
     float latestOutputMeterValid = 0.0f;
+    float latestOutputSourceMirrorFit = 0.0f;
+    float latestOutputDoubleFamilyRisk = 0.0f;
+    float latestOutputLedgerDeficit = 0.0f;
+    float latestOutputMemoryReliability = 0.0f;
+    float latestOutputPreIfftConsensus = 0.0f;
+    float latestOutputSelectiveReconstructionNeed = 0.0f;
     const int meteredShifters = useMidSide ? 1 : numberOfChannels;
     for (int channel = 0; channel < meteredShifters; ++channel)
     {
@@ -6046,6 +6240,12 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
         latestOutputPhaseCoherence += shifter.getOutputPhaseCoherence();
         latestOutputReconstructionNeed += shifter.getOutputReconstructionNeed();
         latestOutputMeterValid += shifter.getOutputMeterValid();
+        latestOutputSourceMirrorFit += shifter.getOutputSourceMirrorFit();
+        latestOutputDoubleFamilyRisk += shifter.getOutputDoubleFamilyRisk();
+        latestOutputLedgerDeficit += shifter.getOutputLedgerDeficit();
+        latestOutputMemoryReliability += shifter.getOutputMemoryReliability();
+        latestOutputPreIfftConsensus += shifter.getOutputPreIfftConsensus();
+        latestOutputSelectiveReconstructionNeed += shifter.getOutputSelectiveReconstructionNeed();
     }
     const float inverseMeteredShifters = 1.0f
         / static_cast<float>(std::max(1, meteredShifters));
@@ -6063,6 +6263,12 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
     latestOutputPhaseCoherence *= inverseMeteredShifters;
     latestOutputReconstructionNeed *= inverseMeteredShifters;
     latestOutputMeterValid *= inverseMeteredShifters;
+    latestOutputSourceMirrorFit *= inverseMeteredShifters;
+    latestOutputDoubleFamilyRisk *= inverseMeteredShifters;
+    latestOutputLedgerDeficit *= inverseMeteredShifters;
+    latestOutputMemoryReliability *= inverseMeteredShifters;
+    latestOutputPreIfftConsensus *= inverseMeteredShifters;
+    latestOutputSelectiveReconstructionNeed *= inverseMeteredShifters;
     const float latestSustainedNoteSeconds = static_cast<float>(
         std::min(12.0, static_cast<double>(noteAgeSamples_) / sampleRate_));
     const auto tempoMeter = tempoController_.getMetering();
@@ -6240,6 +6446,18 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
                                      std::memory_order_relaxed);
     meterOutputTransitionStress_.store(outputTransitionStress_,
                                        std::memory_order_relaxed);
+    meterOutputSourceMirrorFit_.store(latestOutputSourceMirrorFit,
+                                            std::memory_order_relaxed);
+    meterOutputDoubleFamilyRisk_.store(latestOutputDoubleFamilyRisk,
+                                             std::memory_order_relaxed);
+    meterOutputLedgerDeficit_.store(latestOutputLedgerDeficit,
+                                           std::memory_order_relaxed);
+    meterOutputMemoryReliability_.store(latestOutputMemoryReliability,
+                                               std::memory_order_relaxed);
+    meterOutputPreIfftConsensus_.store(latestOutputPreIfftConsensus,
+                                              std::memory_order_relaxed);
+    meterOutputSelectiveReconstructionNeed_.store(
+        latestOutputSelectiveReconstructionNeed, std::memory_order_relaxed);
     meterDualSynthesisActive_.store(
         transitionManager_.isDualSynthesisActive(),
         std::memory_order_relaxed);
@@ -6380,6 +6598,12 @@ void ModernPitchEngine::processBypassed(juce::AudioBuffer<float>& buffer)
     meterOutputCorrectionVelocityCentsPerSecond_.store(0.0f, std::memory_order_relaxed);
     meterOutputOctaveConflict_.store(0.0f, std::memory_order_relaxed);
     meterOutputTransitionStress_.store(0.0f, std::memory_order_relaxed);
+    meterOutputSourceMirrorFit_.store(0.0f, std::memory_order_relaxed);
+    meterOutputDoubleFamilyRisk_.store(0.0f, std::memory_order_relaxed);
+    meterOutputLedgerDeficit_.store(0.0f, std::memory_order_relaxed);
+    meterOutputMemoryReliability_.store(0.0f, std::memory_order_relaxed);
+    meterOutputPreIfftConsensus_.store(0.0f, std::memory_order_relaxed);
+    meterOutputSelectiveReconstructionNeed_.store(0.0f, std::memory_order_relaxed);
     meterDualSynthesisActive_.store(false, std::memory_order_relaxed);
     meterDetectorSupport_.store(0, std::memory_order_relaxed);
     meterOctaveState_.store(0, std::memory_order_relaxed);
@@ -6454,6 +6678,18 @@ ModernPitchEngine::Metering ModernPitchEngine::getMetering() const noexcept
             std::memory_order_relaxed);
         result.outputTransitionStress = meterOutputTransitionStress_.load(
             std::memory_order_relaxed);
+        result.outputSourceMirrorFit = meterOutputSourceMirrorFit_.load(
+            std::memory_order_relaxed);
+        result.outputDoubleFamilyRisk = meterOutputDoubleFamilyRisk_.load(
+            std::memory_order_relaxed);
+        result.outputLedgerDeficit = meterOutputLedgerDeficit_.load(
+            std::memory_order_relaxed);
+        result.outputMemoryReliability = meterOutputMemoryReliability_.load(
+            std::memory_order_relaxed);
+        result.outputPreIfftConsensus = meterOutputPreIfftConsensus_.load(
+            std::memory_order_relaxed);
+        result.outputSelectiveReconstructionNeed =
+            meterOutputSelectiveReconstructionNeed_.load(std::memory_order_relaxed);
         result.dualSynthesisActive = meterDualSynthesisActive_.load(
             std::memory_order_relaxed);
         result.detectorSupport = meterDetectorSupport_.load(std::memory_order_relaxed);
