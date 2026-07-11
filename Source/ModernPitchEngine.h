@@ -92,6 +92,16 @@ public:
         float correctionCents = 0.0f;
         float wetMix = 0.0f;
         float transitionBlend = 0.0f;
+
+        // NEUMATON_V6_OUTPUT_DIAGNOSTICS
+        // Diagnostic-only output meters, 0..100. These do not affect audio.
+        float outputSourceCorrespondence = 0.0f;
+        float outputTargetCoherence = 0.0f;
+        float outputPhysicalHarmonicFit = 0.0f;
+        float outputLedgerHealth = 0.0f;
+        float outputPhaseCoherence = 0.0f;
+        float outputReconstructionNeed = 0.0f;
+
         bool dualSynthesisActive = false;
         int detectorSupport = 0;
         int octaveState = 0;
@@ -150,6 +160,8 @@ public:
     [[nodiscard]] Metering getMetering() const noexcept;
 
 private:
+    void appendV6DiagnosticsCsv(const Metering& meter, int numberOfSamples) noexcept;
+
     struct PitchObservation
     {
         float frequencyHz = 0.0f;
@@ -625,6 +637,12 @@ private:
         [[nodiscard]] float getPolyphony() const noexcept { return smoothedPolyphony_; }
         [[nodiscard]] float getSpectralReliability() const noexcept { return smoothedSpectralReliability_; }
         [[nodiscard]] float getMaskStability() const noexcept { return smoothedMaskStability_; }
+        [[nodiscard]] float getOutputSourceCorrespondence() const noexcept { return outputSourceCorrespondence_; }
+        [[nodiscard]] float getOutputTargetCoherence() const noexcept { return outputTargetCoherence_; }
+        [[nodiscard]] float getOutputPhysicalHarmonicFit() const noexcept { return outputPhysicalHarmonicFit_; }
+        [[nodiscard]] float getOutputLedgerHealth() const noexcept { return outputLedgerHealth_; }
+        [[nodiscard]] float getOutputPhaseCoherence() const noexcept { return outputPhaseCoherence_; }
+        [[nodiscard]] float getOutputReconstructionNeed() const noexcept { return outputReconstructionNeed_; }
 
     private:
         using Complex = std::complex<float>;
@@ -677,6 +695,9 @@ private:
         [[nodiscard]] float calculateHighBandFlatness(
             int firstBin,
             int lastBin) const noexcept;
+        void updateV6OutputDiagnostics(const SynthesisLayer& layer,
+                                       double safeRatio,
+                                       int positiveBins) noexcept;
 
         struct AnalysisProfile
         {
@@ -783,6 +804,13 @@ float frameHumanize_ = 0.0f;
 float frameNaturalConditionerDrive_ = 0.0f;
 bool frameScaleLockActive_ = false;
 float frameDetectedPitchHz_ = 0.0f;
+// NEUMATON_V6_OUTPUT_DIAGNOSTICS_STATE
+float outputSourceCorrespondence_ = 0.0f;
+float outputTargetCoherence_ = 0.0f;
+float outputPhysicalHarmonicFit_ = 0.0f;
+float outputLedgerHealth_ = 100.0f;
+float outputPhaseCoherence_ = 0.0f;
+float outputReconstructionNeed_ = 100.0f;
 float dryWetContinuity_ = 1.0f;
 float dryLeakRisk_ = 0.0f;
 float dryTrustInstability_ = 0.0f;
@@ -881,6 +909,13 @@ float dryCandidateShapeCoefficient_ = 1.0f;
     float noteAgeTargetHz_ = 0.0f;
     std::int64_t noteAgeSamples_ = 0;
 
+    // NEUMATON_V6_CSV_DIAGNOSTICS_STATE
+    // Debug-only CSV logger state.  It does not affect audio or metering values.
+    bool diagnosticCsvInitialised_ = false;
+    juce::File diagnosticCsvFile_;
+    std::uint64_t diagnosticCsvSampleCounter_ = 0;
+    std::uint64_t diagnosticCsvNextSample_ = 0;
+
     std::array<SpectralVoiceShifter, maxSupportedChannels> shifters_;
     std::array<FixedDelay, maxSupportedChannels> auxiliaryDelays_;
 
@@ -903,6 +938,12 @@ float dryCandidateShapeCoefficient_ = 1.0f;
     std::atomic<float> meterCorrectionCents_ { 0.0f };
     std::atomic<float> meterWetMix_ { 0.0f };
     std::atomic<float> meterTransitionBlend_ { 0.0f };
+    std::atomic<float> meterOutputSourceCorrespondence_ { 0.0f };
+    std::atomic<float> meterOutputTargetCoherence_ { 0.0f };
+    std::atomic<float> meterOutputPhysicalHarmonicFit_ { 0.0f };
+    std::atomic<float> meterOutputLedgerHealth_ { 100.0f };
+    std::atomic<float> meterOutputPhaseCoherence_ { 0.0f };
+    std::atomic<float> meterOutputReconstructionNeed_ { 100.0f };
 
     std::atomic<bool> meterDualSynthesisActive_ { false };
     std::atomic<int> meterDetectorSupport_ { 0 };
