@@ -3975,9 +3975,23 @@ void ModernPitchEngine::SpectralVoiceShifter::synthesiseLayer(
                                + requiredOctaveRepair * modeOctaveRepairTrust));
                     }
 
+                    // NEUMATON_LIVE_EXPERIMENTAL_CHARACTER_V52_FAMILY_TRUST
+                    // Short windows use family reconstruction as a local colour
+                    // cue, not as register authority.  Quality is essentially
+                    // unchanged; Live and Experimental remain anchored to the
+                    // plain ratio transport when evidence is weak or tails are
+                    // ambiguous.
+                    const float v52NaturalFamilyTrust = clamp01(
+                        1.0f - frameReconstructionDistrust_
+                            * (ultraLiveFrame ? 0.90f : liveFrame ? 0.62f : 0.08f));
+                    const float v52TailFamilyTrust = clamp01(
+                        1.0f - frameTailGuard_
+                            * (ultraLiveFrame ? 0.72f : liveFrame ? 0.54f : 0.05f));
                     const float rawFamilyBlend = modeFamilyPull
                         * familyReconstructionTrust
-                        * familyRegisterSafety;
+                        * familyRegisterSafety
+                        * v52NaturalFamilyTrust
+                        * v52TailFamilyTrust;
                     const double familyBlend = static_cast<double>(std::min(
                         rawFamilyBlend,
                         modeMaxFamilyBlend));
@@ -4007,8 +4021,13 @@ void ModernPitchEngine::SpectralVoiceShifter::synthesiseLayer(
                     0.58f * targetHarmonicProximity
                     + 0.42f * frameTonalConfidence_);
 
+                // NEUMATON_LIVE_EXPERIMENTAL_CHARACTER_V52_FORMANT_TRUST
+                const float v52FormantTrust = clamp01(
+                    1.0f - frameReconstructionDistrust_
+                        * (ultraLiveFrame ? 0.78f : liveFrame ? 0.45f : 0.06f));
                 const float residualFormantAmount = clamp01(
                     modeFormantDepth
+                    * v52FormantTrust
                     * (0.28f
                        + 0.52f * reconstructionAuthority
                        + 0.20f * targetSpectrumEase));
@@ -4035,8 +4054,15 @@ void ModernPitchEngine::SpectralVoiceShifter::synthesiseLayer(
                     ? static_cast<double>(analysisPhases_[sourceIndex])
                     : layer.synthesisPhases[sourceIndex];
 
+                // NEUMATON_LIVE_EXPERIMENTAL_CHARACTER_V52_PHASE_TRUST
+                const float v52PhaseTrust = clamp01(
+                    1.0f - frameReconstructionDistrust_
+                        * (ultraLiveFrame ? 0.54f : liveFrame ? 0.28f : 0.04f)
+                    - frameTailGuard_
+                        * (ultraLiveFrame ? 0.28f : liveFrame ? 0.18f : 0.02f));
                 const float residualPhaseTrust = clamp01(
                     modePhaseTrust
+                    * v52PhaseTrust
                     * (0.22f + 0.78f * frameTonalConfidence_)
                     * (0.32f + 0.68f * reconstructionAuthority));
 
@@ -4062,11 +4088,18 @@ void ModernPitchEngine::SpectralVoiceShifter::synthesiseLayer(
                     0.42f * targetSpectrumEase
                     + 0.34f * familyReconstructionTrust
                     + 0.24f * frameTonalConfidence_);
+                // NEUMATON_LIVE_EXPERIMENTAL_CHARACTER_V52_CONDITIONER_TRUST
+                const float v52NaturalConditionerTrust = clamp01(
+                    1.0f - frameReconstructionDistrust_
+                        * (ultraLiveFrame ? 0.86f : liveFrame ? 0.60f : 0.08f)
+                    - frameTailGuard_
+                        * (ultraLiveFrame ? 0.38f : liveFrame ? 0.30f : 0.03f));
                 const float conditionerStrength = clamp01(
                     naturalConditionerDrive
                     * localDifficultMaterial
                     * (0.30f + 0.70f * targetFamilyConfidence)
-                    * (ultraLiveFrame ? 0.58f : liveFrame ? 0.78f : 1.00f));
+                    * v52NaturalConditionerTrust
+                    * (ultraLiveFrame ? 0.20f : liveFrame ? 0.54f : 1.00f));
 
                 const float residualMagnitudeBase = magnitude
                     * noiseWeight
@@ -4210,6 +4243,105 @@ void ModernPitchEngine::SpectralVoiceShifter::synthesiseLayer(
                                 conditionerPolar * outerTap;
                     }
                 }
+
+                // NEUMATON_LIVE_EXPERIMENTAL_CHARACTER_V52_PLAUSIBLE_LAYER
+                // Short-window modes should not pretend to have Quality's
+                // natural reconstruction information.  When the natural rebuild
+                // is not trusted, add a very small deterministic target-harmonic
+                // plausibility layer instead of reinforcing a wrong metallic
+                // family.  This is spectral-domain, zero-latency and remains part
+                // of the single corrected output; it is not dry/wet and not a
+                // time-domain FIR/convolver.
+                const float plausibleHarmonicDrive = clamp01(
+                    localDifficultMaterial
+                    * targetFamilyConfidence
+                    * (0.060f * frameLiveCharacterDrive_
+                       + 0.115f * frameExperimentalRobotDrive_)
+                    * (1.0f - 0.38f * conditionerStrength)
+                    * (1.0f - 0.42f * frameTailGuard_));
+
+                if (plausibleHarmonicDrive > 1.0e-5f
+                    && targetPitchHz > 0.0f
+                    && binWidthHzForTransport > 0.0
+                    && sourceBin > 0)
+                {
+                    const double ratioAnchorHz = static_cast<double>(sourceBinHzForAudit)
+                        * safeRatio;
+                    double plausibleCentreHz = ratioAnchorHz;
+                    double plausibleCost = std::numeric_limits<double>::infinity();
+
+                    for (int octaveShift = 0; octaveShift <= 1; ++octaveShift)
+                    {
+                        const double candidatePitchHz = std::ldexp(
+                            static_cast<double>(targetPitchHz),
+                            octaveShift);
+                        if (!std::isfinite(candidatePitchHz) || candidatePitchHz <= 1.0e-6)
+                            continue;
+
+                        const double harmonicFloat = ratioAnchorHz / candidatePitchHz;
+                        const double nearestHarmonic = std::round(harmonicFloat);
+                        if (nearestHarmonic < 1.0 || nearestHarmonic > 256.0)
+                            continue;
+
+                        const double candidateCentreHz = nearestHarmonic * candidatePitchHz;
+                        const double candidateDistance = std::abs(candidateCentreHz - ratioAnchorHz)
+                            / std::max(1.0, binWidthHzForTransport);
+
+                        // Experimental gets a tiny upward-grid preference so it
+                        // stops reinforcing octave-down/subharmonic colour.  Live
+                        // remains more neutral.
+                        const double upwardBias = octaveShift > 0
+                            ? (ultraLiveFrame ? -0.045 : liveFrame ? -0.015 : 0.020)
+                            : 0.0;
+                        const double cost = candidateDistance + upwardBias;
+                        if (cost < plausibleCost)
+                        {
+                            plausibleCost = cost;
+                            plausibleCentreHz = candidateCentreHz;
+                        }
+                    }
+
+                    const double plausibleCentreBin = plausibleCentreHz
+                        / binWidthHzForTransport;
+                    const int plausibleBin = static_cast<int>(std::lround(plausibleCentreBin));
+                    const float plausibleMagnitude = residualMagnitudeBase
+                        * plausibleHarmonicDrive
+                        * (ultraLiveFrame ? 0.070f : liveFrame ? 0.046f : 0.000f);
+
+                    // Use the transported phase, but add a tiny deterministic
+                    // quadrature component in Experimental.  This creates a
+                    // deliberate robot colour without a random/metallic second
+                    // identity.
+                    float plausibleSine = residualSine;
+                    float plausibleCosine = residualCosine;
+                    if (frameExperimentalRobotDrive_ > 1.0e-4f)
+                    {
+                        const double robotPhase = residualPhase
+                            + 0.18 * static_cast<double>((sourceBin + residualPeak) & 3)
+                                * (pi * 0.5);
+                        fastSinCos(robotPhase, plausibleSine, plausibleCosine);
+                    }
+
+                    const Complex plausiblePolar(plausibleMagnitude * plausibleCosine,
+                                                 plausibleMagnitude * plausibleSine);
+                    const float centreWeight = ultraLiveFrame ? 0.82f : 0.74f;
+                    const float sideWeight = 0.5f * (1.0f - centreWeight);
+
+                    if (plausibleBin >= 0 && plausibleBin <= positiveBins)
+                        layer.spectrum[static_cast<std::size_t>(plausibleBin)] +=
+                            plausiblePolar * centreWeight;
+
+                    const int plausibleLower = plausibleBin - 1;
+                    if (plausibleLower >= 0 && plausibleLower <= positiveBins)
+                        layer.spectrum[static_cast<std::size_t>(plausibleLower)] +=
+                            plausiblePolar * sideWeight;
+
+                    const int plausibleUpper = plausibleBin + 1;
+                    if (plausibleUpper >= 0 && plausibleUpper <= positiveBins)
+                        layer.spectrum[static_cast<std::size_t>(plausibleUpper)] +=
+                            plausiblePolar * sideWeight;
+                }
+
             }
         }
 
@@ -4431,6 +4563,58 @@ void ModernPitchEngine::SpectralVoiceShifter::processFrame(
         * harmonicNoiseContext.consensus
         * (1.0f - 0.65f * smoothedPolyphony_)
         * (1.0f - 0.80f * auditTransientSuppression));
+
+
+    // NEUMATON_LIVE_EXPERIMENTAL_CHARACTER_V52_FRAME_DRIVE
+    // Quality has enough context to attempt natural reconstruction.  Live and
+    // Experimental do not: they must prioritise correction reliability and avoid
+    // octave/subharmonic metallic rebuilds.  This distrust value never opens a
+    // dry path; it only reduces over-ambitious natural reconstruction and enables
+    // a controlled target-harmonic character layer.
+    const bool v52UltraLiveFrame = frameSize_ <= 160;
+    const bool v52LiveFrame = frameSize_ > 160 && frameSize_ <= 320;
+    const float v52EvidenceTrust = clamp01(
+        0.36f * harmonicNoiseContext.confidence
+        + 0.28f * harmonicNoiseContext.voicing
+        + 0.24f * harmonicNoiseContext.consensus
+        + 0.12f * (1.0f - auditTransientSuppression));
+    const bool v52ReleaseLikeState = harmonicNoiseContext.trackingState == TrackingState::release
+        || harmonicNoiseContext.trackingState == TrackingState::unvoiced;
+    const float v52WeakFrame = 1.0f - clamp01(
+        0.34f * harmonicNoiseContext.confidence
+        + 0.30f * harmonicNoiseContext.voicing
+        + 0.22f * harmonicNoiseContext.consensus
+        + 0.14f * frameTonalConfidence_);
+    const float v52OldWeakNote = smoothStep(0.08f, 0.55f, harmonicNoiseContext.noteAgeSeconds)
+        * v52WeakFrame
+        * (1.0f - auditTransientSuppression);
+    frameTailGuard_ = clamp01(
+        (v52ReleaseLikeState ? 0.92f : 0.0f)
+        + 0.72f * v52OldWeakNote
+        + 0.38f * (1.0f - frameTonalConfidence_));
+
+    const float v52BaseDistrust = v52UltraLiveFrame ? 0.78f
+                                : v52LiveFrame      ? 0.42f
+                                                     : 0.04f;
+    const float v52WeaknessGain = v52UltraLiveFrame ? 0.34f
+                                  : v52LiveFrame    ? 0.42f
+                                                     : 0.08f;
+    const float v52TailGain = v52UltraLiveFrame ? 0.26f
+                             : v52LiveFrame     ? 0.30f
+                                                : 0.04f;
+    frameReconstructionDistrust_ = clamp01(
+        v52BaseDistrust
+        + v52WeaknessGain * (1.0f - v52EvidenceTrust)
+        + v52TailGain * frameTailGuard_);
+
+    frameLiveCharacterDrive_ = v52LiveFrame
+        ? clamp01((0.24f + 0.76f * frameReconstructionDistrust_)
+                  * (0.35f + 0.65f * frameHardCorrectionIntent_))
+        : 0.0f;
+    frameExperimentalRobotDrive_ = v52UltraLiveFrame
+        ? clamp01((0.58f + 0.42f * frameReconstructionDistrust_)
+                  * (0.45f + 0.55f * frameHardCorrectionIntent_))
+        : 0.0f;
 
     auto& primary = layers_[static_cast<std::size_t>(activeLayerIndex_)];
     synthesiseLayer(primary,
@@ -4970,8 +5154,30 @@ wetArtifactVeto_ = clamp01(wetArtifactVeto_);
 wetCancellationGain_ += 0.045f * (1.0f - wetCancellationGain_);
 
 const float reconstructedWet = wetRedistributionGain_ * levelMatchedShifted;
+
+// NEUMATON_LIVE_EXPERIMENTAL_CHARACTER_V52_OUTPUT_CHARACTER
+// Zero-latency wet-only character.  Live gets a little soft harmonic density;
+// Experimental gets a slightly more robotic but bounded curve.  Quality stays
+// essentially untouched.  This shapes the single reconstructed output and never
+// reintroduces dry/wet mixing.
+const float v52OutputCharacterDrive = clamp01(
+    0.08f * frameLiveCharacterDrive_
+    + 0.14f * frameExperimentalRobotDrive_);
+float characterisedWet = reconstructedWet;
+if (v52OutputCharacterDrive > 1.0e-5f)
+{
+    const float drive = 1.0f + 2.35f * v52OutputCharacterDrive;
+    const float normaliser = std::tanh(drive);
+    const float saturatedWet = normaliser > 1.0e-6f
+        ? std::tanh(reconstructedWet * drive) / normaliser
+        : reconstructedWet;
+    characterisedWet += (0.18f + 0.10f * frameExperimentalRobotDrive_)
+        * v52OutputCharacterDrive
+        * (saturatedWet - reconstructedWet);
+}
+
+const float output = sanitiseAudioSample(characterisedWet * wetCancellationGain_);
 const float output = sanitiseAudioSample(reconstructedWet * wetCancellationGain_);
-    
    
 
     if (transition.commitSecondary && dualTransitionActive_)
