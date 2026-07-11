@@ -781,15 +781,6 @@ float frameHardCorrectionIntent_ = 0.0f;
 // NEUMATON_TARGET_HARMONIC_CONDITIONER_V5_STATE
 float frameHumanize_ = 0.0f;
 float frameNaturalConditionerDrive_ = 0.0f;
-// NEUMATON_LIVE_EXPERIMENTAL_CHARACTER_V52_STATE
-// These are reconstruction-character controls, not a dry/wet path.
-// Quality keeps them near zero.  Live/Experimental use them to avoid
-// over-trusting short-window natural rebuilds and to add controlled,
-// target-harmonic character when natural evidence is weak.
-float frameReconstructionDistrust_ = 0.0f;
-float frameLiveCharacterDrive_ = 0.0f;
-float frameExperimentalRobotDrive_ = 0.0f;
-float frameTailGuard_ = 0.0f;
 bool frameScaleLockActive_ = false;
 float frameDetectedPitchHz_ = 0.0f;
 float dryWetContinuity_ = 1.0f;
