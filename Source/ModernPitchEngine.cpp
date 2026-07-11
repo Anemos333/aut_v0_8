@@ -5177,7 +5177,7 @@ if (v52OutputCharacterDrive > 1.0e-5f)
 }
 
 const float output = sanitiseAudioSample(characterisedWet * wetCancellationGain_);
-const float output = sanitiseAudioSample(reconstructedWet * wetCancellationGain_);
+
    
 
     if (transition.commitSecondary && dualTransitionActive_)
