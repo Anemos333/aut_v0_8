@@ -5495,6 +5495,15 @@ void ModernPitchEngine::reset() noexcept
     tempoController_.reset();
     noteAgeTargetHz_ = 0.0f;
     noteAgeSamples_ = 0;
+    outputTemporalInitialised_ = false;
+    outputTemporalPreviousTargetHz_ = 0.0f;
+    outputTemporalPreviousDetectedHz_ = 0.0f;
+    outputTemporalPreviousCorrectionCents_ = 0.0f;
+    outputTemporalStability_ = 0.0f;
+    outputTargetJumpCents_ = 0.0f;
+    outputCorrectionVelocityCentsPerSecond_ = 0.0f;
+    outputOctaveConflict_ = 0.0f;
+    outputTransitionStress_ = 0.0f;
     diagnosticCsvInitialised_ = false;
     diagnosticCsvFile_ = juce::File();
     diagnosticCsvSampleCounter_ = 0;
@@ -5529,6 +5538,11 @@ void ModernPitchEngine::reset() noexcept
     meterOutputPhaseCoherence_.store(0.0f, std::memory_order_relaxed);
     meterOutputReconstructionNeed_.store(0.0f, std::memory_order_relaxed);
     meterOutputMeterValid_.store(0.0f, std::memory_order_relaxed);
+    meterOutputTemporalStability_.store(0.0f, std::memory_order_relaxed);
+    meterOutputTargetJumpCents_.store(0.0f, std::memory_order_relaxed);
+    meterOutputCorrectionVelocityCentsPerSecond_.store(0.0f, std::memory_order_relaxed);
+    meterOutputOctaveConflict_.store(0.0f, std::memory_order_relaxed);
+    meterOutputTransitionStress_.store(0.0f, std::memory_order_relaxed);
     meterDualSynthesisActive_.store(false, std::memory_order_relaxed);
     meterDetectorSupport_.store(0, std::memory_order_relaxed);
     meterOctaveState_.store(0, std::memory_order_relaxed);
@@ -5597,7 +5611,9 @@ void ModernPitchEngine::appendV6DiagnosticsCsv(const Metering& meter,
             "tracking_state,octave_state,pending_octave_observations,"
             "transition_blend,dual_synthesis,output_meter_valid,active_tonal_frame,source_correspondence,"
             "target_coherence,physical_harmonic_fit,ledger_health,"
-            "phase_coherence,reconstruction_need\n";
+            "phase_coherence,reconstruction_need,temporal_stability,"
+            "target_jump_cents,correction_velocity_cps,octave_conflict,"
+            "transition_stress\n";
 
         diagnosticCsvFile_.replaceWithText(headerLine, false, false, "\n");
         diagnosticCsvInitialised_ = diagnosticCsvFile_.existsAsFile();
@@ -5634,7 +5650,12 @@ void ModernPitchEngine::appendV6DiagnosticsCsv(const Metering& meter,
          << juce::String(meter.outputPhysicalHarmonicFit, 6) << ','
          << juce::String(meter.outputLedgerHealth, 6) << ','
          << juce::String(meter.outputPhaseCoherence, 6) << ','
-         << juce::String(meter.outputReconstructionNeed, 6) << '\n';
+         << juce::String(meter.outputReconstructionNeed, 6) << ','
+         << juce::String(meter.outputTemporalStability, 6) << ','
+         << juce::String(meter.outputTargetJumpCents, 6) << ','
+         << juce::String(meter.outputCorrectionVelocityCentsPerSecond, 6) << ','
+         << juce::String(meter.outputOctaveConflict, 6) << ','
+         << juce::String(meter.outputTransitionStress, 6) << '\n';
 
     diagnosticCsvFile_.appendText(line, false, false, "\n");
 #else
@@ -6046,6 +6067,133 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
         std::min(12.0, static_cast<double>(noteAgeSamples_) / sampleRate_));
     const auto tempoMeter = tempoController_.getMetering();
 
+
+    // NEUMATON_V6_TEMPORAL_OCTAVE_DIAGNOSTICS
+    // Block-level temporal diagnostics.  The spectral meters say whether a frame
+    // is harmonically plausible; these meters say whether the output trajectory is
+    // musically stable through time.  This is especially important for Live, where
+    // a 256-sample frame can look plausible frame-by-frame while the target path
+    // jumps or octave-locks incorrectly.
+    const float latestTargetHzForTemporal = correctionController_.getTargetPitchHz();
+    const float latestCorrectionCentsForTemporal = correctionController_.getCorrectionCents();
+    const float temporalDtSeconds = static_cast<float>(std::max(
+        1.0e-4,
+        static_cast<double>(std::max(1, numberOfSamples)) / std::max(1.0, sampleRate_)));
+
+    const bool temporalActiveFrame = latestOutputMeterValid > 0.50f
+        && latestPitchHz > 20.0f
+        && latestTargetHzForTemporal > 20.0f
+        && latestConfidence > 0.15f
+        && latestVoicing > 0.15f;
+
+    const auto octaveResidualCents = [](float cents) noexcept -> float
+    {
+        const float absCents = std::abs(cents);
+        const float nearestOctave = 1200.0f * static_cast<float>(
+            std::max(1, static_cast<int>(std::lround(absCents / 1200.0f))));
+        return std::abs(absCents - nearestOctave);
+    };
+
+    const auto smoothStress = [](float previous, float target) noexcept -> float
+    {
+        target = std::max(0.0f, target);
+        const float coefficient = target > previous ? 0.34f : 0.10f;
+        return std::max(0.0f, previous + coefficient * (target - previous));
+    };
+
+    const auto smoothStability = [](float previous, float target) noexcept -> float
+    {
+        target = std::clamp(target, 0.0f, 100.0f);
+        const float coefficient = target < previous ? 0.34f : 0.10f;
+        return std::clamp(previous + coefficient * (target - previous), 0.0f, 100.0f);
+    };
+
+    float targetJumpCentsRaw = 0.0f;
+    float detectedJumpCentsRaw = 0.0f;
+    float correctionVelocityRaw = 0.0f;
+    float octaveConflictRaw = 0.0f;
+    float transitionStressRaw = 0.0f;
+    float temporalStabilityRaw = temporalActiveFrame ? 100.0f : 0.0f;
+
+    if (temporalActiveFrame && outputTemporalInitialised_)
+    {
+        if (outputTemporalPreviousTargetHz_ > 20.0f)
+        {
+            targetJumpCentsRaw = static_cast<float>(std::abs(
+                1200.0 * std::log2(
+                    static_cast<double>(latestTargetHzForTemporal)
+                    / static_cast<double>(outputTemporalPreviousTargetHz_))));
+        }
+
+        if (outputTemporalPreviousDetectedHz_ > 20.0f)
+        {
+            detectedJumpCentsRaw = static_cast<float>(std::abs(
+                1200.0 * std::log2(
+                    static_cast<double>(latestPitchHz)
+                    / static_cast<double>(outputTemporalPreviousDetectedHz_))));
+        }
+
+        const float correctionDeltaCents = std::abs(
+            latestCorrectionCentsForTemporal - outputTemporalPreviousCorrectionCents_);
+        correctionVelocityRaw = correctionDeltaCents / temporalDtSeconds;
+
+        const float targetJumpStress = smoothStep(60.0f, 360.0f, targetJumpCentsRaw);
+        const float detectedJumpStress = smoothStep(80.0f, 480.0f, detectedJumpCentsRaw);
+        const float velocityStress = smoothStep(700.0f, 5200.0f, correctionVelocityRaw);
+        const float phaseDropStress = 1.0f - smoothStep(48.0f, 88.0f, latestOutputPhaseCoherence);
+        const float transitionBlendStress = smoothStep(0.05f, 0.72f, transitionManager_.getBlend());
+
+        const float targetOctaveResidual = octaveResidualCents(targetJumpCentsRaw);
+        const float correctionOctaveResidual = octaveResidualCents(latestCorrectionCentsForTemporal);
+        const float octaveLikeTargetJump = smoothStep(620.0f, 1020.0f, targetJumpCentsRaw)
+            * (1.0f - smoothStep(85.0f, 260.0f, targetOctaveResidual));
+        const float octaveLikeCorrection = smoothStep(680.0f, 1100.0f, std::abs(latestCorrectionCentsForTemporal))
+            * (1.0f - smoothStep(85.0f, 280.0f, correctionOctaveResidual));
+        const float pendingOctaveRisk = clamp01(
+            0.34f * static_cast<float>(std::abs(latestOctaveState))
+            + 0.22f * static_cast<float>(latestPendingOctave));
+        const float lowConsensusRisk = 1.0f - smoothStep(0.26f, 0.82f, latestConsensus);
+
+        octaveConflictRaw = 100.0f * clamp01(
+            (0.58f * octaveLikeTargetJump + 0.42f * octaveLikeCorrection)
+                * (0.32f + 0.68f * lowConsensusRisk)
+            + 0.34f * pendingOctaveRisk);
+
+        transitionStressRaw = 100.0f * clamp01(
+            0.34f * velocityStress
+            + 0.25f * targetJumpStress
+            + 0.14f * detectedJumpStress
+            + 0.13f * transitionBlendStress
+            + 0.10f * phaseDropStress
+            + 0.20f * (octaveConflictRaw / 100.0f));
+
+        temporalStabilityRaw = 100.0f * (1.0f - clamp01(
+            0.34f * velocityStress
+            + 0.25f * targetJumpStress
+            + 0.13f * detectedJumpStress
+            + 0.10f * phaseDropStress
+            + 0.22f * (octaveConflictRaw / 100.0f)));
+    }
+
+    if (temporalActiveFrame)
+    {
+        outputTemporalInitialised_ = true;
+        outputTemporalPreviousTargetHz_ = latestTargetHzForTemporal;
+        outputTemporalPreviousDetectedHz_ = latestPitchHz;
+        outputTemporalPreviousCorrectionCents_ = latestCorrectionCentsForTemporal;
+    }
+    else
+    {
+        outputTemporalInitialised_ = false;
+    }
+
+    outputTemporalStability_ = smoothStability(outputTemporalStability_, temporalStabilityRaw);
+    outputTargetJumpCents_ = smoothStress(outputTargetJumpCents_, targetJumpCentsRaw);
+    outputCorrectionVelocityCentsPerSecond_ = smoothStress(
+        outputCorrectionVelocityCentsPerSecond_, correctionVelocityRaw);
+    outputOctaveConflict_ = smoothStress(outputOctaveConflict_, octaveConflictRaw);
+    outputTransitionStress_ = smoothStress(outputTransitionStress_, transitionStressRaw);
+
     meterSequence_.fetch_add(1u, std::memory_order_acq_rel); // odd: publishing
     meterPitchHz_.store(latestPitchHz, std::memory_order_relaxed);
     meterTargetHz_.store(correctionController_.getTargetPitchHz(),
@@ -6082,6 +6230,16 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
                                            std::memory_order_relaxed);
     meterOutputMeterValid_.store(latestOutputMeterValid,
                                  std::memory_order_relaxed);
+    meterOutputTemporalStability_.store(outputTemporalStability_,
+                                         std::memory_order_relaxed);
+    meterOutputTargetJumpCents_.store(outputTargetJumpCents_,
+                                      std::memory_order_relaxed);
+    meterOutputCorrectionVelocityCentsPerSecond_.store(
+        outputCorrectionVelocityCentsPerSecond_, std::memory_order_relaxed);
+    meterOutputOctaveConflict_.store(outputOctaveConflict_,
+                                     std::memory_order_relaxed);
+    meterOutputTransitionStress_.store(outputTransitionStress_,
+                                       std::memory_order_relaxed);
     meterDualSynthesisActive_.store(
         transitionManager_.isDualSynthesisActive(),
         std::memory_order_relaxed);
@@ -6217,6 +6375,11 @@ void ModernPitchEngine::processBypassed(juce::AudioBuffer<float>& buffer)
     meterOutputPhaseCoherence_.store(0.0f, std::memory_order_relaxed);
     meterOutputReconstructionNeed_.store(0.0f, std::memory_order_relaxed);
     meterOutputMeterValid_.store(0.0f, std::memory_order_relaxed);
+    meterOutputTemporalStability_.store(0.0f, std::memory_order_relaxed);
+    meterOutputTargetJumpCents_.store(0.0f, std::memory_order_relaxed);
+    meterOutputCorrectionVelocityCentsPerSecond_.store(0.0f, std::memory_order_relaxed);
+    meterOutputOctaveConflict_.store(0.0f, std::memory_order_relaxed);
+    meterOutputTransitionStress_.store(0.0f, std::memory_order_relaxed);
     meterDualSynthesisActive_.store(false, std::memory_order_relaxed);
     meterDetectorSupport_.store(0, std::memory_order_relaxed);
     meterOctaveState_.store(0, std::memory_order_relaxed);
@@ -6279,6 +6442,17 @@ ModernPitchEngine::Metering ModernPitchEngine::getMetering() const noexcept
         result.outputReconstructionNeed = meterOutputReconstructionNeed_.load(
             std::memory_order_relaxed);
         result.outputMeterValid = meterOutputMeterValid_.load(
+            std::memory_order_relaxed);
+        result.outputTemporalStability = meterOutputTemporalStability_.load(
+            std::memory_order_relaxed);
+        result.outputTargetJumpCents = meterOutputTargetJumpCents_.load(
+            std::memory_order_relaxed);
+        result.outputCorrectionVelocityCentsPerSecond =
+            meterOutputCorrectionVelocityCentsPerSecond_.load(
+                std::memory_order_relaxed);
+        result.outputOctaveConflict = meterOutputOctaveConflict_.load(
+            std::memory_order_relaxed);
+        result.outputTransitionStress = meterOutputTransitionStress_.load(
             std::memory_order_relaxed);
         result.dualSynthesisActive = meterDualSynthesisActive_.load(
             std::memory_order_relaxed);
