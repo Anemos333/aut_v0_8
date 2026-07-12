@@ -4273,6 +4273,25 @@ void ModernPitchEngine::SpectralVoiceShifter::updateV6OutputDiagnostics(
 // or debug meters.  It modifies only layer.spectrum before conjugate symmetry and
 // IFFT, using the existing V6.1 source mirror/memory, phase propagation, octave
 // safety, harmonic masks and formant tools already present in ModernPitchEngine.
+// NEUMATON_V7_TARGET_LOCKED_OUTPUT_RECOMPOSER
+// New pre-IFFT output contract: target-locked spectral recomposition.
+//
+// Previous V6.x composers still treated the transported wet spectrum as the
+// final object and made bounded fixes around it.  That was safe, but it left the
+// most important musical rule under-enforced: for pitched material the output
+// must first belong to the corrected target family, then become natural there.
+//
+// This function uses the already-working analysis/detection machinery as input:
+// - detector and Scale Lock choose the target;
+// - phase propagation, nearest peaks and octave-safe transport supply phase;
+// - harmonic masks separate tonal from aperiodic material;
+// - spectral envelope/formant lookup preserves body;
+// - V6.1 memory supplies stable timbre when the current frame is uncertain.
+//
+// But the final spectrum is no longer a timid add-on over the wet proposal.  In
+// active pitched frames we build a new corrected Fourier object in fftBuffer_,
+// copy it back to layer.spectrum, then let the existing conjugate symmetry and
+// IFFT code finish the frame.  No dry branch is summed or reopened.
 void ModernPitchEngine::SpectralVoiceShifter::applyV62QualityActiveLedger(
     SynthesisLayer& layer,
     double safeRatio,
@@ -4291,7 +4310,16 @@ void ModernPitchEngine::SpectralVoiceShifter::applyV62QualityActiveLedger(
         || !std::isfinite(safeRatio)
         || safeRatio <= 0.0)
     {
-        v62ActiveLedgerDrive_ += 0.12f * (0.0f - v62ActiveLedgerDrive_);
+        v62ActiveLedgerDrive_ += 0.18f * (0.0f - v62ActiveLedgerDrive_);
+        return;
+    }
+
+    const double correctionCents = 1200.0 * std::log2(std::max(1.0e-12, safeRatio));
+    const float correctionAbsCents = static_cast<float>(std::abs(correctionCents));
+    const float correctionGate = smoothStep(0.35f, 5.5f, correctionAbsCents);
+    if (correctionGate <= 1.0e-5f)
+    {
+        v62ActiveLedgerDrive_ += 0.18f * (0.0f - v62ActiveLedgerDrive_);
         return;
     }
 
@@ -4302,138 +4330,124 @@ void ModernPitchEngine::SpectralVoiceShifter::applyV62QualityActiveLedger(
     const double binWidthHz = std::max(
         1.0,
         sampleRate_ / static_cast<double>(std::max(1, frameSize_)));
-    const float correctionAbsCents = static_cast<float>(std::abs(
-        1200.0 * std::log2(std::max(1.0e-12, safeRatio))));
-    const float correctionGate = smoothStep(0.75f, 9.0f, correctionAbsCents);
-    if (correctionGate <= 1.0e-5f)
-    {
-        v62ActiveLedgerDrive_ += 0.12f * (0.0f - v62ActiveLedgerDrive_);
-        return;
-    }
-
     const float safeFormant = clamp01(formantPreservation);
-    const float phaseGate = smoothStep(46.0f, 88.0f, outputPhaseCoherence_);
+    const float energyScale = static_cast<float>(1.0 / std::sqrt(std::max(1.0e-8, safeRatio)));
+
+    const float phaseGate = smoothStep(40.0f, 88.0f, outputPhaseCoherence_);
     const float mirrorNeed = clamp01(outputSelectiveReconstructionNeed_ / 100.0f);
     const float ledgerDeficit = clamp01(outputLedgerDeficit_ / 100.0f);
     const float doubleFamilyRisk = clamp01(outputDoubleFamilyRisk_ / 100.0f);
-    const float memoryGate = smoothStep(10.0f, 62.0f, outputMemoryReliability_);
-    const float preConsensusGate = smoothStep(36.0f, 82.0f, outputPreIfftConsensus_);
-
-    // These two errors are intentionally referenced to near-perfect target
-    // ownership, not merely to "good enough" sound.  Quality is allowed to be
-    // natural only after this has been driven close to the target family.
-    const float targetError = clamp01((99.2f - outputTargetCoherence_) / 42.0f);
-    const float physicalError = clamp01((99.2f - outputPhysicalHarmonicFit_) / 42.0f);
-    const float targetNeed = clamp01(0.55f * targetError
-                                     + 0.35f * physicalError
-                                     + 0.26f * doubleFamilyRisk);
+    const float memoryGate = smoothStep(8.0f, 58.0f, outputMemoryReliability_);
+    const float preConsensusGate = smoothStep(34.0f, 82.0f, outputPreIfftConsensus_);
 
     const float tonalTrust = clamp01(
-        0.38f * frameTonalConfidence_
-        + 0.24f * smoothedSpectralReliability_
-        + 0.20f * smoothedHarmonicity_
+        0.36f * frameTonalConfidence_
+        + 0.23f * smoothedSpectralReliability_
+        + 0.23f * smoothedHarmonicity_
         + 0.18f * smoothedMaskStability_);
-    const float uncertainMaterial = 1.0f - smoothStep(0.34f, 0.78f, tonalTrust);
+    const float uncertainMaterial = 1.0f - smoothStep(0.32f, 0.78f, tonalTrust);
     const float strictCorrectionIntent = clamp01(
         0.44f * frameHardCorrectionIntent_
         + 0.34f * frameCorrectionAssertiveness_
         + 0.22f * (frameScaleLockActive_ ? 1.0f : 0.0f));
 
+    const float targetError = clamp01((99.45f - outputTargetCoherence_) / 38.0f);
+    const float physicalError = clamp01((99.45f - outputPhysicalHarmonicFit_) / 38.0f);
+    const float targetNeed = clamp01(0.56f * targetError
+                                     + 0.36f * physicalError
+                                     + 0.28f * doubleFamilyRisk);
+
     const float transitionRisk = clamp01(
         (frameDualTransitionActive_ ? 0.30f : 0.0f)
-        + 0.44f * frameTransitionBlend_
+        + 0.42f * frameTransitionBlend_
         + 0.26f * doubleFamilyRisk
-        + 0.22f * (1.0f - phaseGate)
-        + 0.16f * uncertainMaterial);
+        + 0.20f * (1.0f - phaseGate)
+        + 0.15f * uncertainMaterial);
 
-    // Target ownership is separate from natural reconstruction.  Even in Live or
-    // Experimental, high transition stress should limit timbral ambition, not let
-    // the spectrum drift away from the corrected target.
-    float targetOwnershipDrive = correctionGate
-        * (0.16f
-           + 0.62f * targetNeed
-           + 0.26f * mirrorNeed
-           + 0.20f * ledgerDeficit)
-        * (0.55f + 0.45f * tonalTrust)
-        * (0.58f + 0.42f * strictCorrectionIntent)
-        * (1.0f - (qualityFrame ? 0.10f : 0.22f) * transitionRisk);
+    // This is the key split: target ownership stays high in all modes; only the
+    // natural-timbre ambition is reduced during stress in Live/Experimental.
+    float targetOwnership = correctionGate
+        * (0.40f
+           + 0.58f * targetNeed
+           + 0.22f * ledgerDeficit
+           + 0.16f * mirrorNeed)
+        * (0.62f + 0.38f * strictCorrectionIntent)
+        * (0.60f + 0.40f * tonalTrust);
 
-    float naturalRebuildDrive = 0.0f;
+    float naturalAmbition = correctionGate
+        * (0.14f + 0.42f * mirrorNeed + 0.36f * ledgerDeficit + 0.24f * memoryGate)
+        * (0.42f + 0.58f * phaseGate)
+        * (0.42f + 0.58f * preConsensusGate)
+        * (0.68f + 0.32f * safeFormant);
+
     if (qualityFrame)
     {
-        naturalRebuildDrive = correctionGate
-            * (0.20f + 0.48f * mirrorNeed + 0.42f * ledgerDeficit + 0.28f * memoryGate)
-            * (0.42f + 0.58f * phaseGate)
-            * (0.46f + 0.54f * preConsensusGate)
-            * (0.72f + 0.28f * safeFormant)
-            * (1.0f - 0.54f * transitionRisk);
-        naturalRebuildDrive = std::clamp(naturalRebuildDrive, 0.0f, 0.86f);
-        targetOwnershipDrive = std::clamp(targetOwnershipDrive, 0.0f, 0.94f);
+        targetOwnership = std::clamp(targetOwnership * (1.0f - 0.05f * transitionRisk),
+                                     0.0f,
+                                     0.98f);
+        naturalAmbition = std::clamp(naturalAmbition * (1.0f - 0.38f * transitionRisk),
+                                     0.0f,
+                                     0.90f);
     }
     else if (liveFrame)
     {
-        // Live: controlled, not timid.  Keep target ownership active, but make
-        // natural reconstruction small and stress-aware.
-        naturalRebuildDrive = correctionGate
-            * (0.04f + 0.13f * mirrorNeed + 0.08f * ledgerDeficit)
-            * (0.34f + 0.66f * phaseGate)
-            * (1.0f - 0.84f * transitionRisk);
-        naturalRebuildDrive = std::clamp(naturalRebuildDrive, 0.0f, 0.14f);
-        targetOwnershipDrive = std::clamp(targetOwnershipDrive, 0.0f, 0.54f);
+        targetOwnership = std::clamp(targetOwnership * (1.0f - 0.12f * transitionRisk),
+                                     0.0f,
+                                     0.82f);
+        naturalAmbition = std::clamp(naturalAmbition * (0.32f + 0.68f * phaseGate)
+                                                   * (1.0f - 0.78f * transitionRisk),
+                                     0.0f,
+                                     0.22f);
     }
     else if (ultraLiveFrame)
     {
-        // Experimental: coherent character, not natural imitation.  Still impose
-        // target-family ownership so metallicness does not become wrong-register
-        // or out-of-target instability.
-        naturalRebuildDrive = correctionGate
-            * (0.03f + 0.09f * ledgerDeficit)
-            * (0.26f + 0.74f * phaseGate)
-            * (1.0f - 0.72f * transitionRisk);
-        naturalRebuildDrive = std::clamp(naturalRebuildDrive, 0.0f, 0.10f);
-        targetOwnershipDrive = std::clamp(targetOwnershipDrive, 0.0f, 0.60f);
+        targetOwnership = std::clamp(targetOwnership * (1.0f - 0.10f * transitionRisk),
+                                     0.0f,
+                                     0.86f);
+        naturalAmbition = std::clamp(naturalAmbition * (0.22f + 0.78f * phaseGate)
+                                                   * (1.0f - 0.70f * transitionRisk),
+                                     0.0f,
+                                     0.16f);
     }
 
-    const float requestedDrive = std::max(targetOwnershipDrive, naturalRebuildDrive);
-    if (requestedDrive <= 1.0e-5f)
-    {
-        v62ActiveLedgerDrive_ += 0.14f * (0.0f - v62ActiveLedgerDrive_);
-        return;
-    }
-
-    const float driveCoefficient = requestedDrive > v62ActiveLedgerDrive_ ? 0.42f : 0.12f;
+    const float targetDriveRequest = std::max(targetOwnership, qualityFrame ? 0.36f * correctionGate : 0.44f * correctionGate);
+    const float driveRequest = std::max(targetDriveRequest, naturalAmbition);
+    const float driveCoefficient = driveRequest > v62ActiveLedgerDrive_ ? 0.52f : 0.16f;
     v62ActiveLedgerDrive_ = std::clamp(
-        v62ActiveLedgerDrive_ + driveCoefficient * (requestedDrive - v62ActiveLedgerDrive_),
+        v62ActiveLedgerDrive_ + driveCoefficient * (driveRequest - v62ActiveLedgerDrive_),
         0.0f,
-        qualityFrame ? 0.94f : 0.60f);
+        qualityFrame ? 0.98f : 0.86f);
 
-    const float targetDrive = std::max(0.35f * v62ActiveLedgerDrive_, targetOwnershipDrive);
-    const float naturalDrive = naturalRebuildDrive * (0.46f + 0.54f * v62ActiveLedgerDrive_);
+    const float targetDrive = std::max(targetDriveRequest, 0.42f * v62ActiveLedgerDrive_);
+    const float naturalDrive = naturalAmbition * (0.55f + 0.45f * v62ActiveLedgerDrive_);
+
     if (targetDrive <= 1.0e-5f && naturalDrive <= 1.0e-5f)
         return;
 
-    double preEnergy = 0.0;
+    double proposalEnergy = 0.0;
     for (int bin = 1; bin < positiveBins; ++bin)
     {
         const float magnitude = std::abs(layer.spectrum[static_cast<std::size_t>(bin)]);
-        preEnergy += static_cast<double>(magnitude) * static_cast<double>(magnitude);
+        proposalEnergy += static_cast<double>(magnitude) * static_cast<double>(magnitude);
     }
 
-    const int localRadius = qualityFrame ? 2 : 1;
-    const float writeSigmaBins = qualityFrame ? 0.66f : liveFrame ? 0.86f : 1.00f;
-    const float readSigmaBins = qualityFrame ? 0.90f : liveFrame ? 1.25f : 1.58f;
-    const float energyScale = static_cast<float>(1.0 / std::sqrt(std::max(1.0e-8, safeRatio)));
+    std::fill(fftBuffer_.begin(), fftBuffer_.end(), Complex {});
 
-    const auto magnitudeAroundInput = [this, positiveBins, readSigmaBins](double binPosition) noexcept -> float
+    const float harmonicReadSigma = qualityFrame ? 0.82f : liveFrame ? 1.18f : 1.46f;
+    const float proposalReadSigma = qualityFrame ? 0.84f : liveFrame ? 1.16f : 1.42f;
+    const float harmonicWriteSigma = qualityFrame ? 0.56f : liveFrame ? 0.74f : 0.88f;
+    const int harmonicRadius = qualityFrame ? 2 : 1;
+
+    const auto magnitudeAroundInput = [this, positiveBins, harmonicReadSigma](double binPosition) noexcept -> float
     {
         if (binPosition < 0.0 || binPosition > static_cast<double>(positiveBins))
             return 0.0f;
 
-        const int radius = static_cast<int>(std::ceil(readSigmaBins * 2.0f));
+        const int radius = static_cast<int>(std::ceil(harmonicReadSigma * 2.1f));
         const int centre = static_cast<int>(std::lround(binPosition));
+        const double sigma = std::max(0.35, static_cast<double>(harmonicReadSigma));
         double weightedEnergy = 0.0;
         double weightSum = 0.0;
-        const double sigma = std::max(0.35, static_cast<double>(readSigmaBins));
         for (int offset = -radius; offset <= radius; ++offset)
         {
             const int bin = centre + offset;
@@ -4450,16 +4464,16 @@ void ModernPitchEngine::SpectralVoiceShifter::applyV62QualityActiveLedger(
             : 0.0f;
     };
 
-    const auto complexAroundOutput = [&layer, positiveBins, readSigmaBins](double binPosition) noexcept -> Complex
+    const auto complexAroundProposal = [&layer, positiveBins, proposalReadSigma](double binPosition) noexcept -> Complex
     {
         if (binPosition < 0.0 || binPosition > static_cast<double>(positiveBins))
             return Complex {};
 
-        const int radius = static_cast<int>(std::ceil(readSigmaBins * 1.5f));
+        const int radius = static_cast<int>(std::ceil(proposalReadSigma * 1.7f));
         const int centre = static_cast<int>(std::lround(binPosition));
+        const double sigma = std::max(0.35, static_cast<double>(proposalReadSigma));
         Complex weighted {};
         double weightSum = 0.0;
-        const double sigma = std::max(0.35, static_cast<double>(readSigmaBins));
         for (int offset = -radius; offset <= radius; ++offset)
         {
             const int bin = centre + offset;
@@ -4479,37 +4493,41 @@ void ModernPitchEngine::SpectralVoiceShifter::applyV62QualityActiveLedger(
     {
         if (pitchHz <= 0.0f || frequencyHz <= pitchHz * 0.45f)
             return 0.0f;
+
         const float harmonicNumber = frequencyHz / pitchHz;
         const float nearestHarmonic = std::round(harmonicNumber);
         if (nearestHarmonic < 1.0f || nearestHarmonic > 256.0f)
             return 0.0f;
+
         const double expectedHz = static_cast<double>(nearestHarmonic) * static_cast<double>(pitchHz);
         const double distanceBins = std::abs(static_cast<double>(frequencyHz) - expectedHz)
             / std::max(1.0, binWidthHz);
-        const double sigma = qualityFrame ? 0.78 : liveFrame ? 1.18 : 1.52;
-        const double hard = qualityFrame ? 1.86 : liveFrame ? 2.65 : 3.05;
+        const double sigma = qualityFrame ? 0.62 : liveFrame ? 0.96 : 1.22;
+        const double hard = qualityFrame ? 1.62 : liveFrame ? 2.24 : 2.72;
         if (distanceBins >= hard)
             return 0.0f;
         return static_cast<float>(std::exp(-0.5 * (distanceBins / sigma) * (distanceBins / sigma)));
     };
 
-    const auto addCoherentAtBin = [&](double binPosition,
-                                      float amplitude,
-                                      double phase,
-                                      float harmonicWriteDrive) noexcept
+    const auto addToScratch = [&](double binPosition,
+                                  float amplitude,
+                                  double phase,
+                                  float writeDrive,
+                                  float sigmaOverride) noexcept
     {
-        if (amplitude <= 1.0e-9f
-            || harmonicWriteDrive <= 1.0e-6f
+        if (amplitude <= 1.0e-10f
+            || writeDrive <= 1.0e-7f
             || binPosition < 1.0
             || binPosition > static_cast<double>(positiveBins) - 1.0)
         {
             return;
         }
 
-        double normalisation = 0.0;
+        const float sigma = std::max(0.35f, sigmaOverride);
+        const int radius = std::max(1, static_cast<int>(std::ceil(sigma * 2.0f)));
         const int centre = static_cast<int>(std::lround(binPosition));
-        const double sigma = std::max(0.35, static_cast<double>(writeSigmaBins));
-        for (int offset = -localRadius; offset <= localRadius; ++offset)
+        double normalisation = 0.0;
+        for (int offset = -radius; offset <= radius; ++offset)
         {
             const int bin = centre + offset;
             if (bin < 1 || bin >= positiveBins)
@@ -4525,20 +4543,23 @@ void ModernPitchEngine::SpectralVoiceShifter::applyV62QualityActiveLedger(
         float cosine = 1.0f;
         fastSinCos(phase, sine, cosine);
         const Complex unit(cosine, sine);
-        for (int offset = -localRadius; offset <= localRadius; ++offset)
+        for (int offset = -radius; offset <= radius; ++offset)
         {
             const int bin = centre + offset;
             if (bin < 1 || bin >= positiveBins)
                 continue;
             const double distanceBins = std::abs(static_cast<double>(bin) - binPosition);
             const double weight = std::exp(-0.5 * (distanceBins / sigma) * (distanceBins / sigma));
-            layer.spectrum[static_cast<std::size_t>(bin)] += unit
+            fftBuffer_[static_cast<std::size_t>(bin)] += unit
                 * static_cast<float>((weight / normalisation)
                                      * static_cast<double>(amplitude)
-                                     * static_cast<double>(harmonicWriteDrive));
+                                     * static_cast<double>(writeDrive));
         }
     };
 
+    // 1) Rebuild the tonal identity explicitly at n*f_target.  This is the part
+    // that forces Quality/Live/Experimental to stick to target rather than merely
+    // sounding pleasant around the old wet proposal.
     const int lastHarmonic = std::min(
         v61HarmonicMemorySize - 1,
         static_cast<int>(std::floor((static_cast<double>(positiveBins) * binWidthHz)
@@ -4564,89 +4585,70 @@ void ModernPitchEngine::SpectralVoiceShifter::applyV62QualityActiveLedger(
         const double memoryEnergy = std::max(
             0.0,
             static_cast<double>(v61HarmonicEnergyMemory_[static_cast<std::size_t>(harmonicIndex)]));
-
-        if (inputMagnitude <= 1.0e-8f && memoryEnergy <= 1.0e-12)
+        if (inputMagnitude <= 1.0e-8f && memoryEnergy <= 1.0e-14)
             continue;
 
-        const Complex existingTarget = complexAroundOutput(targetBinPosition);
-        const float existingMagnitude = std::abs(existingTarget);
-        const double existingEnergy = static_cast<double>(existingMagnitude) * static_cast<double>(existingMagnitude);
+        const Complex proposalTarget = complexAroundProposal(targetBinPosition);
+        const float proposalMagnitude = std::abs(proposalTarget);
+        const double proposalTargetEnergy = static_cast<double>(proposalMagnitude) * static_cast<double>(proposalMagnitude);
 
         const double inputEnergy = static_cast<double>(inputMagnitude) * static_cast<double>(inputMagnitude)
             * static_cast<double>(energyScale) * static_cast<double>(energyScale);
-
-        // When the current frame is uncertain, preserve the causal timbre memory;
-        // when it is stable, current input dominates.  Either way the result is
-        // deposited at n*f_target, not at an off-target compromise frequency.
         const float memoryBlend = qualityFrame
-            ? clamp01(memoryReliability * (0.22f + 0.78f * uncertainMaterial) * (0.42f + 0.58f * safeFormant))
-            : clamp01(0.22f * memoryReliability * (0.35f + 0.65f * uncertainMaterial));
+            ? clamp01(memoryReliability * (0.18f + 0.82f * uncertainMaterial) * (0.40f + 0.60f * safeFormant))
+            : clamp01(0.26f * memoryReliability * (0.30f + 0.70f * uncertainMaterial));
         double expectedEnergy = (1.0 - static_cast<double>(memoryBlend)) * inputEnergy
             + static_cast<double>(memoryBlend) * memoryEnergy;
 
         const double sourceEnvelope = std::max(1.0e-6, static_cast<double>(interpolateEnvelope(sourceBinPosition)));
-        const double sourceCoordinateAtTarget = targetBinPosition / std::max(1.0e-6, safeRatio);
-        const double transportedEnvelope = std::max(1.0e-6, static_cast<double>(interpolateEnvelope(sourceCoordinateAtTarget)));
-        const float envelopeRatio = static_cast<float>(std::clamp(transportedEnvelope / sourceEnvelope, 0.18, 5.25));
+        const double transportedSourceCoordinate = targetBinPosition / std::max(1.0e-6, safeRatio);
+        const double transportedEnvelope = std::max(1.0e-6, static_cast<double>(interpolateEnvelope(transportedSourceCoordinate)));
+        const float envelopeRatio = static_cast<float>(std::clamp(transportedEnvelope / sourceEnvelope, 0.16, 5.80));
         const float formantGain = lookupFormantGain(envelopeRatio, safeFormant);
         expectedEnergy *= std::clamp(
             static_cast<double>(formantGain) * static_cast<double>(formantGain),
-            0.16,
-            qualityFrame ? 3.20 : liveFrame ? 1.85 : 1.65);
+            0.15,
+            qualityFrame ? 3.45 : liveFrame ? 2.05 : 1.80);
 
+        // The wet proposal may already contain a good target component.  It can
+        // contribute energy and own phase, but it cannot pull the target away.
+        expectedEnergy = std::max(expectedEnergy,
+                                  proposalTargetEnergy * static_cast<double>(qualityFrame ? 0.92f : 0.80f));
         if (expectedEnergy <= 1.0e-16)
             continue;
 
         const float harmonicPriority = std::clamp(
-            1.0f - static_cast<float>(harmonicIndex - 1) / (qualityFrame ? 46.0f : liveFrame ? 28.0f : 22.0f),
-            qualityFrame ? 0.24f : 0.12f,
+            1.0f - static_cast<float>(harmonicIndex - 1) / (qualityFrame ? 52.0f : liveFrame ? 32.0f : 26.0f),
+            qualityFrame ? 0.26f : 0.13f,
             1.0f);
-        const float memoryPriority = 0.36f + 0.64f * memoryReliability;
-        const float lowHarmonicAuthority = harmonicIndex <= 6 ? 1.16f : 1.0f;
+        const float lowHarmonicAuthority = harmonicIndex <= 7 ? 1.18f : 1.0f;
+        const float memoryPriority = 0.38f + 0.62f * memoryReliability;
 
-        const double deficitEnergy = std::max(0.0, expectedEnergy - existingEnergy);
-        const float deficitAmplitude = deficitEnergy > 1.0e-18
-            ? static_cast<float>(std::sqrt(deficitEnergy))
-            : 0.0f;
-
-        // Target anchor: if there is already energy near the target but the global
-        // target/physical meters say the family is not exact enough, reinforce the
-        // exact target line instead of accepting a nearby off-target compromise.
-        const float recenterAmplitude = existingMagnitude
+        const double desiredMagnitude = std::sqrt(expectedEnergy);
+        const float amplitudeFromTargetOwnership = static_cast<float>(desiredMagnitude)
             * targetDrive
             * harmonicPriority
             * lowHarmonicAuthority
-            * (0.08f + 0.46f * targetNeed);
-
-        const float naturalAmplitude = deficitAmplitude
+            * (0.62f + 0.38f * targetNeed);
+        const float amplitudeFromNaturalRebuild = static_cast<float>(desiredMagnitude)
             * naturalDrive
             * harmonicPriority
             * memoryPriority
             * lowHarmonicAuthority
-            * (qualityFrame ? 1.0f : liveFrame ? 0.50f : 0.36f)
-            * (1.0f - (qualityFrame ? 0.20f : 0.42f) * transitionRisk);
-
-        const float anchorAmplitude = deficitAmplitude
-            * targetDrive
-            * harmonicPriority
-            * lowHarmonicAuthority
-            * (0.42f + 0.58f * targetNeed)
-            * (qualityFrame ? 1.0f : 0.72f);
-
-        const float addAmplitude = std::max(
-            recenterAmplitude,
-            std::max(naturalAmplitude, anchorAmplitude));
-        if (addAmplitude <= 1.0e-9f)
+            * (qualityFrame ? 0.92f : liveFrame ? 0.42f : 0.30f)
+            * (1.0f - (qualityFrame ? 0.16f : 0.38f) * transitionRisk);
+        const float finalAmplitude = std::max(amplitudeFromTargetOwnership,
+                                              amplitudeFromNaturalRebuild);
+        if (finalAmplitude <= 1.0e-10f)
             continue;
 
         const int sourceIndex = std::clamp(
             static_cast<int>(std::lround(sourceBinPosition)), 1, positiveBins - 1);
         double phase = propagatedPhases_[static_cast<std::size_t>(sourceIndex)];
-        if (existingMagnitude > static_cast<float>(std::sqrt(expectedEnergy)) * 0.08f)
+        if (proposalMagnitude > static_cast<float>(desiredMagnitude) * 0.055f)
         {
-            // Phase ownership: if the wet core already owns the target harmonic
-            // region, reinforce that phase.  We never add a competing strong phase.
-            phase = std::atan2(existingTarget.imag(), existingTarget.real());
+            // Existing corrected wet content may own phase, but not pitch.
+            phase = std::atan2(proposalTarget.imag(), proposalTarget.real());
         }
         else
         {
@@ -4657,49 +4659,134 @@ void ModernPitchEngine::SpectralVoiceShifter::applyV62QualityActiveLedger(
                           - static_cast<double>(analysisPhases_[static_cast<std::size_t>(sourcePeak)]));
         }
 
-        addCoherentAtBin(targetBinPosition, addAmplitude, phase, 1.0f);
+        addToScratch(targetBinPosition,
+                     finalAmplitude,
+                     phase,
+                     1.0f,
+                     harmonicWriteSigma);
     }
 
-    // Old-family cleanup: stronger than V6.2 in Quality, and still present in
-    // Live/Experimental.  It removes tonal old-pitch residues but leaves
-    // aperiodic / consonant / inharmonic material alone.
-    const float familySeparationCents = static_cast<float>(std::abs(
-        1200.0 * std::log2(std::max(1.0e-6f, targetPitchHz)
-                         / std::max(1.0e-6f, sourcePitchHz))));
-    const float separationGate = smoothStep(18.0f, 95.0f, familySeparationCents);
-    const float cleanupDrive = std::clamp(
-        separationGate
-        * (qualityFrame
-            ? (0.14f + 0.54f * targetDrive + 0.34f * doubleFamilyRisk + 0.22f * targetNeed)
-            : liveFrame
-                ? (0.08f + 0.32f * targetDrive + 0.26f * doubleFamilyRisk + 0.18f * targetNeed)
-                : (0.09f + 0.36f * targetDrive + 0.22f * doubleFamilyRisk + 0.20f * targetNeed))
-        * (1.0f - (qualityFrame ? 0.12f : 0.26f) * transitionRisk),
+    // 2) Rebuild the non-tonal body/breath/consonant material in corrected
+    // coordinates.  This is not dry: it is a Fourier-domain re-render of the
+    // original spectral fabric after the target transport decision.
+    const float noiseBodyDrive = std::clamp(
+        correctionGate
+        * (qualityFrame ? 0.72f : liveFrame ? 0.62f : 0.58f)
+        * (0.52f + 0.48f * smoothedSpectralReliability_)
+        * (1.0f - (qualityFrame ? 0.10f : 0.18f) * transitionRisk),
         0.0f,
-        qualityFrame ? 0.66f : liveFrame ? 0.38f : 0.42f);
+        qualityFrame ? 0.78f : 0.64f);
 
-    if (cleanupDrive > 1.0e-5f)
+    if (noiseBodyDrive > 1.0e-5f)
     {
-        const float minimumAttenuation = qualityFrame ? 0.46f : liveFrame ? 0.58f : 0.55f;
-        for (int bin = 1; bin < positiveBins; ++bin)
+        for (int sourceBin = 1; sourceBin < positiveBins; ++sourceBin)
         {
-            const float frequencyHz = binFrequency(bin);
-            const float oldProximity = harmonicProximity(frequencyHz, sourcePitchHz);
-            if (oldProximity <= 1.0e-4f)
-                continue;
-            const float targetProximity = harmonicProximity(frequencyHz, targetPitchHz);
-            const float oldOnly = oldProximity * (1.0f - targetProximity);
-            if (oldOnly <= 1.0e-4f)
+            const std::size_t sourceIndex = static_cast<std::size_t>(sourceBin);
+            const float magnitude = magnitudes_[sourceIndex];
+            if (magnitude <= 1.0e-10f)
                 continue;
 
-            // Stronger cleanup in low tonal harmonics, weaker in high bands where
-            // consonants, breath and inharmonic texture live.
-            const float harmonicNumber = frequencyHz / std::max(1.0f, sourcePitchHz);
-            const float lowBandBias = 1.0f - smoothStep(10.0f, 34.0f, harmonicNumber);
-            const float attenuation = 1.0f - cleanupDrive * oldOnly * (0.54f + 0.46f * lowBandBias);
-            layer.spectrum[static_cast<std::size_t>(bin)] *= std::clamp(attenuation, minimumAttenuation, 1.0f);
+            const float sourceFrequencyHz = binFrequency(sourceBin);
+            const float sourceHarmonic = harmonicProximity(sourceFrequencyHz, sourcePitchHz);
+            const float maskTonal = clamp01(harmonicMask_[sourceIndex]);
+            const float aperiodicWeight = clamp01(
+                (1.0f - maskTonal)
+                * (0.42f + 0.58f * (1.0f - sourceHarmonic)));
+            if (aperiodicWeight <= 1.0e-4f)
+                continue;
+
+            const double targetPosition = static_cast<double>(sourceBin) * safeRatio;
+            if (targetPosition < 1.0 || targetPosition > static_cast<double>(positiveBins) - 1.0)
+                continue;
+
+            const double sourceEnvelope = std::max(1.0e-6, static_cast<double>(spectralEnvelope_[sourceIndex]));
+            const double targetEnvelope = std::max(1.0e-6, static_cast<double>(interpolateEnvelope(targetPosition)));
+            const float envelopeRatio = static_cast<float>(std::clamp(targetEnvelope / sourceEnvelope, 0.32, 2.85));
+            const float formantAmount = qualityFrame ? safeFormant : 0.55f * safeFormant;
+            const float formantGain = 1.0f + formantAmount * (lookupFormantGain(envelopeRatio, safeFormant) - 1.0f);
+
+            const float airBand = smoothStep(3600.0f, 7600.0f, sourceFrequencyHz);
+            const float consonantProtection = 0.70f + 0.30f * airBand;
+            const float outputMagnitude = magnitude
+                * aperiodicWeight
+                * energyScale
+                * formantGain
+                * consonantProtection
+                * noiseBodyDrive;
+            if (outputMagnitude <= 1.0e-10f)
+                continue;
+
+            const double phase = propagatedPhases_[sourceIndex];
+            const float writeSigma = qualityFrame ? (0.82f + 0.62f * airBand)
+                                                  : (1.04f + 0.72f * airBand);
+            addToScratch(targetPosition,
+                         outputMagnitude,
+                         phase,
+                         1.0f,
+                         writeSigma);
         }
     }
+
+    // 3) Merge with the corrected wet proposal only as residual corrected fabric.
+    // Old-source-family tonal bins in the proposal are strongly suppressed.  This
+    // avoids treating the proposal as a hidden dry/wet safety path.
+    for (int bin = 1; bin < positiveBins; ++bin)
+    {
+        const std::size_t index = static_cast<std::size_t>(bin);
+        const float frequencyHz = binFrequency(bin);
+        const float oldProximity = harmonicProximity(frequencyHz, sourcePitchHz);
+        const float targetProximity = harmonicProximity(frequencyHz, targetPitchHz);
+        const float oldOnly = oldProximity * (1.0f - targetProximity);
+        const float targetFamily = targetProximity;
+
+        Complex proposal = layer.spectrum[index];
+        if (oldOnly > 1.0e-4f)
+        {
+            const float familySeparationCents = correctionAbsCents;
+            const float separationGate = smoothStep(12.0f, 82.0f, familySeparationCents);
+            const float oldReject = std::clamp(
+                separationGate
+                * oldOnly
+                * (qualityFrame ? (0.72f + 0.22f * targetDrive)
+                                : (0.54f + 0.26f * targetDrive)),
+                0.0f,
+                qualityFrame ? 0.92f : 0.84f);
+            proposal *= (1.0f - oldReject);
+        }
+
+        const float scratchMagnitude = std::abs(fftBuffer_[index]);
+        const float proposalMagnitude = std::abs(proposal);
+        const float scratchPresent = smoothStep(1.0e-8f, 6.0e-6f, scratchMagnitude);
+        const float targetBinAuthority = clamp01(
+            targetDrive * (0.54f + 0.46f * targetFamily)
+            + naturalDrive * scratchPresent
+            + (oldOnly > 0.0f ? 0.28f * oldOnly : 0.0f));
+
+        const float highAir = smoothStep(5200.0f, 9400.0f, frequencyHz);
+        const float correctedFabricKeep = (1.0f - targetBinAuthority)
+            * (qualityFrame ? (0.16f + 0.22f * highAir)
+                            : (0.24f + 0.30f * highAir));
+        const float recomposedWeight = std::clamp(
+            1.0f - correctedFabricKeep,
+            qualityFrame ? 0.72f : 0.62f,
+            1.0f);
+
+        Complex recomposed = fftBuffer_[index];
+        if (scratchMagnitude <= 1.0e-9f && proposalMagnitude > 1.0e-9f)
+        {
+            // If a bin carries only broadband corrected fabric, keep a bounded
+            // part of the proposal.  This preserves air/noise without letting old
+            // tonal families survive.
+            recomposed = proposal * (qualityFrame ? 0.36f : 0.44f);
+        }
+
+        layer.spectrum[index] = recomposed * recomposedWeight
+            + proposal * (1.0f - recomposedWeight);
+    }
+
+    layer.spectrum[0] = Complex(layer.spectrum[0].real(), 0.0f);
+    layer.spectrum[static_cast<std::size_t>(positiveBins)] =
+        Complex(layer.spectrum[static_cast<std::size_t>(positiveBins)].real(), 0.0f);
 
     double postEnergy = 0.0;
     for (int bin = 1; bin < positiveBins; ++bin)
@@ -4708,15 +4795,24 @@ void ModernPitchEngine::SpectralVoiceShifter::applyV62QualityActiveLedger(
         postEnergy += static_cast<double>(magnitude) * static_cast<double>(magnitude);
     }
 
-    // Bound gain growth but do not undo target correction.  This is a global
-    // spectral safety limiter, not a dry/wet mix or a perceptual compressor.
-    const double energyCeiling = std::max(1.0e-18, preEnergy)
-        * static_cast<double>(qualityFrame ? 1.26f : liveFrame ? 1.14f : 1.16f);
+    // Energy safety.  This prevents the new target-locked object from becoming a
+    // parallel gain boost, but never mixes old dry material back in.
+    const double energyCeiling = std::max(1.0e-18, proposalEnergy)
+        * static_cast<double>(qualityFrame ? 1.34f : liveFrame ? 1.20f : 1.22f);
+    const double energyFloor = std::max(1.0e-18, proposalEnergy)
+        * static_cast<double>(qualityFrame ? 0.70f : liveFrame ? 0.64f : 0.62f);
     if (postEnergy > energyCeiling && postEnergy > 1.0e-18)
     {
         const float safetyGain = static_cast<float>(std::sqrt(energyCeiling / postEnergy));
         for (int bin = 1; bin < positiveBins; ++bin)
             layer.spectrum[static_cast<std::size_t>(bin)] *= safetyGain;
+    }
+    else if (postEnergy < energyFloor && postEnergy > 1.0e-18)
+    {
+        const float recoveryGain = static_cast<float>(std::sqrt(energyFloor / postEnergy));
+        const float boundedGain = std::clamp(recoveryGain, 1.0f, qualityFrame ? 1.16f : 1.12f);
+        for (int bin = 1; bin < positiveBins; ++bin)
+            layer.spectrum[static_cast<std::size_t>(bin)] *= boundedGain;
     }
 }
 
