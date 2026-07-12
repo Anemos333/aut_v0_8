@@ -732,6 +732,14 @@ private:
         void updateV6OutputDiagnostics(const SynthesisLayer& layer,
                                        double safeRatio,
                                        int positiveBins) noexcept;
+        // NEUMATON_V6_2_QUALITY_ACTIVE_LEDGER
+        // Active, bounded pre-IFFT output composer.  It uses the V6.1
+        // source mirror / shadow ledger state but keeps detector, target
+        // selection, transition logic and debug meters unchanged.
+        void applyV62QualityActiveLedger(SynthesisLayer& layer,
+                                            double safeRatio,
+                                            float formantPreservation,
+                                            int positiveBins) noexcept;
 
         struct AnalysisProfile
         {
@@ -855,6 +863,10 @@ float outputPreIfftConsensus_ = 0.0f;
 float outputSelectiveReconstructionNeed_ = 0.0f;
 std::array<float, v61HarmonicMemorySize> v61HarmonicEnergyMemory_ {};
 std::array<float, v61HarmonicMemorySize> v61HarmonicReliabilityMemory_ {};
+// NEUMATON_V6_2_QUALITY_ACTIVE_LEDGER_STATE
+float v62ActiveLedgerDrive_ = 0.0f;
+float frameTransitionBlend_ = 0.0f;
+bool frameDualTransitionActive_ = false;
 float dryWetContinuity_ = 1.0f;
 float dryLeakRisk_ = 0.0f;
 float dryTrustInstability_ = 0.0f;
