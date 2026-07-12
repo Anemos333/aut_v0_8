@@ -732,10 +732,10 @@ private:
         void updateV6OutputDiagnostics(const SynthesisLayer& layer,
                                        double safeRatio,
                                        int positiveBins) noexcept;
-        // NEUMATON_V6_2_QUALITY_ACTIVE_LEDGER
-        // Active, bounded pre-IFFT output composer.  It uses the V6.1
-        // source mirror / shadow ledger state but keeps detector, target
-        // selection, transition logic and debug meters unchanged.
+        // NEUMATON_V6_3_TARGET_FIRST_ACTIVE_LEDGER
+        // Active target-first pre-IFFT output composer.  It uses the V6.1
+        // source mirror / shadow ledger state, but prioritises exact target
+        // ownership before natural timbre reconstruction.
         void applyV62QualityActiveLedger(SynthesisLayer& layer,
                                             double safeRatio,
                                             float formantPreservation,
