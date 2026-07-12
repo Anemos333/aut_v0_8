@@ -732,10 +732,10 @@ private:
         void updateV6OutputDiagnostics(const SynthesisLayer& layer,
                                        double safeRatio,
                                        int positiveBins) noexcept;
-        // NEUMATON_V6_3_TARGET_FIRST_ACTIVE_LEDGER
-        // Active target-first pre-IFFT output composer.  It uses the V6.1
-        // source mirror / shadow ledger state, but prioritises exact target
-        // ownership before natural timbre reconstruction.
+        // NEUMATON_V7_TARGET_LOCKED_OUTPUT_RECOMPOSER
+        // Target-locked pre-IFFT spectral recomposer.  It rebuilds the
+        // pitched output as a corrected Fourier object, then uses formants,
+        // phase ownership and timbre memory to make that object musical.
         void applyV62QualityActiveLedger(SynthesisLayer& layer,
                                             double safeRatio,
                                             float formantPreservation,
