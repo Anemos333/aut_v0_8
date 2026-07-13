@@ -4341,6 +4341,23 @@ void ModernPitchEngine::SpectralVoiceShifter::updateV6OutputDiagnostics(
 // Low consensus or difficult material never means less correction.  It means
 // more model-led reconstruction and less literal copying from an unreliable
 // frame.  Mode differences decide reconstruction detail, not target accuracy.
+// NEUMATON_V8_2_TARGET_LOCKED_MODULAR_PHASE
+// Target-locked modular Fourier reconstruction with final full-spectrum phase alignment.
+//
+// V8 proved the important point: the final output can be forced into the target
+// family.  Its problem was that too much material became an abstract harmonic
+// skeleton.  V8.2 keeps the hard target contract, adds a harder final tonal projection, and rebuilds the final Fourier
+// object by spectral responsibility:
+//
+//   1. target harmonic ownership        -> exact n * f_target centres;
+//   2. formant/body reconstruction      -> target-locked low/mid sidebands;
+//   3. transported non-tonal body       -> ratio-coordinate broad material;
+//   4. breath/air/noise reconstruction  -> broad, energy-limited, not combed;
+//   5. phase/energy finaliser           -> no competing phase families.
+//
+// Low consensus or difficult material never means less correction.  It means
+// more model-led reconstruction and less literal copying from an unreliable
+// frame.  Mode differences decide reconstruction detail, not target accuracy.
 void ModernPitchEngine::SpectralVoiceShifter::applyV62QualityActiveLedger(
     SynthesisLayer& layer,
     double safeRatio,
@@ -4461,20 +4478,20 @@ void ModernPitchEngine::SpectralVoiceShifter::applyV62QualityActiveLedger(
     if (qualityFrame)
     {
         harmonicDetail = std::clamp(
-            correctionGate * (0.66f + 0.22f * memoryTrust + 0.12f * safeFormant)
+            correctionGate * (0.78f + 0.14f * memoryTrust + 0.08f * safeFormant)
             * (0.66f + 0.34f * phaseTrust),
             0.0f,
             1.0f);
         bodyDetail = std::clamp(
-            correctionGate * (0.58f + 0.30f * safeFormant + 0.12f * modelResponsibility)
+            correctionGate * (0.48f + 0.30f * safeFormant + 0.22f * modelResponsibility)
             * (0.70f + 0.30f * memoryTrust),
             0.0f,
-            0.92f);
+            0.76f);
         nonTonalDetail = std::clamp(
             correctionGate * (0.34f + 0.24f * modelResponsibility)
             * (0.72f + 0.28f * phaseTrust),
             0.0f,
-            0.62f);
+            0.42f);
         airDetail = std::clamp(0.34f + 0.20f * safeFormant, 0.0f, 0.56f);
     }
     else if (liveFrame)
@@ -4484,17 +4501,17 @@ void ModernPitchEngine::SpectralVoiceShifter::applyV62QualityActiveLedger(
             * (0.46f + 0.54f * phaseTrust)
             * (1.0f - 0.48f * transitionLoad),
             0.0f,
-            0.58f);
+            0.72f);
         bodyDetail = std::clamp(
             correctionGate * (0.25f + 0.18f * modelResponsibility)
             * (1.0f - 0.62f * transitionLoad),
             0.0f,
-            0.38f);
+            0.52f);
         nonTonalDetail = std::clamp(
             correctionGate * (0.18f + 0.16f * modelResponsibility)
             * (1.0f - 0.56f * transitionLoad),
             0.0f,
-            0.30f);
+            0.26f);
         airDetail = 0.26f;
     }
     else if (ultraLiveFrame)
@@ -4527,8 +4544,8 @@ void ModernPitchEngine::SpectralVoiceShifter::applyV62QualityActiveLedger(
 
     const float inputReadSigma = qualityFrame ? 0.80f : liveFrame ? 1.18f : 1.55f;
     const float proposalReadSigma = qualityFrame ? 0.72f : liveFrame ? 1.18f : 1.48f;
-    const float harmonicSigma = qualityFrame ? 0.48f : liveFrame ? 0.82f : 1.08f;
-    const float bodySigma = qualityFrame ? 1.05f : liveFrame ? 1.45f : 1.90f;
+    const float harmonicSigma = qualityFrame ? 0.42f : liveFrame ? 0.68f : 1.02f;
+    const float bodySigma = qualityFrame ? 0.82f : liveFrame ? 1.16f : 1.82f;
     const float airSigma = qualityFrame ? 2.40f : liveFrame ? 2.90f : 3.60f;
 
     const auto magnitudeAroundInput = [this, positiveBins, inputReadSigma](double binPosition) noexcept -> float
@@ -4641,7 +4658,7 @@ void ModernPitchEngine::SpectralVoiceShifter::applyV62QualityActiveLedger(
         const double targetHz = static_cast<double>(nearest) * static_cast<double>(targetPitchHz);
         const double distanceBins = std::abs(static_cast<double>(frequencyHz) - targetHz)
             / std::max(1.0, binWidthHz);
-        return static_cast<float>(std::exp(-0.5 * (distanceBins / 1.08) * (distanceBins / 1.08)));
+        return static_cast<float>(std::exp(-0.5 * (distanceBins / 0.74) * (distanceBins / 0.74)));
     };
 
     const auto sourcePhaseForBin = [this, positiveBins](double sourceBinPosition) noexcept -> double
@@ -4750,7 +4767,7 @@ void ModernPitchEngine::SpectralVoiceShifter::applyV62QualityActiveLedger(
         // Live gets a broad, low-detail version; Experimental gets almost none.
         if (bodyDetail > 1.0e-5f && harmonicIndex <= (qualityFrame ? 40 : liveFrame ? 24 : 12))
         {
-            const int sideRadius = qualityFrame ? 3 : liveFrame ? 2 : 1;
+            const int sideRadius = qualityFrame ? 2 : liveFrame ? 2 : 1;
             for (int side = -sideRadius; side <= sideRadius; ++side)
             {
                 if (side == 0)
@@ -4893,12 +4910,15 @@ void ModernPitchEngine::SpectralVoiceShifter::applyV62QualityActiveLedger(
         }
     }
 
-    // Pass 4: target-family projection of the tonal region.  Harmonic centres
-    // are very strict; air and breath are allowed to be broad and non-tonal.
+    // Pass 4: hard target-family projection of the tonal region.  Harmonic centres
+    // are strict for every mode.  Off-target tonal energy is not merely removed:
+    // a controlled part is re-deposited onto the nearest target harmonic so body
+    // is not recovered by leaving tonal residue outside the target.
     const float projectionDrive = std::clamp(
-        0.86f * targetDrive
-        + 0.20f * oldFamilyInProposal
-        + 0.08f * modelResponsibility,
+        1.10f * targetDrive
+        + 0.34f * oldFamilyInProposal
+        + 0.18f * modelResponsibility
+        + 0.12f * (1.0f - alreadyTargetedWet),
         0.0f,
         1.0f);
 
@@ -4914,10 +4934,32 @@ void ModernPitchEngine::SpectralVoiceShifter::applyV62QualityActiveLedger(
         if (offTarget <= 1.0e-5f)
             continue;
 
-        const float attenuation = 1.0f - projectionDrive * offTarget;
-        fftBuffer_[index] *= std::clamp(attenuation,
-                                        qualityFrame ? 0.030f : liveFrame ? 0.060f : 0.100f,
-                                        1.0f);
+        const float harmonicNumber = frequencyHz / std::max(1.0f, targetPitchHz);
+        const float nearestHarmonic = std::round(harmonicNumber);
+        const double nearestTargetBin = static_cast<double>(nearestHarmonic)
+            * static_cast<double>(targetPitchHz) / binWidthHz;
+        const double currentEnergy = static_cast<double>(std::norm(fftBuffer_[index]));
+        const float transfer = std::clamp(0.72f * projectionDrive * offTarget, 0.0f, 0.92f);
+        const float retain = std::sqrt(std::clamp(1.0f - projectionDrive * offTarget,
+                                                  qualityFrame ? 0.006f : liveFrame ? 0.012f : 0.050f,
+                                                  1.0f));
+        fftBuffer_[index] *= retain;
+
+        if (currentEnergy > 1.0e-18
+            && transfer > 1.0e-5f
+            && nearestHarmonic >= 1.0f
+            && nearestTargetBin > 1.0
+            && nearestTargetBin < static_cast<double>(positiveBins) - 1.0)
+        {
+            const double sourceCoordinateBin = static_cast<double>(bin) / std::max(1.0e-6, safeRatio);
+            const double phase = sourcePhaseForBin(sourceCoordinateBin);
+            const float amplitude = static_cast<float>(std::sqrt(currentEnergy)) * std::sqrt(transfer);
+            addToScratch(nearestTargetBin,
+                         amplitude,
+                         phase,
+                         harmonicSigma,
+                         qualityFrame ? 0.86f : liveFrame ? 0.74f : 0.42f);
+        }
     }
 
     // Pass 5: phase/energy finaliser.  Energy conservation comes after the
@@ -4949,6 +4991,86 @@ void ModernPitchEngine::SpectralVoiceShifter::applyV62QualityActiveLedger(
                                       qualityFrame ? 1.28f : liveFrame ? 1.14f : 1.04f);
         for (int bin = 1; bin < positiveBins; ++bin)
             fftBuffer_[static_cast<std::size_t>(bin)] *= gain;
+    }
+
+    // NEUMATON_V8_2_FULL_SPECTRUM_PHASE_FINALISER
+    // Same phase rule for Quality, Live and Experimental.  Right before IFFT,
+    // every occupied bin is gently aligned to the nearest target-family carrier
+    // plus its transported source-side phase offset.  Harmonic/body bins align
+    // strongly; breath/air still aligns weakly so it remains broad, not combed.
+    const auto complexAroundScratch = [this, positiveBins](double binPosition) noexcept -> Complex
+    {
+        if (binPosition < 0.0 || binPosition > static_cast<double>(positiveBins))
+            return Complex {};
+        constexpr double sigma = 0.86;
+        const int radius = 2;
+        const int centre = static_cast<int>(std::lround(binPosition));
+        Complex weighted {};
+        double weightSum = 0.0;
+        for (int offset = -radius; offset <= radius; ++offset)
+        {
+            const int b = centre + offset;
+            if (b < 1 || b >= positiveBins)
+                continue;
+            const double distance = std::abs(static_cast<double>(b) - binPosition);
+            const double weight = std::exp(-0.5 * (distance / sigma) * (distance / sigma));
+            weighted += fftBuffer_[static_cast<std::size_t>(b)] * static_cast<float>(weight);
+            weightSum += weight;
+        }
+        return weightSum > 1.0e-12
+            ? weighted * static_cast<float>(1.0 / weightSum)
+            : Complex {};
+    };
+
+    for (int bin = 1; bin < positiveBins; ++bin)
+    {
+        const std::size_t index = static_cast<std::size_t>(bin);
+        const Complex current = fftBuffer_[index];
+        const float magnitude = std::abs(current);
+        if (magnitude <= 1.0e-9f)
+            continue;
+
+        const float frequencyHz = binFrequency(bin);
+        const float harmonicNumber = frequencyHz / std::max(1.0f, targetPitchHz);
+        const float nearestHarmonic = std::round(harmonicNumber);
+        if (nearestHarmonic < 1.0f || nearestHarmonic > 256.0f)
+            continue;
+
+        const double targetCentreBin = static_cast<double>(nearestHarmonic)
+            * static_cast<double>(targetPitchHz) / binWidthHz;
+        if (targetCentreBin < 1.0 || targetCentreBin > static_cast<double>(positiveBins) - 1.0)
+            continue;
+
+        const Complex carrier = complexAroundScratch(targetCentreBin);
+        const float carrierMagnitude = std::abs(carrier);
+        if (carrierMagnitude <= 1.0e-9f)
+            continue;
+
+        const double mappedSourceBin = static_cast<double>(bin) / std::max(1.0e-6, safeRatio);
+        const double sourceCentreBin = static_cast<double>(nearestHarmonic)
+            * static_cast<double>(sourcePitchHz) / binWidthHz;
+        const double sourceRelativePhase = wrapPhase(
+            sourcePhaseForBin(mappedSourceBin) - sourcePhaseForBin(sourceCentreBin));
+        const double desiredPhase = std::atan2(carrier.imag(), carrier.real())
+            + sourceRelativePhase;
+        const double currentPhase = std::atan2(current.imag(), current.real());
+        const double phaseError = wrapPhase(desiredPhase - currentPhase);
+
+        const float targetProximity = targetHarmonicProximity(frequencyHz);
+        const float airGate = smoothStep(4200.0f, 9500.0f, frequencyHz);
+        const float tonalPhaseWeight = clamp01(
+            0.42f * clamp01(harmonicMask_[index])
+            + 0.38f * targetProximity
+            + 0.20f * (1.0f - airGate) * (1.0f - smoothedNoisePathAmount_));
+        const float phaseBlend = std::clamp(0.10f + 0.68f * tonalPhaseWeight,
+                                            0.10f,
+                                            0.78f);
+        const double finalPhase = currentPhase + static_cast<double>(phaseBlend) * phaseError;
+
+        float sine = 0.0f;
+        float cosine = 1.0f;
+        fastSinCos(finalPhase, sine, cosine);
+        fftBuffer_[index] = Complex(magnitude * cosine, magnitude * sine);
     }
 
     for (int bin = 0; bin <= positiveBins; ++bin)
