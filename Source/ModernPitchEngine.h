@@ -732,10 +732,10 @@ private:
         void updateV6OutputDiagnostics(const SynthesisLayer& layer,
                                        double safeRatio,
                                        int positiveBins) noexcept;
-        // NEUMATON_V7_TARGET_LOCKED_OUTPUT_RECOMPOSER
-        // Target-locked pre-IFFT spectral recomposer.  It rebuilds the
-        // pitched output as a corrected Fourier object, then uses formants,
-        // phase ownership and timbre memory to make that object musical.
+        // NEUMATON_V9_HARMONIC_PHASE_LEDGER_RESYNTHESIS
+        // Harmonic-by-harmonic target-locked output recomposer.  The
+        // function name is kept for patch compatibility, but the final
+        // spectrum is rebuilt from explicit harmonic energy/phase ledgers.
         void applyV62QualityActiveLedger(SynthesisLayer& layer,
                                             double safeRatio,
                                             float formantPreservation,
