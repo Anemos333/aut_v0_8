@@ -732,10 +732,11 @@ private:
         void updateV6OutputDiagnostics(const SynthesisLayer& layer,
                                        double safeRatio,
                                        int positiveBins) noexcept;
-        // NEUMATON_V9_HARMONIC_PHASE_LEDGER_RESYNTHESIS
-        // Harmonic-by-harmonic target-locked output recomposer.  The
-        // function name is kept for patch compatibility, but the final
-        // spectrum is rebuilt from explicit harmonic energy/phase ledgers.
+        // NEUMATON_V10_1_UNIVERSAL_WIDE_FIELD_OUTPUT
+        // Universal wide-field target-warp output stage.  The V8.1
+        // Experimental difficult-material treatment is promoted to the
+        // common foundation; harmonic anchors only repair deficits.
+        // Live/Experimental do not use a separate weak voiced branch.
         void applyV62QualityActiveLedger(SynthesisLayer& layer,
                                             double safeRatio,
                                             float formantPreservation,
