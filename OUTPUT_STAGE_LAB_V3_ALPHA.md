@@ -192,8 +192,9 @@ L'upper bound mostra anche che una fase perfetta non rende automaticamente perfe
 ## File
 
 ```text
-OutputLab/neumaton_output_lab_v3_oracle.py.gz.b64
-OutputLab/restore_v3.py              # genera neumaton_output_lab_v3_oracle.py
+OutputLab/v3_source/neumaton_output_lab_v3_oracle.py.gz.b64.part00..05
+OutputLab/restore_v3.py              # verifica archivio e genera il sorgente Python
+OutputLab/V3_CHECKSUMS.txt
 OutputLab/verify_v3a.py
 OutputLab/results/v3a_oracle_summary.csv
 OutputLab/results/v3a_oracle_diagnostics.csv
@@ -201,7 +202,7 @@ OutputLab/results/v3a_raw_gain_N256.csv
 OUTPUT_STAGE_LAB_V3_ALPHA.md
 ```
 
-Il verificatore controlla il contratto stretto:
+Il sorgente ripristinato è protetto da checksum SHA-256 sia dell'archivio Base64 concatenato sia del file Python decompresso. Il verificatore controlla poi il contratto stretto:
 
 - no-op numerico a N=128;
 - gate Live/N=256 su livello, aria, transiente, famiglia vecchia, missing fundamental, vibrato e polifonia;
