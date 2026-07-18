@@ -7,6 +7,12 @@ on:
     paths:
       - 'OutputLab/**'
       - '.github/workflows/output-lab-v3.yml'
+  pull_request:
+    branches:
+      - output-stage-lab-v1
+    paths:
+      - 'OutputLab/**'
+      - '.github/workflows/output-lab-v3.yml'
   workflow_dispatch:
 
 permissions:
