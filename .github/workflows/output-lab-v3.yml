@@ -1,0 +1,80 @@
+name: Output Lab V3
+
+on:
+  push:
+    branches:
+      - output-stage-lab-v3
+    paths:
+      - 'OutputLab/**'
+      - 'OUTPUT_STAGE_LAB_V3_ALPHA.md'
+      - '.github/workflows/output-lab-v3.yml'
+  pull_request:
+    branches:
+      - output-stage-lab-v1
+    paths:
+      - 'OutputLab/**'
+      - 'OUTPUT_STAGE_LAB_V3_ALPHA.md'
+      - '.github/workflows/output-lab-v3.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  oracle-ledger:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: OutputLab
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: OutputLab/requirements.txt
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Restore frozen V2 source
+        run: python restore_v2.py
+
+      - name: Restore V3-alpha source
+        run: python restore_v3.py
+
+      - name: Compile laboratory sources
+        run: |
+          python -m py_compile neumaton_output_lab_v2_candidate.py
+          python -m py_compile neumaton_output_lab_v3_oracle.py
+          python -m py_compile verify_v3a.py
+
+      - name: Run official 48 kHz corpus
+        run: >-
+          python neumaton_output_lab_v3_oracle.py
+          --out results/v3a_ci
+          --sample-rate 48000
+          --frames 128 256 512
+          --duration 0.45
+
+      - name: Verify narrow V3-alpha contract
+        run: python verify_v3a.py results/v3a_ci/v3a_metrics_detail.csv
+
+      - name: Export V3-alpha results
+        uses: actions/upload-artifact@v4
+        with:
+          name: output-lab-v3a-results
+          path: |
+            OutputLab/neumaton_output_lab_v3_oracle.py
+            OutputLab/results/v3a_ci/v3a_metrics_detail.csv
+            OutputLab/results/v3a_ci/v3a_metrics_detail.json
+            OutputLab/results/v3a_ci/v3a_ridge_diagnostics.csv
+            OutputLab/results/v3a_oracle_summary.csv
+            OutputLab/results/v3a_oracle_diagnostics.csv
+            OutputLab/results/v3a_raw_gain_N256.csv
+            OUTPUT_STAGE_LAB_V3_ALPHA.md
+          if-no-files-found: error
+          retention-days: 14
