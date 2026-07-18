@@ -1,0 +1,50 @@
+name: Output Lab V3
+
+on:
+  push:
+    branches:
+      - output-stage-lab-v3
+    paths:
+      - 'OutputLab/**'
+      - '.github/workflows/output-lab-v3.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  restore-and-test:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: OutputLab
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: OutputLab/requirements.txt
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Restore V2 source
+        run: python restore_v2.py
+
+      - name: Compile restored source
+        run: python -m py_compile neumaton_output_lab_v2_candidate.py
+
+      - name: Export restored laboratory
+        uses: actions/upload-artifact@v4
+        with:
+          name: output-lab-v2-restored
+          path: |
+            OutputLab/neumaton_output_lab_v2_candidate.py
+            OutputLab/run_subset.py
+            OutputLab/requirements.txt
+          if-no-files-found: error
+          retention-days: 7
