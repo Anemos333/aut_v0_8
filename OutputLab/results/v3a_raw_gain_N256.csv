@@ -1,0 +1,8 @@
+case,v2_requested_gain_db,v3a_requested_gain_db,reduction_db
+clean_vowel_7_6,8.152,3.949,4.203
+breathy_vowel_19edo,11.246,4.399,6.847
+consonant_vowel,6.715,2.397,4.318
+vibrato_19edo,14.454,3.156,11.298
+missing_fundamental,6.819,6.819,0.000
+two_voice_polyphony,9.457,5.606,3.851
+aperiodic_air,0.022,0.022,0.000
