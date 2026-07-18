@@ -10,6 +10,7 @@ on:
   pull_request:
     branches:
       - output-stage-lab-v1
+      - output-stage-lab-v3-ci
     paths:
       - 'OutputLab/**'
       - '.github/workflows/output-lab-v3.yml'
