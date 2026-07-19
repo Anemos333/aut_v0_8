@@ -49,7 +49,15 @@ jobs:
       - name: Initialise MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
       - name: Compile and run smoke test
-        shell: cmd
+        shell: pwsh
         run: |
-          cl /nologo /std:c++17 /EHsc /W4 /WX /ISource Source\NeumatonRidgeLedger.cpp Source\NeumatonOutputRenderer.cpp Tests\OutputV3ScaffoldSmoke.cpp /Fe:output_v3_scaffold_smoke.exe
-          output_v3_scaffold_smoke.exe
+          $compilerOutput = & cl /nologo /std:c++17 /EHsc /W4 /WX /ISource `
+            Source\NeumatonRidgeLedger.cpp `
+            Source\NeumatonOutputRenderer.cpp `
+            Tests\OutputV3ScaffoldSmoke.cpp `
+            /Fe:output_v3_scaffold_smoke.exe 2>&1
+          $compilerExit = $LASTEXITCODE
+          $compilerOutput | Select-Object -Last 80
+          if ($compilerExit -ne 0) { exit $compilerExit }
+          & .\output_v3_scaffold_smoke.exe
+          exit $LASTEXITCODE
