@@ -64,7 +64,7 @@ private:
     OutputPrepareSpec spec_ {};
     std::vector<RidgeState> tracks_;
     std::vector<RidgeObservation> observations_;
-    std::vector<std::uint8_t> observationMatched_;
+    std::vector<std::uint32_t> observationMatched_;
     std::vector<int> sourceBinTrackIndices_;
 
     int observationCount_ = 0;
