@@ -46,6 +46,8 @@ jobs:
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@v4
+      - name: Initialise MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
       - name: Compile and run smoke test
         shell: cmd
         run: |
