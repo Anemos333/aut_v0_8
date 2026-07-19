@@ -1,0 +1,53 @@
+name: Output V3 Scaffold
+
+on:
+  push:
+    branches:
+      - output-stage-v3-cpp-scaffold
+    paths:
+      - 'Source/NeumatonOutputTypes.h'
+      - 'Source/NeumatonRidgeLedger.*'
+      - 'Source/NeumatonOutputRenderer.*'
+      - 'Tests/OutputV3ScaffoldSmoke.cpp'
+      - '.github/workflows/output-v3-scaffold.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'Source/NeumatonOutputTypes.h'
+      - 'Source/NeumatonRidgeLedger.*'
+      - 'Source/NeumatonOutputRenderer.*'
+      - 'Tests/OutputV3ScaffoldSmoke.cpp'
+      - '.github/workflows/output-v3-scaffold.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  unix:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        compiler: [g++, clang++]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and run smoke test
+        run: |
+          ${{ matrix.compiler }} \
+            -std=c++17 -Wall -Wextra -Wpedantic -Werror \
+            -ISource \
+            Source/NeumatonRidgeLedger.cpp \
+            Source/NeumatonOutputRenderer.cpp \
+            Tests/OutputV3ScaffoldSmoke.cpp \
+            -o output_v3_scaffold_smoke
+          ./output_v3_scaffold_smoke
+
+  windows:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and run smoke test
+        shell: cmd
+        run: |
+          cl /nologo /std:c++17 /EHsc /W4 /WX /ISource Source\NeumatonRidgeLedger.cpp Source\NeumatonOutputRenderer.cpp Tests\OutputV3ScaffoldSmoke.cpp /Fe:output_v3_scaffold_smoke.exe
+          output_v3_scaffold_smoke.exe
