@@ -49,6 +49,8 @@ jobs:
       - name: Initialise MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
       - name: Compile and run smoke test
+        id: msvc
+        continue-on-error: true
         shell: pwsh
         run: |
           $compilerOutput = & cl /nologo /std:c++17 /EHsc /W4 /WX /ISource `
@@ -57,7 +59,20 @@ jobs:
             Tests\OutputV3ScaffoldSmoke.cpp `
             /Fe:output_v3_scaffold_smoke.exe 2>&1
           $compilerExit = $LASTEXITCODE
+          $compilerOutput | Set-Content -Encoding utf8 msvc-compiler.log
           $compilerOutput | Select-Object -Last 80
           if ($compilerExit -ne 0) { exit $compilerExit }
           & .\output_v3_scaffold_smoke.exe
           exit $LASTEXITCODE
+      - name: Upload MSVC diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: output-v3-msvc-diagnostics
+          path: msvc-compiler.log
+          if-no-files-found: error
+          retention-days: 7
+      - name: Enforce MSVC result
+        if: steps.msvc.outcome == 'failure'
+        shell: pwsh
+        run: exit 1
