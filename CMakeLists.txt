@@ -69,6 +69,8 @@ target_sources(Neumaton
         Source/CustomScalePresets.cpp
         Source/CustomScaleEditor.cpp
         Source/ModernPitchEngine.cpp
+        Source/NeumatonRidgeLedger.cpp
+        Source/NeumatonOutputRenderer.cpp
         Source/ScaleLock.cpp
         Source/Tempo.cpp
         Source/Preset.cpp
