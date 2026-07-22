@@ -78,6 +78,11 @@ jobs:
           cmake --build build-shadow --config Release \
             --target ShadowLedgerIdentityOff ShadowLedgerIdentityOn \
             --parallel 2
+      - name: Build full VST3 target
+        run: |
+          cmake --build build-shadow --config Release \
+            --target Neumaton_VST3 \
+            --parallel 2
       - name: Render deterministic corpus
         run: |
           build-shadow/shadow-ledger-tests/ShadowLedgerIdentityOff \
