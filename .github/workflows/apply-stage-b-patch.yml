@@ -7,6 +7,12 @@ on:
     paths:
       - 'Tools/stage_b_patch_b64/**'
       - '.github/workflows/apply-stage-b-patch.yml'
+  pull_request:
+    branches:
+      - output-stage-v3-cpp-scaffold
+    paths:
+      - 'Tools/stage_b_patch_b64/**'
+      - '.github/workflows/apply-stage-b-patch.yml'
 
 permissions:
   contents: write
@@ -38,5 +44,3 @@ jobs:
           git add -A
           git commit -m 'Integrate V3 Stage B shadow ridge ledger [stage-b-applied]'
           git push origin HEAD:output-stage-v3-shadow-ledger
-
-# Existing-on-branch trigger for the atomic application job.
