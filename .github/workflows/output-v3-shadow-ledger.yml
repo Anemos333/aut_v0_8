@@ -1,0 +1,40 @@
+name: Output V3 Shadow Ledger
+
+on:
+  push:
+    branches:
+      - output-stage-v3-shadow-ledger
+    paths:
+      - 'Source/ModernPitchEngine.*'
+      - 'Source/NeumatonOutputTypes.h'
+      - 'Source/NeumatonRidgeLedger.*'
+      - 'Tests/OutputV3ShadowLedger*'
+      - '.github/workflows/output-v3-shadow-ledger.yml'
+  pull_request:
+    paths:
+      - 'Source/ModernPitchEngine.*'
+      - 'Source/NeumatonOutputTypes.h'
+      - 'Source/NeumatonRidgeLedger.*'
+      - 'Tests/OutputV3ShadowLedger*'
+      - '.github/workflows/output-v3-shadow-ledger.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  source-snapshot:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Upload exact Stage B sources
+        uses: actions/upload-artifact@v4
+        with:
+          name: output-v3-shadow-ledger-sources
+          path: |
+            Source/ModernPitchEngine.h
+            Source/ModernPitchEngine.cpp
+            Source/NeumatonOutputTypes.h
+            Source/NeumatonRidgeLedger.h
+            Source/NeumatonRidgeLedger.cpp
+          if-no-files-found: error
+          retention-days: 7
