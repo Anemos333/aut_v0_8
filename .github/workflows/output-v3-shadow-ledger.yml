@@ -5,16 +5,22 @@ on:
     branches:
       - output-stage-v3-shadow-ledger
     paths:
+      - 'CMakeLists.txt'
       - 'Source/ModernPitchEngine.*'
       - 'Source/NeumatonOutputTypes.h'
       - 'Source/NeumatonRidgeLedger.*'
+      - 'Source/Tempo.*'
+      - 'Source/ScaleLock.*'
       - 'Tests/OutputV3ShadowLedger*'
       - '.github/workflows/output-v3-shadow-ledger.yml'
   pull_request:
     paths:
+      - 'CMakeLists.txt'
       - 'Source/ModernPitchEngine.*'
       - 'Source/NeumatonOutputTypes.h'
       - 'Source/NeumatonRidgeLedger.*'
+      - 'Source/Tempo.*'
+      - 'Source/ScaleLock.*'
       - 'Tests/OutputV3ShadowLedger*'
       - '.github/workflows/output-v3-shadow-ledger.yml'
 
@@ -31,10 +37,15 @@ jobs:
         with:
           name: output-v3-shadow-ledger-sources
           path: |
+            CMakeLists.txt
             Source/ModernPitchEngine.h
             Source/ModernPitchEngine.cpp
             Source/NeumatonOutputTypes.h
             Source/NeumatonRidgeLedger.h
             Source/NeumatonRidgeLedger.cpp
+            Source/Tempo.h
+            Source/Tempo.cpp
+            Source/ScaleLock.h
+            Source/ScaleLock.cpp
           if-no-files-found: error
           retention-days: 7
