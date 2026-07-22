@@ -1,0 +1,40 @@
+name: Apply Stage B Patch
+
+on:
+  push:
+    branches:
+      - output-stage-v3-shadow-ledger
+    paths:
+      - 'Tools/stage_b_patch_b64/**'
+      - '.github/workflows/apply-stage-b-patch.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: "!contains(github.event.head_commit.message, '[stage-b-applied]')"
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: output-stage-v3-shadow-ledger
+          fetch-depth: 0
+      - name: Decode and verify patch
+        run: |
+          : > /tmp/stage-b.patch
+          for part in Tools/stage_b_patch_b64/part*; do
+            base64 -d "$part" >> /tmp/stage-b.patch
+          done
+          echo '82a43f8e53158dadd13d99519bc9c033dbc0886dd8abb3cd0d7f2070415faca4  /tmp/stage-b.patch' | sha256sum -c -
+          git apply --check /tmp/stage-b.patch
+      - name: Apply and commit Stage B
+        run: |
+          git apply /tmp/stage-b.patch
+          rm -rf Tools/stage_b_patch Tools/stage_b_patch_b64
+          rm -f .github/workflows/apply-stage-b-patch.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Integrate V3 Stage B shadow ridge ledger [stage-b-applied]'
+          git push origin HEAD:output-stage-v3-shadow-ledger
