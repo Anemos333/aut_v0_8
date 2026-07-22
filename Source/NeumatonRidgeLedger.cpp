@@ -42,6 +42,7 @@ void NeumatonRidgeLedger::prepare(const OutputPrepareSpec& requestedSpec)
                          RidgeObservation {});
     observationMatched_.assign(static_cast<std::size_t>(spec_.maximumObservations), 0u);
     sourceBinTrackIndices_.assign(static_cast<std::size_t>(spec_.positiveBinCount), -1);
+    previousBinTrackIds_.assign(static_cast<std::size_t>(spec_.positiveBinCount), 0u);
     reset();
 }
 
@@ -51,7 +52,10 @@ void NeumatonRidgeLedger::reset() noexcept
     std::fill(observations_.begin(), observations_.end(), RidgeObservation {});
     std::fill(observationMatched_.begin(), observationMatched_.end(), 0u);
     std::fill(sourceBinTrackIndices_.begin(), sourceBinTrackIndices_.end(), -1);
+    std::fill(previousBinTrackIds_.begin(), previousBinTrackIds_.end(), 0u);
     observationCount_ = 0;
+    phasePredictionErrorSum_ = 0.0;
+    phasePredictionErrorCount_ = 0;
     nextTrackId_ = 1;
     diagnostics_ = {};
 }
@@ -83,7 +87,7 @@ RidgeLedgerFrameView NeumatonRidgeLedger::processFrame(
     createReliableBirths(analysis, trajectory);
     coastUnmatchedTracks(trajectory);
     buildSourceBinOwnership(analysis);
-    updateDiagnostics();
+    updateDiagnostics(analysis);
 
     return {
         { tracks_.data(), static_cast<int>(tracks_.size()) },
@@ -94,7 +98,20 @@ RidgeLedgerFrameView NeumatonRidgeLedger::processFrame(
 
 void NeumatonRidgeLedger::clearFrameState() noexcept
 {
+    const int rememberedBins = std::min(static_cast<int>(sourceBinTrackIndices_.size()),
+                                        static_cast<int>(previousBinTrackIds_.size()));
+    for (int bin = 0; bin < rememberedBins; ++bin)
+    {
+        const int trackIndex = sourceBinTrackIndices_[static_cast<std::size_t>(bin)];
+        previousBinTrackIds_[static_cast<std::size_t>(bin)] =
+            trackIndex >= 0 && trackIndex < static_cast<int>(tracks_.size())
+                ? tracks_[static_cast<std::size_t>(trackIndex)].id
+                : 0u;
+    }
+
     observationCount_ = 0;
+    phasePredictionErrorSum_ = 0.0;
+    phasePredictionErrorCount_ = 0;
     std::fill(observationMatched_.begin(), observationMatched_.end(), 0u);
     std::fill(sourceBinTrackIndices_.begin(), sourceBinTrackIndices_.end(), -1);
 
@@ -194,6 +211,14 @@ void NeumatonRidgeLedger::extractObservations(
         observation.sourcePhase = peakBin < analysis.analysisPhases.size()
             ? analysis.analysisPhases[peakBin]
             : 0.0f;
+        if (peakBin > 0 && peakBin + 1 < analysis.analysisPhases.size())
+        {
+            const double phaseDelta = wrapPhase(
+                static_cast<double>(analysis.analysisPhases[peakBin + 1])
+                - static_cast<double>(analysis.analysisPhases[peakBin - 1]));
+            observation.groupDelaySlopeRadiansPerBin =
+                static_cast<float>(0.5 * phaseDelta);
+        }
         observation.phaseCoherence = phaseCoherence;
         observation.harmonicPrior = harmonicPrior;
         observation.eventProbability = eventProbability;
@@ -238,7 +263,7 @@ void NeumatonRidgeLedger::createReliableBirths(
             continue;
 
         const auto& observation = observations_[static_cast<std::size_t>(observationIndex)];
-        if (observation.reliability < 0.74f || observation.eventProbability > 0.48f)
+        if (observation.reliability < 0.64f || observation.eventProbability > 0.55f)
             continue;
 
         const int slot = findInactiveTrackSlot();
@@ -276,6 +301,12 @@ void NeumatonRidgeLedger::coastUnmatchedTracks(
 
         const float targetFrequencyHz = static_cast<float>(
             std::max(0.0, static_cast<double>(track.sourceFrequencyHz) * ratio));
+        track.previousSourcePhase = track.sourcePhase;
+        track.sourcePhase = static_cast<float>(wrapPhase(
+            static_cast<double>(track.sourcePhase)
+            + twoPi * static_cast<double>(spec_.hopSize)
+                * static_cast<double>(track.sourceFrequencyHz)
+                / std::max(1.0, spec_.sampleRate)));
         advanceTargetPhase(track, targetFrequencyHz);
         ++diagnostics_.coastTrackCount;
 
@@ -321,7 +352,8 @@ void NeumatonRidgeLedger::buildSourceBinOwnership(
     }
 }
 
-void NeumatonRidgeLedger::updateDiagnostics() noexcept
+void NeumatonRidgeLedger::updateDiagnostics(
+    const AnalysisFrameView& analysis) noexcept
 {
     double reliabilitySum = 0.0;
     int activeCount = 0;
@@ -335,11 +367,38 @@ void NeumatonRidgeLedger::updateDiagnostics() noexcept
         ++activeCount;
     }
 
+    const int usableBins = std::min({ analysis.positiveBinCount,
+                                      analysis.magnitudes.size(),
+                                      static_cast<int>(sourceBinTrackIndices_.size()) });
+    float maximumMagnitude = 0.0f;
+    for (int bin = 1; bin < usableBins; ++bin)
+        maximumMagnitude = std::max(maximumMagnitude, safeMagnitude(analysis, bin));
+
+    const float energyGate = maximumMagnitude * 1.0e-4f;
+    int eligibleBins = 0;
+    int resolvedBins = 0;
+    for (int bin = 1; bin < usableBins; ++bin)
+    {
+        if (safeMagnitude(analysis, bin) <= energyGate)
+            continue;
+        ++eligibleBins;
+        if (sourceBinTrackIndices_[static_cast<std::size_t>(bin)] >= 0)
+            ++resolvedBins;
+    }
+
     diagnostics_.observationCount = observationCount_;
     diagnostics_.activeTrackCount = activeCount;
+    diagnostics_.meanPredictionErrorRadians = phasePredictionErrorCount_ > 0
+        ? static_cast<float>(phasePredictionErrorSum_
+            / static_cast<double>(phasePredictionErrorCount_))
+        : 0.0f;
     diagnostics_.meanReliability = activeCount > 0
         ? static_cast<float>(reliabilitySum / static_cast<double>(activeCount))
         : 0.0f;
+    diagnostics_.resolvedBinCoverage = eligibleBins > 0
+        ? static_cast<float>(resolvedBins) / static_cast<float>(eligibleBins)
+        : 0.0f;
+    diagnostics_.frameValid = observationCount_ > 0 && usableBins > 2;
 }
 
 int NeumatonRidgeLedger::findBestObservationForTrack(
@@ -398,10 +457,42 @@ void NeumatonRidgeLedger::updateMatchedTrack(
     const CorrectionTrajectoryFrame& trajectory,
     bool newlyBorn) noexcept
 {
+    const float oldSourceFrequencyHz = track.sourceFrequencyHz;
+    const float oldSourcePhase = track.sourcePhase;
+
+    if (!newlyBorn && oldSourceFrequencyHz > 0.0f)
+    {
+        const double predictedSourcePhase = wrapPhase(
+            static_cast<double>(oldSourcePhase)
+            + twoPi * static_cast<double>(spec_.hopSize)
+                * 0.5 * (static_cast<double>(oldSourceFrequencyHz)
+                       + static_cast<double>(observation.sourceFrequencyHz))
+                / std::max(1.0, spec_.sampleRate));
+        phasePredictionErrorSum_ += std::abs(wrapPhase(
+            static_cast<double>(observation.sourcePhase) - predictedSourcePhase));
+        ++phasePredictionErrorCount_;
+
+        if (track.missedFrames == 0
+            && observation.peakBin >= 0
+            && observation.peakBin < static_cast<int>(previousBinTrackIds_.size()))
+        {
+            const std::uint32_t previousOwnerId = previousBinTrackIds_[
+                static_cast<std::size_t>(observation.peakBin)];
+            if (previousOwnerId != 0u && previousOwnerId != track.id)
+                ++diagnostics_.identitySwitchCount;
+        }
+    }
+
     track.previousSourceFrequencyHz = newlyBorn
         ? observation.sourceFrequencyHz
-        : track.sourceFrequencyHz;
+        : oldSourceFrequencyHz;
     track.sourceFrequencyHz = observation.sourceFrequencyHz;
+    track.previousSourcePhase = newlyBorn ? observation.sourcePhase : oldSourcePhase;
+    track.sourcePhase = observation.sourcePhase;
+    track.groupDelaySlopeRadiansPerBin = newlyBorn
+        ? observation.groupDelaySlopeRadiansPerBin
+        : 0.72f * track.groupDelaySlopeRadiansPerBin
+            + 0.28f * observation.groupDelaySlopeRadiansPerBin;
     track.lastPeakBin = observation.peakBin;
     track.amplitude = newlyBorn
         ? observation.amplitude

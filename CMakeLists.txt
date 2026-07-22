@@ -108,3 +108,53 @@ target_link_libraries(Neumaton
 )
 
 # include(${CMAKE_CURRENT_SOURCE_DIR}/Tests/AutotuneTests.cmake)
+
+# -----------------------------------------------------------------------------
+# V3 Stage B validation targets. These are opt-in and never become part of the
+# plug-in binary. The two executables compile the same production engine with
+# the shadow call removed/present, then CI compares their raw audio byte-for-byte.
+option(NEUMATON_BUILD_SHADOW_LEDGER_TESTS
+       "Build V3 Stage B shadow-ledger validation executables" OFF)
+
+if(NEUMATON_BUILD_SHADOW_LEDGER_TESTS)
+    function(neumaton_add_shadow_identity_target target_name shadow_enabled)
+        juce_add_console_app(${target_name}
+            PRODUCT_NAME ${target_name}
+        )
+        juce_generate_juce_header(${target_name})
+        target_sources(${target_name}
+            PRIVATE
+                Tests/OutputV3ShadowLedgerIdentity.cpp
+                Source/ModernPitchEngine.cpp
+                Source/NeumatonRidgeLedger.cpp
+                Source/ScaleLock.cpp
+                Source/Tempo.cpp
+        )
+        target_include_directories(${target_name} PRIVATE Source)
+        target_compile_definitions(${target_name}
+            PRIVATE
+                NEUMATON_OUTPUT_V3_SHADOW_LEDGER=${shadow_enabled}
+                NEUMATON_V6_CSV_DIAGNOSTICS=0
+                JUCE_WEB_BROWSER=0
+                JUCE_USE_CURL=0
+        )
+        target_link_libraries(${target_name}
+            PRIVATE
+                juce::juce_audio_basics
+                juce::juce_core
+            PUBLIC
+                juce::juce_recommended_config_flags
+                juce::juce_recommended_warning_flags
+        )
+        set_target_properties(${target_name} PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/shadow-ledger-tests"
+            RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/shadow-ledger-tests"
+            RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/shadow-ledger-tests"
+            RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/shadow-ledger-tests"
+            RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}/shadow-ledger-tests"
+        )
+    endfunction()
+
+    neumaton_add_shadow_identity_target(ShadowLedgerIdentityOff 0)
+    neumaton_add_shadow_identity_target(ShadowLedgerIdentityOn 1)
+endif()

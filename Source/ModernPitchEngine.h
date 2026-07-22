@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 #include "Tempo.h"
 #include "ScaleLock.h"
+#include "NeumatonRidgeLedger.h"
 
 #include <array>
 #include <atomic>
@@ -128,6 +129,19 @@ public:
         float outputPreIfftConsensus = 0.0f;
         float outputSelectiveReconstructionNeed = 0.0f;
 
+        // V3 Stage B: observed ridge ledger diagnostics. Shadow-only; none of
+        // these values participates in synthesis or output gain.
+        int shadowRidgeObservationCount = 0;
+        int shadowRidgeActiveCount = 0;
+        int shadowRidgeBirthCount = 0;
+        int shadowRidgeCoastCount = 0;
+        int shadowRidgeDeathCount = 0;
+        int shadowRidgeIdentitySwitchCount = 0;
+        float shadowRidgePredictionErrorRadians = 0.0f;
+        float shadowRidgeReliability = 0.0f;
+        float shadowRidgeResolvedBinCoverage = 0.0f;
+        bool shadowRidgeValid = false;
+
         bool dualSynthesisActive = false;
         int detectorSupport = 0;
         int octaveState = 0;
@@ -223,6 +237,8 @@ private:
         // reconstruction conditioner after full-spectrum transport.
         float humanize = 0.0f;
         bool scaleLock = false;
+        float targetPitchHz = 0.0f;
+        std::uint64_t targetRevision = 0;
     };
 
     class BiquadLowPass
@@ -676,6 +692,8 @@ private:
         [[nodiscard]] float getOutputMemoryReliability() const noexcept { return outputMemoryReliability_; }
         [[nodiscard]] float getOutputPreIfftConsensus() const noexcept { return outputPreIfftConsensus_; }
         [[nodiscard]] float getOutputSelectiveReconstructionNeed() const noexcept { return outputSelectiveReconstructionNeed_; }
+        [[nodiscard]] const neumaton::outputv3::RidgeLedgerDiagnostics&
+            getShadowRidgeDiagnostics() const noexcept { return shadowRidgeDiagnostics_; }
 
     private:
         using Complex = std::complex<float>;
@@ -805,6 +823,14 @@ private:
         std::vector<int> nearestPeak_;
         std::vector<int> peakBins_;
         std::array<SynthesisLayer, 2> layers_;
+
+        // V3 Stage B. This state is updated after analysis and before legacy
+        // synthesis. It has no output pointer and cannot alter audible samples.
+        neumaton::outputv3::NeumatonRidgeLedger shadowRidgeLedger_;
+        neumaton::outputv3::RidgeLedgerDiagnostics shadowRidgeDiagnostics_ {};
+        double shadowPreviousCorrectionCents_ = 0.0;
+        float shadowPreviousTargetPitchHz_ = 0.0f;
+        bool shadowTrajectoryInitialised_ = false;
 
         std::int64_t inputSampleCounter_ = 0;
         bool analysisPhaseInitialised_ = false;
@@ -1025,6 +1051,16 @@ float dryCandidateShapeCoefficient_ = 1.0f;
     std::atomic<float> meterOutputMemoryReliability_ { 0.0f };
     std::atomic<float> meterOutputPreIfftConsensus_ { 0.0f };
     std::atomic<float> meterOutputSelectiveReconstructionNeed_ { 0.0f };
+    std::atomic<int> meterShadowRidgeObservationCount_ { 0 };
+    std::atomic<int> meterShadowRidgeActiveCount_ { 0 };
+    std::atomic<int> meterShadowRidgeBirthCount_ { 0 };
+    std::atomic<int> meterShadowRidgeCoastCount_ { 0 };
+    std::atomic<int> meterShadowRidgeDeathCount_ { 0 };
+    std::atomic<int> meterShadowRidgeIdentitySwitchCount_ { 0 };
+    std::atomic<float> meterShadowRidgePredictionErrorRadians_ { 0.0f };
+    std::atomic<float> meterShadowRidgeReliability_ { 0.0f };
+    std::atomic<float> meterShadowRidgeResolvedBinCoverage_ { 0.0f };
+    std::atomic<bool> meterShadowRidgeValid_ { false };
 
     std::atomic<bool> meterDualSynthesisActive_ { false };
     std::atomic<int> meterDetectorSupport_ { 0 };

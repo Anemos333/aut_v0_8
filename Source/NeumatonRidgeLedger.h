@@ -45,7 +45,7 @@ private:
                               const CorrectionTrajectoryFrame& trajectory) noexcept;
     void coastUnmatchedTracks(const CorrectionTrajectoryFrame& trajectory) noexcept;
     void buildSourceBinOwnership(const AnalysisFrameView& analysis) noexcept;
-    void updateDiagnostics() noexcept;
+    void updateDiagnostics(const AnalysisFrameView& analysis) noexcept;
 
     [[nodiscard]] int findBestObservationForTrack(const RidgeState& track) const noexcept;
     [[nodiscard]] int findInactiveTrackSlot() const noexcept;
@@ -66,8 +66,11 @@ private:
     std::vector<RidgeObservation> observations_;
     std::vector<std::uint32_t> observationMatched_;
     std::vector<int> sourceBinTrackIndices_;
+    std::vector<std::uint32_t> previousBinTrackIds_;
 
     int observationCount_ = 0;
+    double phasePredictionErrorSum_ = 0.0;
+    int phasePredictionErrorCount_ = 0;
     std::uint32_t nextTrackId_ = 1;
     RidgeLedgerDiagnostics diagnostics_ {};
 };
