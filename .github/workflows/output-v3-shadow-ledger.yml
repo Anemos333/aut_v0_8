@@ -28,6 +28,84 @@ permissions:
   contents: read
 
 jobs:
+  ridge-lifecycle-unix:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        compiler: [g++, clang++]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile lifecycle test
+        run: |
+          ${{ matrix.compiler }} \
+            -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror \
+            -ISource \
+            Source/NeumatonRidgeLedger.cpp \
+            Tests/OutputV3ShadowLedgerLifecycle.cpp \
+            -o shadow_ledger_lifecycle
+      - name: Run lifecycle test
+        run: ./shadow_ledger_lifecycle
+
+  ridge-lifecycle-windows:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Compile and run lifecycle test
+        shell: cmd
+        run: |
+          cl /nologo /std:c++17 /O2 /EHsc /W4 /WX /ISource Source\NeumatonRidgeLedger.cpp Tests\OutputV3ShadowLedgerLifecycle.cpp /Fe:shadow_ledger_lifecycle.exe
+          shadow_ledger_lifecycle.exe
+
+  audio-bit-identity:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install JUCE build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libfreetype6-dev libfontconfig1-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libgl1-mesa-dev
+      - name: Configure Stage B identity targets
+        run: |
+          cmake -S . -B build-shadow \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DNEUMATON_BUILD_SHADOW_LEDGER_TESTS=ON
+      - name: Build shadow OFF and ON
+        run: |
+          cmake --build build-shadow --config Release \
+            --target ShadowLedgerIdentityOff ShadowLedgerIdentityOn \
+            --parallel 2
+      - name: Render deterministic corpus
+        run: |
+          build-shadow/shadow-ledger-tests/ShadowLedgerIdentityOff \
+            shadow-off.raw shadow-off.txt
+          build-shadow/shadow-ledger-tests/ShadowLedgerIdentityOn \
+            shadow-on.raw shadow-on.txt
+      - name: Enforce bit-identical audio
+        run: |
+          cmp shadow-off.raw shadow-on.raw
+          test "$(stat -c%s shadow-off.raw)" -gt 1000000
+          grep -q '^guarded_allocations=0$' shadow-off.txt
+          grep -q '^guarded_allocations=0$' shadow-on.txt
+          awk -F= '/^total_observations=/{ if ($2 <= 0) exit 1; found=1 } END{ exit found ? 0 : 1 }' shadow-on.txt
+          awk -F= '/^total_valid_blocks=/{ if ($2 <= 0) exit 1; found=1 } END{ exit found ? 0 : 1 }' shadow-on.txt
+          sha256sum shadow-off.raw shadow-on.raw
+          cat shadow-off.txt
+          cat shadow-on.txt
+      - name: Upload identity evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: output-v3-shadow-ledger-bit-identity
+          path: |
+            shadow-off.txt
+            shadow-on.txt
+            shadow-off.raw
+            shadow-on.raw
+          retention-days: 7
+
   source-snapshot:
     runs-on: ubuntu-24.04
     steps:
@@ -47,5 +125,7 @@ jobs:
             Source/Tempo.cpp
             Source/ScaleLock.h
             Source/ScaleLock.cpp
+            Tests/OutputV3ShadowLedgerIdentity.cpp
+            Tests/OutputV3ShadowLedgerLifecycle.cpp
           if-no-files-found: error
           retention-days: 7
