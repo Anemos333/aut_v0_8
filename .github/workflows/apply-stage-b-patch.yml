@@ -38,3 +38,5 @@ jobs:
           git add -A
           git commit -m 'Integrate V3 Stage B shadow ridge ledger [stage-b-applied]'
           git push origin HEAD:output-stage-v3-shadow-ledger
+
+# Existing-on-branch trigger for the atomic application job.
