@@ -13,6 +13,12 @@
 #define NEUMATON_V6_CSV_DIAGNOSTICS 1
 #endif
 
+// V3 Stage B is an analysis-only shadow path. Setting this to 0 removes every
+// call into the ridge ledger and is used by the bit-identity CI comparison.
+#ifndef NEUMATON_OUTPUT_V3_SHADOW_LEDGER
+#define NEUMATON_OUTPUT_V3_SHADOW_LEDGER 1
+#endif
+
 namespace
 {
 constexpr double pi = 3.1415926535897932384626433832795;
@@ -2629,6 +2635,18 @@ void ModernPitchEngine::SpectralVoiceShifter::prepare(double sampleRate,
     peakBins_.clear();
     peakBins_.reserve(static_cast<std::size_t>(positiveBinCount));
 
+#if NEUMATON_OUTPUT_V3_SHADOW_LEDGER
+    neumaton::outputv3::OutputPrepareSpec shadowSpec;
+    shadowSpec.sampleRate = sampleRate_;
+    shadowSpec.frameSize = frameSize_;
+    shadowSpec.hopSize = hopSize_;
+    shadowSpec.positiveBinCount = positiveBinCount;
+    shadowSpec.outputRingSize = outputRingSize;
+    shadowSpec.maximumRidges = std::min(128, positiveBinCount);
+    shadowSpec.maximumObservations = positiveBinCount;
+    shadowRidgeLedger_.prepare(shadowSpec);
+#endif
+
     for (auto& layer : layers_)
     {
         layer.spectrum.assign(static_cast<std::size_t>(frameSize_), Complex {});
@@ -2860,6 +2878,13 @@ void ModernPitchEngine::SpectralVoiceShifter::reset() noexcept
     std::fill(prefixSum_.begin(), prefixSum_.end(), 0.0);
     std::fill(nearestPeak_.begin(), nearestPeak_.end(), 0);
     peakBins_.clear();
+#if NEUMATON_OUTPUT_V3_SHADOW_LEDGER
+    shadowRidgeLedger_.reset();
+#endif
+    shadowRidgeDiagnostics_ = {};
+    shadowPreviousCorrectionCents_ = 0.0;
+    shadowPreviousTargetPitchHz_ = 0.0f;
+    shadowTrajectoryInitialised_ = false;
 
     for (auto& layer : layers_)
     {
@@ -5441,6 +5466,70 @@ void ModernPitchEngine::SpectralVoiceShifter::processFrame(
     frameTransitionBlend_ = clamp01(transition.blend);
     frameDualTransitionActive_ = transition.dualSynthesis;
 
+#if NEUMATON_OUTPUT_V3_SHADOW_LEDGER
+    // Stage B insertion boundary: analysis is complete, while neither legacy
+    // synthesis layer has yet built or committed an output spectrum.
+    const int shadowPositiveBinCount = positiveBins + 1;
+    const double shadowCorrectionCents = transition.dualSynthesis
+        ? transition.primaryCents
+            + static_cast<double>(clamp01(transition.blend))
+                * (transition.secondaryCents - transition.primaryCents)
+        : transition.primaryCents;
+
+    neumaton::outputv3::AnalysisFrameView shadowAnalysis;
+    shadowAnalysis.analysedSpectrum = { fftBuffer_.data(), frameSize_ };
+    shadowAnalysis.magnitudes = { magnitudes_.data(), shadowPositiveBinCount };
+    shadowAnalysis.analysisPhases = { analysisPhases_.data(), shadowPositiveBinCount };
+    shadowAnalysis.previousAnalysisPhases = {
+        previousAnalysisPhases_.data(), shadowPositiveBinCount };
+    shadowAnalysis.trueSourceBins = { trueSourceBins_.data(), shadowPositiveBinCount };
+    shadowAnalysis.harmonicMask = { harmonicMask_.data(), shadowPositiveBinCount };
+    shadowAnalysis.spectralEnvelope = {
+        spectralEnvelope_.data(), shadowPositiveBinCount };
+    shadowAnalysis.nearestPeak = { nearestPeak_.data(), shadowPositiveBinCount };
+    shadowAnalysis.peakBins = {
+        peakBins_.empty() ? nullptr : peakBins_.data(),
+        static_cast<int>(peakBins_.size()) };
+    shadowAnalysis.sampleRate = sampleRate_;
+    shadowAnalysis.frameSize = frameSize_;
+    shadowAnalysis.hopSize = hopSize_;
+    shadowAnalysis.positiveBinCount = shadowPositiveBinCount;
+    shadowAnalysis.frameEndSample = frameEndSample;
+    shadowAnalysis.detectedPitchHz = harmonicNoiseContext.detectedPitchHz;
+    shadowAnalysis.confidence = harmonicNoiseContext.confidence;
+    shadowAnalysis.voicing = harmonicNoiseContext.voicing;
+    shadowAnalysis.consensus = harmonicNoiseContext.consensus;
+    shadowAnalysis.onsetStrength = harmonicNoiseContext.onsetStrength;
+    shadowAnalysis.breathiness = smoothedBreathiness_;
+    shadowAnalysis.harmonicity = smoothedHarmonicity_;
+    shadowAnalysis.polyphony = smoothedPolyphony_;
+    shadowAnalysis.spectralReliability = smoothedSpectralReliability_;
+    shadowAnalysis.maskStability = smoothedMaskStability_;
+    shadowAnalysis.phaseReset = resetAnalysis;
+
+    neumaton::outputv3::CorrectionTrajectoryFrame shadowTrajectory;
+    shadowTrajectory.previousCorrectionCents = shadowTrajectoryInitialised_
+        ? shadowPreviousCorrectionCents_
+        : shadowCorrectionCents;
+    shadowTrajectory.correctionCents = shadowCorrectionCents;
+    shadowTrajectory.previousTargetPitchHz = shadowTrajectoryInitialised_
+        ? shadowPreviousTargetPitchHz_
+        : harmonicNoiseContext.targetPitchHz;
+    shadowTrajectory.targetPitchHz = harmonicNoiseContext.targetPitchHz;
+    shadowTrajectory.targetRevision = harmonicNoiseContext.targetRevision;
+    shadowTrajectory.targetValid = harmonicNoiseContext.targetPitchHz > 0.0f
+        && harmonicNoiseContext.trackingState != TrackingState::unvoiced
+        && harmonicNoiseContext.trackingState != TrackingState::release;
+    shadowTrajectory.forceReset = resetAnalysis;
+
+    static_cast<void>(shadowRidgeLedger_.processFrame(shadowAnalysis,
+                                                       shadowTrajectory));
+    shadowRidgeDiagnostics_ = shadowRidgeLedger_.getDiagnostics();
+    shadowPreviousCorrectionCents_ = shadowCorrectionCents;
+    shadowPreviousTargetPitchHz_ = harmonicNoiseContext.targetPitchHz;
+    shadowTrajectoryInitialised_ = true;
+#endif
+
     auto& primary = layers_[static_cast<std::size_t>(activeLayerIndex_)];
     synthesiseLayer(primary,
                     frameEndSample,
@@ -6064,6 +6153,13 @@ float ModernPitchEngine::SpectralVoiceShifter::processBypassedSample(
         breathProtection_ = 0.0f;
         breathPersistenceMs_ = 0.0f;
         noiseDominanceMs_ = 0.0f;
+#if NEUMATON_OUTPUT_V3_SHADOW_LEDGER
+        shadowRidgeLedger_.reset();
+#endif
+        shadowRidgeDiagnostics_ = {};
+        shadowPreviousCorrectionCents_ = 0.0;
+        shadowPreviousTargetPitchHz_ = 0.0f;
+        shadowTrajectoryInitialised_ = false;
         bypassStatePrimed_ = true;
     }
 
@@ -6212,6 +6308,16 @@ void ModernPitchEngine::reset() noexcept
     meterOutputMemoryReliability_.store(0.0f, std::memory_order_relaxed);
     meterOutputPreIfftConsensus_.store(0.0f, std::memory_order_relaxed);
     meterOutputSelectiveReconstructionNeed_.store(0.0f, std::memory_order_relaxed);
+    meterShadowRidgeObservationCount_.store(0, std::memory_order_relaxed);
+    meterShadowRidgeActiveCount_.store(0, std::memory_order_relaxed);
+    meterShadowRidgeBirthCount_.store(0, std::memory_order_relaxed);
+    meterShadowRidgeCoastCount_.store(0, std::memory_order_relaxed);
+    meterShadowRidgeDeathCount_.store(0, std::memory_order_relaxed);
+    meterShadowRidgeIdentitySwitchCount_.store(0, std::memory_order_relaxed);
+    meterShadowRidgePredictionErrorRadians_.store(0.0f, std::memory_order_relaxed);
+    meterShadowRidgeReliability_.store(0.0f, std::memory_order_relaxed);
+    meterShadowRidgeResolvedBinCoverage_.store(0.0f, std::memory_order_relaxed);
+    meterShadowRidgeValid_.store(false, std::memory_order_relaxed);
     meterDualSynthesisActive_.store(false, std::memory_order_relaxed);
     meterDetectorSupport_.store(0, std::memory_order_relaxed);
     meterOctaveState_.store(0, std::memory_order_relaxed);
@@ -6284,7 +6390,10 @@ void ModernPitchEngine::appendV6DiagnosticsCsv(const Metering& meter,
             "target_jump_cents,correction_velocity_cps,octave_conflict,"
             "transition_stress,source_mirror_fit,double_family_risk,"
             "ledger_deficit,memory_reliability,pre_ifft_consensus,"
-            "selective_reconstruction_need\n";
+            "selective_reconstruction_need,shadow_observations,shadow_active,"
+            "shadow_births,shadow_coasts,shadow_deaths,shadow_identity_switches,"
+            "shadow_prediction_error_rad,shadow_reliability,"
+            "shadow_resolved_bin_coverage,shadow_valid\n";
 
         diagnosticCsvFile_.replaceWithText(headerLine, false, false, "\n");
         diagnosticCsvInitialised_ = diagnosticCsvFile_.existsAsFile();
@@ -6326,7 +6435,23 @@ void ModernPitchEngine::appendV6DiagnosticsCsv(const Metering& meter,
          << juce::String(meter.outputTargetJumpCents, 6) << ','
          << juce::String(meter.outputCorrectionVelocityCentsPerSecond, 6) << ','
          << juce::String(meter.outputOctaveConflict, 6) << ','
-         << juce::String(meter.outputTransitionStress, 6) << '\n';
+         << juce::String(meter.outputTransitionStress, 6) << ','
+         << juce::String(meter.outputSourceMirrorFit, 6) << ','
+         << juce::String(meter.outputDoubleFamilyRisk, 6) << ','
+         << juce::String(meter.outputLedgerDeficit, 6) << ','
+         << juce::String(meter.outputMemoryReliability, 6) << ','
+         << juce::String(meter.outputPreIfftConsensus, 6) << ','
+         << juce::String(meter.outputSelectiveReconstructionNeed, 6) << ','
+         << meter.shadowRidgeObservationCount << ','
+         << meter.shadowRidgeActiveCount << ','
+         << meter.shadowRidgeBirthCount << ','
+         << meter.shadowRidgeCoastCount << ','
+         << meter.shadowRidgeDeathCount << ','
+         << meter.shadowRidgeIdentitySwitchCount << ','
+         << juce::String(meter.shadowRidgePredictionErrorRadians, 6) << ','
+         << juce::String(meter.shadowRidgeReliability, 6) << ','
+         << juce::String(meter.shadowRidgeResolvedBinCoverage, 6) << ','
+         << (meter.shadowRidgeValid ? 1 : 0) << '\n';
 
     diagnosticCsvFile_.appendText(line, false, false, "\n");
 #else
@@ -6645,7 +6770,9 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
             trackingState,
             noteAgeSeconds,
             clamp01(safeParameters.humanize),
-            safeParameters.scaleLock
+            safeParameters.scaleLock,
+            correctionController_.getTargetPitchHz(),
+            tempoDecision.targetRevision
         };
 
         if (useMidSide)
@@ -6705,6 +6832,16 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
     float latestOutputMemoryReliability = 0.0f;
     float latestOutputPreIfftConsensus = 0.0f;
     float latestOutputSelectiveReconstructionNeed = 0.0f;
+    int latestShadowRidgeObservationCount = 0;
+    int latestShadowRidgeActiveCount = 0;
+    int latestShadowRidgeBirthCount = 0;
+    int latestShadowRidgeCoastCount = 0;
+    int latestShadowRidgeDeathCount = 0;
+    int latestShadowRidgeIdentitySwitchCount = 0;
+    float latestShadowRidgePredictionErrorRadians = 0.0f;
+    float latestShadowRidgeReliability = 0.0f;
+    float latestShadowRidgeResolvedBinCoverage = 0.0f;
+    int latestShadowRidgeValidCount = 0;
     const int meteredShifters = useMidSide ? 1 : numberOfChannels;
     for (int channel = 0; channel < meteredShifters; ++channel)
     {
@@ -6729,6 +6866,20 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
         latestOutputMemoryReliability += shifter.getOutputMemoryReliability();
         latestOutputPreIfftConsensus += shifter.getOutputPreIfftConsensus();
         latestOutputSelectiveReconstructionNeed += shifter.getOutputSelectiveReconstructionNeed();
+        const auto& shadow = shifter.getShadowRidgeDiagnostics();
+        latestShadowRidgeObservationCount += shadow.observationCount;
+        latestShadowRidgeActiveCount += shadow.activeTrackCount;
+        latestShadowRidgeBirthCount += shadow.bornTrackCount;
+        latestShadowRidgeCoastCount += shadow.coastTrackCount;
+        latestShadowRidgeDeathCount += shadow.deadTrackCount;
+        latestShadowRidgeIdentitySwitchCount += shadow.identitySwitchCount;
+        if (shadow.frameValid)
+        {
+            latestShadowRidgePredictionErrorRadians += shadow.meanPredictionErrorRadians;
+            latestShadowRidgeReliability += shadow.meanReliability;
+            latestShadowRidgeResolvedBinCoverage += shadow.resolvedBinCoverage;
+            ++latestShadowRidgeValidCount;
+        }
     }
     const float inverseMeteredShifters = 1.0f
         / static_cast<float>(std::max(1, meteredShifters));
@@ -6752,6 +6903,13 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
     latestOutputMemoryReliability *= inverseMeteredShifters;
     latestOutputPreIfftConsensus *= inverseMeteredShifters;
     latestOutputSelectiveReconstructionNeed *= inverseMeteredShifters;
+    const float inverseValidShadowRidges = latestShadowRidgeValidCount > 0
+        ? 1.0f / static_cast<float>(latestShadowRidgeValidCount)
+        : 0.0f;
+    latestShadowRidgePredictionErrorRadians *= inverseValidShadowRidges;
+    latestShadowRidgeReliability *= inverseValidShadowRidges;
+    latestShadowRidgeResolvedBinCoverage *= inverseValidShadowRidges;
+    const bool latestShadowRidgeValid = latestShadowRidgeValidCount > 0;
     const float latestSustainedNoteSeconds = static_cast<float>(
         std::min(12.0, static_cast<double>(noteAgeSamples_) / sampleRate_));
     const auto tempoMeter = tempoController_.getMetering();
@@ -6941,6 +7099,26 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
                                               std::memory_order_relaxed);
     meterOutputSelectiveReconstructionNeed_.store(
         latestOutputSelectiveReconstructionNeed, std::memory_order_relaxed);
+    meterShadowRidgeObservationCount_.store(
+        latestShadowRidgeObservationCount, std::memory_order_relaxed);
+    meterShadowRidgeActiveCount_.store(
+        latestShadowRidgeActiveCount, std::memory_order_relaxed);
+    meterShadowRidgeBirthCount_.store(
+        latestShadowRidgeBirthCount, std::memory_order_relaxed);
+    meterShadowRidgeCoastCount_.store(
+        latestShadowRidgeCoastCount, std::memory_order_relaxed);
+    meterShadowRidgeDeathCount_.store(
+        latestShadowRidgeDeathCount, std::memory_order_relaxed);
+    meterShadowRidgeIdentitySwitchCount_.store(
+        latestShadowRidgeIdentitySwitchCount, std::memory_order_relaxed);
+    meterShadowRidgePredictionErrorRadians_.store(
+        latestShadowRidgePredictionErrorRadians, std::memory_order_relaxed);
+    meterShadowRidgeReliability_.store(
+        latestShadowRidgeReliability, std::memory_order_relaxed);
+    meterShadowRidgeResolvedBinCoverage_.store(
+        latestShadowRidgeResolvedBinCoverage, std::memory_order_relaxed);
+    meterShadowRidgeValid_.store(
+        latestShadowRidgeValid, std::memory_order_relaxed);
     meterDualSynthesisActive_.store(
         transitionManager_.isDualSynthesisActive(),
         std::memory_order_relaxed);
@@ -7087,6 +7265,16 @@ void ModernPitchEngine::processBypassed(juce::AudioBuffer<float>& buffer)
     meterOutputMemoryReliability_.store(0.0f, std::memory_order_relaxed);
     meterOutputPreIfftConsensus_.store(0.0f, std::memory_order_relaxed);
     meterOutputSelectiveReconstructionNeed_.store(0.0f, std::memory_order_relaxed);
+    meterShadowRidgeObservationCount_.store(0, std::memory_order_relaxed);
+    meterShadowRidgeActiveCount_.store(0, std::memory_order_relaxed);
+    meterShadowRidgeBirthCount_.store(0, std::memory_order_relaxed);
+    meterShadowRidgeCoastCount_.store(0, std::memory_order_relaxed);
+    meterShadowRidgeDeathCount_.store(0, std::memory_order_relaxed);
+    meterShadowRidgeIdentitySwitchCount_.store(0, std::memory_order_relaxed);
+    meterShadowRidgePredictionErrorRadians_.store(0.0f, std::memory_order_relaxed);
+    meterShadowRidgeReliability_.store(0.0f, std::memory_order_relaxed);
+    meterShadowRidgeResolvedBinCoverage_.store(0.0f, std::memory_order_relaxed);
+    meterShadowRidgeValid_.store(false, std::memory_order_relaxed);
     meterDualSynthesisActive_.store(false, std::memory_order_relaxed);
     meterDetectorSupport_.store(0, std::memory_order_relaxed);
     meterOctaveState_.store(0, std::memory_order_relaxed);
@@ -7173,6 +7361,26 @@ ModernPitchEngine::Metering ModernPitchEngine::getMetering() const noexcept
             std::memory_order_relaxed);
         result.outputSelectiveReconstructionNeed =
             meterOutputSelectiveReconstructionNeed_.load(std::memory_order_relaxed);
+        result.shadowRidgeObservationCount =
+            meterShadowRidgeObservationCount_.load(std::memory_order_relaxed);
+        result.shadowRidgeActiveCount =
+            meterShadowRidgeActiveCount_.load(std::memory_order_relaxed);
+        result.shadowRidgeBirthCount =
+            meterShadowRidgeBirthCount_.load(std::memory_order_relaxed);
+        result.shadowRidgeCoastCount =
+            meterShadowRidgeCoastCount_.load(std::memory_order_relaxed);
+        result.shadowRidgeDeathCount =
+            meterShadowRidgeDeathCount_.load(std::memory_order_relaxed);
+        result.shadowRidgeIdentitySwitchCount =
+            meterShadowRidgeIdentitySwitchCount_.load(std::memory_order_relaxed);
+        result.shadowRidgePredictionErrorRadians =
+            meterShadowRidgePredictionErrorRadians_.load(std::memory_order_relaxed);
+        result.shadowRidgeReliability =
+            meterShadowRidgeReliability_.load(std::memory_order_relaxed);
+        result.shadowRidgeResolvedBinCoverage =
+            meterShadowRidgeResolvedBinCoverage_.load(std::memory_order_relaxed);
+        result.shadowRidgeValid =
+            meterShadowRidgeValid_.load(std::memory_order_relaxed);
         result.dualSynthesisActive = meterDualSynthesisActive_.load(
             std::memory_order_relaxed);
         result.detectorSupport = meterDetectorSupport_.load(std::memory_order_relaxed);

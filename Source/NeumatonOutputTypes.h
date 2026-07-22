@@ -132,6 +132,7 @@ struct RidgeObservation
     float localWidthBins = 0.0f;
     float localSnr = 0.0f;
     float sourcePhase = 0.0f;
+    float groupDelaySlopeRadiansPerBin = 0.0f;
     float phaseCoherence = 0.0f;
     float harmonicPrior = 0.0f;
     float eventProbability = 0.0f;
@@ -149,6 +150,8 @@ struct RidgeState
     float previousTargetFrequencyHz = 0.0f;
 
     double targetPhase = 0.0;
+    float sourcePhase = 0.0f;
+    float previousSourcePhase = 0.0f;
     float groupDelaySlopeRadiansPerBin = 0.0f;
     float amplitude = 0.0f;
     float reliability = 0.0f;
@@ -182,6 +185,8 @@ struct RidgeLedgerDiagnostics
     int identitySwitchCount = 0;
     float meanPredictionErrorRadians = 0.0f;
     float meanReliability = 0.0f;
+    float resolvedBinCoverage = 0.0f;
+    bool frameValid = false;
 };
 
 struct OutputRendererDiagnostics
