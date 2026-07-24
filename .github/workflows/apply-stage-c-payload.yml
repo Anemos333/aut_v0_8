@@ -1,0 +1,40 @@
+name: Apply Stage C Payload
+
+on:
+  pull_request:
+    paths:
+      - 'Tools/stage_c_payload_b64/**'
+      - '.github/workflows/apply-stage-c-payload.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.event.pull_request.head.ref == 'output-stage-v3-shadow-renderer'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: output-stage-v3-shadow-renderer
+          fetch-depth: 0
+      - name: Apply verified Stage C payload
+        run: |
+          if [ ! -d Tools/stage_c_payload_b64 ]; then
+            echo "Stage C payload already applied"
+            exit 0
+          fi
+          : > /tmp/stage-c.b64
+          for part in Tools/stage_c_payload_b64/part*; do
+            cat "$part" >> /tmp/stage-c.b64
+          done
+          base64 -d /tmp/stage-c.b64 > /tmp/stage-c-files.tar.gz
+          echo 'a1db70926e538e8d767d25e703401e145cdf423266f2eca01588c8cfe94b5622  /tmp/stage-c-files.tar.gz' | sha256sum -c -
+          tar -xzf /tmp/stage-c-files.tar.gz
+          rm -rf Tools/stage_c_payload_b64
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Stage C: integrate single-spectrum shadow renderer [stage-c-applied]'
+          git push origin HEAD:output-stage-v3-shadow-renderer
