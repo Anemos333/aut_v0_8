@@ -1,0 +1,1 @@
+Temporary CI synchronization marker for Stage C. Remove after the workflow is registered and has completed once.
