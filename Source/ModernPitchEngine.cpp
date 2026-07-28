@@ -13,10 +13,24 @@
 #define NEUMATON_V6_CSV_DIAGNOSTICS 1
 #endif
 
-// V3 Stage B is an analysis-only shadow path. Setting this to 0 removes every
-// call into the ridge ledger and is used by the bit-identity CI comparison.
+// V3 ridge tracking remains available independently for shadow validation.
 #ifndef NEUMATON_OUTPUT_V3_SHADOW_LEDGER
 #define NEUMATON_OUTPUT_V3_SHADOW_LEDGER 1
+#endif
+
+// Stage C builds the single-spectrum renderer without consuming its audio.
+#ifndef NEUMATON_OUTPUT_V3_SHADOW_RENDERER
+#define NEUMATON_OUTPUT_V3_SHADOW_RENDERER 1
+#endif
+
+// Stage D is an exclusive compile-time audio selector. When enabled, legacy
+// synthesis layers are not rendered or consumed and no dry/wet output code runs.
+#ifndef NEUMATON_OUTPUT_V3_AUDIO_RENDERER
+#define NEUMATON_OUTPUT_V3_AUDIO_RENDERER 1
+#endif
+
+#if NEUMATON_OUTPUT_V3_AUDIO_RENDERER && !NEUMATON_OUTPUT_V3_SHADOW_LEDGER
+#error "V3 audio renderer requires the persistent ridge ledger"
 #endif
 
 namespace
@@ -2645,6 +2659,9 @@ void ModernPitchEngine::SpectralVoiceShifter::prepare(double sampleRate,
     shadowSpec.maximumRidges = std::min(128, positiveBinCount);
     shadowSpec.maximumObservations = positiveBinCount;
     shadowRidgeLedger_.prepare(shadowSpec);
+#if NEUMATON_OUTPUT_V3_SHADOW_RENDERER || NEUMATON_OUTPUT_V3_AUDIO_RENDERER
+    v3OutputRenderer_.prepare(shadowSpec);
+#endif
 #endif
 
     for (auto& layer : layers_)
@@ -2880,6 +2897,9 @@ void ModernPitchEngine::SpectralVoiceShifter::reset() noexcept
     peakBins_.clear();
 #if NEUMATON_OUTPUT_V3_SHADOW_LEDGER
     shadowRidgeLedger_.reset();
+#if NEUMATON_OUTPUT_V3_SHADOW_RENDERER || NEUMATON_OUTPUT_V3_AUDIO_RENDERER
+    v3OutputRenderer_.reset();
+#endif
 #endif
     shadowRidgeDiagnostics_ = {};
     shadowPreviousCorrectionCents_ = 0.0;
@@ -5522,14 +5542,27 @@ void ModernPitchEngine::SpectralVoiceShifter::processFrame(
         && harmonicNoiseContext.trackingState != TrackingState::release;
     shadowTrajectory.forceReset = resetAnalysis;
 
-    static_cast<void>(shadowRidgeLedger_.processFrame(shadowAnalysis,
-                                                       shadowTrajectory));
+    const auto shadowRidgeFrame = shadowRidgeLedger_.processFrame(shadowAnalysis,
+                                                                   shadowTrajectory);
     shadowRidgeDiagnostics_ = shadowRidgeLedger_.getDiagnostics();
+#if NEUMATON_OUTPUT_V3_AUDIO_RENDERER
+    v3OutputRenderer_.renderAndCommitFrame(shadowAnalysis,
+                                           shadowTrajectory,
+                                           shadowRidgeFrame,
+                                           formantPreservation,
+                                           frameEndSample);
+#elif NEUMATON_OUTPUT_V3_SHADOW_RENDERER
+    static_cast<void>(v3OutputRenderer_.inspectFrame(shadowAnalysis,
+                                                      shadowTrajectory,
+                                                      shadowRidgeFrame,
+                                                      formantPreservation));
+#endif
     shadowPreviousCorrectionCents_ = shadowCorrectionCents;
     shadowPreviousTargetPitchHz_ = harmonicNoiseContext.targetPitchHz;
     shadowTrajectoryInitialised_ = true;
 #endif
 
+#if !NEUMATON_OUTPUT_V3_AUDIO_RENDERER
     auto& primary = layers_[static_cast<std::size_t>(activeLayerIndex_)];
     synthesiseLayer(primary,
                     frameEndSample,
@@ -5550,6 +5583,7 @@ void ModernPitchEngine::SpectralVoiceShifter::processFrame(
                         phaseAnchor,
                         positiveBins);
     }
+#endif
 
     for (int bin = 0; bin <= positiveBins; ++bin)
     {
@@ -5631,11 +5665,13 @@ float ModernPitchEngine::SpectralVoiceShifter::processSample(
     if (forcePhaseReset)
         phaseResetPending_ = true;
 
+#if !NEUMATON_OUTPUT_V3_AUDIO_RENDERER
     if (transition.beginSecondary
         || (transition.dualSynthesis && !dualTransitionActive_))
     {
         beginSecondaryTransition();
     }
+#endif
 
     const float formantTarget = clamp01(formantPreservation);
     const float formantCoefficient = formantTarget < smoothedFormantPreservation_
@@ -5652,6 +5688,15 @@ float ModernPitchEngine::SpectralVoiceShifter::processSample(
                      harmonicNoiseContext,
                      forcePhaseReset);
     }
+
+#if NEUMATON_OUTPUT_V3_AUDIO_RENDERER
+    static_cast<void>(desiredWetMix);
+    transientSuppression_ *= transientReleaseCoefficient_;
+    const float output = sanitiseAudioSample(
+        v3OutputRenderer_.consumeSample(currentSample));
+    ++inputSampleCounter_;
+    return output;
+#endif
 
     auto& primaryLayer = layers_[static_cast<std::size_t>(activeLayerIndex_)];
     const float primaryShifted = consumeLayerOutput(primaryLayer, currentSample);
@@ -6099,6 +6144,9 @@ float ModernPitchEngine::SpectralVoiceShifter::processBypassedSample(
     const int outputIndex = static_cast<int>(currentSample & outputRingMask_);
     for (auto& layer : layers_)
         layer.outputAccumulationRing[static_cast<std::size_t>(outputIndex)] = 0.0f;
+#if NEUMATON_OUTPUT_V3_SHADOW_RENDERER || NEUMATON_OUTPUT_V3_AUDIO_RENDERER
+    v3OutputRenderer_.discardSample(currentSample);
+#endif
 
     const float delayedDry = readInputSample(currentSample - frameSize_);
     ++inputSampleCounter_;
@@ -6155,6 +6203,9 @@ float ModernPitchEngine::SpectralVoiceShifter::processBypassedSample(
         noiseDominanceMs_ = 0.0f;
 #if NEUMATON_OUTPUT_V3_SHADOW_LEDGER
         shadowRidgeLedger_.reset();
+#if NEUMATON_OUTPUT_V3_SHADOW_RENDERER || NEUMATON_OUTPUT_V3_AUDIO_RENDERER
+        v3OutputRenderer_.reset();
+#endif
 #endif
         shadowRidgeDiagnostics_ = {};
         shadowPreviousCorrectionCents_ = 0.0;

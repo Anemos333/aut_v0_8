@@ -4,6 +4,7 @@
 #include "Tempo.h"
 #include "ScaleLock.h"
 #include "NeumatonRidgeLedger.h"
+#include "NeumatonOutputRenderer.h"
 
 #include <array>
 #include <atomic>
@@ -694,6 +695,11 @@ private:
         [[nodiscard]] float getOutputSelectiveReconstructionNeed() const noexcept { return outputSelectiveReconstructionNeed_; }
         [[nodiscard]] const neumaton::outputv3::RidgeLedgerDiagnostics&
             getShadowRidgeDiagnostics() const noexcept { return shadowRidgeDiagnostics_; }
+        [[nodiscard]] const neumaton::outputv3::OutputRendererDiagnostics&
+            getV3RendererDiagnostics() const noexcept
+        {
+            return v3OutputRenderer_.getDiagnostics();
+        }
 
     private:
         using Complex = std::complex<float>;
@@ -827,6 +833,7 @@ private:
         // V3 Stage B. This state is updated after analysis and before legacy
         // synthesis. It has no output pointer and cannot alter audible samples.
         neumaton::outputv3::NeumatonRidgeLedger shadowRidgeLedger_;
+        neumaton::outputv3::NeumatonOutputRenderer v3OutputRenderer_;
         neumaton::outputv3::RidgeLedgerDiagnostics shadowRidgeDiagnostics_ {};
         double shadowPreviousCorrectionCents_ = 0.0;
         float shadowPreviousTargetPitchHz_ = 0.0f;

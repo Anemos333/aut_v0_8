@@ -196,7 +196,13 @@ struct OutputRendererDiagnostics
     float eventEnergyRatio = 0.0f;
     float airEnergyRatio = 0.0f;
     float unclassifiedEnergyRatio = 0.0f;
+    float assignedEnergyRatio = 0.0f;
+    float phaseFieldCoherence = 0.0f;
+    float temporalSpectrumDistance = 0.0f;
+    float destinationCollisionEnergyRatio = 0.0f;
+    float formantEnvelopeError = 0.0f;
     float requestedEnergyGainDb = 0.0f;
+    bool frameValid = false;
 };
 
 } // namespace neumaton::outputv3

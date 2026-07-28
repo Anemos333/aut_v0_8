@@ -80,6 +80,10 @@ target_sources(Neumaton
 )
 
 target_compile_definitions(Neumaton
+    PRIVATE
+        NEUMATON_OUTPUT_V3_SHADOW_LEDGER=1
+        NEUMATON_OUTPUT_V3_SHADOW_RENDERER=1
+        NEUMATON_OUTPUT_V3_AUDIO_RENDERER=1
     PUBLIC
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
@@ -134,6 +138,8 @@ if(NEUMATON_BUILD_SHADOW_LEDGER_TESTS)
         target_compile_definitions(${target_name}
             PRIVATE
                 NEUMATON_OUTPUT_V3_SHADOW_LEDGER=${shadow_enabled}
+                NEUMATON_OUTPUT_V3_SHADOW_RENDERER=0
+                NEUMATON_OUTPUT_V3_AUDIO_RENDERER=0
                 NEUMATON_V6_CSV_DIAGNOSTICS=0
                 JUCE_WEB_BROWSER=0
                 JUCE_USE_CURL=0
@@ -157,4 +163,70 @@ if(NEUMATON_BUILD_SHADOW_LEDGER_TESTS)
 
     neumaton_add_shadow_identity_target(ShadowLedgerIdentityOff 0)
     neumaton_add_shadow_identity_target(ShadowLedgerIdentityOn 1)
+endif()
+
+
+# -----------------------------------------------------------------------------
+# V3 Stage D exclusive-audio validation. These targets are opt-in and never
+# become plug-in formats. The production plug-in on this experimental branch
+# is compiled with V3 as its only audible renderer.
+option(NEUMATON_BUILD_V3_AUDIO_RENDERER_TESTS
+       "Build V3 Stage D exclusive audio validation executables" OFF)
+
+if(NEUMATON_BUILD_V3_AUDIO_RENDERER_TESTS)
+    add_executable(V3AudioRendererStandalone
+        Tests/OutputV3AudioRendererStandalone.cpp
+        Source/NeumatonRidgeLedger.cpp
+        Source/NeumatonOutputRenderer.cpp
+    )
+    target_include_directories(V3AudioRendererStandalone PRIVATE Source)
+    target_compile_features(V3AudioRendererStandalone PRIVATE cxx_std_17)
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        target_compile_options(V3AudioRendererStandalone PRIVATE
+            -Wall -Wextra -Wpedantic -Werror -Wno-mismatched-new-delete)
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        target_compile_options(V3AudioRendererStandalone PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
+    elseif(MSVC)
+        target_compile_options(V3AudioRendererStandalone PRIVATE /W4 /WX)
+    endif()
+
+    juce_add_console_app(V3AudioRendererEngine
+        PRODUCT_NAME V3AudioRendererEngine
+    )
+    juce_generate_juce_header(V3AudioRendererEngine)
+    target_sources(V3AudioRendererEngine
+        PRIVATE
+            Tests/OutputV3AudioRendererEngine.cpp
+            Source/ModernPitchEngine.cpp
+            Source/NeumatonRidgeLedger.cpp
+            Source/NeumatonOutputRenderer.cpp
+            Source/ScaleLock.cpp
+            Source/Tempo.cpp
+    )
+    target_include_directories(V3AudioRendererEngine PRIVATE Source)
+    target_compile_definitions(V3AudioRendererEngine
+        PRIVATE
+            NEUMATON_OUTPUT_V3_SHADOW_LEDGER=1
+            NEUMATON_OUTPUT_V3_SHADOW_RENDERER=1
+            NEUMATON_OUTPUT_V3_AUDIO_RENDERER=1
+            NEUMATON_V6_CSV_DIAGNOSTICS=0
+            JUCE_WEB_BROWSER=0
+            JUCE_USE_CURL=0
+    )
+    target_link_libraries(V3AudioRendererEngine
+        PRIVATE
+            juce::juce_audio_basics
+            juce::juce_core
+        PUBLIC
+            juce::juce_recommended_config_flags
+            juce::juce_recommended_warning_flags
+    )
+    set_target_properties(V3AudioRendererStandalone V3AudioRendererEngine PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/v3-audio-renderer-tests"
+        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/v3-audio-renderer-tests"
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/v3-audio-renderer-tests"
+        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/v3-audio-renderer-tests"
+        RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}/v3-audio-renderer-tests"
+    )
 endif()
