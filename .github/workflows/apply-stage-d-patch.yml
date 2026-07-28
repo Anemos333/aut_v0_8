@@ -7,13 +7,17 @@ on:
     paths:
       - 'Tools/stage_d_patch/**'
       - '.github/workflows/apply-stage-d-patch.yml'
+  pull_request:
+    paths:
+      - 'Tools/stage_d_patch/**'
+      - '.github/workflows/apply-stage-d-patch.yml'
 
 permissions:
   contents: write
 
 jobs:
   apply:
-    if: github.ref == 'refs/heads/output-stage-v3-audio-renderer'
+    if: github.event_name == 'push' || github.event.pull_request.head.ref == 'output-stage-v3-audio-renderer'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
