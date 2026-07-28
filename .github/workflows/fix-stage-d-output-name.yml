@@ -1,0 +1,51 @@
+name: Fix Stage D Output Name
+
+on:
+  push:
+    branches:
+      - output-stage-v3-audio-renderer
+    paths:
+      - '.github/workflows/fix-stage-d-output-name.yml'
+      - 'Source/ModernPitchEngine.cpp'
+  pull_request:
+    paths:
+      - '.github/workflows/fix-stage-d-output-name.yml'
+      - 'Source/ModernPitchEngine.cpp'
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.event_name == 'push' || github.event.pull_request.head.ref == 'output-stage-v3-audio-renderer'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: output-stage-v3-audio-renderer
+          fetch-depth: 0
+      - name: Rename exclusive V3 output local
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('Source/ModernPitchEngine.cpp')
+          text = path.read_text(encoding='utf-8')
+          old = '''    const float output = sanitiseAudioSample(
+              v3OutputRenderer_.consumeSample(currentSample));
+          ++inputSampleCounter_;
+          return output;'''
+          new = '''    const float v3Output = sanitiseAudioSample(
+              v3OutputRenderer_.consumeSample(currentSample));
+          ++inputSampleCounter_;
+          return v3Output;'''
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f'expected one Stage D output block, found {count}')
+          path.write_text(text.replace(old, new), encoding='utf-8')
+          PY
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Source/ModernPitchEngine.cpp
+          git commit -m 'Fix Stage D output local name'
+          git push origin HEAD:output-stage-v3-audio-renderer
