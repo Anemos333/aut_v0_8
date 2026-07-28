@@ -5692,10 +5692,10 @@ float ModernPitchEngine::SpectralVoiceShifter::processSample(
 #if NEUMATON_OUTPUT_V3_AUDIO_RENDERER
     static_cast<void>(desiredWetMix);
     transientSuppression_ *= transientReleaseCoefficient_;
-    const float output = sanitiseAudioSample(
+    const float v3Output = sanitiseAudioSample(
         v3OutputRenderer_.consumeSample(currentSample));
     ++inputSampleCounter_;
-    return output;
+    return v3Output;
 #endif
 
     auto& primaryLayer = layers_[static_cast<std::size_t>(activeLayerIndex_)];
