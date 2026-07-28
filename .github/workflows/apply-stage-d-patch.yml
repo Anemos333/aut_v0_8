@@ -38,6 +38,7 @@ jobs:
           git apply --check /tmp/stage-d.patch
           git apply /tmp/stage-d.patch
           rm -rf Tools/stage_d_patch
+          rm -f .github/workflows/output-v3-audio-renderer.yml
           git diff --check
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
