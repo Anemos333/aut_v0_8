@@ -30,18 +30,15 @@ jobs:
           from pathlib import Path
           path = Path('Source/ModernPitchEngine.cpp')
           text = path.read_text(encoding='utf-8')
-          old = '''    const float output = sanitiseAudioSample(
-              v3OutputRenderer_.consumeSample(currentSample));
-          ++inputSampleCounter_;
-          return output;'''
-          new = '''    const float v3Output = sanitiseAudioSample(
-              v3OutputRenderer_.consumeSample(currentSample));
-          ++inputSampleCounter_;
-          return v3Output;'''
-          count = text.count(old)
-          if count != 1:
-              raise SystemExit(f'expected one Stage D output block, found {count}')
-          path.write_text(text.replace(old, new), encoding='utf-8')
+          declaration = '    const float output = sanitiseAudioSample(\n        v3OutputRenderer_.consumeSample(currentSample));'
+          return_anchor = '    return output;\n#endif\n\n    auto& primaryLayer'
+          if text.count(declaration) != 1:
+              raise SystemExit(f'declaration count: {text.count(declaration)}')
+          if text.count(return_anchor) != 1:
+              raise SystemExit(f'return anchor count: {text.count(return_anchor)}')
+          text = text.replace(declaration, declaration.replace('const float output', 'const float v3Output'))
+          text = text.replace(return_anchor, '    return v3Output;\n#endif\n\n    auto& primaryLayer')
+          path.write_text(text, encoding='utf-8')
           PY
           git diff --check
           git config user.name 'github-actions[bot]'
