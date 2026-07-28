@@ -78,11 +78,35 @@ jobs:
           cmake -S . -B build-v3 \
             -DCMAKE_BUILD_TYPE=Release \
             -DNEUMATON_BUILD_V3_AUDIO_RENDERER_TESTS=ON
-      - name: Build engine, standalone test and VST3
+      - name: Build standalone target
+        shell: bash
         run: |
+          set -o pipefail
           cmake --build build-v3 --config Release \
-            --target V3AudioRendererStandalone V3AudioRendererEngine Neumaton_VST3 \
-            --parallel 2
+            --target V3AudioRendererStandalone --parallel 2 \
+            2>&1 | tee build-standalone-linux.log
+      - name: Build production engine target
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake --build build-v3 --config Release \
+            --target V3AudioRendererEngine --parallel 2 \
+            2>&1 | tee build-engine-linux.log
+      - name: Build VST3 target
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake --build build-v3 --config Release \
+            --target Neumaton_VST3 --parallel 2 \
+            2>&1 | tee build-vst3-linux.log
+      - name: Upload Linux build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage-d-linux-build-logs
+          path: build-*-linux.log
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Render deterministic engine corpus
         run: |
           build-v3/v3-audio-renderer-tests/V3AudioRendererStandalone
@@ -117,11 +141,35 @@ jobs:
             -DCMAKE_OSX_ARCHITECTURES='arm64;x86_64' \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
             -DNEUMATON_BUILD_V3_AUDIO_RENDERER_TESTS=ON
-      - name: Build tests and universal VST3
+      - name: Build standalone target
+        shell: bash
         run: |
+          set -o pipefail
           cmake --build build-macos --config Release \
-            --target V3AudioRendererStandalone V3AudioRendererEngine Neumaton_VST3 \
-            --parallel 2
+            --target V3AudioRendererStandalone --parallel 2 \
+            2>&1 | tee build-standalone-macos.log
+      - name: Build production engine target
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake --build build-macos --config Release \
+            --target V3AudioRendererEngine --parallel 2 \
+            2>&1 | tee build-engine-macos.log
+      - name: Build universal VST3 target
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake --build build-macos --config Release \
+            --target Neumaton_VST3 --parallel 2 \
+            2>&1 | tee build-vst3-macos.log
+      - name: Upload macOS build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage-d-macos-build-logs
+          path: build-*-macos.log
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Run native slice tests
         run: |
           build-macos/v3-audio-renderer-tests/V3AudioRendererStandalone
