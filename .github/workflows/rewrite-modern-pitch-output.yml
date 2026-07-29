@@ -1,9 +1,7 @@
 name: Rewrite ModernPitch Output
 
 on:
-  push:
-    branches:
-      - modern-pitch-engine-output-rewrite
+  pull_request:
     paths:
       - 'Tools/rewrite_payload/**'
       - 'Tools/apply_modern_pitch_output_rewrite.py'
@@ -11,6 +9,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: read
 
 jobs:
   rewrite:
