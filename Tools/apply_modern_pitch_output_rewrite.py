@@ -61,51 +61,11 @@ cmake = re.sub(
 )
 cmake_path.write_text(cmake)
 
-(root / ".github" / "workflows" / "output-v3-shadow-ledger.yml").write_text(
-"""name: Ridge Ledger Lifecycle
-
-on:
-  pull_request:
-    paths:
-      - 'Source/NeumatonOutputTypes.h'
-      - 'Source/NeumatonRidgeLedger.*'
-      - 'Tests/OutputV3ShadowLedgerLifecycle.cpp'
-      - '.github/workflows/output-v3-shadow-ledger.yml'
-
-permissions:
-  contents: read
-
-jobs:
-  lifecycle-unix:
-    runs-on: ubuntu-24.04
-    strategy:
-      matrix:
-        compiler: [g++, clang++]
-    steps:
-      - uses: actions/checkout@v4
-      - name: Compile and run lifecycle test
-        run: |
-          ${{ matrix.compiler }} -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror \
-            -ISource Source/NeumatonRidgeLedger.cpp \
-            Tests/OutputV3ShadowLedgerLifecycle.cpp -o ridge_ledger_lifecycle
-          ./ridge_ledger_lifecycle
-
-  lifecycle-windows:
-    runs-on: windows-2025
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ilammy/msvc-dev-cmd@v1
-      - name: Compile and run lifecycle test
-        shell: cmd
-        run: |
-          cl /nologo /std:c++17 /O2 /EHsc /W4 /WX /ISource Source\\NeumatonRidgeLedger.cpp Tests\\OutputV3ShadowLedgerLifecycle.cpp /Fe:ridge_ledger_lifecycle.exe
-          ridge_ledger_lifecycle.exe
-""")
-
+# Workflow files are intentionally left untouched here: GitHub Actions may not
+# update workflow definitions with its ordinary repository token. They are
+# cleaned up separately through the GitHub connector after this commit lands.
 for relative in [
     "Tests/OutputV3ShadowLedgerIdentity.cpp",
-    ".github/workflows/export-modern-engine-source.yml",
-    ".github/workflows/rewrite-modern-pitch-output.yml",
     "Tools/apply_modern_pitch_output_rewrite.py",
 ]:
     path = root / relative
