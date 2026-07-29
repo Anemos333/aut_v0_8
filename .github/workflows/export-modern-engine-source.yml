@@ -1,0 +1,35 @@
+name: Export ModernPitchEngine Source
+
+on:
+  pull_request:
+    paths:
+      - 'Source/ModernPitchEngine.*'
+      - 'Source/NeumatonOutputRenderer.*'
+      - 'Tests/OutputV3AudioRendererStandalone.cpp'
+      - '.github/workflows/export-modern-engine-source.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  export-source:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Collect engine source
+        run: |
+          mkdir -p exported-source/Source exported-source/Tests
+          cp Source/ModernPitchEngine.cpp exported-source/Source/
+          cp Source/ModernPitchEngine.h exported-source/Source/
+          cp Source/NeumatonOutputRenderer.cpp exported-source/Source/
+          cp Source/NeumatonOutputRenderer.h exported-source/Source/
+          cp Source/NeumatonOutputTypes.h exported-source/Source/
+          cp Source/NeumatonRidgeLedger.cpp exported-source/Source/
+          cp Source/NeumatonRidgeLedger.h exported-source/Source/
+          cp Tests/OutputV3AudioRendererStandalone.cpp exported-source/Tests/
+          wc -l exported-source/Source/* exported-source/Tests/* > exported-source/line-counts.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: modern-pitch-engine-source
+          path: exported-source
+          retention-days: 2
