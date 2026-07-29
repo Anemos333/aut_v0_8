@@ -36,3 +36,5 @@ jobs:
           git add -A
           git commit -m 'Replace legacy output machinery with single-spectrum stage'
           git push origin HEAD:modern-pitch-engine-output-rewrite
+
+# One-shot workflow: the generated commit removes this file.
