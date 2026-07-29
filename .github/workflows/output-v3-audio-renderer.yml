@@ -1,0 +1,199 @@
+name: Output V3 Exclusive Audio Renderer
+
+on:
+  push:
+    branches:
+      - output-stage-v3-audio-renderer
+    paths:
+      - 'CMakeLists.txt'
+      - 'Source/ModernPitchEngine.*'
+      - 'Source/NeumatonOutputTypes.h'
+      - 'Source/NeumatonRidgeLedger.*'
+      - 'Source/NeumatonOutputRenderer.*'
+      - 'Tests/OutputV3AudioRenderer*'
+      - '.github/workflows/output-v3-audio-renderer.yml'
+  pull_request:
+    paths:
+      - 'CMakeLists.txt'
+      - 'Source/ModernPitchEngine.*'
+      - 'Source/NeumatonOutputTypes.h'
+      - 'Source/NeumatonRidgeLedger.*'
+      - 'Source/NeumatonOutputRenderer.*'
+      - 'Tests/OutputV3AudioRenderer*'
+      - '.github/workflows/output-v3-audio-renderer.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  standalone-unix:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        compiler: [g++, clang++]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile single-spectrum renderer
+        shell: bash
+        run: |
+          extra=()
+          if [ "${{ matrix.compiler }}" = "g++" ]; then
+            extra+=("-Wno-mismatched-new-delete")
+          fi
+          "${{ matrix.compiler }}" \
+            -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror \
+            "${extra[@]}" \
+            -ISource \
+            Source/NeumatonRidgeLedger.cpp \
+            Source/NeumatonOutputRenderer.cpp \
+            Tests/OutputV3AudioRendererStandalone.cpp \
+            -o v3_audio_renderer_standalone
+      - name: Run allocation and lifecycle test
+        run: ./v3_audio_renderer_standalone
+
+  standalone-windows:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Compile and run single-spectrum renderer
+        shell: cmd
+        run: |
+          cl /nologo /std:c++17 /O2 /EHsc /W4 /WX /ISource Source\NeumatonRidgeLedger.cpp Source\NeumatonOutputRenderer.cpp Tests\OutputV3AudioRendererStandalone.cpp /Fe:v3_audio_renderer_standalone.exe
+          v3_audio_renderer_standalone.exe
+
+  engine-and-plugin-linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install JUCE build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libfreetype6-dev libfontconfig1-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libgl1-mesa-dev
+      - name: Configure experimental V3 build
+        run: |
+          cmake -S . -B build-v3 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DNEUMATON_BUILD_V3_AUDIO_RENDERER_TESTS=ON
+      - name: Build standalone target
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake --build build-v3 --config Release \
+            --target V3AudioRendererStandalone --parallel 2 \
+            2>&1 | tee build-standalone-linux.log
+      - name: Build production engine target
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake --build build-v3 --config Release \
+            --target V3AudioRendererEngine --parallel 2 \
+            2>&1 | tee build-engine-linux.log
+      - name: Build VST3 target
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake --build build-v3 --config Release \
+            --target Neumaton_VST3 --parallel 2 \
+            2>&1 | tee build-vst3-linux.log
+      - name: Upload Linux build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage-d-linux-build-logs
+          path: build-*-linux.log
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Render deterministic engine corpus
+        run: |
+          build-v3/v3-audio-renderer-tests/V3AudioRendererStandalone
+          build-v3/v3-audio-renderer-tests/V3AudioRendererEngine \
+            v3-engine-output.raw v3-engine-stats.txt
+          cat v3-engine-stats.txt
+          grep -q '^guarded_allocations=0$' v3-engine-stats.txt
+          grep -q '^non_finite_samples=0$' v3-engine-stats.txt
+          awk -F= '/^total_output_energy=/{ if ($2 <= 0.0001) exit 1; found=1 } END{ exit found ? 0 : 1 }' v3-engine-stats.txt
+          awk -F= '/^maximum_absolute_sample=/{ if ($2 >= 16.0) exit 1; found=1 } END{ exit found ? 0 : 1 }' v3-engine-stats.txt
+      - name: Collect VST3
+        run: |
+          mkdir -p stage-d-artifact
+          find build-v3 -name '*.vst3' -print -exec cp -R {} stage-d-artifact/ \;
+          test -n "$(find stage-d-artifact -name '*.vst3' -print -quit)"
+          cp v3-engine-stats.txt stage-d-artifact/
+      - name: Upload Stage D Linux evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: neumaton-v3-exclusive-audio-linux
+          path: stage-d-artifact
+          retention-days: 14
+
+  plugin-macos-universal:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure universal VST3
+        run: |
+          cmake -S . -B build-macos \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES='arm64;x86_64' \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
+            -DNEUMATON_BUILD_V3_AUDIO_RENDERER_TESTS=ON
+      - name: Build standalone target
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake --build build-macos --config Release \
+            --target V3AudioRendererStandalone --parallel 2 \
+            2>&1 | tee build-standalone-macos.log
+      - name: Build production engine target
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake --build build-macos --config Release \
+            --target V3AudioRendererEngine --parallel 2 \
+            2>&1 | tee build-engine-macos.log
+      - name: Build universal VST3 target
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake --build build-macos --config Release \
+            --target Neumaton_VST3 --parallel 2 \
+            2>&1 | tee build-vst3-macos.log
+      - name: Upload macOS build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage-d-macos-build-logs
+          path: build-*-macos.log
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Run native slice tests
+        run: |
+          build-macos/v3-audio-renderer-tests/V3AudioRendererStandalone
+          build-macos/v3-audio-renderer-tests/V3AudioRendererEngine \
+            v3-engine-output.raw v3-engine-stats.txt
+          grep -q '^guarded_allocations=0$' v3-engine-stats.txt
+          grep -q '^non_finite_samples=0$' v3-engine-stats.txt
+      - name: Verify and package universal VST3
+        run: |
+          plugin_path="$(find build-macos -name '*.vst3' -type d -print -quit)"
+          test -n "$plugin_path"
+          binary_path="$(find "$plugin_path/Contents/MacOS" -type f -print -quit)"
+          test -n "$binary_path"
+          lipo -info "$binary_path" | tee lipo-info.txt
+          grep -q 'arm64' lipo-info.txt
+          grep -q 'x86_64' lipo-info.txt
+          codesign --force --deep --sign - "$plugin_path"
+          mkdir -p stage-d-macos
+          cp -R "$plugin_path" stage-d-macos/
+          cp v3-engine-stats.txt lipo-info.txt stage-d-macos/
+          ditto -c -k --keepParent stage-d-macos Neumaton-V3-Exclusive-Audio-macOS.zip
+      - name: Upload Stage D macOS build
+        uses: actions/upload-artifact@v4
+        with:
+          name: neumaton-v3-exclusive-audio-macos-universal
+          path: Neumaton-V3-Exclusive-Audio-macOS.zip
+          retention-days: 14

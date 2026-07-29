@@ -1,0 +1,87 @@
+name: Output V3 Scaffold
+
+on:
+  push:
+    branches:
+      - output-stage-v3-cpp-scaffold
+    paths:
+      - 'Source/NeumatonOutputTypes.h'
+      - 'Source/NeumatonRidgeLedger.*'
+      - 'Source/NeumatonOutputRenderer.*'
+      - 'Tests/OutputV3ScaffoldSmoke.cpp'
+      - '.github/workflows/output-v3-scaffold.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'Source/NeumatonOutputTypes.h'
+      - 'Source/NeumatonRidgeLedger.*'
+      - 'Source/NeumatonOutputRenderer.*'
+      - 'Tests/OutputV3ScaffoldSmoke.cpp'
+      - '.github/workflows/output-v3-scaffold.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  unix:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        compiler: [g++, clang++]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and run smoke test
+        run: |
+          ${{ matrix.compiler }} \
+            -std=c++17 -Wall -Wextra -Wpedantic -Werror \
+            -ISource \
+            Source/NeumatonRidgeLedger.cpp \
+            Source/NeumatonOutputRenderer.cpp \
+            Tests/OutputV3ScaffoldSmoke.cpp \
+            -o output_v3_scaffold_smoke
+          ./output_v3_scaffold_smoke
+
+  windows:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - name: Initialise MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Compile and run smoke test
+        id: msvc
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $compilerOutput = & cl /nologo /std:c++17 /EHsc /W4 /WX /ISource `
+            Source\NeumatonRidgeLedger.cpp `
+            Source\NeumatonOutputRenderer.cpp `
+            Tests\OutputV3ScaffoldSmoke.cpp `
+            /Fe:output_v3_scaffold_smoke.exe 2>&1
+          $compilerExit = $LASTEXITCODE
+          $compilerOutput | Set-Content -Encoding utf8 msvc-compiler.log
+          $compilerOutput | Select-Object -Last 80
+
+          $testExit = 0
+          if ($compilerExit -eq 0) {
+            & .\output_v3_scaffold_smoke.exe
+            $testExit = $LASTEXITCODE
+          }
+
+          "compiler_exit=$compilerExit" | Set-Content -Encoding utf8 msvc-result.txt
+          "test_exit=$testExit" | Add-Content -Encoding utf8 msvc-result.txt
+          "compiler_exit=$compilerExit" >> $env:GITHUB_OUTPUT
+          "test_exit=$testExit" >> $env:GITHUB_OUTPUT
+
+          if ($compilerExit -ne 0) { exit $compilerExit }
+          exit $testExit
+      - name: Upload MSVC diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: output-v3-msvc-diagnostics
+          path: |
+            msvc-compiler.log
+            msvc-result.txt
+          if-no-files-found: error
+          retention-days: 7
