@@ -3,6 +3,7 @@ name: Output V3 Exclusive Audio Renderer
 on:
   push:
     branches:
+      - main
       - output-stage-v3-audio-renderer
     paths:
       - 'CMakeLists.txt'
