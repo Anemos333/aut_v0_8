@@ -1,0 +1,90 @@
+name: Finalize Scale Cage Semantics
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/finalize-scale-cage-semantics.yml'
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  finalize:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: scale-cage-output-v1
+          fetch-depth: 0
+
+      - name: Apply exact attack and all-channel semantics
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('Source/ModernPitchEngine.cpp')
+          text = path.read_text()
+
+          onset_anchor = '''        targetValid_ = false;
+          quantizer.resetTarget();
+              }'''
+          onset_replacement = '''        targetValid_ = false;
+          quantizer.resetTarget();
+          authority_ = 0.0f;
+          wetMix_ = 0.0f;
+          authorityTarget_ = 0.0f;
+          wetMixTarget_ = 0.0f;
+          desiredCorrectionCents_ = 0.0;
+          synthesisTargetCorrectionCents_ = 0.0;
+          currentCorrectionCents_ = 0.0;
+          correctionVelocityCentsPerSecond_ = 0.0;
+              }'''
+          if onset_anchor not in text:
+              raise RuntimeError('onset reset anchor not found')
+          text = text.replace(onset_anchor, onset_replacement, 1)
+
+          text = text.replace(
+              '    double targetBoundaryCents = hysteresisCents;\n',
+              '',
+              1)
+          text = text.replace(
+              '        targetBoundaryCents = hysteresisCents;\n',
+              '',
+              1)
+
+          transition_start = text.index(
+              '        const float transitionTonalEvidence = clamp01(')
+          transition_end = text.index(
+              '        TransitionManager::Command transition;',
+              transition_start)
+          text = text[:transition_start] + text[transition_end:]
+
+          text = text.replace(
+              '        const float wetMix = correctionController_.getWetMix();\n',
+              '',
+              1)
+          occurrences = text.count('sample, transition, wetMix, formant,')
+          if occurrences != 2:
+              raise RuntimeError(f'expected two legacy wet arguments, got {occurrences}')
+          text = text.replace(
+              'sample, transition, wetMix, formant,',
+              'sample, transition, 1.0f, formant,')
+
+          path.write_text(text)
+          PY
+
+          grep -q 'currentCorrectionCents_ = 0.0' Source/ModernPitchEngine.cpp
+          ! grep -q 'targetBoundaryCents' Source/ModernPitchEngine.cpp
+          ! grep -q 'transitionTonalEvidence' Source/ModernPitchEngine.cpp
+          ! grep -q 'sample, transition, wetMix' Source/ModernPitchEngine.cpp
+          ! grep -q 'const float wetMix = correctionController_' Source/ModernPitchEngine.cpp
+
+      - name: Commit source semantics
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Source/ModernPitchEngine.cpp
+          git commit -m 'Make Speed delay and all-channel correction exact'
+          git push origin HEAD:scale-cage-output-v1
