@@ -694,53 +694,25 @@ private:
         [[nodiscard]] float getOutputPreIfftConsensus() const noexcept { return outputPreIfftConsensus_; }
         [[nodiscard]] float getOutputSelectiveReconstructionNeed() const noexcept { return outputSelectiveReconstructionNeed_; }
         [[nodiscard]] const neumaton::outputv3::RidgeLedgerDiagnostics&
-            getShadowRidgeDiagnostics() const noexcept { return shadowRidgeDiagnostics_; }
+            getShadowRidgeDiagnostics() const noexcept { return ridgeDiagnostics_; }
         [[nodiscard]] const neumaton::outputv3::OutputRendererDiagnostics&
             getV3RendererDiagnostics() const noexcept
         {
-            return v3OutputRenderer_.getDiagnostics();
+            return outputRenderer_.getDiagnostics();
         }
 
     private:
         using Complex = std::complex<float>;
-        static constexpr int sineTableSize = 4096;
-        static constexpr int formantRatioTableSize = 256;
-        static constexpr int formantLevelCount = 32;
-        static constexpr int v61HarmonicMemorySize = 64;
-
-        struct SynthesisLayer
-        {
-            std::vector<Complex> spectrum;
-            std::vector<double> synthesisPhases;
-            std::vector<float> outputAccumulationRing;
-            bool phaseInitialised = false;
-        };
 
         void processFrame(std::int64_t frameEndSample,
                           const TransitionManager::Command& transition,
                           float formantPreservation,
                           const HarmonicNoiseContext& harmonicNoiseContext,
                           bool forcePhaseReset) noexcept;
-        void synthesiseLayer(SynthesisLayer& layer,
-                             std::int64_t frameEndSample,
-                             double correctionCents,
-                             float formantPreservation,
-                             bool resetPhases,
-                             float phaseAnchor,
-                             int positiveBins) noexcept;
-        void beginSecondaryTransition() noexcept;
-        void clearLayerOutput(SynthesisLayer& layer) noexcept;
-        [[nodiscard]] float consumeLayerOutput(SynthesisLayer& layer,
-                                               std::int64_t sample) noexcept;
-        [[nodiscard]] float blendLayers(float primary,
-                                        float secondary,
-                                        float transitionBlend) noexcept;
+        void publishRendererDiagnostics() noexcept;
 
         void fft(std::vector<Complex>& data, bool inverse) noexcept;
         [[nodiscard]] static double wrapPhase(double phase) noexcept;
-        void fastSinCos(double phase, float& sine, float& cosine) const noexcept;
-        [[nodiscard]] float lookupFormantGain(float envelopeRatio,
-                                              float formantAmount) const noexcept;
         [[nodiscard]] float readInputSample(std::int64_t absoluteSample) const noexcept;
         [[nodiscard]] float interpolateEnvelope(double binPosition) const noexcept;
         void calculateEnvelope(int positiveBins) noexcept;
@@ -753,18 +725,6 @@ private:
         [[nodiscard]] float calculateHighBandFlatness(
             int firstBin,
             int lastBin) const noexcept;
-        void updateV6OutputDiagnostics(const SynthesisLayer& layer,
-                                       double safeRatio,
-                                       int positiveBins) noexcept;
-        // NEUMATON_V10_1_UNIVERSAL_WIDE_FIELD_OUTPUT
-        // Universal wide-field target-warp output stage.  The V8.1
-        // Experimental difficult-material treatment is promoted to the
-        // common foundation; harmonic anchors only repair deficits.
-        // Live/Experimental do not use a separate weak voiced branch.
-        void applyV62QualityActiveLedger(SynthesisLayer& layer,
-                                            double safeRatio,
-                                            float formantPreservation,
-                                            int positiveBins) noexcept;
 
         struct AnalysisProfile
         {
@@ -805,20 +765,16 @@ private:
 
         std::vector<float> inputRing_;
         int inputRingMask_ = 0;
-        int outputRingMask_ = 0;
 
         std::vector<float> window_;
         std::vector<int> fftBitReversal_;
         std::vector<Complex> fftTwiddles_;
-        std::vector<float> sineTable_;
-        std::vector<float> formantGainTable_;
         std::vector<Complex> fftBuffer_;
         std::vector<float> magnitudes_;
         std::vector<float> analysisPhases_;
         std::vector<float> previousMagnitudes_;
         std::vector<float> previousAnalysisPhases_;
         std::vector<double> trueSourceBins_;
-        std::vector<double> propagatedPhases_;
         std::vector<float> logMagnitudes_;
         std::vector<float> rawSpectralEnvelope_;
         std::vector<float> spectralEnvelope_;
@@ -828,111 +784,31 @@ private:
         std::vector<double> prefixSum_;
         std::vector<int> nearestPeak_;
         std::vector<int> peakBins_;
-        std::array<SynthesisLayer, 2> layers_;
 
-        // V3 Stage B. This state is updated after analysis and before legacy
-        // synthesis. It has no output pointer and cannot alter audible samples.
-        neumaton::outputv3::NeumatonRidgeLedger shadowRidgeLedger_;
-        neumaton::outputv3::NeumatonOutputRenderer v3OutputRenderer_;
-        neumaton::outputv3::RidgeLedgerDiagnostics shadowRidgeDiagnostics_ {};
-        double shadowPreviousCorrectionCents_ = 0.0;
-        float shadowPreviousTargetPitchHz_ = 0.0f;
-        bool shadowTrajectoryInitialised_ = false;
+        neumaton::outputv3::NeumatonRidgeLedger ridgeLedger_;
+        neumaton::outputv3::NeumatonOutputRenderer outputRenderer_;
+        neumaton::outputv3::RidgeLedgerDiagnostics ridgeDiagnostics_ {};
+        double previousCorrectionCents_ = 0.0;
+        float previousTargetPitchHz_ = 0.0f;
+        bool trajectoryInitialised_ = false;
 
         std::int64_t inputSampleCounter_ = 0;
         bool analysisPhaseInitialised_ = false;
         bool phaseResetPending_ = false;
         bool envelopeInitialised_ = false;
-        bool wetGateOpen_ = false;
-        bool dualTransitionActive_ = false;
-        bool secondaryStartPending_ = false;
         bool bypassStatePrimed_ = false;
-        int activeLayerIndex_ = 0;
-        int secondaryLayerIndex_ = 1;
         int envelopeFrameCounter_ = 0;
         int envelopeUpdateInterval_ = 2;
-        float synthesisGain_ = 0.5f;
-        float wetMix_ = 0.0f;
-        float wetAttackCoefficient_ = 1.0f;
-        float wetReleaseCoefficient_ = 1.0f;
 
-        // Correlation-aware, boost-only compensation. It removes cancellation
-        // dips during wet/dry and dual-layer crossfades without changing either
-        // endpoint or applying static loudness normalisation.
-        float crossfadeEnergyCoefficient_ = 1.0f;
-        float wetDryEnergy_ = 0.0f;
-        float wetShiftedEnergy_ = 0.0f;
-        float wetDryCrossEnergy_ = 0.0f;
-        float wetLevelGain_ = 1.0f;
-        float wetCancellationGain_ = 1.0f;
-        float dryTrust_ = 1.0f;
-float dryTrustTarget_ = 1.0f;
-float dryWetCoexistenceMs_ = 0.0f;
-// NEUMATON_ASSERTIVE_AUDITORS_V2_INTERNAL_SHIFTER_STATE
-float tonalDryVeto_ = 0.0f;
-float wetArtifactVeto_ = 0.0f;
-float wetRedistributionGain_ = 1.0f;
-float frameTonalConfidence_ = 0.0f;
-float frameCorrectionAssertiveness_ = 0.0f;
-float frameHardCorrectionIntent_ = 0.0f;
-// NEUMATON_TARGET_HARMONIC_CONDITIONER_V5_STATE
-float frameHumanize_ = 0.0f;
-float frameNaturalConditionerDrive_ = 0.0f;
-bool frameScaleLockActive_ = false;
-float frameDetectedPitchHz_ = 0.0f;
-// NEUMATON_V6_OUTPUT_DIAGNOSTICS_STATE
-float outputSourceCorrespondence_ = 0.0f;
-float outputTargetCoherence_ = 0.0f;
-float outputPhysicalHarmonicFit_ = 0.0f;
-float outputLedgerHealth_ = 100.0f;
-float outputPhaseCoherence_ = 0.0f;
-float outputReconstructionNeed_ = 0.0f;
-float outputMeterValid_ = 0.0f;
-// NEUMATON_V6_1_SOURCE_MIRROR_SHADOW_LEDGER_STATE
-float outputSourceMirrorFit_ = 0.0f;
-float outputDoubleFamilyRisk_ = 0.0f;
-float outputLedgerDeficit_ = 0.0f;
-float outputMemoryReliability_ = 0.0f;
-float outputPreIfftConsensus_ = 0.0f;
-float outputSelectiveReconstructionNeed_ = 0.0f;
-std::array<float, v61HarmonicMemorySize> v61HarmonicEnergyMemory_ {};
-std::array<float, v61HarmonicMemorySize> v61HarmonicReliabilityMemory_ {};
-// NEUMATON_V6_2_QUALITY_ACTIVE_LEDGER_STATE
-float v62ActiveLedgerDrive_ = 0.0f;
-float frameTransitionBlend_ = 0.0f;
-bool frameDualTransitionActive_ = false;
-float dryWetContinuity_ = 1.0f;
-float dryLeakRisk_ = 0.0f;
-float dryTrustInstability_ = 0.0f;
-float dryTrustOpenCoefficient_ = 1.0f;
-float dryTrustCloseCoefficient_ = 1.0f;
-float dryLeakAttackCoefficient_ = 1.0f;
-float dryLeakReleaseCoefficient_ = 1.0f;
-float dryContinuityCoefficient_ = 1.0f;
-float dryCandidateFastEnvelope_ = 0.0f;
-float dryCandidateSlowEnvelope_ = 0.0f;
-float dryCandidatePeakEnvelope_ = 0.0f;
-float dryCandidateAgeMs_ = 1000.0f;
-float dryCandidateShapeTrust_ = 1.0f;
-float dryCandidateFastCoefficient_ = 1.0f;
-float dryCandidateSlowCoefficient_ = 1.0f;
-float dryCandidatePeakDecayCoefficient_ = 1.0f;
-float dryCandidateShapeCoefficient_ = 1.0f;
-        float layerPrimaryEnergy_ = 0.0f;
-        float layerSecondaryEnergy_ = 0.0f;
-        float layerCrossEnergy_ = 0.0f;
-        float layerCancellationGain_ = 1.0f;
         float envelopeAttackCoefficient_ = 1.0f;
         float envelopeReleaseCoefficient_ = 1.0f;
         float smoothedFormantPreservation_ = 0.0f;
         float formantReductionCoefficient_ = 1.0f;
         float formantRecoveryCoefficient_ = 1.0f;
-        float transientSuppression_ = 0.0f;
-        float transientReleaseCoefficient_ = 0.99f;
 
-        // Wind Fix V4: causal harmonic/noise decomposition. The mask is
-        // smoothed in frequency and time; the residual is reconstructed at
-        // its original bins/phases inside the same IFFT as the shifted voice.
+        // The harmonic/noise analysis is retained verbatim because it supplies
+        // ownership evidence to the proven ridge transport. It never changes
+        // correction authority or opens a dry path.
         float smoothedBreathiness_ = 0.0f;
         float smoothedHarmonicity_ = 1.0f;
         float smoothedNoisePathAmount_ = 0.0f;
@@ -955,14 +831,26 @@ float dryCandidateShapeCoefficient_ = 1.0f;
         float polyphonyReleaseCoefficient_ = 1.0f;
         float reliabilityAttackCoefficient_ = 1.0f;
         float reliabilityReleaseCoefficient_ = 1.0f;
-        float dryBreathLowPass_ = 0.0f;
-        float dryBreathLowPassCoefficient_ = 1.0f;
         float breathPersistenceMs_ = 0.0f;
         float noiseDominanceMs_ = 0.0f;
         float maskRiseLimitPerFrame_ = 1.0f;
         float maskFallLimitPerFrame_ = 1.0f;
         AnalysisProfile profile_ {};
 
+        // Compatibility meters now describe the actual single-spectrum output.
+        float outputSourceCorrespondence_ = 0.0f;
+        float outputTargetCoherence_ = 0.0f;
+        float outputPhysicalHarmonicFit_ = 0.0f;
+        float outputLedgerHealth_ = 100.0f;
+        float outputPhaseCoherence_ = 0.0f;
+        float outputReconstructionNeed_ = 0.0f;
+        float outputMeterValid_ = 0.0f;
+        float outputSourceMirrorFit_ = 0.0f;
+        float outputDoubleFamilyRisk_ = 0.0f;
+        float outputLedgerDeficit_ = 0.0f;
+        float outputMemoryReliability_ = 0.0f;
+        float outputPreIfftConsensus_ = 0.0f;
+        float outputSelectiveReconstructionNeed_ = 0.0f;
     };
 
     class FixedDelay

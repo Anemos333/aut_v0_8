@@ -68,3 +68,5 @@ jobs:
         with:
           name: MicrotonalAutotune-windows-VST3
           path: artifacts/MicrotonalAutotune-windows-VST3.zip
+
+          
