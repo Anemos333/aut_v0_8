@@ -48,7 +48,7 @@ void NeumatonOutputRenderer::prepare(const OutputPrepareSpec& requestedSpec)
 
     ownership_.assign(binCount, BinOwnership::unclassified);
     freeSynthesisPhase_.assign(binCount, 0.0);
-    freeSynthesisPhaseValid_.assign(binCount, 0u);
+    freeSynthesisPhaseValid_.assign(binCount, std::uint8_t { 0 });
     destinationDepositedEnergy_.assign(binCount, 0.0f);
 
     for (int index = 0; index < spec_.frameSize; ++index)
@@ -106,7 +106,7 @@ void NeumatonOutputRenderer::reset() noexcept
     std::fill(outputAccumulationRing_.begin(), outputAccumulationRing_.end(), 0.0f);
     std::fill(ownership_.begin(), ownership_.end(), BinOwnership::unclassified);
     std::fill(freeSynthesisPhase_.begin(), freeSynthesisPhase_.end(), 0.0);
-    std::fill(freeSynthesisPhaseValid_.begin(), freeSynthesisPhaseValid_.end(), 0u);
+    std::fill(freeSynthesisPhaseValid_.begin(), freeSynthesisPhaseValid_.end(), std::uint8_t { 0 });
     std::fill(destinationDepositedEnergy_.begin(), destinationDepositedEnergy_.end(), 0.0f);
     diagnostics_ = {};
     lastCorrectionRatio_ = 1.0;
