@@ -22,7 +22,18 @@ jobs:
           fetch-depth: 0
 
       - name: Apply controller and stereo rewrite
-        run: python Tools/apply_scale_cage_v1.py
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('Tools/apply_scale_cage_v1.py')
+          text = path.read_text()
+          text = text.replace(
+              '                                 const std::vector<double>& scaleRatios',
+              '                                const std::vector<double>& scaleRatios',
+              1)
+          path.write_text(text)
+          PY
+          python Tools/apply_scale_cage_v1.py
 
       - name: Verify semantic boundaries
         run: |
