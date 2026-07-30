@@ -29,7 +29,7 @@ jobs:
 
           onset_anchor = '''        targetValid_ = false;
           quantizer.resetTarget();
-              }'''
+              }'''.replace('          quantizer', '        quantizer').replace('              }', '    }')
           onset_replacement = '''        targetValid_ = false;
           quantizer.resetTarget();
           authority_ = 0.0f;
@@ -40,7 +40,7 @@ jobs:
           synthesisTargetCorrectionCents_ = 0.0;
           currentCorrectionCents_ = 0.0;
           correctionVelocityCentsPerSecond_ = 0.0;
-              }'''
+              }'''.replace('          quantizer', '        quantizer').replace('          authority_', '        authority_').replace('          wetMix_', '        wetMix_').replace('          desired', '        desired').replace('          synthesis', '        synthesis').replace('          current', '        current').replace('          correction', '        correction').replace('              }', '    }')
           if onset_anchor not in text:
               raise RuntimeError('onset reset anchor not found')
           text = text.replace(onset_anchor, onset_replacement, 1)
