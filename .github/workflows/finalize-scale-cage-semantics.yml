@@ -27,10 +27,10 @@ jobs:
           path = Path('Source/ModernPitchEngine.cpp')
           text = path.read_text()
 
-          onset_anchor = '''        targetValid_ = false;
-          quantizer.resetTarget();
-              }'''.replace('          quantizer', '        quantizer').replace('              }', '    }')
-          onset_replacement = '''        targetValid_ = false;
+          onset_if = text.index('    if (observation.onset)\n')
+          reset_start = text.index('        targetValid_ = false;\n', onset_if)
+          reset_end = text.index('    if (!observationUsable)\n', reset_start)
+          reset_replacement = '''        targetValid_ = false;
           quantizer.resetTarget();
           authority_ = 0.0f;
           wetMix_ = 0.0f;
@@ -40,10 +40,13 @@ jobs:
           synthesisTargetCorrectionCents_ = 0.0;
           currentCorrectionCents_ = 0.0;
           correctionVelocityCentsPerSecond_ = 0.0;
-              }'''.replace('          quantizer', '        quantizer').replace('          authority_', '        authority_').replace('          wetMix_', '        wetMix_').replace('          desired', '        desired').replace('          synthesis', '        synthesis').replace('          current', '        current').replace('          correction', '        correction').replace('              }', '    }')
-          if onset_anchor not in text:
-              raise RuntimeError('onset reset anchor not found')
-          text = text.replace(onset_anchor, onset_replacement, 1)
+              }
+
+          '''
+          reset_replacement = reset_replacement.replace('          ', '        ', 1)
+          reset_replacement = reset_replacement.replace('              }', '    }')
+          reset_replacement = reset_replacement.replace('\n          ', '\n')
+          text = text[:reset_start] + reset_replacement + text[reset_end:]
 
           text = text.replace(
               '    double targetBoundaryCents = hysteresisCents;\n',
