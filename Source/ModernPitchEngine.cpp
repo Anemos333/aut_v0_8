@@ -112,56 +112,31 @@ constexpr float minimumDetectorRms = 0.0012f;
 // when the pitch corrector should intervene.  Low detector trust widens the
 // tolerance instead of opening an uncorrected dry/residual path.
 [[nodiscard]] double neumatonApplyAmountToleranceGate(double errorCents,
-                                                      float amount01,
-                                                      float confidence,
-                                                      float consensus) noexcept
+                                                       float amount01,
+                                                       float confidence,
+                                                       float consensus) noexcept
 {
+    static_cast<void>(confidence);
+    static_cast<void>(consensus);
+
     const float safeAmount = std::clamp(amount01, 0.0f, 1.0f);
     if (safeAmount <= 0.0001f || !std::isfinite(errorCents))
         return 0.0;
 
-    const float absError = static_cast<float>(std::abs(errorCents));
+    const double forgiveness = 1.0 - static_cast<double>(safeAmount);
+    const double toleranceCents = 0.5 + 49.5 * forgiveness * forgiveness;
+    const double magnitude = std::abs(errorCents);
+    if (magnitude <= toleranceCents)
+        return 0.0;
 
-    // Amount 100: intervene on very small errors.
-    // Amount 50: accept small expressive intonation deviations.
-    // Amount 0: bypass correction completely, handled above.
-    const float amountForgiveness = std::pow(1.0f - safeAmount, 2.10f);
-    const float baseToleranceCents = 0.50f + 18.0f * amountForgiveness;
-
-    const float detectorReliability = std::clamp(0.65f * confidence
-                                               + 0.35f * consensus,
-                                               0.0f,
-                                               1.0f);
-    const float lowTrust = 1.0f - smoothStep(0.25f, 0.78f, detectorReliability);
-
-    // Design target: at Amount 100, very low trust adds roughly +/-1 cent.
-    // At Amount 20, very low trust adds roughly +/-7 cents.
-    const float trustToleranceWideningCents = lowTrust
-        * (1.0f + 7.5f * (1.0f - safeAmount));
-
-    const float totalToleranceCents = baseToleranceCents
-        + trustToleranceWideningCents;
-
-    const float transitionWidthCents = 0.90f
-        + 3.50f * (1.0f - safeAmount)
-        + 2.00f * lowTrust;
-
-    const float interventionGate = smoothStep(totalToleranceCents,
-                                              totalToleranceCents + transitionWidthCents,
-                                              absError);
-
-    return errorCents * static_cast<double>(interventionGate);
+    return std::copysign(magnitude - toleranceCents, errorCents);
 }
 
-[[nodiscard]] float retuneFloorForLatencyMode(ModernPitchEngine::LatencyMode mode) noexcept
+[[nodiscard]] float retuneFloorForLatencyMode(
+    ModernPitchEngine::LatencyMode mode) noexcept
 {
-    switch (mode)
-    {
-        case ModernPitchEngine::LatencyMode::ultraLive: return 4.5f;
-        case ModernPitchEngine::LatencyMode::live:      return 6.0f;
-        case ModernPitchEngine::LatencyMode::quality:   return 9.0f;
-    }
-    return 6.0f;
+    static_cast<void>(mode);
+    return 0.0f;
 }
 
 [[nodiscard]] double wrapCorrectionToNearestOctave(double cents) noexcept
@@ -1552,11 +1527,11 @@ void ModernPitchEngine::CorrectionController::prepare(double sampleRate) noexcep
     sampleRate_ = std::max(8000.0, sampleRate);
 
     authorityAttackCoefficient_ = static_cast<float>(
-        1.0 - std::exp(-1.0 / (0.006 * sampleRate_)));
+        1.0 - std::exp(-1.0 / (0.0008 * sampleRate_)));
     authorityReleaseCoefficient_ = static_cast<float>(
         1.0 - std::exp(-1.0 / (0.035 * sampleRate_)));
     wetAttackCoefficient_ = static_cast<float>(
-        1.0 - std::exp(-1.0 / (0.010 * sampleRate_)));
+        1.0 - std::exp(-1.0 / (0.0008 * sampleRate_)));
     wetReleaseCoefficient_ = static_cast<float>(
         1.0 - std::exp(-1.0 / (0.055 * sampleRate_)));
 
@@ -1797,58 +1772,37 @@ const bool hardScaleLock = parameters.scaleLock && parameters.hardLockActive && 
 
     if (observation.onset)
     {
-        const float protection = clamp01(parameters.transientProtection);
-        const double attackMs = 1.5 + 8.5 * static_cast<double>(protection);
+        const double attackDelayMs = std::clamp(
+            static_cast<double>(parameters.retuneTimeMs), 0.0, 500.0);
         enterState(TrackingState::attack,
                    std::max(1, static_cast<int>(std::lround(
-                       attackMs * 0.001 * sampleRate_))));
+                       attackDelayMs * 0.001 * sampleRate_))));
         stableObservationCount_ = 0;
         invalidObservationCount_ = 0;
         pitchCentreValid_ = false;
         targetValid_ = false;
         quantizer.resetTarget();
-
-        // Do not hard-mute the wet path here. The state machine and the
-        // asymmetric release below fade it smoothly, preserving continuity.
     }
 
     if (!observationUsable)
     {
         ++invalidObservationCount_;
         stableObservationCount_ = 0;
-
-        // Short confidence drop-outs are common inside vowels. Hold the last
-        // musical decision for a few observations instead of immediately
-        // returning the shifter to ratio 1, which sounds like wind/pumping.
-        if (invalidObservationCount_ <= 3)
+        if (targetValid_)
         {
-            // Keep the musical target through short detector drop-outs, but do
-            // not preserve noisy pitch modulation when the spectral path says
-            // that the tail is predominantly breath/residual.
-            const float breathRelease = 1.0f - 0.20f * spectralBreathiness_;
-            authorityTarget_ *= 0.94f * breathRelease;
-            wetMixTarget_ *= 0.96f;
-            return;
-        }
-
-        authorityTarget_ = 0.0f;
-        wetMixTarget_ = 0.0f;
-        desiredCorrectionCents_ = 0.0;
-
-        if (invalidObservationCount_ > 3 && state_ != TrackingState::attack)
-            enterState(TrackingState::release,
-                       std::max(1, static_cast<int>(std::lround(0.040 * sampleRate_))));
-        if (invalidObservationCount_ > 18)
-        {
-            enterState(TrackingState::unvoiced);
-            pitchCentreValid_ = false;
-            targetValid_ = false;
+            authorityTarget_ = 1.0f;
+            wetMixTarget_ = 1.0f;
         }
         return;
     }
 
     invalidObservationCount_ = 0;
     observedLog2_ = safeLog2(observation.frequencyHz);
+
+    const double minStepCents = sanitisedMinStepCents(parameters);
+    const double sameNoteBandCents = 3.0
+        + static_cast<double>(clamp01(parameters.humanize))
+            * std::min(60.0, 0.45 * minStepCents);
 
     if (!pitchCentreValid_ || observation.onset)
     {
@@ -1857,21 +1811,15 @@ const bool hardScaleLock = parameters.scaleLock && parameters.hardLockActive && 
     }
     else
     {
-        const double distanceCents = std::abs((observedLog2_ - pitchCentreLog2_) * 1200.0);
-        const double baseCentreAlpha = distanceCents > 90.0 ? 0.32 : 0.10;
-        const double breathStability = std::clamp(
-            1.0 - 0.72 * static_cast<double>(spectralBreathiness_),
-            0.20,
-            1.0);
-        const double harmonicStability = 0.55
-            + 0.45 * static_cast<double>(spectralHarmonicity_);
-        const double centreAlpha = baseCentreAlpha
-            * breathStability
-            * harmonicStability;
-        pitchCentreLog2_ += centreAlpha * (observedLog2_ - pitchCentreLog2_);
+        const double distanceCents = std::abs(
+            (observedLog2_ - pitchCentreLog2_) * 1200.0);
+        const double alpha = distanceCents <= sameNoteBandCents
+            ? 0.18 - 0.15 * static_cast<double>(clamp01(parameters.humanize))
+            : 0.45;
+        pitchCentreLog2_ += alpha * (observedLog2_ - pitchCentreLog2_);
     }
 
-    double hysteresisCents = 18.0f + 38.0f * clamp01(parameters.humanize);
+    double hysteresisCents = sameNoteBandCents;
     double targetBoundaryCents = hysteresisCents;
     
     if (parameters.scaleLock)
@@ -1956,158 +1904,21 @@ slParams.hardLock = hardScaleLock;
     targetLog2_ = newTargetLog2;
     targetValid_ = true;
 
-    if (parameters.scaleLock)
-    {
-        ScaleLock::Parameters slParams;
-        slParams.userHysteresis = parameters.lockHysteresis;
-        slParams.vibratoAmount = parameters.vibratoPreserve;
-        slParams.humanize = parameters.humanize;
-        slParams.latencyMode = parameters.latencyMode;
-        slParams.confidence = currentConfidence_;
-        slParams.breathiness = spectralBreathiness_;
-slParams.stability = clamp01(0.45f * spectralReliability_
-                            + 0.35f * spectralHarmonicity_
-                            + 0.20f * observation.consensus);
-slParams.periodicity = clamp01(observation.periodicity);
-slParams.strictness = lockStrictness;
-slParams.hardLock = hardScaleLock;
-        slParams.tempoLockActive = (parameters.tempo.mode == CreativeTempo::Mode::glideLock);
-        slParams.scaleSize = parameters.scaleSize > 0 ? parameters.scaleSize : 12;
-    slParams.minScaleStepCents = (std::isfinite(parameters.minScaleStepCents)
-                              && parameters.minScaleStepCents > 0.0f)
-    ? parameters.minScaleStepCents
-    : 100.0f;
-        
-        
-        ScaleLock::ProcessResult res = scaleLockProcessor_.process(
-            observation.frequencyHz > 0.0f ? std::log2(observation.frequencyHz) : 0.0,
-            targetLog2_,
-            pitchCentreLog2_,
-            slParams,
-            sampleRate_);
-            
-        double errorCents = res.targetCorrectionCents;
-        const double maxCorrectionCents = 1200.0 * std::clamp(
-            static_cast<double>(parameters.maximumCorrectionSemitones), 0.0, 24.0);
-        errorCents = std::clamp(errorCents, -maxCorrectionCents, maxCorrectionCents);
-        desiredCorrectionCents_ = neumatonApplyAmountToleranceGate(
-            errorCents,
-            parameters.amount,
-            currentConfidence_,
-            observation.consensus);
-    }
-    else
-    {
-        const double vibratoComponent = observedLog2_ - pitchCentreLog2_;
-        const float cleanBreath = 1.0f - spectralBreathiness_;
-        const float vibratoReliability = clamp01(
-            spectralHarmonicity_ * cleanBreath * cleanBreath);
-        const float effectivePreserveVibrato =
-            clamp01(parameters.preserveVibrato) * vibratoReliability;
-        const double correctedLog2 = targetLog2_
-            + static_cast<double>(effectivePreserveVibrato) * vibratoComponent;
-        double errorCents = (correctedLog2 - observedLog2_) * 1200.0;
-        errorCents = wrapCorrectionToNearestOctave(errorCents);
-
-        const double deadBandCents = 1.5 + 20.0 * static_cast<double>(clamp01(parameters.humanize));
-        if (std::abs(errorCents) <= deadBandCents)
-        {
-            errorCents = 0.0;
-        }
-        else
-        {
-            errorCents = std::copysign(std::abs(errorCents) - deadBandCents,
-                                       errorCents);
-        }
-
-        const double maxCorrectionCents = 1200.0 * std::clamp(
-            static_cast<double>(parameters.maximumCorrectionSemitones), 0.0, 24.0);
-        errorCents = std::clamp(errorCents,
-                                -maxCorrectionCents,
-                                maxCorrectionCents);
-        desiredCorrectionCents_ = neumatonApplyAmountToleranceGate(
-            errorCents,
-            parameters.amount,
-            currentConfidence_,
-            observation.consensus);
-    }
-
-    const float confidenceGate = confidenceAuthority(currentConfidence_,
-                                                      parameters.detectorSensitivity);
-    // Reliability is a safety gate, not a permanent loss of correction
-    // strength.  Clean monophonic frames pass at unity; only clearly weak
-    // consensus, noise-dominant spectra or competing pitch families retreat
-    // toward the aligned dry path.
-    const float consensusGate = 0.30f + 0.70f
-        * smoothStep(0.08f, 0.48f, observation.consensus);
-    const float spectralGate = 0.25f + 0.75f
-        * smoothStep(0.22f, 0.68f, spectralReliability_);
-    const float polyphonyGate = 1.0f - 0.82f
-        * smoothStep(0.12f, 0.65f, spectralPolyphony_);
-    authorityTarget_ = clamp01(confidenceGate
-                               * (voicedLatched_ ? smoothedVoicing_ : 0.0f)
-                               * consensusGate
-                               * spectralGate
-                               * polyphonyGate);
-
-    const float correctionNeed = smoothStep(
-        1.5f, 10.0f, static_cast<float>(std::abs(desiredCorrectionCents_)));
-    const float transientAttenuation = 1.0f
-        - clamp01(parameters.transientProtection) * currentOnsetStrength_;
-
-    wetMixTarget_ = clamp01((voicedLatched_ ? smoothedVoicing_ : 0.0f)
-                            * correctionNeed
-                            * transientAttenuation
-                            * consensusGate
-                            * spectralGate
-                            * polyphonyGate);
-
-    // NEUMATON_RECONSTRUCTIVE_WET_V1_SEVERITY
-    // Amount and Speed define correction severity, not just correction depth.
-    // Humanize is intentionally excluded: Humanize shapes naturalness, while
-    // S(amount, speed) decides whether the whole wet spectrum must be rebuilt
-    // toward the requested target.
-    const float correctionAssertiveness = neumatonCorrectionSeverityFromAmountSpeed(
+    double errorCents = (targetLog2_ - observedLog2_) * 1200.0;
+    errorCents = wrapCorrectionToNearestOctave(errorCents);
+    const double maxCorrectionCents = 1200.0 * std::clamp(
+        static_cast<double>(parameters.maximumCorrectionSemitones), 0.0, 24.0);
+    errorCents = std::clamp(errorCents,
+                            -maxCorrectionCents,
+                            maxCorrectionCents);
+    desiredCorrectionCents_ = neumatonApplyAmountToleranceGate(
+        errorCents,
         parameters.amount,
-        parameters.retuneTimeMs);
-    const float correctionPresent = smoothStep(
-        1.0f, 8.0f, static_cast<float>(std::abs(desiredCorrectionCents_)));
-    const float scaleLockAuthority = parameters.scaleLock
-        ? std::max(0.82f, correctionAssertiveness)
-        : correctionAssertiveness;
-    const float hardCorrectionIntent = clamp01(scaleLockAuthority * correctionPresent);
+        currentConfidence_,
+        observation.consensus);
 
-    // In assertive settings, consensus/spectral/polyphony gates remain safety
-    // rails, but they must not make a clearly requested correction timid.
-    const float voicedGateForAuthority = voicedLatched_ ? smoothedVoicing_ : 0.0f;
-    const float hardSafetyGate = clamp01(
-        voicedGateForAuthority
-        * confidenceGate
-        * (0.70f + 0.30f * observation.consensus)
-        * (1.0f - 0.45f * smoothStep(0.35f, 0.80f, spectralPolyphony_)));
-    const float hardTransientGate = 1.0f
-        - 0.35f * clamp01(parameters.transientProtection) * currentOnsetStrength_;
-
-    const float hardAuthorityTarget = clamp01(hardCorrectionIntent * hardSafetyGate);
-    const float hardWetTarget = clamp01(hardCorrectionIntent * hardSafetyGate * hardTransientGate);
-
-    authorityTarget_ = std::max(authorityTarget_, hardAuthorityTarget);
-    wetMixTarget_ = std::max(wetMixTarget_, hardWetTarget);
-
-    if (parameters.scaleLock)
-    {
-        // NEUMATON_FULL_SPECTRUM_TRANSPORT_V2_SCALELOCK_GATE_BLEND
-        // hardBlend = 0 -> previous cautious Scale Lock gate.
-        // hardBlend = 1 -> no extra Scale Lock timidity: the target scale is
-        // a contract, while safety is handled by confidence/voicing gates.
-        const float slConfidence = clamp01(currentConfidence_ + 0.15f * lockStrictness);
-        const float slGate = 0.50f + 0.50f * slConfidence;
-        const float hardBlend = hardCorrectionIntent;
-        const float blendedSlGate = slGate + hardBlend * (1.0f - slGate);
-
-        authorityTarget_ = clamp01(authorityTarget_ * blendedSlGate);
-        wetMixTarget_ = clamp01(wetMixTarget_ * blendedSlGate);
-    }
+    authorityTarget_ = targetValid_ ? 1.0f : authorityTarget_;
+    wetMixTarget_ = targetValid_ ? 1.0f : wetMixTarget_;
 
     ++stableObservationCount_;
     if (state_ == TrackingState::unvoiced || state_ == TrackingState::release)
@@ -2120,14 +1931,14 @@ slParams.hardLock = hardScaleLock;
 void ModernPitchEngine::CorrectionController::advanceOneSample(
     const Parameters& parameters) noexcept
 {
+    static_cast<void>(parameters);
     if (stateSamplesRemaining_ > 0)
     {
         --stateSamplesRemaining_;
         if (stateSamplesRemaining_ == 0)
         {
             if (state_ == TrackingState::attack)
-                enterState(TrackingState::acquire,
-                           std::max(1, static_cast<int>(std::lround(0.007 * sampleRate_))));
+                enterState(TrackingState::stable);
             else if (state_ == TrackingState::transition)
                 enterState(TrackingState::stable);
             else if (state_ == TrackingState::release)
@@ -2135,16 +1946,9 @@ void ModernPitchEngine::CorrectionController::advanceOneSample(
         }
     }
 
-    float stateAuthorityScale = 1.0f;
-    switch (state_)
-    {
-        case TrackingState::unvoiced:   stateAuthorityScale = 0.0f; break;
-        case TrackingState::attack:     stateAuthorityScale = 0.10f; break;
-        case TrackingState::acquire:    stateAuthorityScale = 0.68f; break;
-        case TrackingState::stable:     stateAuthorityScale = 1.0f; break;
-        case TrackingState::transition: stateAuthorityScale = 0.82f; break;
-        case TrackingState::release:    stateAuthorityScale = 0.20f; break;
-    }
+    float stateAuthorityScale = targetValid_ ? 1.0f : 0.0f;
+    if (state_ == TrackingState::attack)
+        stateAuthorityScale = 0.0f;
 
     const float effectiveAuthorityTarget = authorityTarget_ * stateAuthorityScale;
     const float authorityCoefficient = effectiveAuthorityTarget > authority_
@@ -2162,13 +1966,7 @@ void ModernPitchEngine::CorrectionController::advanceOneSample(
                                        * static_cast<double>(authority_);
     synthesisTargetCorrectionCents_ = targetCorrectionCents;
 
-    double responseMs = std::max(0.35, static_cast<double>(parameters.retuneTimeMs));
-    if (state_ == TrackingState::transition)
-        responseMs = std::max(responseMs,
-                              static_cast<double>(parameters.transitionTimeMs));
-    else if (state_ == TrackingState::acquire)
-        responseMs = std::max(responseMs, 4.0);
-
+    const double responseMs = 1.0;
     const double dt = 1.0 / sampleRate_;
     const double responseSeconds = responseMs * 0.001;
     const double omega = std::min(0.22 / dt, 4.6 / std::max(0.00035, responseSeconds));
@@ -6783,18 +6581,14 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
             * (1.0f - 0.50f * latestPolyphony));
         const float transitionCorrectionDistanceCents = static_cast<float>(
             std::abs(tempoDecision.destinationCents));
-        const auto transition = transitionManager_.processSample(
-            tempoDecision.controllerCents,
-            tempoDecision.destinationCents,
-            tempoDecision.targetRevision,
-            trackingState,
-            wetMix,
-            transitionTonalEvidence,
-            transitionCorrectionDistanceCents,
-            transitionParameters,
-            tempoDecision.forceTransition);
-        const float formant = clamp01(safeParameters.formantPreservation
-            * correctionController_.getFormantStability());
+        TransitionManager::Command transition;
+        transition.primaryCents = tempoDecision.destinationCents;
+        transition.secondaryCents = tempoDecision.destinationCents;
+        transition.blend = 0.0f;
+        transition.dualSynthesis = false;
+        transition.beginSecondary = false;
+        transition.commitSecondary = false;
+        const float formant = clamp01(safeParameters.formantPreservation);
         
         // NEUMATON_RECONSTRUCTIVE_WET_V1_CONTEXT_SET
         const float correctionAssertivenessForAuditors = neumatonCorrectionSeverityFromAmountSpeed(
@@ -6835,13 +6629,18 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
 
             const float processedMid = shifters_[0].processSample(mid,
                                                                   transition,
-                                                                  wetMix,
+                                                                  1.0f,
                                                                   formant,
                                                                   harmonicNoiseContext,
                                                                   forcePhaseReset);
-            const float delayedSide = auxiliaryDelays_[0].process(side);
-            channelData[0][sampleIndex] = processedMid + delayedSide;
-            channelData[1][sampleIndex] = processedMid - delayedSide;
+            const float processedSide = shifters_[1].processSample(side,
+                                                                   transition,
+                                                                   1.0f,
+                                                                   formant,
+                                                                   harmonicNoiseContext,
+                                                                   forcePhaseReset);
+            channelData[0][sampleIndex] = processedMid + processedSide;
+            channelData[1][sampleIndex] = processedMid - processedSide;
 
             for (int channel = 2; channel < numberOfChannels; ++channel)
             {
@@ -6893,7 +6692,7 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
     float latestShadowRidgeReliability = 0.0f;
     float latestShadowRidgeResolvedBinCoverage = 0.0f;
     int latestShadowRidgeValidCount = 0;
-    const int meteredShifters = useMidSide ? 1 : numberOfChannels;
+    const int meteredShifters = useMidSide ? 2 : numberOfChannels;
     for (int channel = 0; channel < meteredShifters; ++channel)
     {
         const auto& shifter = shifters_[static_cast<std::size_t>(channel)];
