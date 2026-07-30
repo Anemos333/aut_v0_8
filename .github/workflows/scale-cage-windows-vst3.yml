@@ -1,0 +1,68 @@
+name: Scale Cage Windows VST3
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'Source/ModernPitchEngine.cpp'
+      - 'Source/NeumatonOutputRenderer.*'
+      - 'Tests/OutputV3AudioRendererStandalone.cpp'
+      - '.github/workflows/scale-cage-windows-vst3.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-vst3:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure Release build
+        shell: pwsh
+        run: |
+          cmake -S . -B build-scale-cage `
+            -G "Visual Studio 17 2022" `
+            -A x64 `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DNEUMATON_BUILD_V3_AUDIO_RENDERER_TESTS=ON
+
+      - name: Build invariant test
+        shell: pwsh
+        run: |
+          cmake --build build-scale-cage --config Release `
+            --target V3AudioRendererStandalone --parallel 2
+          & build-scale-cage\v3-audio-renderer-tests\Release\V3AudioRendererStandalone.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build VST3
+        shell: pwsh
+        run: |
+          cmake --build build-scale-cage --config Release `
+            --target Neumaton_VST3 --parallel 2
+
+      - name: Package VST3
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifact | Out-Null
+          $vst3 = Get-ChildItem -Path build-scale-cage -Recurse -Directory -Filter "Neumaton.vst3" | Select-Object -First 1
+          if (-not $vst3) {
+            Write-Error "Neumaton.vst3 not found"
+            exit 1
+          }
+          Copy-Item -Path $vst3.FullName -Destination artifact\Neumaton.vst3 -Recurse -Force
+          Compress-Archive -Path artifact\Neumaton.vst3 `
+            -DestinationPath artifact\Neumaton-Scale-Cage-Windows-VST3.zip -Force
+          Get-FileHash artifact\Neumaton-Scale-Cage-Windows-VST3.zip -Algorithm SHA256 |
+            Format-List | Out-File artifact\sha256.txt
+
+      - name: Upload Windows VST3
+        uses: actions/upload-artifact@v4
+        with:
+          name: Neumaton-Scale-Cage-Windows-VST3
+          path: |
+            artifact/Neumaton-Scale-Cage-Windows-VST3.zip
+            artifact/sha256.txt
+          retention-days: 14
