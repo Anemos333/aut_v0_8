@@ -10,6 +10,7 @@ namespace neumaton::outputv3
 {
 
 // Scale-cage renderer: every analysed component follows one musical ratio.
+// Ownership can shape reconstruction, but never correction authority.
 class NeumatonOutputRenderer final
 {
 public:
