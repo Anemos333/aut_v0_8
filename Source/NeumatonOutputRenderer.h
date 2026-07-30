@@ -9,6 +9,7 @@
 namespace neumaton::outputv3
 {
 
+// Scale-cage renderer: every analysed component follows one musical ratio.
 class NeumatonOutputRenderer final
 {
 public:
