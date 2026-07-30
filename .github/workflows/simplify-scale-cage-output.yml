@@ -43,59 +43,41 @@ jobs:
               gain_start)
           text = text[:gain_start] + text[gain_end:]
 
-          phase_anchor = '''    if (trackIndex >= 0 && !resetPhase)
-              return wrapPhase(ledger.tracks[trackIndex].targetPhase + relativePhase);
+          phase_function = text.index(
+              'double NeumatonOutputRenderer::synthesisPhase(')
+          phase_index = text.index(
+              '    const auto phaseIndex = static_cast<std::size_t>(std::clamp(',
+              phase_function)
+          aperiodic_block = '''    if (harmonicEvidence < 0.20f)
+          {
+              const auto aperiodicIndex = static_cast<std::size_t>(std::clamp(
+                  sourceBin,
+                  0,
+                  static_cast<int>(freeSynthesisPhaseValid_.size()) - 1));
+              freeSynthesisPhaseValid_[aperiodicIndex] = std::uint8_t { 0 };
+              return wrapPhase(sourcePhase);
+          }
           
-              const auto phaseIndex'''.replace(
-                  '              return', '        return').replace(
-                  '          \n', '\n').replace(
-                  '              const', '    const')
-          phase_replacement = '''    if (trackIndex >= 0 && !resetPhase)
-              return wrapPhase(ledger.tracks[trackIndex].targetPhase + relativePhase);
-          
-              if (harmonicEvidence < 0.20f)
-              {
-                  const auto aperiodicIndex = static_cast<std::size_t>(std::clamp(
-                      sourceBin,
-                      0,
-                      static_cast<int>(freeSynthesisPhaseValid_.size()) - 1));
-                  freeSynthesisPhaseValid_[aperiodicIndex] = std::uint8_t { 0 };
-                  return wrapPhase(sourcePhase);
-              }
-          
-              const auto phaseIndex'''.replace(
-                  '              return', '        return').replace(
-                  '          \n', '\n').replace(
-                  '              if', '    if').replace(
-                  '              {', '    {').replace(
-                  '                  ', '        ').replace(
-                  '              }', '    }').replace(
-                  '              const', '    const')
-          if phase_anchor not in text:
-              raise RuntimeError('aperiodic phase anchor not found')
-          text = text.replace(phase_anchor, phase_replacement, 1)
+          '''.replace('          ', '    ', 1).replace('\n      ', '\n    ')
+          text = text[:phase_index] + aperiodic_block + text[phase_index:]
 
-          formant_anchor = '''    const float safeAmount = clamp01(amount);
-              // Consonants and breaths receive the same pitch ratio, but gentler envelope
-              // compensation so their broadband attack is not turned into a moving filter.
-              const float effectiveAmount = safeAmount
-                  * (0.35f + 0.65f * clamp01(harmonicEvidence));'''.replace(
-                  '              //', '    //').replace(
-                  '              const', '    const').replace(
-                  '                  *', '        *')
-          formant_replacement = '''    const float safeAmount = clamp01(amount);
-              // Formant compensation belongs only to periodic vocal structure.
-              // Aperiodic consonants and breath still follow the scale ratio, but
-              // do not acquire moving envelope correction.
-              const float harmonicAmount = clamp01(harmonicEvidence);
-              const float effectiveAmount = safeAmount
-                  * harmonicAmount * harmonicAmount;'''.replace(
-                  '              //', '    //').replace(
-                  '              const', '    const').replace(
-                  '                  *', '        *')
-          if formant_anchor not in text:
-              raise RuntimeError('formant anchor not found')
-          text = text.replace(formant_anchor, formant_replacement, 1)
+          formant_function = text.index(
+              'float NeumatonOutputRenderer::formantGain(')
+          amount_start = text.index(
+              '    const float safeAmount = clamp01(amount);\n',
+              formant_function)
+          amount_end = text.index(
+              '    if (effectiveAmount <= 1.0e-4f)\n',
+              amount_start)
+          formant_block = '''    const float safeAmount = clamp01(amount);
+          // Formant compensation belongs only to periodic vocal structure.
+          // Aperiodic consonants and breath still follow the scale ratio, but
+          // do not acquire moving envelope correction.
+          const float harmonicAmount = clamp01(harmonicEvidence);
+          const float effectiveAmount = safeAmount
+              * harmonicAmount * harmonicAmount;
+          '''.replace('\n      ', '\n    ')
+          text = text[:amount_start] + formant_block + text[amount_end:]
 
           path.write_text(text)
           PY
