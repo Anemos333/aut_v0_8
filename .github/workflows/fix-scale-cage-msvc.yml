@@ -1,0 +1,46 @@
+name: Fix Scale Cage MSVC
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/fix-scale-cage-msvc.yml'
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  fix:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: scale-cage-output-v1
+          fetch-depth: 0
+
+      - name: Apply typed byte initialization
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('Source/NeumatonOutputRenderer.cpp')
+          text = path.read_text()
+          text = text.replace(
+              'freeSynthesisPhaseValid_.assign(binCount, 0u);',
+              'freeSynthesisPhaseValid_.assign(binCount, std::uint8_t { 0 });')
+          text = text.replace(
+              'std::fill(freeSynthesisPhaseValid_.begin(), freeSynthesisPhaseValid_.end(), 0u);',
+              'std::fill(freeSynthesisPhaseValid_.begin(), freeSynthesisPhaseValid_.end(), std::uint8_t { 0 });')
+          path.write_text(text)
+          PY
+          grep -q 'std::uint8_t { 0 }' Source/NeumatonOutputRenderer.cpp
+          ! grep -q 'freeSynthesisPhaseValid_.*0u' Source/NeumatonOutputRenderer.cpp
+
+      - name: Commit source fix
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Source/NeumatonOutputRenderer.cpp
+          git commit -m 'Use typed byte initialization in scale-cage phase state'
+          git push origin HEAD:scale-cage-output-v1
