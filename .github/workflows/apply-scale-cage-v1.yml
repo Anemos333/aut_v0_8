@@ -1,0 +1,43 @@
+name: Apply Scale Cage V1
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'Tools/apply_scale_cage_v1.py'
+      - '.github/workflows/apply-scale-cage-v1.yml'
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: scale-cage-output-v1
+          fetch-depth: 0
+
+      - name: Apply controller and stereo rewrite
+        run: python Tools/apply_scale_cage_v1.py
+
+      - name: Verify semantic boundaries
+        run: |
+          grep -q 'toleranceCents = 0.5' Source/ModernPitchEngine.cpp
+          grep -q 'const double responseMs = 1.0' Source/ModernPitchEngine.cpp
+          grep -q 'const float processedSide' Source/ModernPitchEngine.cpp
+          ! grep -q 'const float delayedSide' Source/ModernPitchEngine.cpp
+          grep -q 'transition.dualSynthesis = false' Source/ModernPitchEngine.cpp
+          grep -q 'targetLog2_ = newTargetLog2' Source/ModernPitchEngine.cpp
+          grep -q 'newTargetLog2 = alignTargetToNearestOctave' Source/ModernPitchEngine.cpp
+
+      - name: Commit generated source
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Source/ModernPitchEngine.cpp
+          git commit -m 'Make scale authority unconditional across controller and stereo'
+          git push origin HEAD:scale-cage-output-v1
