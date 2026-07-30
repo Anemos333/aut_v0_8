@@ -1,0 +1,88 @@
+name: Simplify Scale Cage Output
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/simplify-scale-cage-output.yml'
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  simplify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: scale-cage-output-v1
+          fetch-depth: 0
+
+      - name: Remove adaptive gain and aperiodic phase memory
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('Source/NeumatonOutputRenderer.cpp')
+          text = path.read_text()
+
+          text = text.replace('    double inputEnergy = 0.0;\n', '', 1)
+          text = text.replace(
+              '        inputEnergy += static_cast<double>(magnitude) * magnitude;\n',
+              '',
+              1)
+          gain_start = text.index('    double outputEnergy = 0.0;\n')
+          gain_end = text.index('\n}\n\nvoid NeumatonOutputRenderer::depositMappedBin', gain_start)
+          text = text[:gain_start] + text[gain_end:]
+
+          track_anchor = '''    if (trackIndex >= 0 && !resetPhase)
+              return wrapPhase(ledger.tracks[trackIndex].targetPhase + relativePhase);
+          
+              const auto phaseIndex'''.replace('              return', '        return').replace('          \n', '\n').replace('              const', '    const')
+          replacement = '''    if (trackIndex >= 0 && !resetPhase)
+              return wrapPhase(ledger.tracks[trackIndex].targetPhase + relativePhase);
+          
+              if (harmonicEvidence < 0.20f)
+              {
+                  const auto aperiodicIndex = static_cast<std::size_t>(std::clamp(
+                      sourceBin,
+                      0,
+                      static_cast<int>(freeSynthesisPhaseValid_.size()) - 1));
+                  freeSynthesisPhaseValid_[aperiodicIndex] = std::uint8_t { 0 };
+                  return wrapPhase(sourcePhase);
+              }
+          
+              const auto phaseIndex'''.replace('              return', '        return').replace('          \n', '\n').replace('              if', '    if').replace('              {', '    {').replace('                  ', '        ').replace('              }', '    }').replace('              const', '    const')
+          if track_anchor not in text:
+              raise RuntimeError('phase anchor not found')
+          text = text.replace(track_anchor, replacement, 1)
+
+          old_formant = '''    const float safeAmount = clamp01(amount);
+              // Consonants and breaths receive the same pitch ratio, but gentler envelope
+              // compensation so their broadband attack is not turned into a moving filter.
+              const float effectiveAmount = safeAmount
+                  * (0.35f + 0.65f * clamp01(harmonicEvidence));'''.replace('              //', '    //').replace('              const', '    const').replace('                  *', '        *')
+          new_formant = '''    const float safeAmount = clamp01(amount);
+              // Formant compensation belongs only to periodic vocal structure.
+              // Aperiodic consonants and breath still follow the scale ratio, but
+              // do not acquire a moving envelope correction.
+              const float harmonicAmount = clamp01(harmonicEvidence);
+              const float effectiveAmount = safeAmount * harmonicAmount * harmonicAmount;'''.replace('              //', '    //').replace('              const', '    const')
+          if old_formant not in text:
+              raise RuntimeError('formant anchor not found')
+          text = text.replace(old_formant, new_formant, 1)
+
+          path.write_text(text)
+          PY
+          ! grep -q 'energyGain' Source/NeumatonOutputRenderer.cpp
+          grep -q 'aperiodicIndex' Source/NeumatonOutputRenderer.cpp
+          grep -q 'harmonicAmount \* harmonicAmount' Source/NeumatonOutputRenderer.cpp
+
+      - name: Commit simplified output
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Source/NeumatonOutputRenderer.cpp
+          git commit -m 'Keep aperiodic output stochastic and remove frame gain servo'
+          git push origin HEAD:scale-cage-output-v1
