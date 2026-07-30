@@ -228,7 +228,6 @@ void NeumatonOutputRenderer::buildFullSpectrum(
         || trajectory.forceReset
         || analysis.onsetStrength >= 0.58f;
 
-    double inputEnergy = 0.0;
     for (int sourceBin = 0; sourceBin < usableBins; ++sourceBin)
     {
         const float magnitude = std::max(0.0f, analysis.magnitudes[sourceBin]);
@@ -264,7 +263,6 @@ void NeumatonOutputRenderer::buildFullSpectrum(
                                        formantPreservation,
                                        harmonicEvidence);
         const float targetMagnitude = magnitude * gain;
-        inputEnergy += static_cast<double>(magnitude) * magnitude;
         depositMappedBin(sourceBin,
                          targetPosition,
                          targetMagnitude,
@@ -272,19 +270,7 @@ void NeumatonOutputRenderer::buildFullSpectrum(
                          slope);
     }
 
-    double outputEnergy = 0.0;
-    for (int bin = 0; bin < usableBins; ++bin)
-        outputEnergy += std::norm(spectrum_[static_cast<std::size_t>(bin)]);
 
-    if (inputEnergy > 1.0e-18 && outputEnergy > 1.0e-18)
-    {
-        const float energyGain = std::clamp(
-            static_cast<float>(std::sqrt(inputEnergy / outputEnergy)),
-            0.50f,
-            2.0f);
-        for (int bin = 0; bin < usableBins; ++bin)
-            spectrum_[static_cast<std::size_t>(bin)] *= energyGain;
-    }
 }
 
 void NeumatonOutputRenderer::depositMappedBin(int /*sourceBin*/,
@@ -458,6 +444,16 @@ double NeumatonOutputRenderer::synthesisPhase(
     if (trackIndex >= 0 && !resetPhase)
         return wrapPhase(ledger.tracks[trackIndex].targetPhase + relativePhase);
 
+    if (harmonicEvidence < 0.20f)
+{
+    const auto aperiodicIndex = static_cast<std::size_t>(std::clamp(
+      sourceBin,
+      0,
+      static_cast<int>(freeSynthesisPhaseValid_.size()) - 1));
+    freeSynthesisPhaseValid_[aperiodicIndex] = std::uint8_t { 0 };
+    return wrapPhase(sourcePhase);
+}
+
     const auto phaseIndex = static_cast<std::size_t>(std::clamp(
         sourceBin,
         0,
@@ -515,10 +511,12 @@ float NeumatonOutputRenderer::formantGain(
         return 1.0f;
 
     const float safeAmount = clamp01(amount);
-    // Consonants and breaths receive the same pitch ratio, but gentler envelope
-    // compensation so their broadband attack is not turned into a moving filter.
-    const float effectiveAmount = safeAmount
-        * (0.35f + 0.65f * clamp01(harmonicEvidence));
+// Formant compensation belongs only to periodic vocal structure.
+// Aperiodic consonants and breath still follow the scale ratio, but
+// do not acquire moving envelope correction.
+const float harmonicAmount = clamp01(harmonicEvidence);
+const float effectiveAmount = safeAmount
+    * harmonicAmount * harmonicAmount;
     if (effectiveAmount <= 1.0e-4f)
         return 1.0f;
 
