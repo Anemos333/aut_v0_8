@@ -1781,7 +1781,15 @@ const bool hardScaleLock = parameters.scaleLock && parameters.hardLockActive && 
         invalidObservationCount_ = 0;
         pitchCentreValid_ = false;
         targetValid_ = false;
-        quantizer.resetTarget();
+quantizer.resetTarget();
+authority_ = 0.0f;
+wetMix_ = 0.0f;
+authorityTarget_ = 0.0f;
+wetMixTarget_ = 0.0f;
+desiredCorrectionCents_ = 0.0;
+synthesisTargetCorrectionCents_ = 0.0;
+currentCorrectionCents_ = 0.0;
+correctionVelocityCentsPerSecond_ = 0.0;
     }
 
     if (!observationUsable)
@@ -1820,7 +1828,6 @@ const bool hardScaleLock = parameters.scaleLock && parameters.hardLockActive && 
     }
 
     double hysteresisCents = sameNoteBandCents;
-    double targetBoundaryCents = hysteresisCents;
     
     if (parameters.scaleLock)
     {
@@ -1846,7 +1853,6 @@ slParams.hardLock = hardScaleLock;
         
         
         hysteresisCents = scaleLockProcessor_.calculateHysteresis(slParams);
-        targetBoundaryCents = hysteresisCents;
     }
 
     double newTargetLog2 = quantizer.chooseTargetLog2(pitchCentreLog2_, hysteresisCents);
@@ -6527,7 +6533,6 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
         }
 
         correctionController_.advanceOneSample(safeParameters);
-        const float wetMix = correctionController_.getWetMix();
         const auto trackingState = correctionController_.getState();
         const bool musicalState = trackingState != TrackingState::unvoiced
                                && trackingState != TrackingState::release;
@@ -6572,15 +6577,6 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
             sampleIndex,
             safeParameters.tempo,
             safeParameters.transitionTimeMs);
-        const float transitionTonalEvidence = clamp01(
-            latestVoicing
-            * latestConfidence
-            * (0.35f + 0.65f * latestConsensus)
-            * (0.35f + 0.65f * latestHarmonicity)
-            * (1.0f - 0.55f * latestNoisePath)
-            * (1.0f - 0.50f * latestPolyphony));
-        const float transitionCorrectionDistanceCents = static_cast<float>(
-            std::abs(tempoDecision.destinationCents));
         TransitionManager::Command transition;
         transition.primaryCents = tempoDecision.destinationCents;
         transition.secondaryCents = tempoDecision.destinationCents;
@@ -6646,7 +6642,7 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
             {
                 float& sample = channelData[static_cast<std::size_t>(channel)][sampleIndex];
                 sample = shifters_[static_cast<std::size_t>(channel)].processSample(
-                    sample, transition, wetMix, formant,
+                    sample, transition, 1.0f, formant,
                     harmonicNoiseContext, forcePhaseReset);
             }
         }
@@ -6656,7 +6652,7 @@ void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,
             {
                 float& sample = channelData[static_cast<std::size_t>(channel)][sampleIndex];
                 sample = shifters_[static_cast<std::size_t>(channel)].processSample(
-                    sample, transition, wetMix, formant,
+                    sample, transition, 1.0f, formant,
                     harmonicNoiseContext, forcePhaseReset);
             }
         }
