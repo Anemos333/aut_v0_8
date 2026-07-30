@@ -27,10 +27,18 @@ jobs:
           from pathlib import Path
           path = Path('Tools/apply_scale_cage_v1.py')
           text = path.read_text()
-          text = text.replace(
-              '                                 const std::vector<double>& scaleRatios',
-              '                                const std::vector<double>& scaleRatios',
-              1)
+          start = text.index("process_sig = '''")
+          end = text.index("\n\ntransition_start =", start)
+          replacement = '''host_marker = "const CreativeTempo::HostPosition& hostTempoPosition)"
+          host_position = text.index(host_marker)
+          process_prefix = "void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,\\n"
+          p_start = text.rfind(process_prefix, 0, host_position)
+          if p_start < 0:
+              raise RuntimeError("host-aware process overload not found")
+          vector_marker = "void ModernPitchEngine::process(juce::AudioBuffer<float>& buffer,\\n                                const std::vector<double>& scaleRatios"
+          p_end = text.index(vector_marker, host_position)
+          process = text[p_start:p_end]'''
+          text = text[:start] + replacement + text[end:]
           path.write_text(text)
           PY
           python Tools/apply_scale_cage_v1.py
