@@ -11,6 +11,7 @@ namespace neumaton::outputv3
 
 // Scale-cage renderer: every analysed component follows one musical ratio.
 // Ownership can shape reconstruction, but never correction authority.
+// No source-frequency bypass is available inside the audible spectrum.
 class NeumatonOutputRenderer final
 {
 public:
