@@ -64,11 +64,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $previousPreference = $ErrorActionPreference
-          $ErrorActionPreference = 'Continue'
-          & .\build-clean\clean-engine-tests\CleanModernPitchEngineTest.exe *> clean-engine-windows-metrics.txt
+          cmd.exe /d /c ".\build-clean\clean-engine-tests\CleanModernPitchEngineTest.exe > clean-engine-windows-metrics.txt 2>&1"
           $testExitCode = $LASTEXITCODE
-          $ErrorActionPreference = $previousPreference
           if (Test-Path clean-engine-windows-metrics.txt) {
             Get-Content clean-engine-windows-metrics.txt
           }
