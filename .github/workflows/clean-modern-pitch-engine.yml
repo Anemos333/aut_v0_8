@@ -25,6 +25,7 @@ jobs:
           git show origin/main:Source/ModernPitchEngine.cpp > /tmp/legacy.cpp
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
           header_path = Path('Source/ModernPitchEngine.h')
           cpp_path = Path('Source/ModernPitchEngine.cpp')
@@ -83,43 +84,31 @@ jobs:
           ''')
           cpp = cpp.replace('linkedTracker_.prepare(sampleRate_, latencyMode_);',
                             'linkedTracker_.prepare(sampleRate_);')
-          cpp = cpp.replace(
-              '''channelTrackers_[static_cast<std::size_t>(channel)].prepare(
-                      sampleRate_, latencyMode_);''',
-              '''channelTrackers_[static_cast<std::size_t>(channel)].prepare(
-                      sampleRate_);''')
+          cpp = re.sub(
+              r'channelTrackers_\[static_cast<std::size_t>\(channel\)\]\.prepare\(\s*sampleRate_,\s*latencyMode_\s*\);',
+              'channelTrackers_[static_cast<std::size_t>(channel)].prepare(\n            sampleRate_);',
+              cpp,
+              count=1)
 
-          linked_call = '''if (linkedTracker_.push(linkedSample,
-                                      parameters.minimumPitchHz,
-                                      parameters.maximumPitchHz,
-                                      parameters.detectorSensitivity,
-                                      observation))'''
-          if linked_call not in cpp:
-              raise SystemExit('provisional linked tracker call not found')
-          cpp = cpp.replace(linked_call,
-                            'if (linkedTracker_.processSample(linkedSample, observation))')
+          cpp, linked_count = re.subn(
+              r'if\s*\(linkedTracker_\.push\(linkedSample,\s*parameters\.minimumPitchHz,\s*parameters\.maximumPitchHz,\s*parameters\.detectorSensitivity,\s*observation\)\)',
+              'if (linkedTracker_.processSample(linkedSample, observation))',
+              cpp,
+              count=1)
+          if linked_count != 1:
+              raise SystemExit(f'linked tracker replacements={linked_count}')
 
-          channel_call = '''if (channelTrackers_[static_cast<std::size_t>(channel)].push(
-                              input,
-                              parameters.minimumPitchHz,
-                              parameters.maximumPitchHz,
-                              parameters.detectorSensitivity,
-                              channelObservation))'''
-          if channel_call not in cpp:
-              raise SystemExit('provisional channel tracker call not found')
-          cpp = cpp.replace(
-              channel_call,
-              '''if (channelTrackers_[static_cast<std::size_t>(channel)].processSample(
-                              input,
-                              channelObservation))''')
+          cpp, channel_count = re.subn(
+              r'if\s*\(channelTrackers_\[static_cast<std::size_t>\(channel\)\]\.push\(\s*input,\s*parameters\.minimumPitchHz,\s*parameters\.maximumPitchHz,\s*parameters\.detectorSensitivity,\s*channelObservation\)\)',
+              'if (channelTrackers_[static_cast<std::size_t>(channel)].processSample(\n                    input, channelObservation))',
+              cpp,
+              count=1)
+          if channel_count != 1:
+              raise SystemExit(f'channel tracker replacements={channel_count}')
 
-          anchor = '''    const bool dualMono = parameters.stereoMode == StereoMode::dualMono
-              && channels > 1;
-
-          '''
-          setup = '''    const bool dualMono = parameters.stereoMode == StereoMode::dualMono
-              && channels > 1;
-
+          cpp, setup_count = re.subn(
+              r'(    const bool dualMono = parameters\.stereoMode == StereoMode::dualMono\s*&& channels > 1;\s*)',
+              r'''\1
               linkedTracker_.setRange(parameters.minimumPitchHz,
                                       parameters.maximumPitchHz);
               linkedTracker_.setSensitivity(parameters.detectorSensitivity);
@@ -131,10 +120,11 @@ jobs:
                   tracker.setSensitivity(parameters.detectorSensitivity);
               }
 
-          '''
-          if anchor not in cpp:
-              raise SystemExit('tracker setup anchor not found')
-          cpp = cpp.replace(anchor, setup, 1)
+          ''',
+              cpp,
+              count=1)
+          if setup_count != 1:
+              raise SystemExit(f'tracker setup replacements={setup_count}')
 
           combined = header + cpp
           forbidden = [
