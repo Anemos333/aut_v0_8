@@ -64,10 +64,21 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          cmd.exe /v:on /d /c ".\build-clean\clean-engine-tests\CleanModernPitchEngineTest.exe > clean-engine-windows-metrics.txt 2>&1 & echo !errorlevel! > clean-engine-windows-exit.txt & exit /b 0"
-          Get-Content clean-engine-windows-metrics.txt
-          $testExitCode = [int](Get-Content clean-engine-windows-exit.txt)
-          if ($testExitCode -ne 0) { exit $testExitCode }
+          $process = Start-Process `
+            -FilePath ".\build-clean\clean-engine-tests\CleanModernPitchEngineTest.exe" `
+            -Wait `
+            -PassThru `
+            -NoNewWindow `
+            -RedirectStandardOutput "clean-engine-windows-stdout.txt" `
+            -RedirectStandardError "clean-engine-windows-stderr.txt"
+          Write-Host "test_exit_code=$($process.ExitCode)"
+          if (Test-Path clean-engine-windows-stdout.txt) {
+            Get-Content clean-engine-windows-stdout.txt
+          }
+          if (Test-Path clean-engine-windows-stderr.txt) {
+            Get-Content clean-engine-windows-stderr.txt
+          }
+          if ($process.ExitCode -ne 0) { exit $process.ExitCode }
 
   windows-vst3:
     runs-on: windows-2022
