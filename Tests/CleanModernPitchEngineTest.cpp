@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <vector>
 
 namespace
@@ -79,11 +80,14 @@ int main()
     constexpr int totalSamples = static_cast<int>(6.0 * sampleRate);
     constexpr int captureSamples = static_cast<int>(1.5 * sampleRate);
 
-    ModernPitchEngine engine;
-    engine.prepare(sampleRate,
-                   blockSize,
-                   channelCount,
-                   ModernPitchEngine::LatencyMode::live);
+    // ModernPitchEngine owns deliberately large, fixed realtime ring buffers.
+    // The plug-in processor is heap allocated; mirror that lifetime here so the
+    // Windows console test does not overflow its smaller default thread stack.
+    auto engine = std::make_unique<ModernPitchEngine>();
+    engine->prepare(sampleRate,
+                    blockSize,
+                    channelCount,
+                    ModernPitchEngine::LatencyMode::live);
 
     ModernPitchEngine::Parameters parameters;
     parameters.amount = 1.0f;
@@ -140,11 +144,11 @@ int main()
                 + 0.62 * std::sin(2.0 * phase + 0.81));
         }
 
-        engine.process(block,
-                       scale,
-                       static_cast<int>(std::size(scale)),
-                       expectedTarget,
-                       parameters);
+        engine->process(block,
+                        scale,
+                        static_cast<int>(std::size(scale)),
+                        expectedTarget,
+                        parameters);
 
         if (!finiteBuffer(block))
         {
@@ -170,7 +174,7 @@ int main()
         produced += samplesThisBlock;
     }
 
-    const auto meter = engine.getMetering();
+    const auto meter = engine->getMetering();
     const double leftFrequency = estimateFrequency(leftCapture,
                                                    sampleRate,
                                                    380.0,
@@ -186,7 +190,7 @@ int main()
     const bool rightCorrect = std::abs(rightFrequency - expectedTarget) < 6.0;
     const bool bothChannelsAlive = leftEnergy > 1.0
         && rightEnergy > 1.0;
-    const bool latencyCorrect = engine.getLatencySamples() == 256;
+    const bool latencyCorrect = engine->getLatencySamples() == 256;
 
     std::cerr
         << "target_hz=" << meter.targetPitchHz << '\n'
