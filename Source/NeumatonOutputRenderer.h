@@ -9,24 +9,23 @@
 namespace neumaton::outputv3
 {
 
+// Scale-cage renderer: every analysed component follows one musical ratio.
+// Ownership can shape reconstruction, but never correction authority.
+// No source-frequency bypass is available inside the audible spectrum.
 class NeumatonOutputRenderer final
 {
 public:
     NeumatonOutputRenderer() = default;
 
-    // All callback storage is allocated here.
     void prepare(const OutputPrepareSpec& spec);
     void reset() noexcept;
 
-    // Builds the single V3 spectrum but does not commit it to audio.
     [[nodiscard]] OutputSpectrumView inspectFrame(
         const AnalysisFrameView& analysis,
         const CorrectionTrajectoryFrame& trajectory,
         const RidgeLedgerFrameView& ledger,
         float formantPreservation) noexcept;
 
-    // Builds exactly the same spectrum as inspectFrame(), then performs one
-    // IFFT and one overlap-add commit into the renderer-owned output ring.
     void renderAndCommitFrame(
         const AnalysisFrameView& analysis,
         const CorrectionTrajectoryFrame& trajectory,
@@ -45,31 +44,49 @@ public:
 private:
     using Complex = std::complex<float>;
 
-    void classifyOwnership(const AnalysisFrameView& analysis,
-                           const RidgeLedgerFrameView& ledger) noexcept;
-    void calculateRidgeNormalisation(const AnalysisFrameView& analysis,
-                                     const CorrectionTrajectoryFrame& trajectory,
-                                     const RidgeLedgerFrameView& ledger,
-                                     float formantPreservation) noexcept;
-    void buildSpectrum(const AnalysisFrameView& analysis,
-                       const CorrectionTrajectoryFrame& trajectory,
-                       const RidgeLedgerFrameView& ledger,
-                       float formantPreservation) noexcept;
+    void classifyForDiagnostics(const AnalysisFrameView& analysis) noexcept;
+    void buildFullSpectrum(const AnalysisFrameView& analysis,
+                           const CorrectionTrajectoryFrame& trajectory,
+                           const RidgeLedgerFrameView& ledger,
+                           float formantPreservation) noexcept;
+    void depositMappedBin(int sourceBin,
+                          double targetPosition,
+                          float magnitude,
+                          double phase,
+                          double phaseSlope) noexcept;
     void completeConjugateSymmetry() noexcept;
     void commitCurrentSpectrum(std::int64_t frameEndSample) noexcept;
     void updateDiagnostics(const AnalysisFrameView& analysis) noexcept;
     void fft(std::vector<Complex>& data, bool inverse) noexcept;
 
-    [[nodiscard]] double ridgeRatio(const RidgeState& track,
-                                    const CorrectionTrajectoryFrame& trajectory) const noexcept;
+    [[nodiscard]] double correctionRatio(
+        const AnalysisFrameView& analysis,
+        const CorrectionTrajectoryFrame& trajectory) noexcept;
+    [[nodiscard]] double sourcePosition(const AnalysisFrameView& analysis,
+                                        int sourceBin) const noexcept;
+    [[nodiscard]] int nearestPeakForBin(const AnalysisFrameView& analysis,
+                                        int sourceBin) const noexcept;
+    [[nodiscard]] int trackForPeak(const RidgeLedgerFrameView& ledger,
+                                   int peakBin) const noexcept;
+    [[nodiscard]] double synthesisPhase(const AnalysisFrameView& analysis,
+                                        const RidgeLedgerFrameView& ledger,
+                                        int sourceBin,
+                                        int peakBin,
+                                        double targetPosition,
+                                        bool resetPhase) noexcept;
+    [[nodiscard]] double localPhaseSlope(const AnalysisFrameView& analysis,
+                                         const RidgeLedgerFrameView& ledger,
+                                         int sourceBin,
+                                         int peakBin,
+                                         double ratio) const noexcept;
     [[nodiscard]] float formantGain(const AnalysisFrameView& analysis,
                                     double sourceBin,
                                     double targetBin,
-                                    float amount) const noexcept;
+                                    float amount,
+                                    float harmonicEvidence) const noexcept;
     [[nodiscard]] static float interpolate(const ConstArrayView<float>& values,
                                            double position,
                                            float fallback) noexcept;
-    [[nodiscard]] static double unwrapNear(double value, double reference) noexcept;
     [[nodiscard]] static double wrapPhase(double phase) noexcept;
     [[nodiscard]] static float clamp01(float value) noexcept;
     [[nodiscard]] static int nextPowerOfTwo(int value) noexcept;
@@ -87,14 +104,13 @@ private:
     std::vector<Complex> fftTwiddles_;
 
     std::vector<BinOwnership> ownership_;
-    std::vector<float> ridgeSourceEnergy_;
-    std::vector<float> ridgePredictedEnergy_;
-    std::vector<float> ridgeNormalisationGain_;
-    std::vector<int> destinationOwnerToken_;
-    std::vector<float> destinationEnergy_;
-    std::vector<float> destinationCollisionEnergy_;
+    std::vector<double> freeSynthesisPhase_;
+    std::vector<std::uint8_t> freeSynthesisPhaseValid_;
+    std::vector<float> destinationDepositedEnergy_;
 
     OutputRendererDiagnostics diagnostics_ {};
+    double lastCorrectionRatio_ = 1.0;
+    bool correctionRatioValid_ = false;
     bool previousSpectrumValid_ = false;
 };
 

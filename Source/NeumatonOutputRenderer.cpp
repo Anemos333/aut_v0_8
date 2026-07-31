@@ -10,7 +10,6 @@ namespace
 {
 constexpr double pi = 3.1415926535897932384626433832795;
 constexpr double twoPi = 2.0 * pi;
-constexpr double groupDelayPrior = 1.35 * pi;
 constexpr float magnitudeFloor = 1.0e-12f;
 
 [[nodiscard]] bool trackIsUsable(const RidgeState& track) noexcept
@@ -18,6 +17,7 @@ constexpr float magnitudeFloor = 1.0e-12f;
     return track.lifeState == RidgeLifeState::active
         || track.lifeState == RidgeLifeState::coasting;
 }
+
 } // namespace
 
 void NeumatonOutputRenderer::prepare(const OutputPrepareSpec& requestedSpec)
@@ -33,25 +33,23 @@ void NeumatonOutputRenderer::prepare(const OutputPrepareSpec& requestedSpec)
                                         spec_.frameSize / 2 + 1);
     spec_.outputRingSize = nextPowerOfTwo(std::max(spec_.frameSize * 2,
                                                    spec_.outputRingSize));
-    spec_.maximumRidges = std::clamp(spec_.maximumRidges, 1, 512);
     outputRingMask_ = spec_.outputRingSize - 1;
 
-    spectrum_.assign(static_cast<std::size_t>(spec_.frameSize), Complex {});
-    previousSpectrum_.assign(static_cast<std::size_t>(spec_.frameSize), Complex {});
-    timeFrame_.assign(static_cast<std::size_t>(spec_.frameSize), Complex {});
+    const auto frameCount = static_cast<std::size_t>(spec_.frameSize);
+    const auto binCount = static_cast<std::size_t>(spec_.positiveBinCount);
+
+    spectrum_.assign(frameCount, Complex {});
+    previousSpectrum_.assign(frameCount, Complex {});
+    timeFrame_.assign(frameCount, Complex {});
     outputAccumulationRing_.assign(static_cast<std::size_t>(spec_.outputRingSize), 0.0f);
-    synthesisWindow_.assign(static_cast<std::size_t>(spec_.frameSize), 0.0f);
-    fftBitReversal_.assign(static_cast<std::size_t>(spec_.frameSize), 0);
+    synthesisWindow_.assign(frameCount, 0.0f);
+    fftBitReversal_.assign(frameCount, 0);
     fftTwiddles_.assign(static_cast<std::size_t>(spec_.frameSize / 2), Complex {});
 
-    ownership_.assign(static_cast<std::size_t>(spec_.positiveBinCount),
-                      BinOwnership::unclassified);
-    ridgeSourceEnergy_.assign(static_cast<std::size_t>(spec_.maximumRidges), 0.0f);
-    ridgePredictedEnergy_.assign(static_cast<std::size_t>(spec_.maximumRidges), 0.0f);
-    ridgeNormalisationGain_.assign(static_cast<std::size_t>(spec_.maximumRidges), 1.0f);
-    destinationOwnerToken_.assign(static_cast<std::size_t>(spec_.positiveBinCount), 0);
-    destinationEnergy_.assign(static_cast<std::size_t>(spec_.positiveBinCount), 0.0f);
-    destinationCollisionEnergy_.assign(static_cast<std::size_t>(spec_.positiveBinCount), 0.0f);
+    ownership_.assign(binCount, BinOwnership::unclassified);
+    freeSynthesisPhase_.assign(binCount, 0.0);
+    freeSynthesisPhaseValid_.assign(binCount, std::uint8_t { 0 });
+    destinationDepositedEnergy_.assign(binCount, 0.0f);
 
     for (int index = 0; index < spec_.frameSize; ++index)
     {
@@ -72,6 +70,8 @@ void NeumatonOutputRenderer::prepare(const OutputPrepareSpec& requestedSpec)
     }
     synthesisGain_ = static_cast<float>(1.0
         / std::max(1.0e-9, overlapNormalisation));
+
+    
 
     int fftBits = 0;
     while ((1 << fftBits) < spec_.frameSize)
@@ -107,13 +107,12 @@ void NeumatonOutputRenderer::reset() noexcept
     std::fill(timeFrame_.begin(), timeFrame_.end(), Complex {});
     std::fill(outputAccumulationRing_.begin(), outputAccumulationRing_.end(), 0.0f);
     std::fill(ownership_.begin(), ownership_.end(), BinOwnership::unclassified);
-    std::fill(ridgeSourceEnergy_.begin(), ridgeSourceEnergy_.end(), 0.0f);
-    std::fill(ridgePredictedEnergy_.begin(), ridgePredictedEnergy_.end(), 0.0f);
-    std::fill(ridgeNormalisationGain_.begin(), ridgeNormalisationGain_.end(), 1.0f);
-    std::fill(destinationOwnerToken_.begin(), destinationOwnerToken_.end(), 0);
-    std::fill(destinationEnergy_.begin(), destinationEnergy_.end(), 0.0f);
-    std::fill(destinationCollisionEnergy_.begin(), destinationCollisionEnergy_.end(), 0.0f);
+    std::fill(freeSynthesisPhase_.begin(), freeSynthesisPhase_.end(), 0.0);
+    std::fill(freeSynthesisPhaseValid_.begin(), freeSynthesisPhaseValid_.end(), std::uint8_t { 0 });
+    std::fill(destinationDepositedEnergy_.begin(), destinationDepositedEnergy_.end(), 0.0f);
     diagnostics_ = {};
+    lastCorrectionRatio_ = 1.0;
+    correctionRatioValid_ = false;
     previousSpectrumValid_ = false;
 }
 
@@ -129,13 +128,12 @@ OutputSpectrumView NeumatonOutputRenderer::inspectFrame(
     std::copy(spectrum_.begin(), spectrum_.end(), previousSpectrum_.begin());
     std::fill(spectrum_.begin(), spectrum_.end(), Complex {});
     std::fill(ownership_.begin(), ownership_.end(), BinOwnership::unclassified);
-    std::fill(destinationOwnerToken_.begin(), destinationOwnerToken_.end(), 0);
-    std::fill(destinationEnergy_.begin(), destinationEnergy_.end(), 0.0f);
-    std::fill(destinationCollisionEnergy_.begin(), destinationCollisionEnergy_.end(), 0.0f);
+    std::fill(destinationDepositedEnergy_.begin(),
+              destinationDepositedEnergy_.end(),
+              0.0f);
 
-    classifyOwnership(analysis, ledger);
-    calculateRidgeNormalisation(analysis, trajectory, ledger, formantPreservation);
-    buildSpectrum(analysis, trajectory, ledger, formantPreservation);
+    classifyForDiagnostics(analysis);
+    buildFullSpectrum(analysis, trajectory, ledger, formantPreservation);
     completeConjugateSymmetry();
     updateDiagnostics(analysis);
     previousSpectrumValid_ = true;
@@ -166,7 +164,7 @@ float NeumatonOutputRenderer::consumeSample(std::int64_t absoluteSample) noexcep
         return 0.0f;
     const int index = static_cast<int>(absoluteSample
         & static_cast<std::int64_t>(outputRingMask_));
-    const std::size_t safeIndex = static_cast<std::size_t>(index);
+    const auto safeIndex = static_cast<std::size_t>(index);
     const float value = outputAccumulationRing_[safeIndex];
     outputAccumulationRing_[safeIndex] = 0.0f;
     if (!std::isfinite(value) || std::fpclassify(value) == FP_SUBNORMAL)
@@ -183,116 +181,39 @@ void NeumatonOutputRenderer::discardSample(std::int64_t absoluteSample) noexcept
     outputAccumulationRing_[static_cast<std::size_t>(index)] = 0.0f;
 }
 
-void NeumatonOutputRenderer::classifyOwnership(
-    const AnalysisFrameView& analysis,
-    const RidgeLedgerFrameView& ledger) noexcept
+void NeumatonOutputRenderer::classifyForDiagnostics(
+    const AnalysisFrameView& analysis) noexcept
 {
     const int usableBins = std::min({ analysis.positiveBinCount,
                                       analysis.magnitudes.size(),
                                       static_cast<int>(ownership_.size()) });
-    const float binWidthHz = static_cast<float>(analysis.sampleRate
-        / static_cast<double>(std::max(1, analysis.frameSize)));
+    const float binWidthHz = static_cast<float>(
+        analysis.sampleRate / static_cast<double>(std::max(1, analysis.frameSize)));
 
     for (int bin = 0; bin < usableBins; ++bin)
     {
-        const int trackIndex = bin < ledger.sourceBinTrackIndices.size()
-            ? ledger.sourceBinTrackIndices[bin]
-            : -1;
-        if (trackIndex >= 0 && trackIndex < ledger.tracks.size()
-            && trackIsUsable(ledger.tracks[trackIndex]))
-        {
-            ownership_[static_cast<std::size_t>(bin)] = BinOwnership::ridge;
-            continue;
-        }
-
         const float harmonic = bin < analysis.harmonicMask.size()
             ? clamp01(analysis.harmonicMask[bin])
             : 0.0f;
         const float frequencyHz = static_cast<float>(bin) * binWidthHz;
         const float eventEvidence = clamp01(analysis.onsetStrength)
-            * (0.30f + 0.70f * (1.0f - harmonic));
+            * (0.25f + 0.75f * (1.0f - harmonic));
         const float airEvidence = (1.0f - harmonic)
             * clamp01(analysis.breathiness)
-            * clamp01((frequencyHz - 2200.0f) / 5200.0f);
+            * clamp01((frequencyHz - 1800.0f) / 6200.0f);
 
-        if (eventEvidence > 0.42f)
+        if (harmonic >= 0.45f)
+            ownership_[static_cast<std::size_t>(bin)] = BinOwnership::ridge;
+        else if (eventEvidence >= 0.38f)
             ownership_[static_cast<std::size_t>(bin)] = BinOwnership::event;
-        else if (airEvidence > 0.18f)
+        else if (airEvidence >= 0.16f)
             ownership_[static_cast<std::size_t>(bin)] = BinOwnership::air;
         else
             ownership_[static_cast<std::size_t>(bin)] = BinOwnership::unclassified;
     }
 }
 
-void NeumatonOutputRenderer::calculateRidgeNormalisation(
-    const AnalysisFrameView& analysis,
-    const CorrectionTrajectoryFrame& trajectory,
-    const RidgeLedgerFrameView& ledger,
-    float formantPreservation) noexcept
-{
-    std::fill(ridgeSourceEnergy_.begin(), ridgeSourceEnergy_.end(), 0.0f);
-    std::fill(ridgePredictedEnergy_.begin(), ridgePredictedEnergy_.end(), 0.0f);
-    std::fill(ridgeNormalisationGain_.begin(), ridgeNormalisationGain_.end(), 1.0f);
-
-    const int usableBins = std::min({ analysis.positiveBinCount,
-                                      analysis.magnitudes.size(),
-                                      static_cast<int>(ownership_.size()) });
-
-    for (int sourceBin = 1; sourceBin < usableBins; ++sourceBin)
-    {
-        if (ownership_[static_cast<std::size_t>(sourceBin)] != BinOwnership::ridge)
-            continue;
-        const int trackIndex = sourceBin < ledger.sourceBinTrackIndices.size()
-            ? ledger.sourceBinTrackIndices[sourceBin]
-            : -1;
-        if (trackIndex < 0
-            || trackIndex >= ledger.tracks.size()
-            || trackIndex >= static_cast<int>(ridgeSourceEnergy_.size()))
-            continue;
-
-        const auto& track = ledger.tracks[trackIndex];
-        if (!trackIsUsable(track))
-            continue;
-
-        const float magnitude = std::max(0.0f, analysis.magnitudes[sourceBin]);
-        if (magnitude <= magnitudeFloor)
-            continue;
-
-        const double sourcePosition = sourceBin < analysis.trueSourceBins.size()
-            && std::isfinite(analysis.trueSourceBins[sourceBin])
-            ? analysis.trueSourceBins[sourceBin]
-            : static_cast<double>(sourceBin);
-        const double targetPosition = sourcePosition * ridgeRatio(track, trajectory);
-        if (targetPosition < 0.0
-            || targetPosition > static_cast<double>(usableBins - 1))
-            continue;
-
-        const float shapeGain = formantGain(analysis,
-                                            sourcePosition,
-                                            targetPosition,
-                                            formantPreservation);
-        const float sourceEnergy = magnitude * magnitude;
-        const float targetMagnitude = magnitude * shapeGain;
-        ridgeSourceEnergy_[static_cast<std::size_t>(trackIndex)] += sourceEnergy;
-        ridgePredictedEnergy_[static_cast<std::size_t>(trackIndex)] +=
-            targetMagnitude * targetMagnitude;
-    }
-
-    const int usableTracks = std::min(ledger.tracks.size(),
-                                      static_cast<int>(ridgeNormalisationGain_.size()));
-    for (int trackIndex = 0; trackIndex < usableTracks; ++trackIndex)
-    {
-        const float sourceEnergy = ridgeSourceEnergy_[static_cast<std::size_t>(trackIndex)];
-        const float predictedEnergy = ridgePredictedEnergy_[static_cast<std::size_t>(trackIndex)];
-        if (sourceEnergy > 1.0e-18f && predictedEnergy > 1.0e-18f)
-        {
-            ridgeNormalisationGain_[static_cast<std::size_t>(trackIndex)] = std::clamp(
-                std::sqrt(sourceEnergy / predictedEnergy), 0.50f, 2.0f);
-        }
-    }
-}
-
-void NeumatonOutputRenderer::buildSpectrum(
+void NeumatonOutputRenderer::buildFullSpectrum(
     const AnalysisFrameView& analysis,
     const CorrectionTrajectoryFrame& trajectory,
     const RidgeLedgerFrameView& ledger,
@@ -301,110 +222,317 @@ void NeumatonOutputRenderer::buildSpectrum(
     const int usableBins = std::min({ analysis.positiveBinCount,
                                       analysis.magnitudes.size(),
                                       static_cast<int>(ownership_.size()) });
+    if (usableBins <= 1)
+        return;
 
-    const auto commit = [this, usableBins](int bin,
-                                           Complex value,
-                                           int ownerToken) noexcept
-    {
-        if (bin < 0 || bin >= usableBins)
-            return;
-        const std::size_t index = static_cast<std::size_t>(bin);
-        const float energy = std::norm(value);
-        if (destinationOwnerToken_[index] == 0)
-            destinationOwnerToken_[index] = ownerToken;
-        else if (destinationOwnerToken_[index] != ownerToken)
-            destinationCollisionEnergy_[index] += energy;
-        destinationEnergy_[index] += energy;
-        spectrum_[index] += value;
-    };
+    const double ratio = correctionRatio(analysis, trajectory);
+    const bool resetPhase = analysis.phaseReset
+        || trajectory.forceReset
+        || analysis.onsetStrength >= 0.58f;
 
     for (int sourceBin = 0; sourceBin < usableBins; ++sourceBin)
     {
         const float magnitude = std::max(0.0f, analysis.magnitudes[sourceBin]);
-        if (magnitude <= magnitudeFloor)
+        if (!(magnitude > magnitudeFloor))
             continue;
 
-        const auto owner = ownership_[static_cast<std::size_t>(sourceBin)];
-        const int trackIndex = sourceBin < ledger.sourceBinTrackIndices.size()
-            ? ledger.sourceBinTrackIndices[sourceBin]
-            : -1;
-
-        if (owner == BinOwnership::ridge
-            && trackIndex >= 0
-            && trackIndex < ledger.tracks.size()
-            && trackIndex < static_cast<int>(ridgeNormalisationGain_.size()))
+        const double sourceBinPosition = sourcePosition(analysis, sourceBin);
+        const double targetPosition = sourceBinPosition * ratio;
+        if (targetPosition < 0.0
+            || targetPosition > static_cast<double>(usableBins - 1))
         {
-            const auto& track = ledger.tracks[trackIndex];
-            if (trackIsUsable(track))
-            {
-                const double ratio = ridgeRatio(track, trajectory);
-                const double sourcePosition = sourceBin < analysis.trueSourceBins.size()
-                    && std::isfinite(analysis.trueSourceBins[sourceBin])
-                    ? analysis.trueSourceBins[sourceBin]
-                    : static_cast<double>(sourceBin);
-                const double targetPosition = sourcePosition * ratio;
-                if (targetPosition >= 0.0
-                    && targetPosition <= static_cast<double>(usableBins - 1))
-                {
-                    const double ridgeSourceBin = static_cast<double>(track.sourceFrequencyHz)
-                        * static_cast<double>(analysis.frameSize)
-                        / std::max(1.0, analysis.sampleRate);
-                    const double ridgeTargetBin = static_cast<double>(track.targetFrequencyHz)
-                        * static_cast<double>(analysis.frameSize)
-                        / std::max(1.0, analysis.sampleRate);
-                    const double measuredSlope = unwrapNear(
-                        static_cast<double>(track.groupDelaySlopeRadiansPerBin),
-                        groupDelayPrior);
-                    const double targetSlope = 0.82 * measuredSlope
-                        / std::max(0.25, ratio)
-                        + 0.18 * groupDelayPrior;
-                    const double phase = wrapPhase(track.targetPhase
-                        + targetSlope * (targetPosition - ridgeTargetBin)
-                        + 0.04 * measuredSlope * (sourcePosition - ridgeSourceBin));
-
-                    const float shapeGain = formantGain(analysis,
-                                                        sourcePosition,
-                                                        targetPosition,
-                                                        formantPreservation);
-                    const float localGain = ridgeNormalisationGain_[
-                        static_cast<std::size_t>(trackIndex)];
-                    const float targetMagnitude = magnitude * shapeGain * localGain;
-                    const Complex polar(targetMagnitude * static_cast<float>(std::cos(phase)),
-                                        targetMagnitude * static_cast<float>(std::sin(phase)));
-
-                    const int lowerBin = static_cast<int>(std::floor(targetPosition));
-                    const int upperBin = lowerBin + 1;
-                    const float fraction = static_cast<float>(targetPosition
-                        - static_cast<double>(lowerBin));
-                    const float lowerWeight = std::cos(0.5f * static_cast<float>(pi) * fraction);
-                    const float upperWeight = std::sin(0.5f * static_cast<float>(pi) * fraction);
-                    const int ownerToken = static_cast<int>(track.id == 0u ? 1u : track.id);
-                    commit(lowerBin, polar * lowerWeight, ownerToken);
-                    commit(upperBin, polar * upperWeight, ownerToken);
-                    continue;
-                }
-            }
+            continue;
         }
 
-        Complex identity {};
-        if (sourceBin < analysis.analysedSpectrum.size())
-            identity = analysis.analysedSpectrum[sourceBin];
-        else
-        {
-            const float phase = sourceBin < analysis.analysisPhases.size()
-                ? analysis.analysisPhases[sourceBin]
-                : 0.0f;
-            identity = Complex(magnitude * std::cos(phase),
-                               magnitude * std::sin(phase));
-        }
-
-        int token = -3;
-        if (owner == BinOwnership::event)
-            token = -1;
-        else if (owner == BinOwnership::air)
-            token = -2;
-        commit(sourceBin, identity, token);
+        const int peakBin = nearestPeakForBin(analysis, sourceBin);
+        const double phase = synthesisPhase(analysis,
+                                            ledger,
+                                            sourceBin,
+                                            peakBin,
+                                            targetPosition,
+                                            resetPhase);
+        const double slope = localPhaseSlope(analysis,
+                                             ledger,
+                                             sourceBin,
+                                             peakBin,
+                                             ratio);
+        const float harmonicEvidence = sourceBin < analysis.harmonicMask.size()
+            ? clamp01(analysis.harmonicMask[sourceBin])
+            : 0.0f;
+        const float gain = formantGain(analysis,
+                                       sourceBinPosition,
+                                       targetPosition,
+                                       formantPreservation,
+                                       harmonicEvidence);
+        const float targetMagnitude = magnitude * gain;
+        depositMappedBin(sourceBin,
+                         targetPosition,
+                         targetMagnitude,
+                         phase,
+                         slope);
     }
+
+
+}
+
+void NeumatonOutputRenderer::depositMappedBin(int /*sourceBin*/,
+                                               double targetPosition,
+                                               float magnitude,
+                                               double phase,
+                                               double phaseSlope) noexcept
+{
+    if (!(magnitude > magnitudeFloor) || !std::isfinite(targetPosition))
+        return;
+
+    const int centre = static_cast<int>(std::floor(targetPosition));
+    const double fraction = targetPosition - static_cast<double>(centre);
+    const double oneMinus = 1.0 - fraction;
+
+    // Smooth, non-negative four-bin transport. L2 normalisation preserves the
+    // source-bin energy without the two-bin weight exchange that produced the
+    // audible amplitude modulation in the former renderer.
+    float weights[4] {
+        static_cast<float>((oneMinus * oneMinus * oneMinus) / 6.0),
+        static_cast<float>((3.0 * fraction * fraction * fraction
+                          - 6.0 * fraction * fraction + 4.0) / 6.0),
+        static_cast<float>((-3.0 * fraction * fraction * fraction
+                          + 3.0 * fraction * fraction
+                          + 3.0 * fraction + 1.0) / 6.0),
+        static_cast<float>((fraction * fraction * fraction) / 6.0)
+    };
+    const int bins[4] { centre - 1, centre, centre + 1, centre + 2 };
+
+    float weightEnergy = 0.0f;
+    for (int index = 0; index < 4; ++index)
+    {
+        if (bins[index] >= 0
+            && bins[index] < static_cast<int>(destinationDepositedEnergy_.size()))
+        {
+            weightEnergy += weights[index] * weights[index];
+        }
+    }
+    if (!(weightEnergy > 1.0e-12f))
+        return;
+
+    const float inverseNorm = 1.0f / std::sqrt(weightEnergy);
+    for (int index = 0; index < 4; ++index)
+    {
+        const int destinationBin = bins[index];
+        if (destinationBin < 0
+            || destinationBin >= static_cast<int>(destinationDepositedEnergy_.size()))
+        {
+            continue;
+        }
+
+        const float weight = weights[index] * inverseNorm;
+        const double binPhase = phase
+            + phaseSlope * (static_cast<double>(destinationBin) - targetPosition);
+        const float amplitude = magnitude * weight;
+        const Complex contribution(
+            amplitude * static_cast<float>(std::cos(binPhase)),
+            amplitude * static_cast<float>(std::sin(binPhase)));
+        spectrum_[static_cast<std::size_t>(destinationBin)] += contribution;
+        destinationDepositedEnergy_[static_cast<std::size_t>(destinationBin)]
+            += amplitude * amplitude;
+    }
+}
+
+double NeumatonOutputRenderer::correctionRatio(
+    const AnalysisFrameView& analysis,
+    const CorrectionTrajectoryFrame& trajectory) noexcept
+{
+    double ratio = lastCorrectionRatio_;
+    bool newRatioValid = false;
+
+    if (std::isfinite(trajectory.correctionCents)
+        && (trajectory.targetValid || std::abs(trajectory.correctionCents) > 1.0e-8))
+    {
+        ratio = std::exp2(trajectory.correctionCents / 1200.0);
+        newRatioValid = true;
+    }
+    else if (trajectory.targetPitchHz > 0.0f
+             && analysis.detectedPitchHz > 0.0f
+             && std::isfinite(trajectory.targetPitchHz)
+             && std::isfinite(analysis.detectedPitchHz))
+    {
+        ratio = static_cast<double>(trajectory.targetPitchHz)
+              / static_cast<double>(analysis.detectedPitchHz);
+        newRatioValid = true;
+    }
+
+    ratio = std::clamp(ratio, 0.25, 4.0);
+    if (newRatioValid)
+    {
+        lastCorrectionRatio_ = ratio;
+        correctionRatioValid_ = true;
+    }
+    else if (!correctionRatioValid_)
+    {
+        lastCorrectionRatio_ = 1.0;
+        ratio = 1.0;
+    }
+
+    return ratio;
+}
+
+double NeumatonOutputRenderer::sourcePosition(
+    const AnalysisFrameView& analysis,
+    int sourceBin) const noexcept
+{
+    if (sourceBin >= 0
+        && sourceBin < analysis.trueSourceBins.size()
+        && std::isfinite(analysis.trueSourceBins[sourceBin])
+        && analysis.trueSourceBins[sourceBin] >= 0.0)
+    {
+        return analysis.trueSourceBins[sourceBin];
+    }
+    return static_cast<double>(std::max(0, sourceBin));
+}
+
+int NeumatonOutputRenderer::nearestPeakForBin(
+    const AnalysisFrameView& analysis,
+    int sourceBin) const noexcept
+{
+    if (sourceBin >= 0 && sourceBin < analysis.nearestPeak.size())
+    {
+        const int peak = analysis.nearestPeak[sourceBin];
+        if (peak >= 0 && peak < analysis.positiveBinCount)
+            return peak;
+    }
+    return sourceBin;
+}
+
+int NeumatonOutputRenderer::trackForPeak(
+    const RidgeLedgerFrameView& ledger,
+    int peakBin) const noexcept
+{
+    if (peakBin < 0 || peakBin >= ledger.sourceBinTrackIndices.size())
+        return -1;
+    const int trackIndex = ledger.sourceBinTrackIndices[peakBin];
+    if (trackIndex < 0 || trackIndex >= ledger.tracks.size())
+        return -1;
+    return trackIsUsable(ledger.tracks[trackIndex]) ? trackIndex : -1;
+}
+
+double NeumatonOutputRenderer::synthesisPhase(
+    const AnalysisFrameView& analysis,
+    const RidgeLedgerFrameView& ledger,
+    int sourceBin,
+    int peakBin,
+    double targetPosition,
+    bool resetPhase) noexcept
+{
+    const int safeSource = std::clamp(sourceBin,
+                                      0,
+                                      std::max(0, analysis.analysisPhases.size() - 1));
+    const int safePeak = std::clamp(peakBin,
+                                    0,
+                                    std::max(0, analysis.analysisPhases.size() - 1));
+    const double sourcePhase = analysis.analysisPhases.empty()
+        ? 0.0
+        : static_cast<double>(analysis.analysisPhases[safeSource]);
+    const double peakPhase = analysis.analysisPhases.empty()
+        ? sourcePhase
+        : static_cast<double>(analysis.analysisPhases[safePeak]);
+    const double relativePhase = wrapPhase(sourcePhase - peakPhase);
+
+    const float harmonicEvidence = sourceBin < analysis.harmonicMask.size()
+        ? clamp01(analysis.harmonicMask[sourceBin])
+        : 0.0f;
+    const int trackIndex = harmonicEvidence >= 0.20f
+        ? trackForPeak(ledger, peakBin)
+        : -1;
+
+    if (trackIndex >= 0 && !resetPhase)
+        return wrapPhase(ledger.tracks[trackIndex].targetPhase + relativePhase);
+
+    if (harmonicEvidence < 0.20f)
+{
+    const auto aperiodicIndex = static_cast<std::size_t>(std::clamp(
+      sourceBin,
+      0,
+      static_cast<int>(freeSynthesisPhaseValid_.size()) - 1));
+    freeSynthesisPhaseValid_[aperiodicIndex] = std::uint8_t { 0 };
+    return wrapPhase(sourcePhase);
+}
+
+    const auto phaseIndex = static_cast<std::size_t>(std::clamp(
+        sourceBin,
+        0,
+        static_cast<int>(freeSynthesisPhase_.size()) - 1));
+    if (resetPhase || freeSynthesisPhaseValid_[phaseIndex] == 0u)
+    {
+        freeSynthesisPhase_[phaseIndex] = sourcePhase;
+        freeSynthesisPhaseValid_[phaseIndex] = 1u;
+    }
+    else
+    {
+        const double advance = twoPi
+            * static_cast<double>(spec_.hopSize)
+            * targetPosition
+            / static_cast<double>(spec_.frameSize);
+        freeSynthesisPhase_[phaseIndex] = wrapPhase(
+            freeSynthesisPhase_[phaseIndex] + advance);
+    }
+    return freeSynthesisPhase_[phaseIndex];
+}
+
+double NeumatonOutputRenderer::localPhaseSlope(
+    const AnalysisFrameView& analysis,
+    const RidgeLedgerFrameView& ledger,
+    int sourceBin,
+    int peakBin,
+    double ratio) const noexcept
+{
+    const int trackIndex = trackForPeak(ledger, peakBin);
+    if (trackIndex >= 0)
+    {
+        return static_cast<double>(
+            ledger.tracks[trackIndex].groupDelaySlopeRadiansPerBin)
+            / std::max(0.25, ratio);
+    }
+
+    if (analysis.analysisPhases.size() < 3)
+        return 0.0;
+    const int centre = std::clamp(sourceBin,
+                                  1,
+                                  analysis.analysisPhases.size() - 2);
+    const double left = analysis.analysisPhases[centre - 1];
+    const double right = analysis.analysisPhases[centre + 1];
+    return 0.5 * wrapPhase(right - left) / std::max(0.25, ratio);
+}
+
+float NeumatonOutputRenderer::formantGain(
+    const AnalysisFrameView& analysis,
+    double sourceBin,
+    double targetBin,
+    float amount,
+    float harmonicEvidence) const noexcept
+{
+    if (analysis.spectralEnvelope.empty())
+        return 1.0f;
+
+    const float safeAmount = clamp01(amount);
+// Formant compensation belongs only to periodic vocal structure.
+// Aperiodic consonants and breath still follow the scale ratio, but
+// do not acquire moving envelope correction.
+const float harmonicAmount = clamp01(harmonicEvidence);
+const float effectiveAmount = safeAmount
+    * harmonicAmount * harmonicAmount;
+    if (effectiveAmount <= 1.0e-4f)
+        return 1.0f;
+
+    const float sourceEnvelope = interpolate(analysis.spectralEnvelope,
+                                             sourceBin,
+                                             1.0f);
+    const float targetEnvelope = interpolate(analysis.spectralEnvelope,
+                                             targetBin,
+                                             sourceEnvelope);
+    const float ratio = std::clamp(
+        targetEnvelope / std::max(1.0e-8f, sourceEnvelope),
+        0.25f,
+        4.0f);
+    return std::clamp(std::pow(ratio, effectiveAmount), 0.50f, 2.0f);
 }
 
 void NeumatonOutputRenderer::completeConjugateSymmetry() noexcept
@@ -450,7 +578,6 @@ void NeumatonOutputRenderer::updateDiagnostics(
                                       static_cast<int>(ownership_.size()) });
     double inputEnergy = 0.0;
     double outputEnergy = 0.0;
-    double assignedEnergy = 0.0;
     double ridgeEnergy = 0.0;
     double eventEnergy = 0.0;
     double airEnergy = 0.0;
@@ -468,7 +595,6 @@ void NeumatonOutputRenderer::updateDiagnostics(
         const double sourceMagnitude = std::max(0.0f, analysis.magnitudes[bin]);
         const double sourceEnergy = sourceMagnitude * sourceMagnitude;
         inputEnergy += sourceEnergy;
-        assignedEnergy += sourceEnergy;
 
         switch (ownership_[static_cast<std::size_t>(bin)])
         {
@@ -478,19 +604,22 @@ void NeumatonOutputRenderer::updateDiagnostics(
             case BinOwnership::unclassified: unclassifiedEnergy += sourceEnergy; break;
         }
 
-        outputEnergy += std::norm(spectrum_[static_cast<std::size_t>(bin)]);
-        collisionEnergy += destinationCollisionEnergy_[static_cast<std::size_t>(bin)];
+        const auto index = static_cast<std::size_t>(bin);
+        const double actualEnergy = std::norm(spectrum_[index]);
+        outputEnergy += actualEnergy;
+        collisionEnergy += std::abs(
+            static_cast<double>(destinationDepositedEnergy_[index]) - actualEnergy);
 
         if (bin > 0 && bin + 1 < usableBins)
         {
             const Complex left = spectrum_[static_cast<std::size_t>(bin - 1)];
-            const Complex centre = spectrum_[static_cast<std::size_t>(bin)];
+            const Complex centre = spectrum_[index];
             const Complex right = spectrum_[static_cast<std::size_t>(bin + 1)];
             const double weight = std::abs(centre);
             if (weight > 1.0e-9)
             {
-                const double curvature = wrapPhase(std::arg(right)
-                    - 2.0 * std::arg(centre) + std::arg(left));
+                const double curvature = wrapPhase(
+                    std::arg(right) - 2.0 * std::arg(centre) + std::arg(left));
                 phaseCoherenceSum += weight * (0.5 + 0.5 * std::cos(curvature));
                 phaseCoherenceWeight += weight;
             }
@@ -498,8 +627,8 @@ void NeumatonOutputRenderer::updateDiagnostics(
 
         if (previousSpectrumValid_)
         {
-            const Complex current = spectrum_[static_cast<std::size_t>(bin)];
-            const Complex previous = previousSpectrum_[static_cast<std::size_t>(bin)];
+            const Complex current = spectrum_[index];
+            const Complex previous = previousSpectrum_[index];
             temporalDistance += std::norm(current - previous);
             temporalReference += std::norm(current) + std::norm(previous);
 
@@ -512,8 +641,8 @@ void NeumatonOutputRenderer::updateDiagnostics(
                     * static_cast<double>(spec_.hopSize)
                     * static_cast<double>(bin)
                     / static_cast<double>(spec_.frameSize);
-                const double phaseError = wrapPhase(std::arg(current)
-                    - std::arg(previous) - expectedAdvance);
+                const double phaseError = wrapPhase(
+                    std::arg(current) - std::arg(previous) - expectedAdvance);
                 olaCoherenceSum += weight * (0.5 + 0.5 * std::cos(phaseError));
                 olaWeight += weight;
             }
@@ -524,8 +653,9 @@ void NeumatonOutputRenderer::updateDiagnostics(
     diagnostics_.ridgeEnergyRatio = static_cast<float>(ridgeEnergy * inverseInput);
     diagnostics_.eventEnergyRatio = static_cast<float>(eventEnergy * inverseInput);
     diagnostics_.airEnergyRatio = static_cast<float>(airEnergy * inverseInput);
-    diagnostics_.unclassifiedEnergyRatio = static_cast<float>(unclassifiedEnergy * inverseInput);
-    diagnostics_.assignedEnergyRatio = static_cast<float>(assignedEnergy * inverseInput);
+    diagnostics_.unclassifiedEnergyRatio = static_cast<float>(
+        unclassifiedEnergy * inverseInput);
+    diagnostics_.assignedEnergyRatio = inputEnergy > 1.0e-18 ? 1.0f : 0.0f;
     diagnostics_.destinationCollisionEnergyRatio = outputEnergy > 1.0e-18
         ? static_cast<float>(collisionEnergy / outputEnergy)
         : 0.0f;
@@ -542,6 +672,7 @@ void NeumatonOutputRenderer::updateDiagnostics(
         && outputEnergy > 1.0e-18
         ? static_cast<float>(10.0 * std::log10(inputEnergy / outputEnergy))
         : 0.0f;
+    diagnostics_.formantEnvelopeError = 0.0f;
     diagnostics_.frameValid = inputEnergy > 1.0e-18 && usableBins > 2;
 }
 
@@ -589,44 +720,6 @@ void NeumatonOutputRenderer::fft(std::vector<Complex>& data,
     }
 }
 
-double NeumatonOutputRenderer::ridgeRatio(
-    const RidgeState& track,
-    const CorrectionTrajectoryFrame& trajectory) const noexcept
-{
-    if (track.sourceFrequencyHz > 0.0f
-        && track.targetFrequencyHz > 0.0f
-        && std::isfinite(track.sourceFrequencyHz)
-        && std::isfinite(track.targetFrequencyHz))
-    {
-        return std::clamp(static_cast<double>(track.targetFrequencyHz)
-            / static_cast<double>(track.sourceFrequencyHz), 0.25, 4.0);
-    }
-    if (trajectory.targetValid && std::isfinite(trajectory.correctionCents))
-        return std::clamp(std::exp2(trajectory.correctionCents / 1200.0), 0.25, 4.0);
-    return 1.0;
-}
-
-float NeumatonOutputRenderer::formantGain(
-    const AnalysisFrameView& analysis,
-    double sourceBin,
-    double targetBin,
-    float amount) const noexcept
-{
-    const float safeAmount = clamp01(amount);
-    if (safeAmount <= 1.0e-4f || analysis.spectralEnvelope.empty())
-        return 1.0f;
-    const float sourceEnvelope = interpolate(analysis.spectralEnvelope,
-                                             sourceBin,
-                                             1.0f);
-    const float targetEnvelope = interpolate(analysis.spectralEnvelope,
-                                             targetBin,
-                                             sourceEnvelope);
-    const float ratio = std::clamp(sourceEnvelope / std::max(1.0e-8f, targetEnvelope),
-                                   0.25f,
-                                   4.0f);
-    return std::clamp(std::pow(ratio, safeAmount), 0.50f, 2.0f);
-}
-
 float NeumatonOutputRenderer::interpolate(
     const ConstArrayView<float>& values,
     double position,
@@ -634,22 +727,20 @@ float NeumatonOutputRenderer::interpolate(
 {
     if (values.empty() || !std::isfinite(position))
         return fallback;
-    position = std::clamp(position, 0.0,
+    position = std::clamp(position,
+                          0.0,
                           static_cast<double>(values.size() - 1));
     const int lower = static_cast<int>(std::floor(position));
     const int upper = std::min(values.size() - 1, lower + 1);
-    const float fraction = static_cast<float>(position - static_cast<double>(lower));
-    const float lowerValue = std::isfinite(values[lower]) ? values[lower] : fallback;
-    const float upperValue = std::isfinite(values[upper]) ? values[upper] : lowerValue;
+    const float fraction = static_cast<float>(
+        position - static_cast<double>(lower));
+    const float lowerValue = std::isfinite(values[lower])
+        ? values[lower]
+        : fallback;
+    const float upperValue = std::isfinite(values[upper])
+        ? values[upper]
+        : lowerValue;
     return lowerValue + fraction * (upperValue - lowerValue);
-}
-
-double NeumatonOutputRenderer::unwrapNear(double value,
-                                          double reference) noexcept
-{
-    if (!std::isfinite(value))
-        return reference;
-    return value + twoPi * std::nearbyint((reference - value) / twoPi);
 }
 
 double NeumatonOutputRenderer::wrapPhase(double phase) noexcept

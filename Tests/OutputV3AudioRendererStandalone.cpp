@@ -69,6 +69,106 @@ int main()
     std::vector<int> peaks;
     peaks.reserve(16);
 
+    // Fundamental scale-cage invariant: ownership may change reconstruction,
+    // but neither tonal nor aperiodic energy may remain at its source frequency.
+    const auto verifyCompleteTransport = [&](int sourceBin,
+                                             float harmonicEvidence,
+                                             float breathiness) -> bool
+    {
+        renderer.reset();
+        std::fill(analysed.begin(), analysed.end(), std::complex<float> {});
+        std::fill(magnitudes.begin(), magnitudes.end(), 0.0f);
+        std::fill(phases.begin(), phases.end(), 0.0f);
+        std::fill(previousPhases.begin(), previousPhases.end(), 0.0f);
+        std::fill(harmonicMask.begin(), harmonicMask.end(), 0.0f);
+        std::fill(envelope.begin(), envelope.end(), 1.0f);
+        peaks.clear();
+
+        for (int bin = 0; bin < positiveBins; ++bin)
+        {
+            trueBins[static_cast<std::size_t>(bin)] = static_cast<double>(bin);
+            nearestPeak[static_cast<std::size_t>(bin)] = sourceBin;
+        }
+
+        analysed[static_cast<std::size_t>(sourceBin)] = { 1.0f, 0.0f };
+        magnitudes[static_cast<std::size_t>(sourceBin)] = 1.0f;
+        harmonicMask[static_cast<std::size_t>(sourceBin)] = harmonicEvidence;
+        peaks.push_back(sourceBin);
+
+        AnalysisFrameView analysis;
+        analysis.analysedSpectrum = { analysed.data(), frameSize };
+        analysis.magnitudes = { magnitudes.data(), positiveBins };
+        analysis.analysisPhases = { phases.data(), positiveBins };
+        analysis.previousAnalysisPhases = { previousPhases.data(), positiveBins };
+        analysis.trueSourceBins = { trueBins.data(), positiveBins };
+        analysis.harmonicMask = { harmonicMask.data(), positiveBins };
+        analysis.spectralEnvelope = { envelope.data(), positiveBins };
+        analysis.nearestPeak = { nearestPeak.data(), positiveBins };
+        analysis.peakBins = { peaks.data(), static_cast<int>(peaks.size()) };
+        analysis.sampleRate = sampleRate;
+        analysis.frameSize = frameSize;
+        analysis.hopSize = hopSize;
+        analysis.positiveBinCount = positiveBins;
+        analysis.frameEndSample = frameSize - 1;
+        analysis.detectedPitchHz = static_cast<float>(sourceBin * sampleRate / frameSize);
+        analysis.confidence = harmonicEvidence > 0.5f ? 0.98f : 0.05f;
+        analysis.voicing = harmonicEvidence > 0.5f ? 0.98f : 0.03f;
+        analysis.consensus = harmonicEvidence > 0.5f ? 0.96f : 0.02f;
+        analysis.harmonicity = harmonicEvidence;
+        analysis.breathiness = breathiness;
+        analysis.onsetStrength = breathiness > 0.5f ? 0.85f : 0.0f;
+        analysis.spectralReliability = harmonicEvidence > 0.5f ? 0.96f : 0.08f;
+        analysis.maskStability = 0.95f;
+        analysis.phaseReset = true;
+
+        constexpr double correctionCents = 500.0;
+        const double ratio = std::exp2(correctionCents / 1200.0);
+        CorrectionTrajectoryFrame trajectory;
+        trajectory.previousCorrectionCents = correctionCents;
+        trajectory.correctionCents = correctionCents;
+        trajectory.previousTargetPitchHz = static_cast<float>(
+            analysis.detectedPitchHz * ratio);
+        trajectory.targetPitchHz = trajectory.previousTargetPitchHz;
+        trajectory.targetRevision = 1;
+        trajectory.targetValid = true;
+        trajectory.forceReset = true;
+
+        RidgeLedgerFrameView noTracks;
+        OutputSpectrumView preview;
+        {
+            Guard guard;
+            preview = renderer.inspectFrame(analysis, trajectory, noTracks, 0.0f);
+        }
+
+        const double targetPosition = static_cast<double>(sourceBin) * ratio;
+        const int supportFirst = static_cast<int>(std::floor(targetPosition)) - 1;
+        const int supportLast = static_cast<int>(std::floor(targetPosition)) + 2;
+        double totalEnergy = 0.0;
+        double supportEnergy = 0.0;
+        double outsideEnergy = 0.0;
+        for (int bin = 0; bin < positiveBins; ++bin)
+        {
+            const double energy = std::norm(preview.spectrum[bin]);
+            totalEnergy += energy;
+            if (bin >= supportFirst && bin <= supportLast)
+                supportEnergy += energy;
+            else
+                outsideEnergy += energy;
+        }
+
+        const double sourceEnergy = std::norm(preview.spectrum[sourceBin]);
+        return totalEnergy > 0.25
+            && supportEnergy > 0.25
+            && sourceEnergy < 1.0e-12
+            && outsideEnergy < 1.0e-10;
+    };
+
+    const bool tonalTransportComplete = verifyCompleteTransport(20, 1.0f, 0.0f);
+    const bool breathTransportComplete = verifyCompleteTransport(70, 0.0f, 1.0f);
+    if (!tonalTransportComplete) return 7;
+    if (!breathTransportComplete) return 8;
+
+    renderer.reset();
     double outputEnergy = 0.0;
     int validFrames = 0;
     int activeTracks = 0;
@@ -83,7 +183,8 @@ int main()
         std::fill(harmonicMask.begin(), harmonicMask.end(), 0.05f);
         peaks.clear();
 
-        const double f0 = 220.0 * std::exp2(12.0 * std::sin(twoPi * 5.0 * frame * hopSize / sampleRate) / 1200.0);
+        const double f0 = 220.0 * std::exp2(
+            12.0 * std::sin(twoPi * 5.0 * frame * hopSize / sampleRate) / 1200.0);
         for (int harmonic = 1; harmonic <= 8; ++harmonic)
         {
             const double frequency = f0 * harmonic;
@@ -91,12 +192,16 @@ int main()
             const int bin = static_cast<int>(std::lround(binPosition));
             if (bin <= 1 || bin >= positiveBins - 1) continue;
             const float amplitude = static_cast<float>(1.0 / harmonic);
-            const double phase = twoPi * frequency * frame * hopSize / sampleRate + 0.13 * harmonic;
-            const std::complex<float> value(amplitude * static_cast<float>(std::cos(phase)),
-                                            amplitude * static_cast<float>(std::sin(phase)));
+            const double phase = twoPi * frequency * frame * hopSize / sampleRate
+                               + 0.13 * harmonic;
+            const std::complex<float> value(
+                amplitude * static_cast<float>(std::cos(phase)),
+                amplitude * static_cast<float>(std::sin(phase)));
             analysed[static_cast<std::size_t>(bin)] += value;
-            magnitudes[static_cast<std::size_t>(bin)] = std::abs(analysed[static_cast<std::size_t>(bin)]);
-            phases[static_cast<std::size_t>(bin)] = std::arg(analysed[static_cast<std::size_t>(bin)]);
+            magnitudes[static_cast<std::size_t>(bin)] = std::abs(
+                analysed[static_cast<std::size_t>(bin)]);
+            phases[static_cast<std::size_t>(bin)] = std::arg(
+                analysed[static_cast<std::size_t>(bin)]);
             trueBins[static_cast<std::size_t>(bin)] = binPosition;
             harmonicMask[static_cast<std::size_t>(bin)] = 1.0f;
             envelope[static_cast<std::size_t>(bin)] = 1.0f + 0.08f * harmonic;
@@ -144,7 +249,8 @@ int main()
         CorrectionTrajectoryFrame trajectory;
         trajectory.previousCorrectionCents = 200.0;
         trajectory.correctionCents = 200.0;
-        trajectory.previousTargetPitchHz = static_cast<float>(f0 * std::exp2(200.0 / 1200.0));
+        trajectory.previousTargetPitchHz = static_cast<float>(
+            f0 * std::exp2(200.0 / 1200.0));
         trajectory.targetPitchHz = trajectory.previousTargetPitchHz;
         trajectory.targetRevision = 1;
         trajectory.targetValid = true;
@@ -154,14 +260,18 @@ int main()
         {
             Guard guard;
             ridgeFrame = ledger.processFrame(analysis, trajectory);
-            renderer.renderAndCommitFrame(analysis, trajectory, ridgeFrame, 0.9f,
+            renderer.renderAndCommitFrame(analysis,
+                                          trajectory,
+                                          ridgeFrame,
+                                          0.9f,
                                           analysis.frameEndSample);
         }
 
         const auto& diagnostics = renderer.getDiagnostics();
         validFrames += diagnostics.frameValid ? 1 : 0;
         activeTracks = std::max(activeTracks, ridgeFrame.activeTrackCount);
-        worstGainDb = std::max(worstGainDb, std::abs(diagnostics.requestedEnergyGainDb));
+        worstGainDb = std::max(worstGainDb,
+                               std::abs(diagnostics.requestedEnergyGainDb));
 
         const std::int64_t firstOutputSample = analysis.frameEndSample + 1;
         for (int sample = 0; sample < hopSize; ++sample)
@@ -174,6 +284,8 @@ int main()
     }
 
     std::cout << "allocations=" << guardedAllocations.load() << '\n'
+              << "tonal_transport_complete=" << tonalTransportComplete << '\n'
+              << "breath_transport_complete=" << breathTransportComplete << '\n'
               << "valid_frames=" << validFrames << '\n'
               << "active_tracks=" << activeTracks << '\n'
               << "output_energy=" << outputEnergy << '\n'

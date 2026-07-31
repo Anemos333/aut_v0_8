@@ -1,0 +1,95 @@
+name: Simplify Scale Cage Output
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/simplify-scale-cage-output.yml'
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  simplify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: scale-cage-output-v1
+          fetch-depth: 0
+
+      - name: Remove adaptive gain and aperiodic phase memory
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('Source/NeumatonOutputRenderer.cpp')
+          text = path.read_text()
+
+          input_energy = '    double inputEnergy = 0.0;\n'
+          input_accumulation = (
+              '        inputEnergy += static_cast<double>(magnitude) * magnitude;\n'
+          )
+          if input_energy not in text or input_accumulation not in text:
+              raise RuntimeError('frame energy servo anchors not found')
+          text = text.replace(input_energy, '', 1)
+          text = text.replace(input_accumulation, '', 1)
+
+          gain_start = text.index('    double outputEnergy = 0.0;\n')
+          gain_end = text.index(
+              '\n}\n\nvoid NeumatonOutputRenderer::depositMappedBin',
+              gain_start)
+          text = text[:gain_start] + text[gain_end:]
+
+          phase_function = text.index(
+              'double NeumatonOutputRenderer::synthesisPhase(')
+          phase_index = text.index(
+              '    const auto phaseIndex = static_cast<std::size_t>(std::clamp(',
+              phase_function)
+          aperiodic_block = '''    if (harmonicEvidence < 0.20f)
+          {
+              const auto aperiodicIndex = static_cast<std::size_t>(std::clamp(
+                  sourceBin,
+                  0,
+                  static_cast<int>(freeSynthesisPhaseValid_.size()) - 1));
+              freeSynthesisPhaseValid_[aperiodicIndex] = std::uint8_t { 0 };
+              return wrapPhase(sourcePhase);
+          }
+          
+          '''.replace('          ', '    ', 1).replace('\n      ', '\n    ')
+          text = text[:phase_index] + aperiodic_block + text[phase_index:]
+
+          formant_function = text.index(
+              'float NeumatonOutputRenderer::formantGain(')
+          amount_start = text.index(
+              '    const float safeAmount = clamp01(amount);\n',
+              formant_function)
+          amount_end = text.index(
+              '    if (effectiveAmount <= 1.0e-4f)\n',
+              amount_start)
+          formant_block = '''    const float safeAmount = clamp01(amount);
+          // Formant compensation belongs only to periodic vocal structure.
+          // Aperiodic consonants and breath still follow the scale ratio, but
+          // do not acquire moving envelope correction.
+          const float harmonicAmount = clamp01(harmonicEvidence);
+          const float effectiveAmount = safeAmount
+              * harmonicAmount * harmonicAmount;
+          '''.replace('\n      ', '\n    ')
+          text = text[:amount_start] + formant_block + text[amount_end:]
+
+          path.write_text(text)
+          PY
+
+          ! grep -q 'energyGain' Source/NeumatonOutputRenderer.cpp
+          grep -q 'aperiodicIndex' Source/NeumatonOutputRenderer.cpp
+          grep -q 'harmonicAmount \* harmonicAmount' Source/NeumatonOutputRenderer.cpp
+
+      - name: Commit simplified output
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Source/NeumatonOutputRenderer.cpp
+          git commit -m 'Keep aperiodic output stochastic and remove frame gain servo'
+          git push origin HEAD:scale-cage-output-v1
