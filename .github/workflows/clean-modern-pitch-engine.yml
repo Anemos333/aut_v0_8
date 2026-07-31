@@ -1,9 +1,9 @@
 name: Clean ModernPitchEngine detector graft
 
 on:
-  push:
+  pull_request:
     branches:
-      - modern-pitch-engine-clean-rewrite
+      - main
 
 permissions:
   contents: write
