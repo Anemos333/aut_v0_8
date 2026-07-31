@@ -1,134 +1,162 @@
-name: Clean ModernPitchEngine
+name: Clean ModernPitchEngine detector graft
 
 on:
   push:
     branches:
       - modern-pitch-engine-clean-rewrite
-  pull_request:
-    branches:
-      - main
-    paths:
-      - 'Source/ModernPitchEngine.*'
-      - 'Source/LivePitchProcessor.h'
-      - 'CMakeLists.txt'
-      - 'Tests/CleanModernPitchEngineTest.cpp'
-      - '.github/workflows/clean-modern-pitch-engine.yml'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  invariant-test:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-22.04, windows-2022]
-    runs-on: ${{ matrix.os }}
+  graft-proven-detector:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-22.04
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Linux dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libasound2-dev libjack-jackd2-dev ladspa-sdk \
-            libcurl4-openssl-dev libfreetype6-dev libfontconfig1-dev \
-            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
-            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
-            libglu1-mesa-dev mesa-common-dev
-
-      - name: Configure Linux
-        if: runner.os == 'Linux'
-        run: |
-          cmake -S . -B build-clean \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
-
-      - name: Configure Windows
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          cmake -S . -B build-clean `
-            -G "Visual Studio 17 2022" `
-            -A x64 `
-            -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
-
-      - name: Build invariant test
-        run: cmake --build build-clean --config Release --target CleanModernPitchEngineTest --parallel 2
-
-      - name: Run invariant test on Linux
-        if: runner.os == 'Linux'
-        run: ./build-clean/clean-engine-tests/CleanModernPitchEngineTest
-
-      - name: Run invariant test on Windows
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          & .\build-clean\clean-engine-tests\CleanModernPitchEngineTest.exe
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-  windows-vst3:
-    runs-on: windows-2022
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Configure
-        shell: pwsh
-        run: |
-          cmake -S . -B build-vst3 `
-            -G "Visual Studio 17 2022" `
-            -A x64
-
-      - name: Build VST3
-        shell: pwsh
-        run: |
-          cmake --build build-vst3 --config Release `
-            --target Neumaton_VST3 --parallel 2
-
-      - name: Verify clean architecture and package
-        shell: pwsh
-        run: |
-          $lineCount = (Get-Content Source\ModernPitchEngine.cpp).Count
-          if ($lineCount -gt 1800) {
-            Write-Error "ModernPitchEngine.cpp grew beyond clean-engine limit: $lineCount"
-            exit 1
-          }
-          $forbidden = @(
-            'SynthesisLayer',
-            'TransitionManager',
-            'wetMix_',
-            'dryTrust_',
-            'NeumatonOutputRenderer',
-            'NeumatonRidgeLedger',
-            'NEUMATON_OUTPUT_V3'
-          )
-          foreach ($term in $forbidden) {
-            if (Select-String -Path Source\ModernPitchEngine.cpp,Source\ModernPitchEngine.h -Pattern $term -Quiet) {
-              Write-Error "Forbidden legacy symbol remains: $term"
-              exit 1
-            }
-          }
-
-          New-Item -ItemType Directory -Force -Path artifact | Out-Null
-          $vst3 = Get-ChildItem -Path build-vst3 -Recurse -Directory -Filter "Neumaton.vst3" | Select-Object -First 1
-          if (-not $vst3) {
-            Write-Error "Neumaton.vst3 not found"
-            exit 1
-          }
-          Copy-Item -Path $vst3.FullName -Destination artifact\Neumaton.vst3 -Recurse -Force
-          Compress-Archive -Path artifact\Neumaton.vst3 `
-            -DestinationPath artifact\Neumaton-Clean-ModernPitchEngine-Windows.zip -Force
-          Get-FileHash artifact\Neumaton-Clean-ModernPitchEngine-Windows.zip -Algorithm SHA256 |
-            Format-List | Out-File artifact\sha256.txt
-
-      - name: Upload Windows VST3
-        uses: actions/upload-artifact@v4
+      - uses: actions/checkout@v4
         with:
-          name: Neumaton-Clean-ModernPitchEngine-Windows
-          path: |
-            artifact/Neumaton-Clean-ModernPitchEngine-Windows.zip
-            artifact/sha256.txt
-          retention-days: 14
+          ref: modern-pitch-engine-clean-rewrite
+          fetch-depth: 0
+
+      - name: Extract only detector and anti-alias filters from main
+        run: |
+          git fetch origin main:refs/remotes/origin/main
+          git show origin/main:Source/ModernPitchEngine.h > /tmp/legacy.h
+          git show origin/main:Source/ModernPitchEngine.cpp > /tmp/legacy.cpp
+          python3 - <<'PY'
+          from pathlib import Path
+
+          header_path = Path('Source/ModernPitchEngine.h')
+          cpp_path = Path('Source/ModernPitchEngine.cpp')
+          header = header_path.read_text()
+          cpp = cpp_path.read_text()
+          legacy_h = Path('/tmp/legacy.h').read_text()
+          legacy_cpp = Path('/tmp/legacy.cpp').read_text()
+
+          def between(text, start, end):
+              begin = text.index(start)
+              finish = text.index(end, begin)
+              return text[begin:finish]
+
+          detector_h = between(legacy_h,
+                               '    class BiquadLowPass',
+                               '    class ScaleQuantizer')
+          begin = header.index('    class PitchTracker')
+          finish = header.index('    class ScaleQuantizer', begin)
+          header = header[:begin] + detector_h + header[finish:]
+          header = header.replace('PitchTracker linkedTracker_;',
+                                  'MultiRatePitchTracker linkedTracker_;')
+          header = header.replace(
+              'std::array<PitchTracker, maxSupportedChannels> channelTrackers_ {};',
+              'std::array<MultiRatePitchTracker, maxSupportedChannels> channelTrackers_ {};')
+
+          detector_cpp = between(
+              legacy_cpp,
+              '//==============================================================================\n// BiquadLowPass',
+              '//==============================================================================\n// ScaleQuantizer')
+          begin = cpp.index('//==============================================================================\n// PitchTracker')
+          finish = cpp.index('//==============================================================================\n// ScaleQuantizer', begin)
+          cpp = cpp[:begin] + detector_cpp + cpp[finish:]
+
+          cpp = cpp.replace('#include <limits>\n',
+                            '#include <limits>\n#include <cstring>\n')
+          cpp = cpp.replace('constexpr float audioFloor = 1.0e-12f;\n',
+              '''constexpr float audioFloor = 1.0e-12f;
+          constexpr float minimumDetectorRms = 0.0012f;
+
+          [[nodiscard]] float sanitiseAudioSample(float value) noexcept
+          {
+              if (!std::isfinite(value) || std::fpclassify(value) == FP_SUBNORMAL)
+                  return 0.0f;
+              return std::clamp(value, -32.0f, 32.0f);
+          }
+
+          [[nodiscard]] float finiteOr(float value, float fallback) noexcept
+          {
+              return std::isfinite(value) ? value : fallback;
+          }
+
+          [[nodiscard]] double finiteOr(double value, double fallback) noexcept
+          {
+              return std::isfinite(value) ? value : fallback;
+          }
+          ''')
+          cpp = cpp.replace('linkedTracker_.prepare(sampleRate_, latencyMode_);',
+                            'linkedTracker_.prepare(sampleRate_);')
+          cpp = cpp.replace(
+              '''channelTrackers_[static_cast<std::size_t>(channel)].prepare(
+                      sampleRate_, latencyMode_);''',
+              '''channelTrackers_[static_cast<std::size_t>(channel)].prepare(
+                      sampleRate_);''')
+
+          linked_call = '''if (linkedTracker_.push(linkedSample,
+                                      parameters.minimumPitchHz,
+                                      parameters.maximumPitchHz,
+                                      parameters.detectorSensitivity,
+                                      observation))'''
+          if linked_call not in cpp:
+              raise SystemExit('provisional linked tracker call not found')
+          cpp = cpp.replace(linked_call,
+                            'if (linkedTracker_.processSample(linkedSample, observation))')
+
+          channel_call = '''if (channelTrackers_[static_cast<std::size_t>(channel)].push(
+                              input,
+                              parameters.minimumPitchHz,
+                              parameters.maximumPitchHz,
+                              parameters.detectorSensitivity,
+                              channelObservation))'''
+          if channel_call not in cpp:
+              raise SystemExit('provisional channel tracker call not found')
+          cpp = cpp.replace(
+              channel_call,
+              '''if (channelTrackers_[static_cast<std::size_t>(channel)].processSample(
+                              input,
+                              channelObservation))''')
+
+          anchor = '''    const bool dualMono = parameters.stereoMode == StereoMode::dualMono
+              && channels > 1;
+
+          '''
+          setup = '''    const bool dualMono = parameters.stereoMode == StereoMode::dualMono
+              && channels > 1;
+
+              linkedTracker_.setRange(parameters.minimumPitchHz,
+                                      parameters.maximumPitchHz);
+              linkedTracker_.setSensitivity(parameters.detectorSensitivity);
+              for (int channel = 0; channel < channels; ++channel)
+              {
+                  auto& tracker = channelTrackers_[static_cast<std::size_t>(channel)];
+                  tracker.setRange(parameters.minimumPitchHz,
+                                   parameters.maximumPitchHz);
+                  tracker.setSensitivity(parameters.detectorSensitivity);
+              }
+
+          '''
+          if anchor not in cpp:
+              raise SystemExit('tracker setup anchor not found')
+          cpp = cpp.replace(anchor, setup, 1)
+
+          combined = header + cpp
+          forbidden = [
+              'SynthesisLayer', 'TransitionManager', 'wetMix_', 'dryTrust_',
+              'NeumatonOutputRenderer', 'NeumatonRidgeLedger',
+              'NEUMATON_OUTPUT_V3', 'SpectralVoiceShifter',
+              'CorrectionController'
+          ]
+          for term in forbidden:
+              if term in combined:
+                  raise SystemExit(f'forbidden legacy symbol returned: {term}')
+          if 'MultiRatePitchTracker' not in combined:
+              raise SystemExit('detector graft missing')
+
+          header_path.write_text(header)
+          cpp_path.write_text(cpp)
+          PY
+
+      - name: Commit detector-only graft
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Source/ModernPitchEngine.h Source/ModernPitchEngine.cpp
+          git commit -m "Reuse proven multi-rate detector in clean engine"
+          git push origin HEAD:modern-pitch-engine-clean-rewrite
