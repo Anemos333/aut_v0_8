@@ -3,12 +3,31 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <cstring>
 
 namespace
 {
 constexpr double pi = 3.1415926535897932384626433832795;
 constexpr double twoPi = 2.0 * pi;
 constexpr float audioFloor = 1.0e-12f;
+constexpr float minimumDetectorRms = 0.0012f;
+
+[[nodiscard]] float sanitiseAudioSample(float value) noexcept
+{
+    if (!std::isfinite(value) || std::fpclassify(value) == FP_SUBNORMAL)
+        return 0.0f;
+    return std::clamp(value, -32.0f, 32.0f);
+}
+
+[[nodiscard]] float finiteOr(float value, float fallback) noexcept
+{
+    return std::isfinite(value) ? value : fallback;
+}
+
+[[nodiscard]] double finiteOr(double value, double fallback) noexcept
+{
+    return std::isfinite(value) ? value : fallback;
+}
 
 [[nodiscard]] float smoothStep(float edge0, float edge1, float value) noexcept
 {
@@ -28,329 +47,1176 @@ constexpr float audioFloor = 1.0e-12f;
 } // namespace
 
 //==============================================================================
-// PitchTracker
-void ModernPitchEngine::PitchTracker::prepare(double sampleRate,
-                                              LatencyMode mode)
+// BiquadLowPass
+
+void ModernPitchEngine::BiquadLowPass::prepare(double sampleRate,
+                                                double cutoffHz,
+                                                double q) noexcept
 {
-    sampleRate_ = std::isfinite(sampleRate) ? std::max(8000.0, sampleRate)
-                                            : 48000.0;
-    detectorSampleRate_ = sampleRate_ * 0.5;
+    const double safeSampleRate = std::max(1.0, sampleRate);
+    const double safeCutoff = std::clamp(cutoffHz, 10.0, safeSampleRate * 0.45);
+    const double safeQ = std::max(0.05, q);
 
-    switch (mode)
-    {
-        case LatencyMode::ultraLive:
-            analysisWindow_ = 1024;
-            analysisHop_ = 32;
-            break;
-        case LatencyMode::live:
-            analysisWindow_ = 1536;
-            analysisHop_ = 48;
-            break;
-        case LatencyMode::quality:
-            analysisWindow_ = 2048;
-            analysisHop_ = 64;
-            break;
-    }
+    const double omega = twoPi * safeCutoff / safeSampleRate;
+    const double cosine = std::cos(omega);
+    const double sine = std::sin(omega);
+    const double alpha = sine / (2.0 * safeQ);
+    const double a0 = 1.0 + alpha;
 
-    analysisWindow_ = std::clamp(analysisWindow_, 512, detectorRingSize);
-    analysisHop_ = std::max(16, analysisHop_);
+    b0_ = ((1.0 - cosine) * 0.5) / a0;
+    b1_ = (1.0 - cosine) / a0;
+    b2_ = b0_;
+    a1_ = (-2.0 * cosine) / a0;
+    a2_ = (1.0 - alpha) / a0;
     reset();
 }
 
-void ModernPitchEngine::PitchTracker::reset() noexcept
+void ModernPitchEngine::BiquadLowPass::reset() noexcept
 {
-    ring_.fill(0.0f);
-    scratch_.fill(0.0f);
-    writeIndex_ = 0;
-    filled_ = 0;
-    downsampleCounter_ = 0;
-    downsampleAccumulator_ = 0.0f;
-    samplesSinceAnalysis_ = 0;
-    shortEnergy_ = 0.0f;
-    longEnergy_ = 0.0f;
-    previousFrequencyHz_ = 0.0f;
-    pendingOctaveDirection_ = 0;
-    pendingOctaveCount_ = 0;
+    z1_ = 0.0;
+    z2_ = 0.0;
 }
 
-float ModernPitchEngine::PitchTracker::sampleFromNewest(int age) const noexcept
+float ModernPitchEngine::BiquadLowPass::process(float input) noexcept
 {
-    if (age < 0 || age >= filled_)
+    const double x = static_cast<double>(sanitiseAudioSample(input));
+    const double output = b0_ * x + z1_;
+    z1_ = b1_ * x - a1_ * output + z2_;
+    z2_ = b2_ * x - a2_ * output;
+    if (!std::isfinite(output) || !std::isfinite(z1_) || !std::isfinite(z2_))
+    {
+        reset();
         return 0.0f;
-
-    int index = writeIndex_ - 1 - age;
-    while (index < 0)
-        index += detectorRingSize;
-    return ring_[static_cast<std::size_t>(index)];
+    }
+    return static_cast<float>(output);
 }
 
-float ModernPitchEngine::PitchTracker::correlationAt(int lag,
-                                                     int stride) const noexcept
+//==============================================================================
+// MultiRatePitchTracker
+
+void ModernPitchEngine::MultiRatePitchTracker::prepare(double sampleRate) noexcept
 {
-    if (lag <= 0 || lag >= analysisWindow_)
-        return -1.0f;
+    sampleRate_ = std::isfinite(sampleRate)
+        ? std::max(8000.0, sampleRate)
+        : 48000.0;
 
-    double xy = 0.0;
-    double xx = 0.0;
-    double yy = 0.0;
-    int count = 0;
+    halfRateAntiAlias_.prepare(sampleRate_, std::min(5200.0, sampleRate_ * 0.20));
+    quarterRateAntiAlias_.prepare(sampleRate_ * 0.5,
+                                  std::min(2600.0, sampleRate_ * 0.10));
+    eighthRateAntiAlias_.prepare(sampleRate_ * 0.25,
+                                 std::min(1300.0, sampleRate_ * 0.05));
 
-    const int safeStride = std::max(1, stride);
-    for (int index = lag; index < analysisWindow_; index += safeStride)
+    dcBlockCoefficient_ = static_cast<float>(std::exp(-twoPi * 22.0 / sampleRate_));
+
+    fastEnergyCoefficient_ = static_cast<float>(
+        1.0 - std::exp(-1.0 / (0.0018 * sampleRate_)));
+    slowEnergyCoefficient_ = static_cast<float>(
+        1.0 - std::exp(-1.0 / (0.035 * sampleRate_)));
+
+    reset();
+}
+
+void ModernPitchEngine::MultiRatePitchTracker::reset() noexcept
+{
+    fullRateRing_.fill(0.0f);
+    halfRateRing_.fill(0.0f);
+    quarterRateRing_.fill(0.0f);
+    eighthRateRing_.fill(0.0f);
+    frame_.fill(0.0f);
+    difference_.fill(1.0f);
+
+    fullRateWritePosition_ = 0;
+    halfRateWritePosition_ = 0;
+    quarterRateWritePosition_ = 0;
+    eighthRateWritePosition_ = 0;
+    fullRateAvailableSamples_ = 0;
+    halfRateAvailableSamples_ = 0;
+    quarterRateAvailableSamples_ = 0;
+    eighthRateAvailableSamples_ = 0;
+    halfRateDecimationCounter_ = 0;
+    quarterRateDecimationCounter_ = 0;
+    eighthRateDecimationCounter_ = 0;
+    hopCounter_ = 0;
+    analysisHopCounter_ = 0;
+
+    halfRateAntiAlias_.reset();
+    quarterRateAntiAlias_.reset();
+    eighthRateAntiAlias_.reset();
+
+    previousInput_ = 0.0f;
+    previousDcOutput_ = 0.0f;
+    fastEnergy_ = 0.0f;
+    slowEnergy_ = 0.0f;
+    onsetEnvelope_ = 0.0f;
+    onsetCooldownSamples_ = 0;
+    onsetPending_ = false;
+
+    fullRateCandidate_ = {};
+    halfRateCandidate_ = {};
+    quarterRateCandidate_ = {};
+    eighthRateCandidate_ = {};
+    decoderBeam_.fill({});
+
+    trackedPitchHz_ = 0.0f;
+    trackedConfidence_ = 0.0f;
+    trackedPeriodicity_ = 0.0f;
+    trackedConsensus_ = 0.0f;
+    trackedSupportCount_ = 0;
+    invalidHopCount_ = 0;
+
+    octaveState_ = 0;
+    pendingOctaveDelta_ = 0;
+    pendingOctaveCount_ = 0;
+    pendingOctaveFrequencyHz_ = 0.0f;
+    committedOctaveFrequencyHz_ = 0.0f;
+    octaveCommitGuardHops_ = 0;
+}
+
+void ModernPitchEngine::MultiRatePitchTracker::setRange(float minimumPitchHz,
+                                                         float maximumPitchHz) noexcept
+{
+    minimumPitchHz_ = std::clamp(minimumPitchHz, 35.0f, 500.0f);
+    maximumPitchHz_ = std::clamp(maximumPitchHz,
+                                 minimumPitchHz_ + 20.0f,
+                                 3000.0f);
+}
+
+void ModernPitchEngine::MultiRatePitchTracker::setSensitivity(float sensitivity) noexcept
+{
+    sensitivity_ = clamp01(sensitivity);
+}
+
+void ModernPitchEngine::MultiRatePitchTracker::push(
+    std::array<float, ringSize>& ring,
+    int& writePosition,
+    int& availableSamples,
+    float sample) noexcept
+{
+    ring[static_cast<std::size_t>(writePosition)] = sample;
+    writePosition = (writePosition + 1) & ringMask;
+    availableSamples = std::min(availableSamples + 1, ringSize);
+}
+
+ModernPitchEngine::MultiRatePitchTracker::PitchCandidate
+ModernPitchEngine::MultiRatePitchTracker::analyse(
+    const std::array<float, ringSize>& ring,
+    int writePosition,
+    int availableSamples,
+    double effectiveSampleRate,
+    float minimumFrequency,
+    float maximumFrequency,
+    int analysisLength) noexcept
+{
+    PitchCandidate result;
+    analysisLength = std::clamp(analysisLength, 64, maxAnalysisSize);
+
+    if (availableSamples < analysisLength || effectiveSampleRate <= 0.0
+        || minimumFrequency >= maximumFrequency)
     {
-        const double a = static_cast<double>(
-            scratch_[static_cast<std::size_t>(index)]);
-        const double b = static_cast<double>(
-            scratch_[static_cast<std::size_t>(index - lag)]);
-        xy += a * b;
-        xx += a * a;
-        yy += b * b;
-        ++count;
+        return result;
     }
 
-    if (count < 8 || xx <= 1.0e-16 || yy <= 1.0e-16)
-        return -1.0f;
+    const int startPosition = (writePosition - analysisLength + ringSize) & ringMask;
 
-    return static_cast<float>(xy / std::sqrt(xx * yy));
-}
+    double mean = 0.0;
+    for (int index = 0; index < analysisLength; ++index)
+    {
+        const float sample = ring[static_cast<std::size_t>((startPosition + index) & ringMask)];
+        frame_[static_cast<std::size_t>(index)] = sample;
+        mean += static_cast<double>(sample);
+    }
+    mean /= static_cast<double>(analysisLength);
 
-ModernPitchEngine::PitchObservation
-ModernPitchEngine::PitchTracker::analyse(float minimumPitchHz,
-                                         float maximumPitchHz,
-                                         float sensitivity) noexcept
-{
-    PitchObservation result;
+    double squaredSum = 0.0;
+    for (int index = 0; index < analysisLength; ++index)
+    {
+        float& sample = frame_[static_cast<std::size_t>(index)];
+        sample -= static_cast<float>(mean);
+        squaredSum += static_cast<double>(sample) * static_cast<double>(sample);
+    }
 
-    if (filled_ < analysisWindow_)
+    const float rms = static_cast<float>(std::sqrt(
+        squaredSum / static_cast<double>(analysisLength)));
+    if (rms < minimumDetectorRms)
         return result;
 
-    for (int index = 0; index < analysisWindow_; ++index)
-    {
-        const int age = analysisWindow_ - 1 - index;
-        const float sample = sampleFromNewest(age);
-        const double phase = twoPi * static_cast<double>(index)
-                           / static_cast<double>(analysisWindow_);
-        const float window = static_cast<float>(0.5 - 0.5 * std::cos(phase));
-        scratch_[static_cast<std::size_t>(index)] = sample * window;
-    }
+    const int tauMinimum = std::clamp(
+        static_cast<int>(std::floor(effectiveSampleRate
+                                    / static_cast<double>(maximumFrequency))),
+        2,
+        analysisLength - 16);
 
-    const float safeMinimum = std::clamp(minimumPitchHz, 35.0f, 1200.0f);
-    const float safeMaximum = std::clamp(maximumPitchHz,
-                                         safeMinimum + 1.0f,
-                                         4000.0f);
-    int minimumLag = static_cast<int>(std::floor(
-        detectorSampleRate_ / static_cast<double>(safeMaximum)));
-    int maximumLag = static_cast<int>(std::ceil(
-        detectorSampleRate_ / static_cast<double>(safeMinimum)));
-    minimumLag = std::clamp(minimumLag, 3, analysisWindow_ / 3);
-    maximumLag = std::clamp(maximumLag,
-                            minimumLag + 2,
-                            analysisWindow_ - 8);
+    const int tauMaximum = std::clamp(
+        static_cast<int>(std::ceil(effectiveSampleRate
+                                   / static_cast<double>(minimumFrequency))),
+        tauMinimum + 1,
+        analysisLength - 16);
 
-    float bestCorrelation = -1.0f;
-    int bestLag = minimumLag;
-    constexpr int coarseStep = 2;
-    for (int lag = minimumLag; lag <= maximumLag; lag += coarseStep)
+    difference_.fill(1.0f);
+    difference_[0] = 1.0f;
+
+    for (int tau = 1; tau <= tauMaximum; ++tau)
     {
-        const float correlation = correlationAt(lag, 2);
-        if (correlation > bestCorrelation)
+        const int overlap = analysisLength - tau;
+        float sum0 = 0.0f;
+        float sum1 = 0.0f;
+        float sum2 = 0.0f;
+        float sum3 = 0.0f;
+
+        int index = 0;
+        const int vectorEnd = overlap & ~3;
+        for (; index < vectorEnd; index += 4)
         {
-            bestCorrelation = correlation;
-            bestLag = lag;
+            const float delta0 = frame_[static_cast<std::size_t>(index)]
+                               - frame_[static_cast<std::size_t>(index + tau)];
+            const float delta1 = frame_[static_cast<std::size_t>(index + 1)]
+                               - frame_[static_cast<std::size_t>(index + tau + 1)];
+            const float delta2 = frame_[static_cast<std::size_t>(index + 2)]
+                               - frame_[static_cast<std::size_t>(index + tau + 2)];
+            const float delta3 = frame_[static_cast<std::size_t>(index + 3)]
+                               - frame_[static_cast<std::size_t>(index + tau + 3)];
+            sum0 += delta0 * delta0;
+            sum1 += delta1 * delta1;
+            sum2 += delta2 * delta2;
+            sum3 += delta3 * delta3;
         }
-    }
 
-    int refinedLag = bestLag;
-    for (int lag = std::max(minimumLag, bestLag - 3);
-         lag <= std::min(maximumLag, bestLag + 3);
-         ++lag)
-    {
-        const float correlation = correlationAt(lag, 1);
-        if (correlation > bestCorrelation)
+        float differenceSum = (sum0 + sum1) + (sum2 + sum3);
+        for (; index < overlap; ++index)
         {
-            bestCorrelation = correlation;
-            refinedLag = lag;
+            const float delta = frame_[static_cast<std::size_t>(index)]
+                              - frame_[static_cast<std::size_t>(index + tau)];
+            differenceSum += delta * delta;
         }
+
+        difference_[static_cast<std::size_t>(tau)] = differenceSum
+            / static_cast<float>(std::max(1, overlap));
     }
-    bestLag = refinedLag;
 
-    int fundamentalLag = bestLag;
-    float fundamentalCorrelation = bestCorrelation;
-
-    // Only the 2:1 ambiguity is promoted. Correlation peaks repeat at every
-    // integer multiple of the true period, so accepting 3x/4x merely because
-    // they are coherent would manufacture subharmonic octaves. The doubled
-    // period wins only when it is measurably better than the short-period peak,
-    // which is the signature of alternating cycles caused by a real
-    // fundamental under a dominant second harmonic.
-    const int doubledLag = bestLag * 2;
-    if (doubledLag <= maximumLag)
+    double cumulativeSum = 0.0;
+    for (int tau = 1; tau <= tauMaximum; ++tau)
     {
-        int localLag = doubledLag;
-        float localCorrelation = correlationAt(doubledLag, 1);
-        for (int offset = -2; offset <= 2; ++offset)
+        cumulativeSum += static_cast<double>(difference_[static_cast<std::size_t>(tau)]);
+        difference_[static_cast<std::size_t>(tau)] = cumulativeSum > 1.0e-20
+            ? static_cast<float>(static_cast<double>(difference_[static_cast<std::size_t>(tau)])
+                                 * static_cast<double>(tau) / cumulativeSum)
+            : 1.0f;
+    }
+
+    const float yinThreshold = 0.12f + 0.16f * sensitivity_;
+    const float fallbackThreshold = 0.26f + 0.20f * sensitivity_;
+
+    int thresholdTau = -1;
+    int globalTau = tauMinimum;
+    float globalValue = difference_[static_cast<std::size_t>(tauMinimum)];
+
+    for (int tau = tauMinimum; tau <= tauMaximum; ++tau)
+    {
+        const float value = difference_[static_cast<std::size_t>(tau)];
+        if (value < globalValue)
         {
-            const int lag = doubledLag + offset;
-            if (lag < minimumLag || lag > maximumLag)
-                continue;
-            const float correlation = correlationAt(lag, 1);
-            if (correlation > localCorrelation)
+            globalValue = value;
+            globalTau = tau;
+        }
+
+        if (thresholdTau < 0 && value < yinThreshold)
+        {
+            int localTau = tau;
+            while (localTau + 1 <= tauMaximum
+                   && difference_[static_cast<std::size_t>(localTau + 1)]
+                        < difference_[static_cast<std::size_t>(localTau)])
             {
-                localCorrelation = correlation;
-                localLag = lag;
+                ++localTau;
             }
-        }
-
-        const float improvement = localCorrelation - bestCorrelation;
-        if (localCorrelation >= 0.34f && improvement >= 0.012f)
-        {
-            fundamentalLag = localLag;
-            fundamentalCorrelation = localCorrelation;
+            thresholdTau = localTau;
         }
     }
 
-    double fractionalLag = static_cast<double>(fundamentalLag);
-    if (fundamentalLag > minimumLag && fundamentalLag < maximumLag)
-    {
-        const double left = correlationAt(fundamentalLag - 1, 1);
-        const double centre = correlationAt(fundamentalLag, 1);
-        const double right = correlationAt(fundamentalLag + 1, 1);
-        const double denominator = left - 2.0 * centre + right;
-        if (std::abs(denominator) > 1.0e-9)
-        {
-            fractionalLag += 0.5 * (left - right) / denominator;
-            fractionalLag = std::clamp(fractionalLag,
-                                       static_cast<double>(fundamentalLag - 1),
-                                       static_cast<double>(fundamentalLag + 1));
-        }
-    }
-
-    if (!(fractionalLag > 0.0) || !std::isfinite(fractionalLag))
+    if (thresholdTau < 0 && globalValue > fallbackThreshold)
         return result;
 
-    float detectedFrequency = static_cast<float>(
-        detectorSampleRate_ / fractionalLag);
+    // Alternative periods are deliberately retained because a weak fundamental
+    // can be recovered from its harmonics.  They are not equally trusted:
+    // doubled periods (subharmonics) receive the strongest prior penalty and
+    // must subsequently survive the cross-rate consensus and temporal decoder.
+    std::array<int, 5> candidateTaus {
+        thresholdTau >= 0 ? thresholdTau : globalTau,
+        globalTau,
+        std::max(tauMinimum, globalTau / 2),
+        std::min(tauMaximum, globalTau * 2),
+        std::min(tauMaximum, (globalTau * 3) / 2)
+    };
+    constexpr std::array<float, 5> candidatePriors {
+        1.00f, 0.98f, 0.88f, 0.70f, 0.78f
+    };
 
-    int octaveDirection = 0;
-    if (previousFrequencyHz_ > 0.0f && detectedFrequency > 0.0f)
+    float bestScore = -1.0f;
+    int bestTau = -1;
+    float bestPeriodicity = 0.0f;
+
+    for (std::size_t candidateIndex = 0;
+         candidateIndex < candidateTaus.size();
+         ++candidateIndex)
     {
-        const double jumpCents = 1200.0 * safeLog2(
-            static_cast<double>(detectedFrequency)
-            / static_cast<double>(previousFrequencyHz_));
+        int tau = std::clamp(candidateTaus[candidateIndex],
+                             tauMinimum,
+                             tauMaximum);
 
-        if (std::abs(jumpCents) > 850.0 && std::abs(jumpCents) < 1350.0)
-            octaveDirection = jumpCents > 0.0 ? 1 : -1;
-    }
+        double correlation = 0.0;
+        double energyA = 0.0;
+        double energyB = 0.0;
+        const int overlap = analysisLength - tau;
 
-    if (octaveDirection != 0)
-    {
-        if (pendingOctaveDirection_ == octaveDirection)
-            ++pendingOctaveCount_;
-        else
+        for (int index = 0; index < overlap; ++index)
         {
-            pendingOctaveDirection_ = octaveDirection;
-            pendingOctaveCount_ = 1;
+            const double a = frame_[static_cast<std::size_t>(index)];
+            const double b = frame_[static_cast<std::size_t>(index + tau)];
+            correlation += a * b;
+            energyA += a * a;
+            energyB += b * b;
         }
 
-        const int required = fundamentalCorrelation > 0.78f ? 3 : 5;
-        if (pendingOctaveCount_ < required)
+        const double denominator = std::sqrt(std::max(1.0e-20, energyA * energyB));
+        const float normalisedCorrelation = denominator > 0.0
+            ? static_cast<float>(correlation / denominator)
+            : 0.0f;
+        const float periodicity = clamp01(0.5f * (normalisedCorrelation + 1.0f));
+        const float yinConfidence = clamp01(
+            1.0f - difference_[static_cast<std::size_t>(tau)]);
+
+        // Prefer candidates containing at least two periods, but do not reject
+        // low notes whose fundamental is mainly inferred from their harmonics.
+        const float periodsInWindow = static_cast<float>(analysisLength)
+                                    / static_cast<float>(std::max(1, tau));
+        const float periodSupport = std::clamp(periodsInWindow / 2.2f, 0.55f, 1.0f);
+        const float score = (0.67f * yinConfidence + 0.33f * periodicity)
+                          * periodSupport
+                          * candidatePriors[candidateIndex];
+
+        if (score > bestScore)
         {
-            detectedFrequency = previousFrequencyHz_;
-        }
-        else
-        {
-            pendingOctaveCount_ = 0;
-            pendingOctaveDirection_ = 0;
+            bestScore = score;
+            bestTau = tau;
+            bestPeriodicity = periodicity;
         }
     }
-    else
+
+    if (bestTau < 2 || bestScore < 0.45f)
+        return result;
+
+    double refinedTau = static_cast<double>(bestTau);
+    if (bestTau > tauMinimum && bestTau < tauMaximum)
     {
-        pendingOctaveCount_ = 0;
-        pendingOctaveDirection_ = 0;
+        const double left = difference_[static_cast<std::size_t>(bestTau - 1)];
+        const double centre = difference_[static_cast<std::size_t>(bestTau)];
+        const double right = difference_[static_cast<std::size_t>(bestTau + 1)];
+        const double denominator = left - 2.0 * centre + right;
+
+        if (std::abs(denominator) > 1.0e-12)
+            refinedTau += 0.5 * (left - right) / denominator;
     }
 
-    const float safeSensitivity = std::clamp(sensitivity, 0.0f, 1.0f);
-    const float correlationThreshold = 0.50f - 0.22f * safeSensitivity;
-    const float energy = std::sqrt(std::max(0.0f, shortEnergy_));
-    const float energyGate = smoothStep(0.00035f, 0.0040f, energy);
-    const float periodicityGate = smoothStep(correlationThreshold,
-                                             std::min(0.96f,
-                                                      correlationThreshold + 0.30f),
-                                             fundamentalCorrelation);
+    if (refinedTau <= 0.0)
+        return result;
 
-    result.frequencyHz = detectedFrequency;
-    result.confidence = std::clamp(
-        periodicityGate * (0.45f + 0.55f * energyGate), 0.0f, 1.0f);
-    result.periodicity = std::clamp(fundamentalCorrelation, 0.0f, 1.0f);
-    result.voicing = std::clamp(periodicityGate * energyGate, 0.0f, 1.0f);
-    result.consensus = std::clamp(
-        0.65f * result.periodicity
-        + 0.35f * smoothStep(0.0f,
-                             0.12f,
-                             fundamentalCorrelation
-                                 - correlationAt(std::max(minimumLag,
-                                                          fundamentalLag / 2),
-                                                 1)),
-        0.0f,
-        1.0f);
-    result.detectorSupport = 1;
-    if (fundamentalLag * 2 <= maximumLag
-        && correlationAt(fundamentalLag * 2, 1) > 0.55f)
-        ++result.detectorSupport;
-    if (fundamentalLag * 3 <= maximumLag
-        && correlationAt(fundamentalLag * 3, 1) > 0.45f)
-        ++result.detectorSupport;
+    const float frequency = static_cast<float>(effectiveSampleRate / refinedTau);
+    if (!std::isfinite(frequency)
+        || frequency < minimumFrequency * 0.82f
+        || frequency > maximumFrequency * 1.18f)
+    {
+        return result;
+    }
 
-    result.pendingOctaveObservations = pendingOctaveCount_;
-    result.octaveState = octaveDirection;
-    result.valid = std::isfinite(result.frequencyHz)
-        && result.frequencyHz >= safeMinimum
-        && result.frequencyHz <= safeMaximum
-        && result.confidence > 0.10f
-        && result.voicing > 0.08f;
-
-    if (result.valid)
-        previousFrequencyHz_ = result.frequencyHz;
-
+    result.frequencyHz = frequency;
+    result.confidence = clamp01(bestScore);
+    result.periodicity = bestPeriodicity;
+    result.valid = true;
     return result;
 }
 
-bool ModernPitchEngine::PitchTracker::push(float sample,
-                                           float minimumPitchHz,
-                                           float maximumPitchHz,
-                                           float sensitivity,
-                                           PitchObservation& result) noexcept
+float ModernPitchEngine::MultiRatePitchTracker::centsDistance(
+    float frequencyA,
+    float frequencyB) noexcept
 {
-    const float safeSample = std::isfinite(sample) ? sample : 0.0f;
-    const float square = safeSample * safeSample;
-    shortEnergy_ += 0.020f * (square - shortEnergy_);
-    longEnergy_ += 0.0012f * (square - longEnergy_);
+    if (frequencyA <= 0.0f || frequencyB <= 0.0f)
+        return 100000.0f;
 
-    downsampleAccumulator_ += safeSample;
-    ++downsampleCounter_;
-    if (downsampleCounter_ < 2)
+    return std::abs(1200.0f * std::log2(frequencyA / frequencyB));
+}
+
+float ModernPitchEngine::MultiRatePitchTracker::candidateBaseScore(
+    const PitchCandidate& candidate) const noexcept
+{
+    if (!candidate.valid || candidate.frequencyHz <= 0.0f)
+        return 0.0f;
+
+    const float ageWeight = std::exp(-0.22f
+        * static_cast<float>(std::max(0, candidate.ageInHops)));
+    return clamp01((0.70f * candidate.confidence
+                  + 0.30f * candidate.periodicity) * ageWeight);
+}
+
+float ModernPitchEngine::MultiRatePitchTracker::pathReliability(
+    int pathIndex,
+    float frequencyHz) const noexcept
+{
+    const auto bandWeight = [](float frequency,
+                               float lowerSoft,
+                               float lowerFull,
+                               float upperFull,
+                               float upperSoft) noexcept
+    {
+        const float lower = smoothStep(lowerSoft, lowerFull, frequency);
+        const float upper = 1.0f - smoothStep(upperFull, upperSoft, frequency);
+        return std::clamp(lower * upper, 0.08f, 1.0f);
+    };
+
+    switch (pathIndex)
+    {
+        case 0: return bandWeight(frequencyHz, 125.0f, 185.0f, 1250.0f, 2300.0f);
+        case 1: return bandWeight(frequencyHz, 62.0f, 92.0f, 650.0f, 980.0f);
+        case 2: return bandWeight(frequencyHz, 30.0f, 48.0f, 330.0f, 500.0f);
+        case 3: return bandWeight(frequencyHz, 22.0f, 36.0f, 165.0f, 250.0f);
+        default: break;
+    }
+
+    return 0.0f;
+}
+
+int ModernPitchEngine::MultiRatePitchTracker::collectFreshCandidates(
+    std::array<PitchCandidate, detectorPathCount>& candidates) const noexcept
+{
+    int count = 0;
+
+    const auto append = [&candidates, &count](const CandidateSlot& slot,
+                                              int pathIndex,
+                                              int maximumAge)
+    {
+        if (!slot.candidate.valid || slot.ageInHops > maximumAge
+            || count >= detectorPathCount)
+        {
+            return;
+        }
+
+        PitchCandidate candidate = slot.candidate;
+        candidate.pathIndex = pathIndex;
+        candidate.ageInHops = slot.ageInHops;
+        candidates[static_cast<std::size_t>(count++)] = candidate;
+    };
+
+    append(fullRateCandidate_,    0, 2);
+    append(halfRateCandidate_,    1, 3);
+    append(quarterRateCandidate_, 2, 5);
+    append(eighthRateCandidate_,  3, 9);
+    return count;
+}
+
+int ModernPitchEngine::MultiRatePitchTracker::buildConsensusHypotheses(
+    const std::array<PitchCandidate, detectorPathCount>& candidates,
+    int candidateCount,
+    std::array<ConsensusHypothesis, maxConsensusHypotheses>& hypotheses) const noexcept
+{
+    int seedCount = 0;
+
+    // Every detector contributes octave-explicit seeds.  A detector can only
+    // contribute once to a resulting cluster, so generated octave variants do
+    // not create fake consensus by themselves.
+    for (int candidateIndex = 0; candidateIndex < candidateCount; ++candidateIndex)
+    {
+        const auto& candidate = candidates[static_cast<std::size_t>(candidateIndex)];
+        if (!candidate.valid)
+            continue;
+
+        for (int octaveShift = -2; octaveShift <= 2; ++octaveShift)
+        {
+            const float frequency = std::ldexp(candidate.frequencyHz, octaveShift);
+            if (frequency < minimumPitchHz_ || frequency > maximumPitchHz_)
+                continue;
+
+            bool duplicate = false;
+            for (int seedIndex = 0; seedIndex < seedCount; ++seedIndex)
+            {
+                if (centsDistance(hypotheses[static_cast<std::size_t>(seedIndex)].frequencyHz,
+                                  frequency) < 28.0f)
+                {
+                    duplicate = true;
+                    break;
+                }
+            }
+
+            if (!duplicate && seedCount < maxConsensusHypotheses)
+            {
+                auto& seed = hypotheses[static_cast<std::size_t>(seedCount++)];
+                seed = {};
+                seed.frequencyHz = frequency;
+                seed.valid = true;
+            }
+        }
+    }
+
+    int validCount = 0;
+    for (int seedIndex = 0; seedIndex < seedCount; ++seedIndex)
+    {
+        const float seedFrequency = hypotheses[static_cast<std::size_t>(seedIndex)].frequencyHz;
+        double weightedLogFrequency = 0.0;
+        float totalWeight = 0.0f;
+        float confidenceSum = 0.0f;
+        float periodicitySum = 0.0f;
+        int supportCount = 0;
+        int directSupportCount = 0;
+        std::uint8_t supportMask = 0;
+        std::uint8_t freshSupportMask = 0;
+
+        for (int candidateIndex = 0; candidateIndex < candidateCount; ++candidateIndex)
+        {
+            const auto& candidate = candidates[static_cast<std::size_t>(candidateIndex)];
+            int bestOctaveShift = 0;
+            float bestFrequency = candidate.frequencyHz;
+            float bestDistance = centsDistance(bestFrequency, seedFrequency);
+
+            for (int octaveShift = -2; octaveShift <= 2; ++octaveShift)
+            {
+                const float shiftedFrequency = std::ldexp(candidate.frequencyHz, octaveShift);
+                if (shiftedFrequency < minimumPitchHz_ || shiftedFrequency > maximumPitchHz_)
+                    continue;
+
+                const float distance = centsDistance(shiftedFrequency, seedFrequency);
+                if (distance < bestDistance)
+                {
+                    bestDistance = distance;
+                    bestFrequency = shiftedFrequency;
+                    bestOctaveShift = octaveShift;
+                }
+            }
+
+            const bool direct = bestOctaveShift == 0;
+            const float tolerance = direct ? 55.0f : 38.0f;
+            if (bestDistance > tolerance)
+                continue;
+
+            const float octavePrior = direct ? 1.0f
+                : (std::abs(bestOctaveShift) == 1 ? 0.52f : 0.25f);
+            const float reliability = pathReliability(candidate.pathIndex,
+                                                       candidate.frequencyHz);
+            const float baseScore = candidateBaseScore(candidate);
+            const float weight = baseScore * reliability * octavePrior;
+
+            // Octave-transposed support is useful as harmonic evidence, but it
+            // must be genuinely strong; otherwise it is ignored rather than
+            // being allowed to manufacture a low subharmonic.
+            if ((!direct && baseScore < 0.60f) || weight < 0.10f)
+                continue;
+
+            weightedLogFrequency += static_cast<double>(weight)
+                                  * safeLog2(static_cast<double>(bestFrequency));
+            totalWeight += weight;
+            confidenceSum += weight * candidate.confidence;
+            periodicitySum += weight * candidate.periodicity;
+            ++supportCount;
+            if (direct)
+                ++directSupportCount;
+
+            const auto bit = static_cast<std::uint8_t>(1u << candidate.pathIndex);
+            supportMask = static_cast<std::uint8_t>(supportMask | bit);
+            if (candidate.ageInHops == 0)
+                freshSupportMask = static_cast<std::uint8_t>(freshSupportMask | bit);
+        }
+
+        if (supportCount <= 0 || totalWeight <= 1.0e-6f)
+            continue;
+
+        ConsensusHypothesis hypothesis;
+        hypothesis.frequencyHz = static_cast<float>(std::exp2(
+            weightedLogFrequency / static_cast<double>(totalWeight)));
+        hypothesis.confidence = clamp01(confidenceSum / totalWeight);
+        hypothesis.periodicity = clamp01(periodicitySum / totalWeight);
+        hypothesis.supportCount = supportCount;
+        hypothesis.directSupportCount = directSupportCount;
+        hypothesis.supportMask = supportMask;
+        hypothesis.freshSupportMask = freshSupportMask;
+
+        const float pathConsensus = static_cast<float>(supportCount - 1)
+                                  / static_cast<float>(detectorPathCount - 1);
+        const float directConsensus = static_cast<float>(directSupportCount)
+                                    / static_cast<float>(detectorPathCount);
+        hypothesis.consensus = clamp01(0.12f
+                                     + 0.58f * pathConsensus
+                                     + 0.30f * directConsensus);
+
+        const float meanEvidence = clamp01(totalWeight
+            / static_cast<float>(std::max(1, supportCount)));
+        const float directPenalty = directSupportCount == 0 ? 0.16f : 0.0f;
+        hypothesis.evidenceScore = meanEvidence
+                                 * (0.70f + 0.30f * hypothesis.consensus)
+                                 + 0.045f * static_cast<float>(directSupportCount)
+                                 - directPenalty;
+        hypothesis.valid = hypothesis.evidenceScore > 0.20f;
+
+        if (!hypothesis.valid)
+            continue;
+
+        // Merge clusters that converged after weighted refinement.
+        int mergeIndex = -1;
+        for (int existing = 0; existing < validCount; ++existing)
+        {
+            if (centsDistance(hypotheses[static_cast<std::size_t>(existing)].frequencyHz,
+                              hypothesis.frequencyHz) < 24.0f)
+            {
+                mergeIndex = existing;
+                break;
+            }
+        }
+
+        if (mergeIndex >= 0)
+        {
+            if (hypothesis.evidenceScore
+                > hypotheses[static_cast<std::size_t>(mergeIndex)].evidenceScore)
+            {
+                hypotheses[static_cast<std::size_t>(mergeIndex)] = hypothesis;
+            }
+        }
+        else if (validCount < maxConsensusHypotheses)
+        {
+            hypotheses[static_cast<std::size_t>(validCount++)] = hypothesis;
+        }
+    }
+
+    std::sort(hypotheses.begin(),
+              hypotheses.begin() + validCount,
+              [](const ConsensusHypothesis& left,
+                 const ConsensusHypothesis& right)
+              {
+                  return left.evidenceScore > right.evidenceScore;
+              });
+    return validCount;
+}
+
+bool ModernPitchEngine::MultiRatePitchTracker::isOctaveLikeTransition(
+    float fromFrequency,
+    float toFrequency,
+    int& octaveDelta,
+    float& residualCents) noexcept
+{
+    octaveDelta = 0;
+    residualCents = 100000.0f;
+    if (fromFrequency <= 0.0f || toFrequency <= 0.0f)
         return false;
 
-    const float downsampled = 0.5f * downsampleAccumulator_;
-    downsampleAccumulator_ = 0.0f;
-    downsampleCounter_ = 0;
+    const float octaveDistance = std::log2(toFrequency / fromFrequency);
+    octaveDelta = static_cast<int>(std::lround(octaveDistance));
+    residualCents = std::abs(1200.0f
+        * (octaveDistance - static_cast<float>(octaveDelta)));
+    return octaveDelta != 0 && std::abs(octaveDelta) <= 2
+        && residualCents <= 85.0f;
+}
 
-    ring_[static_cast<std::size_t>(writeIndex_)] = downsampled;
-    writeIndex_ = (writeIndex_ + 1) % detectorRingSize;
-    filled_ = std::min(detectorRingSize, filled_ + 1);
-    ++samplesSinceAnalysis_;
+void ModernPitchEngine::MultiRatePitchTracker::updateDecoderBeam(
+    const std::array<ConsensusHypothesis, maxConsensusHypotheses>& hypotheses,
+    int hypothesisCount,
+    bool onsetPending) noexcept
+{
+    std::array<DecoderState, maxConsensusHypotheses + decoderBeamWidth> proposals {};
+    int proposalCount = 0;
 
-    if (samplesSinceAnalysis_ < analysisHop_)
+    for (int hypothesisIndex = 0;
+         hypothesisIndex < hypothesisCount && proposalCount < maxConsensusHypotheses;
+         ++hypothesisIndex)
+    {
+        const auto& hypothesis = hypotheses[static_cast<std::size_t>(hypothesisIndex)];
+        if (!hypothesis.valid)
+            continue;
+
+        DecoderState proposal;
+        proposal.valid = true;
+        proposal.logFrequency = safeLog2(hypothesis.frequencyHz);
+        proposal.score = hypothesis.evidenceScore + 0.26f * hypothesis.consensus;
+        proposal.octaveIndex = octaveState_;
+
+        float bestTransitionScore = -1000.0f;
+        int bestOctaveIndex = octaveState_;
+        bool foundPrevious = false;
+
+        for (const auto& previous : decoderBeam_)
+        {
+            if (!previous.valid)
+                continue;
+
+            foundPrevious = true;
+            const float deltaCents = static_cast<float>(1200.0
+                * (proposal.logFrequency - previous.logFrequency));
+            const float absoluteCents = std::abs(deltaCents);
+            const float continuityBonus = 0.30f * std::exp(-absoluteCents / 85.0f);
+            const float transitionPenalty = onsetPending
+                ? 0.10f * std::min(1.0f, absoluteCents / 1800.0f)
+                : 0.19f * std::min(2.0f, absoluteCents / 650.0f);
+
+            int octaveDelta = 0;
+            float residualCents = 0.0f;
+            const bool octaveLike = isOctaveLikeTransition(
+                static_cast<float>(std::exp2(previous.logFrequency)),
+                hypothesis.frequencyHz,
+                octaveDelta,
+                residualCents);
+            const float octavePenalty = octaveLike
+                ? 0.24f * static_cast<float>(std::abs(octaveDelta))
+                    * (1.0f - 0.70f * hypothesis.consensus)
+                : 0.0f;
+
+            const float historyWeight = onsetPending ? 0.24f : 0.72f;
+            const float transitionScore = historyWeight * previous.score
+                                        + proposal.score
+                                        + continuityBonus
+                                        - transitionPenalty
+                                        - octavePenalty;
+            if (transitionScore > bestTransitionScore)
+            {
+                bestTransitionScore = transitionScore;
+                bestOctaveIndex = previous.octaveIndex
+                    + (octaveLike ? octaveDelta : 0);
+            }
+        }
+
+        if (foundPrevious)
+            proposal.score = bestTransitionScore;
+        proposal.octaveIndex = bestOctaveIndex;
+        proposals[static_cast<std::size_t>(proposalCount++)] = proposal;
+    }
+
+    // A short hold branch prevents a single weak hop from forcing a jump.  It
+    // decays quickly, so genuine new notes still win after fresh evidence.
+    for (const auto& previous : decoderBeam_)
+    {
+        if (!previous.valid || proposalCount >= static_cast<int>(proposals.size()))
+            continue;
+
+        DecoderState held = previous;
+        held.score = previous.score * (onsetPending ? 0.22f : 0.76f)
+                   - (onsetPending ? 0.10f : 0.055f);
+        ++held.ageInHops;
+        if (held.ageInHops <= 4)
+            proposals[static_cast<std::size_t>(proposalCount++)] = held;
+    }
+
+    std::sort(proposals.begin(),
+              proposals.begin() + proposalCount,
+              [](const DecoderState& left, const DecoderState& right)
+              {
+                  return left.score > right.score;
+              });
+
+    decoderBeam_.fill({});
+    int accepted = 0;
+    for (int proposalIndex = 0;
+         proposalIndex < proposalCount && accepted < decoderBeamWidth;
+         ++proposalIndex)
+    {
+        const auto& proposal = proposals[static_cast<std::size_t>(proposalIndex)];
+        if (!proposal.valid)
+            continue;
+
+        bool duplicate = false;
+        for (int existing = 0; existing < accepted; ++existing)
+        {
+            const float distance = static_cast<float>(1200.0
+                * std::abs(proposal.logFrequency
+                         - decoderBeam_[static_cast<std::size_t>(existing)].logFrequency));
+            if (distance < 24.0f)
+            {
+                duplicate = true;
+                break;
+            }
+        }
+
+        if (!duplicate)
+            decoderBeam_[static_cast<std::size_t>(accepted++)] = proposal;
+    }
+}
+
+ModernPitchEngine::MultiRatePitchTracker::DecoderDecision
+ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noexcept
+{
+    std::array<PitchCandidate, detectorPathCount> candidates {};
+    const int candidateCount = collectFreshCandidates(candidates);
+    if (candidateCount <= 0)
+        return {};
+
+    std::array<ConsensusHypothesis, maxConsensusHypotheses> hypotheses {};
+    const int hypothesisCount = buildConsensusHypotheses(candidates,
+                                                         candidateCount,
+                                                         hypotheses);
+    if (hypothesisCount <= 0)
+        return {};
+
+    updateDecoderBeam(hypotheses, hypothesisCount, onsetPending);
+    if (!decoderBeam_[0].valid)
+        return {};
+
+    const float decodedFrequency = static_cast<float>(
+        std::exp2(decoderBeam_[0].logFrequency));
+
+    int matchedHypothesis = -1;
+    float matchedDistance = 100000.0f;
+    for (int index = 0; index < hypothesisCount; ++index)
+    {
+        const float distance = centsDistance(
+            hypotheses[static_cast<std::size_t>(index)].frequencyHz,
+            decodedFrequency);
+        if (distance < matchedDistance)
+        {
+            matchedDistance = distance;
+            matchedHypothesis = index;
+        }
+    }
+
+    if (matchedHypothesis < 0 || matchedDistance > 65.0f)
+        return {}; // the winning branch is only a decaying hold state
+
+    const auto& hypothesis = hypotheses[static_cast<std::size_t>(matchedHypothesis)];
+    DecoderDecision decision;
+    decision.candidate.frequencyHz = hypothesis.frequencyHz;
+    decision.candidate.confidence = clamp01(hypothesis.confidence
+        * (0.76f + 0.24f * hypothesis.consensus));
+    decision.candidate.periodicity = hypothesis.periodicity;
+    decision.candidate.valid = true;
+    decision.consensus = hypothesis.consensus;
+    decision.supportCount = hypothesis.supportCount;
+    decision.directSupportCount = hypothesis.directSupportCount;
+    decision.freshSupportMask = hypothesis.freshSupportMask;
+    decision.decoderOctaveIndex = decoderBeam_[0].octaveIndex;
+
+    const bool closeToTrack = trackedPitchHz_ > 0.0f
+        && centsDistance(trackedPitchHz_, decision.candidate.frequencyHz) < 95.0f;
+    const bool sufficientInitialEvidence = decision.supportCount >= 2
+        || decision.candidate.confidence >= 0.78f;
+    decision.valid = closeToTrack || sufficientInitialEvidence;
+    return decision;
+}
+
+bool ModernPitchEngine::MultiRatePitchTracker::confirmOctaveTransition(
+    DecoderDecision& decision,
+    bool onsetPending) noexcept
+{
+    if (!decision.valid || trackedPitchHz_ <= 0.0f)
+    {
+        pendingOctaveDelta_ = 0;
+        pendingOctaveCount_ = 0;
+        pendingOctaveFrequencyHz_ = 0.0f;
+        return decision.valid;
+    }
+
+    if (octaveCommitGuardHops_ > 0)
+    {
+        --octaveCommitGuardHops_;
+        if (committedOctaveFrequencyHz_ > 0.0f
+            && centsDistance(committedOctaveFrequencyHz_,
+                             decision.candidate.frequencyHz) < 95.0f)
+        {
+            decision.decoderOctaveIndex = octaveState_;
+            return true;
+        }
+    }
+
+    int octaveDelta = 0;
+    float residualCents = 0.0f;
+    if (!isOctaveLikeTransition(trackedPitchHz_,
+                                decision.candidate.frequencyHz,
+                                octaveDelta,
+                                residualCents))
+    {
+        pendingOctaveDelta_ = 0;
+        pendingOctaveCount_ = 0;
+        pendingOctaveFrequencyHz_ = 0.0f;
+        return true;
+    }
+
+    const bool samePending = pendingOctaveDelta_ == octaveDelta
+        && pendingOctaveFrequencyHz_ > 0.0f
+        && centsDistance(pendingOctaveFrequencyHz_,
+                         decision.candidate.frequencyHz) < 70.0f;
+
+    if (!samePending)
+    {
+        pendingOctaveDelta_ = octaveDelta;
+        pendingOctaveCount_ = 0;
+        pendingOctaveFrequencyHz_ = decision.candidate.frequencyHz;
+    }
+
+    // Count only genuinely refreshed evidence.  Reusing an old low-rate
+    // candidate over several full-rate hops must not confirm a subharmonic.
+    if (decision.freshSupportMask != 0)
+        ++pendingOctaveCount_;
+
+    int requiredObservations = octaveDelta < 0 ? 3 : 2;
+    if (onsetPending && decision.supportCount >= 2
+        && decision.directSupportCount >= 2
+        && decision.consensus > 0.82f)
+    {
+        requiredObservations = 2;
+    }
+
+    const bool credibleConsensus = octaveDelta < 0
+        ? (decision.directSupportCount >= 1
+           && (decision.supportCount >= 2
+               || (decision.candidate.confidence > 0.92f
+                   && decision.consensus > 0.68f)))
+        : (decision.supportCount >= 2
+           || (decision.directSupportCount >= 1
+               && decision.candidate.confidence > 0.90f
+               && decision.consensus > 0.62f));
+
+    if (!credibleConsensus || pendingOctaveCount_ < requiredObservations)
+    {
+        // Hold the committed octave while the challenger accumulates evidence.
+        decision.candidate.frequencyHz = trackedPitchHz_;
+        decision.candidate.confidence = trackedConfidence_ * 0.97f;
+        decision.candidate.periodicity = trackedPeriodicity_;
+        decision.consensus = trackedConsensus_;
+        decision.supportCount = trackedSupportCount_;
+        decision.decoderOctaveIndex = octaveState_;
+        decision.valid = trackedPitchHz_ > 0.0f;
         return false;
-    samplesSinceAnalysis_ = 0;
+    }
 
-    result = analyse(minimumPitchHz, maximumPitchHz, sensitivity);
+    octaveState_ = std::clamp(octaveState_ + octaveDelta, -4, 4);
+    committedOctaveFrequencyHz_ = decision.candidate.frequencyHz;
+    octaveCommitGuardHops_ = 12;
+    pendingOctaveDelta_ = 0;
+    pendingOctaveCount_ = 0;
+    pendingOctaveFrequencyHz_ = 0.0f;
+    decision.decoderOctaveIndex = octaveState_;
+    return true;
+}
 
-    const float energyRise = std::max(
-        0.0f,
-        (shortEnergy_ - longEnergy_) / std::max(1.0e-8f, longEnergy_));
-    result.onsetStrength = smoothStep(0.30f, 2.2f, energyRise);
-    result.onset = result.onsetStrength > 0.42f;
+bool ModernPitchEngine::MultiRatePitchTracker::processSample(
+    float inputSample,
+    PitchObservation& observation) noexcept
+{
+    observation = {};
+    inputSample = sanitiseAudioSample(inputSample);
+
+    const float dcBlocked = inputSample - previousInput_
+                          + dcBlockCoefficient_ * previousDcOutput_;
+    previousInput_ = inputSample;
+    previousDcOutput_ = dcBlocked;
+
+    const float energy = dcBlocked * dcBlocked;
+    fastEnergy_ += fastEnergyCoefficient_ * (energy - fastEnergy_);
+    slowEnergy_ += slowEnergyCoefficient_ * (energy - slowEnergy_);
+
+    if (onsetCooldownSamples_ > 0)
+        --onsetCooldownSamples_;
+
+    const float energyRatio = fastEnergy_ / std::max(1.0e-9f, slowEnergy_);
+    const float energeticEnough = fastEnergy_ > minimumDetectorRms * minimumDetectorRms * 3.0f;
+    const float onsetStrength = clamp01((energyRatio - 1.8f) / 3.2f);
+
+    onsetEnvelope_ = std::max(onsetStrength, onsetEnvelope_ * 0.985f);
+
+    if (energeticEnough && energyRatio > 3.1f && onsetCooldownSamples_ == 0)
+    {
+        onsetPending_ = true;
+        onsetCooldownSamples_ = std::max(1,
+            static_cast<int>(std::lround(sampleRate_ * 0.010)));
+    }
+
+    push(fullRateRing_, fullRateWritePosition_, fullRateAvailableSamples_, dcBlocked);
+
+    const float halfFiltered = halfRateAntiAlias_.process(dcBlocked);
+    if (++halfRateDecimationCounter_ >= 2)
+    {
+        halfRateDecimationCounter_ = 0;
+        push(halfRateRing_, halfRateWritePosition_, halfRateAvailableSamples_, halfFiltered);
+
+        const float quarterFiltered = quarterRateAntiAlias_.process(halfFiltered);
+        if (++quarterRateDecimationCounter_ >= 2)
+        {
+            quarterRateDecimationCounter_ = 0;
+            push(quarterRateRing_, quarterRateWritePosition_,
+                 quarterRateAvailableSamples_, quarterFiltered);
+
+            const float eighthFiltered = eighthRateAntiAlias_.process(quarterFiltered);
+            if (++eighthRateDecimationCounter_ >= 2)
+            {
+                eighthRateDecimationCounter_ = 0;
+                push(eighthRateRing_, eighthRateWritePosition_,
+                     eighthRateAvailableSamples_, eighthFiltered);
+            }
+        }
+    }
+
+    if (++hopCounter_ < detectorHop)
+        return false;
+
+    hopCounter_ = 0;
+    ++analysisHopCounter_;
+
+    ++fullRateCandidate_.ageInHops;
+    ++halfRateCandidate_.ageInHops;
+    ++quarterRateCandidate_.ageInHops;
+    ++eighthRateCandidate_.ageInHops;
+
+    const float fullMinimum = std::max(160.0f, minimumPitchHz_);
+    const float fullMaximum = std::min(maximumPitchHz_, 2600.0f);
+    if (fullMinimum < fullMaximum)
+    {
+        fullRateCandidate_.candidate = analyse(fullRateRing_,
+                                               fullRateWritePosition_,
+                                               fullRateAvailableSamples_,
+                                               sampleRate_,
+                                               fullMinimum,
+                                               fullMaximum,
+                                               standardAnalysisSize);
+        fullRateCandidate_.candidate.pathIndex = 0;
+        fullRateCandidate_.candidate.ageInHops = 0;
+        fullRateCandidate_.ageInHops = 0;
+    }
+
+    if ((analysisHopCounter_ & 1) == 0)
+    {
+        const float halfMinimum = std::max(78.0f, minimumPitchHz_);
+        const float halfMaximum = std::min(maximumPitchHz_, 900.0f);
+        if (halfMinimum < halfMaximum)
+        {
+            halfRateCandidate_.candidate = analyse(halfRateRing_,
+                                                   halfRateWritePosition_,
+                                                   halfRateAvailableSamples_,
+                                                   sampleRate_ * 0.5,
+                                                   halfMinimum,
+                                                   halfMaximum,
+                                                   standardAnalysisSize);
+            halfRateCandidate_.candidate.pathIndex = 1;
+            halfRateCandidate_.candidate.ageInHops = 0;
+            halfRateCandidate_.ageInHops = 0;
+        }
+    }
+
+    if ((analysisHopCounter_ & 3) == 0)
+    {
+        const float quarterMinimum = std::max(35.0f, minimumPitchHz_);
+        const float quarterMaximum = std::min(maximumPitchHz_, 460.0f);
+        if (quarterMinimum < quarterMaximum)
+        {
+            quarterRateCandidate_.candidate = analyse(quarterRateRing_,
+                                                      quarterRateWritePosition_,
+                                                      quarterRateAvailableSamples_,
+                                                      sampleRate_ * 0.25,
+                                                      quarterMinimum,
+                                                      quarterMaximum,
+                                                      384);
+            quarterRateCandidate_.candidate.pathIndex = 2;
+            quarterRateCandidate_.candidate.ageInHops = 0;
+            quarterRateCandidate_.ageInHops = 0;
+        }
+    }
+
+    if ((analysisHopCounter_ & 7) == 0)
+    {
+        const float eighthMinimum = std::max(25.0f, minimumPitchHz_);
+        const float eighthMaximum = std::min(maximumPitchHz_, 230.0f);
+        if (eighthMinimum < eighthMaximum)
+        {
+            eighthRateCandidate_.candidate = analyse(eighthRateRing_,
+                                                     eighthRateWritePosition_,
+                                                     eighthRateAvailableSamples_,
+                                                     sampleRate_ * 0.125,
+                                                     eighthMinimum,
+                                                     eighthMaximum,
+                                                     maxAnalysisSize);
+            eighthRateCandidate_.candidate.pathIndex = 3;
+            eighthRateCandidate_.candidate.ageInHops = 0;
+            eighthRateCandidate_.ageInHops = 0;
+        }
+    }
+
+    DecoderDecision decision = decodeCandidate(onsetPending_);
+    const int previousOctaveState = octaveState_;
+    const bool decoderDecisionAccepted = confirmOctaveTransition(decision,
+                                                                  onsetPending_);
+    const bool committedOctaveChange = octaveState_ != previousOctaveState;
+
+    if (decision.valid && decision.candidate.valid)
+    {
+        const bool firstLock = trackedPitchHz_ <= 0.0f;
+        const float selectedLog = std::log2(decision.candidate.frequencyHz);
+        const float trackedLog = firstLock ? selectedLog : std::log2(trackedPitchHz_);
+
+        // An onset may move faster than a stable note, but it no longer bypasses
+        // the decoder.  Confirmed octave changes remain intentionally smoother
+        // to avoid a low-frequency burst when the decision is first committed.
+        float smoothing = 0.32f;
+        if (firstLock)
+            smoothing = 1.0f;
+        else if (committedOctaveChange)
+            smoothing = 0.82f;
+        else if (onsetPending_)
+            smoothing = decoderDecisionAccepted ? 0.58f : 0.36f;
+
+        trackedPitchHz_ = std::exp2(trackedLog
+            + smoothing * (selectedLog - trackedLog));
+        trackedConfidence_ += 0.38f
+            * (decision.candidate.confidence - trackedConfidence_);
+        trackedPeriodicity_ += 0.38f
+            * (decision.candidate.periodicity - trackedPeriodicity_);
+        trackedConsensus_ += 0.35f
+            * (decision.consensus - trackedConsensus_);
+        trackedSupportCount_ = decision.supportCount;
+        invalidHopCount_ = 0;
+
+        const float rmsGate = smoothStep(minimumDetectorRms,
+                                         minimumDetectorRms * 4.0f,
+                                         std::sqrt(std::max(0.0f, slowEnergy_)));
+        const float confidenceGate = smoothStep(0.42f, 0.88f, trackedConfidence_);
+        const float periodicityGate = smoothStep(0.48f, 0.90f, trackedPeriodicity_);
+        const float consensusGate = smoothStep(0.10f, 0.78f, trackedConsensus_);
+
+        observation.frequencyHz = trackedPitchHz_;
+        observation.confidence = trackedConfidence_;
+        observation.periodicity = trackedPeriodicity_;
+        observation.consensus = trackedConsensus_;
+        observation.detectorSupport = trackedSupportCount_;
+        observation.octaveState = octaveState_;
+        observation.pendingOctaveObservations = pendingOctaveCount_;
+        observation.voicing = clamp01(rmsGate
+            * (0.48f * confidenceGate
+             + 0.30f * periodicityGate
+             + 0.22f * consensusGate));
+        observation.valid = observation.voicing > 0.08f;
+    }
+    else
+    {
+        ++invalidHopCount_;
+        trackedConfidence_ *= 0.90f;
+        trackedPeriodicity_ *= 0.90f;
+        trackedConsensus_ *= 0.88f;
+
+        if (invalidHopCount_ > 12)
+        {
+            trackedPitchHz_ = 0.0f;
+            trackedConfidence_ = 0.0f;
+            trackedPeriodicity_ = 0.0f;
+            trackedConsensus_ = 0.0f;
+            trackedSupportCount_ = 0;
+            decoderBeam_.fill({});
+            pendingOctaveDelta_ = 0;
+            pendingOctaveCount_ = 0;
+            pendingOctaveFrequencyHz_ = 0.0f;
+        }
+
+        observation.frequencyHz = trackedPitchHz_;
+        observation.confidence = trackedConfidence_;
+        observation.periodicity = trackedPeriodicity_;
+        observation.consensus = trackedConsensus_;
+        observation.detectorSupport = trackedSupportCount_;
+        observation.octaveState = octaveState_;
+        observation.pendingOctaveObservations = pendingOctaveCount_;
+        observation.voicing = 0.0f;
+        observation.valid = false;
+    }
+
+    observation.onset = onsetPending_;
+    observation.onsetStrength = onsetPending_ ? std::max(0.65f, onsetEnvelope_)
+                                             : onsetEnvelope_;
+    onsetPending_ = false;
     return true;
 }
 
@@ -810,14 +1676,14 @@ void ModernPitchEngine::prepare(double sampleRate,
 
     monoScratch_.assign(static_cast<std::size_t>(maximumBlockSize_), 0.0f);
 
-    linkedTracker_.prepare(sampleRate_, latencyMode_);
+    linkedTracker_.prepare(sampleRate_);
     linkedQuantizer_.reset();
     linkedClock_.prepare(latencySamples_);
 
     for (int channel = 0; channel < maxSupportedChannels; ++channel)
     {
         channelTrackers_[static_cast<std::size_t>(channel)].prepare(
-            sampleRate_, latencyMode_);
+            sampleRate_);
         channelQuantizers_[static_cast<std::size_t>(channel)].reset();
         channelClocks_[static_cast<std::size_t>(channel)].prepare(
             latencySamples_);
@@ -1248,7 +2114,19 @@ void ModernPitchEngine::process(
     const bool dualMono = parameters.stereoMode == StereoMode::dualMono
         && channels > 1;
 
-    for (int sample = 0; sample < samples; ++sample)
+    
+    linkedTracker_.setRange(parameters.minimumPitchHz,
+                            parameters.maximumPitchHz);
+    linkedTracker_.setSensitivity(parameters.detectorSensitivity);
+    for (int channel = 0; channel < channels; ++channel)
+    {
+        auto& tracker = channelTrackers_[static_cast<std::size_t>(channel)];
+        tracker.setRange(parameters.minimumPitchHz,
+                         parameters.maximumPitchHz);
+        tracker.setSensitivity(parameters.detectorSensitivity);
+    }
+
+for (int sample = 0; sample < samples; ++sample)
     {
         double linkedAnalysis = 0.0;
         for (int channel = 0; channel < channels; ++channel)
@@ -1263,11 +2141,7 @@ void ModernPitchEngine::process(
             linkedAnalysis / static_cast<double>(channels));
 
         PitchObservation observation;
-        if (linkedTracker_.push(linkedSample,
-                                parameters.minimumPitchHz,
-                                parameters.maximumPitchHz,
-                                parameters.detectorSensitivity,
-                                observation))
+        if (linkedTracker_.processSample(linkedSample, observation))
         {
             latestObservation_ = observation;
             if (!dualMono)
@@ -1281,12 +2155,8 @@ void ModernPitchEngine::process(
                 PitchObservation channelObservation;
                 const float input =
                     channelData[static_cast<std::size_t>(channel)][sample];
-                if (channelTrackers_[static_cast<std::size_t>(channel)].push(
-                        input,
-                        parameters.minimumPitchHz,
-                        parameters.maximumPitchHz,
-                        parameters.detectorSensitivity,
-                        channelObservation))
+                if (channelTrackers_[static_cast<std::size_t>(channel)].processSample(
+                    input, channelObservation))
                 {
                     latestChannelObservation_[static_cast<std::size_t>(channel)]
                         = channelObservation;

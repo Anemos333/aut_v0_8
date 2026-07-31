@@ -199,42 +199,196 @@ private:
         bool onset = false;
     };
 
-    class PitchTracker
+    class BiquadLowPass
     {
     public:
-        void prepare(double sampleRate, LatencyMode mode);
+        void prepare(double sampleRate, double cutoffHz, double q = 0.7071067811865476) noexcept;
         void reset() noexcept;
-        [[nodiscard]] bool push(float sample,
-                                float minimumPitchHz,
-                                float maximumPitchHz,
-                                float sensitivity,
-                                PitchObservation& result) noexcept;
+        [[nodiscard]] float process(float input) noexcept;
 
     private:
-        [[nodiscard]] PitchObservation analyse(float minimumPitchHz,
-                                               float maximumPitchHz,
-                                               float sensitivity) noexcept;
-        [[nodiscard]] float correlationAt(int lag, int stride) const noexcept;
-        [[nodiscard]] float sampleFromNewest(int age) const noexcept;
+        double b0_ = 1.0;
+        double b1_ = 0.0;
+        double b2_ = 0.0;
+        double a1_ = 0.0;
+        double a2_ = 0.0;
+        double z1_ = 0.0;
+        double z2_ = 0.0;
+    };
 
-        std::array<float, detectorRingSize> ring_ {};
-        std::array<float, detectorRingSize> scratch_ {};
-        int writeIndex_ = 0;
-        int filled_ = 0;
-        int downsampleCounter_ = 0;
-        float downsampleAccumulator_ = 0.0f;
-        int samplesSinceAnalysis_ = 0;
+    class MultiRatePitchTracker
+    {
+    public:
+        void prepare(double sampleRate) noexcept;
+        void reset() noexcept;
+        void setRange(float minimumPitchHz, float maximumPitchHz) noexcept;
+        void setSensitivity(float sensitivity) noexcept;
+
+        // Returns true when a new temporally decoded observation is available.
+        bool processSample(float inputSample, PitchObservation& observation) noexcept;
+
+    private:
+        static constexpr int ringSize = 1024;
+        static constexpr int ringMask = ringSize - 1;
+        static constexpr int maxAnalysisSize = 512;
+        static constexpr int standardAnalysisSize = 256;
+        static constexpr int detectorHop = 32;
+        static constexpr int detectorPathCount = 4;
+        static constexpr int maxConsensusHypotheses = 20;
+        static constexpr int decoderBeamWidth = 6;
+
+        struct PitchCandidate
+        {
+            float frequencyHz = 0.0f;
+            float confidence = 0.0f;
+            float periodicity = 0.0f;
+            int pathIndex = -1;
+            int ageInHops = 1000;
+            bool valid = false;
+        };
+
+        struct CandidateSlot
+        {
+            PitchCandidate candidate;
+            int ageInHops = 1000;
+        };
+
+        struct ConsensusHypothesis
+        {
+            float frequencyHz = 0.0f;
+            float confidence = 0.0f;
+            float periodicity = 0.0f;
+            float consensus = 0.0f;
+            float evidenceScore = -1000.0f;
+            int supportCount = 0;
+            int directSupportCount = 0;
+            std::uint8_t supportMask = 0;
+            std::uint8_t freshSupportMask = 0;
+            bool valid = false;
+        };
+
+        struct DecoderState
+        {
+            double logFrequency = 0.0;
+            float score = -1000.0f;
+            int ageInHops = 0;
+            int octaveIndex = 0;
+            bool valid = false;
+        };
+
+        struct DecoderDecision
+        {
+            PitchCandidate candidate;
+            float consensus = 0.0f;
+            int supportCount = 0;
+            int directSupportCount = 0;
+            std::uint8_t freshSupportMask = 0;
+            int decoderOctaveIndex = 0;
+            bool valid = false;
+        };
+
+        static_assert((ringSize & (ringSize - 1)) == 0,
+                      "Pitch tracker ring size must be a power of two");
+
+        void push(std::array<float, ringSize>& ring,
+                  int& writePosition,
+                  int& availableSamples,
+                  float sample) noexcept;
+
+        [[nodiscard]] PitchCandidate analyse(const std::array<float, ringSize>& ring,
+                                             int writePosition,
+                                             int availableSamples,
+                                             double effectiveSampleRate,
+                                             float minimumFrequency,
+                                             float maximumFrequency,
+                                             int analysisLength) noexcept;
+
+        [[nodiscard]] int collectFreshCandidates(
+            std::array<PitchCandidate, detectorPathCount>& candidates) const noexcept;
+
+        [[nodiscard]] int buildConsensusHypotheses(
+            const std::array<PitchCandidate, detectorPathCount>& candidates,
+            int candidateCount,
+            std::array<ConsensusHypothesis, maxConsensusHypotheses>& hypotheses) const noexcept;
+
+        [[nodiscard]] DecoderDecision decodeCandidate(bool onsetPending) noexcept;
+        [[nodiscard]] float pathReliability(int pathIndex, float frequencyHz) const noexcept;
+        [[nodiscard]] float candidateBaseScore(const PitchCandidate& candidate) const noexcept;
+        [[nodiscard]] static float centsDistance(float frequencyA, float frequencyB) noexcept;
+        [[nodiscard]] static bool isOctaveLikeTransition(float fromFrequency,
+                                                         float toFrequency,
+                                                         int& octaveDelta,
+                                                         float& residualCents) noexcept;
+        [[nodiscard]] bool confirmOctaveTransition(DecoderDecision& decision,
+                                                   bool onsetPending) noexcept;
+        void updateDecoderBeam(
+            const std::array<ConsensusHypothesis, maxConsensusHypotheses>& hypotheses,
+            int hypothesisCount,
+            bool onsetPending) noexcept;
 
         double sampleRate_ = 48000.0;
-        double detectorSampleRate_ = 24000.0;
-        int analysisWindow_ = 1536;
-        int analysisHop_ = 48;
+        float minimumPitchHz_ = 45.0f;
+        float maximumPitchHz_ = 1600.0f;
+        float sensitivity_ = 0.70f;
 
-        float shortEnergy_ = 0.0f;
-        float longEnergy_ = 0.0f;
-        float previousFrequencyHz_ = 0.0f;
-        int pendingOctaveDirection_ = 0;
+        std::array<float, ringSize> fullRateRing_ {};
+        std::array<float, ringSize> halfRateRing_ {};
+        std::array<float, ringSize> quarterRateRing_ {};
+        std::array<float, ringSize> eighthRateRing_ {};
+
+        int fullRateWritePosition_ = 0;
+        int halfRateWritePosition_ = 0;
+        int quarterRateWritePosition_ = 0;
+        int eighthRateWritePosition_ = 0;
+        int fullRateAvailableSamples_ = 0;
+        int halfRateAvailableSamples_ = 0;
+        int quarterRateAvailableSamples_ = 0;
+        int eighthRateAvailableSamples_ = 0;
+
+        int halfRateDecimationCounter_ = 0;
+        int quarterRateDecimationCounter_ = 0;
+        int eighthRateDecimationCounter_ = 0;
+        int hopCounter_ = 0;
+        int analysisHopCounter_ = 0;
+
+        BiquadLowPass halfRateAntiAlias_;
+        BiquadLowPass quarterRateAntiAlias_;
+        BiquadLowPass eighthRateAntiAlias_;
+
+        float previousInput_ = 0.0f;
+        float previousDcOutput_ = 0.0f;
+        float dcBlockCoefficient_ = 0.995f;
+
+        float fastEnergy_ = 0.0f;
+        float slowEnergy_ = 0.0f;
+        float fastEnergyCoefficient_ = 0.0f;
+        float slowEnergyCoefficient_ = 0.0f;
+        float onsetEnvelope_ = 0.0f;
+        int onsetCooldownSamples_ = 0;
+        bool onsetPending_ = false;
+
+        CandidateSlot fullRateCandidate_;
+        CandidateSlot halfRateCandidate_;
+        CandidateSlot quarterRateCandidate_;
+        CandidateSlot eighthRateCandidate_;
+
+        std::array<float, maxAnalysisSize> frame_ {};
+        std::array<float, maxAnalysisSize> difference_ {};
+        std::array<DecoderState, decoderBeamWidth> decoderBeam_ {};
+
+        float trackedPitchHz_ = 0.0f;
+        float trackedConfidence_ = 0.0f;
+        float trackedPeriodicity_ = 0.0f;
+        float trackedConsensus_ = 0.0f;
+        int trackedSupportCount_ = 0;
+        int invalidHopCount_ = 0;
+
+        int octaveState_ = 0;
+        int pendingOctaveDelta_ = 0;
         int pendingOctaveCount_ = 0;
+        float pendingOctaveFrequencyHz_ = 0.0f;
+        float committedOctaveFrequencyHz_ = 0.0f;
+        int octaveCommitGuardHops_ = 0;
     };
 
     class ScaleQuantizer
@@ -358,8 +512,8 @@ private:
     int latencySamples_ = 256;
     LatencyMode latencyMode_ = LatencyMode::live;
 
-    PitchTracker linkedTracker_;
-    std::array<PitchTracker, maxSupportedChannels> channelTrackers_ {};
+    MultiRatePitchTracker linkedTracker_;
+    std::array<MultiRatePitchTracker, maxSupportedChannels> channelTrackers_ {};
     ScaleQuantizer linkedQuantizer_;
     std::array<ScaleQuantizer, maxSupportedChannels> channelQuantizers_ {};
 
