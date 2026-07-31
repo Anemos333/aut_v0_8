@@ -64,11 +64,9 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          cmd.exe /d /c ".\build-clean\clean-engine-tests\CleanModernPitchEngineTest.exe > clean-engine-windows-metrics.txt 2>&1"
-          $testExitCode = $LASTEXITCODE
-          if (Test-Path clean-engine-windows-metrics.txt) {
-            Get-Content clean-engine-windows-metrics.txt
-          }
+          cmd.exe /v:on /d /c ".\build-clean\clean-engine-tests\CleanModernPitchEngineTest.exe > clean-engine-windows-metrics.txt 2>&1 & echo !errorlevel! > clean-engine-windows-exit.txt & exit /b 0"
+          Get-Content clean-engine-windows-metrics.txt
+          $testExitCode = [int](Get-Content clean-engine-windows-exit.txt)
           if ($testExitCode -ne 0) { exit $testExitCode }
 
   windows-vst3:
