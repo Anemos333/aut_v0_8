@@ -188,7 +188,7 @@ int main()
         && rightEnergy > 1.0;
     const bool latencyCorrect = engine.getLatencySamples() == 256;
 
-    std::cout
+    std::cerr
         << "target_hz=" << meter.targetPitchHz << '\n'
         << "detected_hz=" << meter.detectedPitchHz << '\n'
         << "left_output_hz=" << leftFrequency << '\n'
