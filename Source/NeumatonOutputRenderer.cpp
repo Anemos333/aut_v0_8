@@ -71,6 +71,8 @@ void NeumatonOutputRenderer::prepare(const OutputPrepareSpec& requestedSpec)
     synthesisGain_ = static_cast<float>(1.0
         / std::max(1.0e-9, overlapNormalisation));
 
+    
+
     int fftBits = 0;
     while ((1 << fftBits) < spec_.frameSize)
         ++fftBits;
