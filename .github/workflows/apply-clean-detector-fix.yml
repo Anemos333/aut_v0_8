@@ -1,0 +1,104 @@
+name: Apply clean detector octave fix
+
+on:
+  push:
+    branches:
+      - modern-pitch-engine-clean-rewrite
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: modern-pitch-engine-clean-rewrite
+
+      - name: Replace over-broad subharmonic promotion
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('Source/ModernPitchEngine.cpp')
+          text = path.read_text()
+          old = '''    int fundamentalLag = bestLag;
+              float fundamentalCorrelation = bestCorrelation;
+              for (int multiplier = 2; multiplier <= 4; ++multiplier)
+              {
+                  const int candidateLag = bestLag * multiplier;
+                  if (candidateLag > maximumLag)
+                      break;
+
+                  int localLag = candidateLag;
+                  float localCorrelation = correlationAt(candidateLag, 1);
+                  for (int offset = -2; offset <= 2; ++offset)
+                  {
+                      const int lag = candidateLag + offset;
+                      if (lag < minimumLag || lag > maximumLag)
+                          continue;
+                      const float correlation = correlationAt(lag, 1);
+                      if (correlation > localCorrelation)
+                      {
+                          localCorrelation = correlation;
+                          localLag = lag;
+                      }
+                  }
+
+                  const float acceptance = multiplier == 2 ? 0.82f : 0.88f;
+                  if (localCorrelation >= acceptance * bestCorrelation
+                      && localCorrelation >= 0.34f)
+                  {
+                      fundamentalLag = localLag;
+                      fundamentalCorrelation = localCorrelation;
+                  }
+              }
+          '''
+          new = '''    int fundamentalLag = bestLag;
+              float fundamentalCorrelation = bestCorrelation;
+
+              // Only the 2:1 ambiguity is promoted. Correlation peaks repeat at every
+              // integer multiple of the true period, so accepting 3x/4x merely because
+              // they are coherent would manufacture subharmonic octaves. The doubled
+              // period wins only when it is measurably better than the short-period peak,
+              // which is the signature of alternating cycles caused by a real
+              // fundamental under a dominant second harmonic.
+              const int doubledLag = bestLag * 2;
+              if (doubledLag <= maximumLag)
+              {
+                  int localLag = doubledLag;
+                  float localCorrelation = correlationAt(doubledLag, 1);
+                  for (int offset = -2; offset <= 2; ++offset)
+                  {
+                      const int lag = doubledLag + offset;
+                      if (lag < minimumLag || lag > maximumLag)
+                          continue;
+                      const float correlation = correlationAt(lag, 1);
+                      if (correlation > localCorrelation)
+                      {
+                          localCorrelation = correlation;
+                          localLag = lag;
+                      }
+                  }
+
+                  const float improvement = localCorrelation - bestCorrelation;
+                  if (localCorrelation >= 0.34f && improvement >= 0.012f)
+                  {
+                      fundamentalLag = localLag;
+                      fundamentalCorrelation = localCorrelation;
+                  }
+              }
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f'expected exactly one old detector block, found {text.count(old)}')
+          path.write_text(text.replace(old, new))
+          PY
+
+      - name: Commit detector fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Source/ModernPitchEngine.cpp
+          git commit -m "Restrict octave promotion to genuine 2:1 ambiguity"
+          git push origin HEAD:modern-pitch-engine-clean-rewrite
