@@ -176,17 +176,21 @@ ModernPitchEngine::PitchTracker::analyse(float minimumPitchHz,
 
     int fundamentalLag = bestLag;
     float fundamentalCorrelation = bestCorrelation;
-    for (int multiplier = 2; multiplier <= 4; ++multiplier)
-    {
-        const int candidateLag = bestLag * multiplier;
-        if (candidateLag > maximumLag)
-            break;
 
-        int localLag = candidateLag;
-        float localCorrelation = correlationAt(candidateLag, 1);
+    // Only the 2:1 ambiguity is promoted. Correlation peaks repeat at every
+    // integer multiple of the true period, so accepting 3x/4x merely because
+    // they are coherent would manufacture subharmonic octaves. The doubled
+    // period wins only when it is measurably better than the short-period peak,
+    // which is the signature of alternating cycles caused by a real
+    // fundamental under a dominant second harmonic.
+    const int doubledLag = bestLag * 2;
+    if (doubledLag <= maximumLag)
+    {
+        int localLag = doubledLag;
+        float localCorrelation = correlationAt(doubledLag, 1);
         for (int offset = -2; offset <= 2; ++offset)
         {
-            const int lag = candidateLag + offset;
+            const int lag = doubledLag + offset;
             if (lag < minimumLag || lag > maximumLag)
                 continue;
             const float correlation = correlationAt(lag, 1);
@@ -197,9 +201,8 @@ ModernPitchEngine::PitchTracker::analyse(float minimumPitchHz,
             }
         }
 
-        const float acceptance = multiplier == 2 ? 0.82f : 0.88f;
-        if (localCorrelation >= acceptance * bestCorrelation
-            && localCorrelation >= 0.34f)
+        const float improvement = localCorrelation - bestCorrelation;
+        if (localCorrelation >= 0.34f && improvement >= 0.012f)
         {
             fundamentalLag = localLag;
             fundamentalCorrelation = localCorrelation;
