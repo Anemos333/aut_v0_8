@@ -18,5 +18,6 @@ This branch is a release-candidate source branch only while every invariant belo
 14. **High Latency remains legacy.** Mode 0 is not rewritten by this branch. The integration replaces only the three ModernPitchEngine modes.
 15. **Release-candidate gate.** Source is not a final binary release until Windows JUCE/VST3 CI passes and real DAW listening confirms: scale/root/custom-scale transport, obvious response from every GUI control, no wind/flanging, intelligible consonants, stable octave identity, equal perceived quality between the three modern modes and correct latency reporting.
 16. **Parameter sensitivity gate.** Automated validation must fail when Amount, Speed, Humanize, Lock Hysteresis, Vibrato Preserve or Creative Tempo no longer produces a measurable change in the requested pitch trajectory or target identity.
+17. **Compiler portability gate.** The same source and invariant suite must compile under the workflow's GCC and MSVC C++17 toolchains before the branch can be treated as a binary candidate.
 
 `Tests/CleanModernPitchEngineTest.cpp` is the automated minimum gate. It must verify finite stereo output, target pitch in all modes, mode latency, equal corrected pitch between modes, Amount, Speed, Humanize, Lock Hysteresis, Vibrato Preserve, Tempo division/glide length, Glide Lock strength and Smart Onset.
