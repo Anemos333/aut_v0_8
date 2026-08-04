@@ -1,0 +1,41 @@
+name: Fix ModernPitchEngine MSVC capture
+
+on:
+  push:
+    branches:
+      - modern-pitch-engine-clean-rewrite
+    paths:
+      - '.github/workflows/fix-modern-pitch-msvc.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch explicit lambda capture
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('Source/ModernPitchEngine.cpp')
+          text = path.read_text(encoding='utf-8')
+          old = 'const auto mix = [&hash](std::uint64_t value) noexcept'
+          new = 'const auto mix = [&hash, prime](std::uint64_t value) noexcept'
+          if text.count(old) != 1:
+              raise RuntimeError('unexpected hash lambda form')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+      - name: Commit compiler portability fix
+        shell: bash
+        run: |
+          rm -f .github/workflows/fix-modern-pitch-msvc.yml
+          git config user.name 'neumaton-integration-bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add -A
+          git commit -m 'Fix explicit MSVC hash lambda capture'
+          git push origin HEAD:modern-pitch-engine-clean-rewrite
