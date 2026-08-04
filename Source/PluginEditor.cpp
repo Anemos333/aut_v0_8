@@ -228,10 +228,20 @@ buildPresetMenu();
     speedKnob.setColour (juce::Slider::thumbColourId, juce::Colours::white);
     speedKnob.setLookAndFeel (&mainValveLookAndFeel);
     speedKnob.setMouseCursor (juce::MouseCursor::PointingHandCursor);
-    speedKnob.textFromValueFunction = [this](double val) {
-        if (scaleLockButton.getToggleState()) {
-            double mappedVal = val * (7.0 / 500.0);
-            return juce::String(mappedVal, 2) + " ms";
+    speedKnob.textFromValueFunction = [this](double val)
+    {
+        if (scaleLockButton.getToggleState())
+        {
+            const int mode = processorRef.processingMode.load();
+            if (mode > 0)
+            {
+                const double norm = std::pow(
+                    juce::jlimit(0.0, 1.0, val / 500.0), 1.35);
+                const double mappedVal = mode == 1 ? 3.0 + 4.0 * norm
+                    : mode == 2 ? 1.5 + 3.5 * norm
+                                : 0.35 + 2.65 * norm;
+                return juce::String(mappedVal, 2) + " ms";
+            }
         }
         return juce::String(val, 1) + " ms";
     };
@@ -1546,6 +1556,7 @@ void MicrotonalAutotuneAudioProcessorEditor::onModeSelected()
     {
         int newMode = selectedId - 1; // ComboBox ID 1-4 → mode 0-3
         processorRef.updateProcessingMode (newMode);
+        speedKnob.updateText();
         repaint(); // refresh the mode indicator dot
     }
 }

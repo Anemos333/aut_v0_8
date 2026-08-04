@@ -2,14 +2,9 @@
 
 #include <JuceHeader.h>
 #include "Tempo.h"
-#include "ScaleLock.h"
-#include "NeumatonRidgeLedger.h"
-#include "NeumatonOutputRenderer.h"
 
 #include <array>
 #include <atomic>
-#include <complex>
-#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -21,9 +16,9 @@ public:
 
     enum class LatencyMode : int
     {
-        ultraLive = 0, // approximately 2.7-2.9 ms at 44.1/48 kHz
-        live = 1,      // approximately 5.3-5.8 ms at 44.1/48 kHz
-        quality = 2    // approximately 10.7-11.6 ms at 44.1/48 kHz
+        ultraLive = 0,
+        live = 1,
+        quality = 2
     };
 
     enum class StereoMode : int
@@ -44,35 +39,29 @@ public:
 
     struct Parameters
     {
-        float amount = 1.0f;                 // 0..1
-        float retuneTimeMs = 8.0f;           // stable-note correction time
-        float transitionTimeMs = 35.0f;      // note-to-note transition time
-        float preserveVibrato = 0.70f;       // 0..1
-        float humanize = 0.20f;              // 0..1, creates a small dead-band
-        float formantPreservation = 0.90f;   // 0..1
-        float transientProtection = 0.85f;   // 0..1
-        float detectorSensitivity = 0.70f;   // 0..1
+        float amount = 1.0f;
+        float retuneTimeMs = 8.0f;
+        float transitionTimeMs = 35.0f;
+        float preserveVibrato = 0.70f;
+        float humanize = 0.20f;
+        float formantPreservation = 0.90f;
+        float transientProtection = 0.85f;
+        float detectorSensitivity = 0.70f;
         float maximumCorrectionSemitones = 12.0f;
         float minimumPitchHz = 45.0f;
         float maximumPitchHz = 1600.0f;
         StereoMode stereoMode = StereoMode::linkedMidSide;
+        float breathReduction = 0.50f;
 
-        // Wind Fix V5: 0 keeps the V4 residual unchanged, 1 applies the
-        // full soft de-breath curve (up to approximately 12 dB in the air band).
-        float breathReduction = 0.50f;       // 0..1
-
-        // Scale Lock Parameters
         bool scaleLock = false;
-        float lockHysteresis = 24.0f;       // 0..80 cents
-        float vibratoPreserve = 0.0f;       // 0..1
+        float lockHysteresis = 24.0f;
+        float vibratoPreserve = 0.0f;
         int scaleSize = 12;
         float minScaleStepCents = 100.0f;
         int latencyMode = 1;
-        float lockStrictness = 0.0f; // 0..1
+        float lockStrictness = 0.0f;
         bool hardLockActive = false;
 
-        // Creative tempo layer. When mode == off, the V5 signal path is
-        // unchanged. The controller acts only on confirmed target revisions.
         CreativeTempo::Settings tempo;
     };
 
@@ -92,37 +81,21 @@ public:
         float sustainedNoteSeconds = 0.0f;
         float consensus = 0.0f;
         float correctionCents = 0.0f;
-        float wetMix = 0.0f;
+        float wetMix = 1.0f;
         float transitionBlend = 0.0f;
 
-        // NEUMATON_V6_OUTPUT_DIAGNOSTICS
-        // Diagnostic-only output meters, 0..100. These do not affect audio.
         float outputSourceCorrespondence = 0.0f;
         float outputTargetCoherence = 0.0f;
         float outputPhysicalHarmonicFit = 0.0f;
         float outputLedgerHealth = 0.0f;
         float outputPhaseCoherence = 0.0f;
         float outputReconstructionNeed = 0.0f;
-        // NEUMATON_V6_OUTPUT_DIAGNOSTICS_CALIBRATED
-        // 1 when the V6 output meters describe an active pitched frame.
-        // 0 means ignore Source/Target/Physical/Need for CSV statistics.
         float outputMeterValid = 0.0f;
-
-        // NEUMATON_V6_TEMPORAL_OCTAVE_DIAGNOSTICS
-        // Temporal diagnostics for the output trajectory.  These do not
-        // alter audio; they help diagnose Live/Experimental octave jumps,
-        // target discontinuities and correction-speed stress.
         float outputTemporalStability = 0.0f;
         float outputTargetJumpCents = 0.0f;
         float outputCorrectionVelocityCentsPerSecond = 0.0f;
         float outputOctaveConflict = 0.0f;
         float outputTransitionStress = 0.0f;
-
-        // NEUMATON_V6_1_SOURCE_MIRROR_SHADOW_LEDGER
-        // Shadow-only pre-IFFT consensus diagnostics. These do not affect
-        // audio yet; they measure how well the transported output spectrum
-        // matches the input spectrum expressed in target-F0 coordinates, and
-        // how much a future spectral ledger would need to intervene.
         float outputSourceMirrorFit = 0.0f;
         float outputDoubleFamilyRisk = 0.0f;
         float outputLedgerDeficit = 0.0f;
@@ -130,8 +103,6 @@ public:
         float outputPreIfftConsensus = 0.0f;
         float outputSelectiveReconstructionNeed = 0.0f;
 
-        // V3 Stage B: observed ridge ledger diagnostics. Shadow-only; none of
-        // these values participates in synthesis or output gain.
         int shadowRidgeObservationCount = 0;
         int shadowRidgeActiveCount = 0;
         int shadowRidgeBirthCount = 0;
@@ -149,7 +120,6 @@ public:
         int pendingOctaveObservations = 0;
         TrackingState state = TrackingState::unvoiced;
 
-        // Creative tempo diagnostics.
         float tempoBpm = 120.0f;
         float tempoGridPhase = 0.0f;
         float tempoGlideTimeMs = 0.0f;
@@ -165,7 +135,6 @@ public:
                  int maximumExpectedSamplesPerBlock,
                  int numberOfChannels,
                  LatencyMode latencyMode);
-
     void reset() noexcept;
 
     void process(juce::AudioBuffer<float>& buffer,
@@ -192,8 +161,6 @@ public:
                  double rootFrequency,
                  const Parameters& parameters);
 
-    // Keeps the same fixed delay while disabling correction. Use this from
-    // AudioProcessor::processBlockBypassed() so host bypass remains aligned.
     void processBypassed(juce::AudioBuffer<float>& buffer);
 
     [[nodiscard]] int getLatencySamples() const noexcept { return latencySamples_; }
@@ -201,7 +168,8 @@ public:
     [[nodiscard]] Metering getMetering() const noexcept;
 
 private:
-    void appendV6DiagnosticsCsv(const Metering& meter, int numberOfSamples) noexcept;
+    static constexpr int maximumLpcOrder = 12;
+    static constexpr int transportRingSize = 16384;
 
     struct PitchObservation
     {
@@ -218,34 +186,11 @@ private:
         bool onset = false;
     };
 
-    struct HarmonicNoiseContext
-    {
-        float detectedPitchHz = 0.0f;
-        float confidence = 0.0f;
-        float voicing = 0.0f;
-        float consensus = 0.0f;
-        float onsetStrength = 0.0f;
-        float breathReduction = 0.50f;
-        // NEUMATON_ASSERTIVE_AUDITORS_V2_INTERNAL_HARMONIC_CONTEXT
-        // Internal, non-user-facing auditor intent. Derived from Amount, Speed,
-        // Scale Lock and requested correction size inside the audio path.
-        float correctionAssertiveness = 0.0f;
-        float hardCorrectionIntent = 0.0f;
-        TrackingState trackingState = TrackingState::unvoiced;
-        float noteAgeSeconds = 0.0f;
-        // NEUMATON_TARGET_HARMONIC_CONDITIONER_V5_CONTEXT
-        // These do not reopen dry/wet behaviour.  They only shape the spectral
-        // reconstruction conditioner after full-spectrum transport.
-        float humanize = 0.0f;
-        bool scaleLock = false;
-        float targetPitchHz = 0.0f;
-        std::uint64_t targetRevision = 0;
-    };
-
     class BiquadLowPass
     {
     public:
-        void prepare(double sampleRate, double cutoffHz, double q = 0.7071067811865476) noexcept;
+        void prepare(double sampleRate, double cutoffHz,
+                     double q = 0.7071067811865476) noexcept;
         void reset() noexcept;
         [[nodiscard]] float process(float input) noexcept;
 
@@ -266,8 +211,6 @@ private:
         void reset() noexcept;
         void setRange(float minimumPitchHz, float maximumPitchHz) noexcept;
         void setSensitivity(float sensitivity) noexcept;
-
-        // Returns true when a new temporally decoded observation is available.
         bool processSample(float inputSample, PitchObservation& observation) noexcept;
 
     private:
@@ -337,27 +280,25 @@ private:
                   int& writePosition,
                   int& availableSamples,
                   float sample) noexcept;
-
-        [[nodiscard]] PitchCandidate analyse(const std::array<float, ringSize>& ring,
-                                             int writePosition,
-                                             int availableSamples,
-                                             double effectiveSampleRate,
-                                             float minimumFrequency,
-                                             float maximumFrequency,
-                                             int analysisLength) noexcept;
-
+        [[nodiscard]] PitchCandidate analyse(
+            const std::array<float, ringSize>& ring,
+            int writePosition,
+            int availableSamples,
+            double effectiveSampleRate,
+            float minimumFrequency,
+            float maximumFrequency,
+            int analysisLength) noexcept;
         [[nodiscard]] int collectFreshCandidates(
             std::array<PitchCandidate, detectorPathCount>& candidates) const noexcept;
-
         [[nodiscard]] int buildConsensusHypotheses(
             const std::array<PitchCandidate, detectorPathCount>& candidates,
             int candidateCount,
             std::array<ConsensusHypothesis, maxConsensusHypotheses>& hypotheses) const noexcept;
-
         [[nodiscard]] DecoderDecision decodeCandidate(bool onsetPending) noexcept;
         [[nodiscard]] float pathReliability(int pathIndex, float frequencyHz) const noexcept;
         [[nodiscard]] float candidateBaseScore(const PitchCandidate& candidate) const noexcept;
-        [[nodiscard]] static float centsDistance(float frequencyA, float frequencyB) noexcept;
+        [[nodiscard]] static float centsDistance(float frequencyA,
+                                                 float frequencyB) noexcept;
         [[nodiscard]] static bool isOctaveLikeTransition(float fromFrequency,
                                                          float toFrequency,
                                                          int& octaveDelta,
@@ -378,7 +319,6 @@ private:
         std::array<float, ringSize> halfRateRing_ {};
         std::array<float, ringSize> quarterRateRing_ {};
         std::array<float, ringSize> eighthRateRing_ {};
-
         int fullRateWritePosition_ = 0;
         int halfRateWritePosition_ = 0;
         int quarterRateWritePosition_ = 0;
@@ -387,7 +327,6 @@ private:
         int halfRateAvailableSamples_ = 0;
         int quarterRateAvailableSamples_ = 0;
         int eighthRateAvailableSamples_ = 0;
-
         int halfRateDecimationCounter_ = 0;
         int quarterRateDecimationCounter_ = 0;
         int eighthRateDecimationCounter_ = 0;
@@ -397,11 +336,9 @@ private:
         BiquadLowPass halfRateAntiAlias_;
         BiquadLowPass quarterRateAntiAlias_;
         BiquadLowPass eighthRateAntiAlias_;
-
         float previousInput_ = 0.0f;
         float previousDcOutput_ = 0.0f;
         float dcBlockCoefficient_ = 0.995f;
-
         float fastEnergy_ = 0.0f;
         float slowEnergy_ = 0.0f;
         float fastEnergyCoefficient_ = 0.0f;
@@ -414,18 +351,15 @@ private:
         CandidateSlot halfRateCandidate_;
         CandidateSlot quarterRateCandidate_;
         CandidateSlot eighthRateCandidate_;
-
         std::array<float, maxAnalysisSize> frame_ {};
         std::array<float, maxAnalysisSize> difference_ {};
         std::array<DecoderState, decoderBeamWidth> decoderBeam_ {};
-
         float trackedPitchHz_ = 0.0f;
         float trackedConfidence_ = 0.0f;
         float trackedPeriodicity_ = 0.0f;
         float trackedConsensus_ = 0.0f;
         int trackedSupportCount_ = 0;
         int invalidHopCount_ = 0;
-
         int octaveState_ = 0;
         int pendingOctaveDelta_ = 0;
         int pendingOctaveCount_ = 0;
@@ -437,643 +371,165 @@ private:
     class ScaleQuantizer
     {
     public:
-        bool update(const double* scaleRatios,
-                    int numberOfScaleRatios,
-                    double rootFrequency) noexcept;
-
-        void resetTarget() noexcept;
-        void forceTargetLog2(double targetLog2) noexcept;
-
+        void reset() noexcept;
+        bool setScale(const double* ratios, int ratioCount,
+                      double rootFrequency) noexcept;
         [[nodiscard]] double chooseTargetLog2(double inputLog2,
-                                              float hysteresisCents) noexcept;
-
-        [[nodiscard]] double getCurrentTargetLog2() const noexcept
-        {
-            return currentTargetLog2_;
-        }
-
-        [[nodiscard]] bool hasScale() const noexcept { return cachedScaleSize_ > 0; }
+                                              float hysteresisCents,
+                                              float strictness,
+                                              float confidence,
+                                              bool hardLock,
+                                              bool onset,
+                                              int& pendingObservations) noexcept;
+        [[nodiscard]] float minimumStepCents() const noexcept { return minStepCents_; }
+        [[nodiscard]] float asymmetry() const noexcept { return asymmetry_; }
 
     private:
-        [[nodiscard]] static std::uint64_t hashScale(const double* scaleRatios,
-                                                     int numberOfScaleRatios,
-                                                     double rootFrequency) noexcept;
-
-        std::array<double, maxScaleRatios> cachedScaleLogRatios_ {};
-        int cachedScaleSize_ = 0;
+        [[nodiscard]] static std::uint64_t hashScale(const double* ratios,
+                                                     int count,
+                                                     double root) noexcept;
+        std::array<double, maxScaleRatios> logRatios_ {};
+        int ratioCount_ = 1;
         double rootLog2_ = 0.0;
-        double currentTargetLog2_ = 0.0;
+        std::uint64_t hash_ = 0;
+        float minStepCents_ = 1200.0f;
+        float asymmetry_ = 0.0f;
         bool targetValid_ = false;
-        std::uint64_t scaleHash_ = 0;
-    };
-
-    class CorrectionController
-    {
-    public:
-        void prepare(double sampleRate) noexcept;
-        void reset() noexcept;
-
-        void acceptObservation(const PitchObservation& observation,
-                               ScaleQuantizer& quantizer,
-                               const Parameters& parameters) noexcept;
-
-        void setSpectralReliability(float breathiness,
-                                    float harmonicity,
-                                    float polyphony,
-                                    float spectralReliability) noexcept;
-        void advanceOneSample(const Parameters& parameters) noexcept;
-
-        [[nodiscard]] double getPitchRatio() const noexcept;
-        [[nodiscard]] double getCurrentCorrectionCents() const noexcept
-        {
-            return currentCorrectionCents_;
-        }
-        [[nodiscard]] double getSynthesisTargetCorrectionCents() const noexcept
-        {
-            return synthesisTargetCorrectionCents_;
-        }
-        [[nodiscard]] double getDesiredCorrectionCents() const noexcept
-        {
-            return desiredCorrectionCents_;
-        }
-        [[nodiscard]] std::uint64_t getTargetRevision() const noexcept
-        {
-            return targetRevision_;
-        }
-        [[nodiscard]] float getWetMix() const noexcept { return wetMix_; }
-        [[nodiscard]] float getCorrectionCents() const noexcept
-        {
-            return static_cast<float>(currentCorrectionCents_);
-        }
-        [[nodiscard]] float getTargetPitchHz() const noexcept;
-        [[nodiscard]] TrackingState getState() const noexcept { return state_; }
-        [[nodiscard]] float getVoicing() const noexcept { return currentVoicing_; }
-        [[nodiscard]] float getFormantStability() const noexcept;
-
-    
-        void enterState(TrackingState newState, int durationSamples = 0) noexcept;
-        void updateVoicingLatch(bool observationUsable,
-                                float voicing,
-                                float sensitivity) noexcept;
-        [[nodiscard]] float confidenceAuthority(float confidence,
-                                                float sensitivity) const noexcept;
-
-        [[nodiscard]] static double sanitisedMinStepCents(const Parameters& parameters) noexcept;
-        [[nodiscard]] static double scaleLockRevisionThresholdCents(const Parameters& parameters,
-                                                                    float strictness,
-                                                                    float vibratoProtection) noexcept;
-        [[nodiscard]] static double scaleLockTransitionThresholdCents(const Parameters& parameters,
-                                                                      float strictness,
-                                                                      float vibratoProtection) noexcept;
-
-        [[nodiscard]] double guardScaleLockTarget(double candidateLog2,
-                                                  const PitchObservation& observation,
-                                                  const Parameters& parameters,
-                                                  double minStepCents,
-                                                  float strictness,
-                                                  bool hardScaleLock) noexcept;
-
-        double sampleRate_ = 48000.0;
-        TrackingState state_ = TrackingState::unvoiced;
-        int stateSamplesRemaining_ = 0;
-        int stableObservationCount_ = 0;
-        int invalidObservationCount_ = 0;
-
-        double observedLog2_ = 0.0;
-        double pitchCentreLog2_ = 0.0;
         double targetLog2_ = 0.0;
-        bool pitchCentreValid_ = false;
-        bool targetValid_ = false;
-
-        double desiredCorrectionCents_ = 0.0;
-        double synthesisTargetCorrectionCents_ = 0.0;
-        double currentCorrectionCents_ = 0.0;
-        double correctionVelocityCentsPerSecond_ = 0.0;
-        ScaleLock::Processor scaleLockProcessor_;
-        std::uint64_t targetRevision_ = 0;
-
-        float currentConfidence_ = 0.0f;
-        float currentVoicing_ = 0.0f;
-        float currentOnsetStrength_ = 0.0f;
-        float spectralBreathiness_ = 0.0f;
-        float spectralHarmonicity_ = 1.0f;
-        float spectralPolyphony_ = 0.0f;
-        float spectralReliability_ = 1.0f;
-        float authority_ = 0.0f;
-        float authorityTarget_ = 0.0f;
-        float wetMix_ = 0.0f;
-        float wetMixTarget_ = 0.0f;
-        float smoothedVoicing_ = 0.0f;
-        float authorityAttackCoefficient_ = 1.0f;
-        float authorityReleaseCoefficient_ = 1.0f;
-        float wetAttackCoefficient_ = 1.0f;
-        float wetReleaseCoefficient_ = 1.0f;
-        bool voicedLatched_ = false;
-        int voicedEnterCount_ = 0;
-        int voicedExitCount_ = 0;
-
-        bool revisionCandidateValid_ = false;
-        double revisionCandidateLog2_ = 0.0;
-        int revisionCandidateCount_ = 0;
+        bool pendingValid_ = false;
+        double pendingLog2_ = 0.0;
+        int pendingCount_ = 0;
     };
 
-    class TransitionManager
+    struct TransportPlan
     {
-    public:
-        struct Command
-        {
-            double primaryCents = 0.0;
-            double secondaryCents = 0.0;
-            float blend = 0.0f;
-            bool dualSynthesis = false;
-            bool beginSecondary = false;
-            bool commitSecondary = false;
-        };
-
-        void prepare(double sampleRate,
-                     int synthesisFrameSize,
-                     LatencyMode latencyMode) noexcept;
-        void reset() noexcept;
-
-        [[nodiscard]] Command processSample(
-            double controllerCorrectionCents,
-            double destinationCorrectionCents,
-            std::uint64_t targetRevision,
-            TrackingState trackingState,
-            float wetMix,
-            float tonalEvidence,
-            float correctionDistanceCents,
-            const Parameters& parameters,
-            bool forceTransition = false) noexcept;
-
-        [[nodiscard]] float getBlend() const noexcept { return publishedBlend_; }
-        [[nodiscard]] bool isDualSynthesisActive() const noexcept
-        {
-            return phase_ != Phase::idle;
-        }
-
-    private:
-        enum class Phase : std::uint8_t
-        {
-            idle = 0,
-            preRoll,
-            crossfade
-        };
-
-        void startTransition(double currentCents,
-                             double targetCents,
-                             const Parameters& parameters) noexcept;
-        void updateSecondaryTrajectory(double targetCents,
-                                       const Parameters& parameters) noexcept;
-        [[nodiscard]] double transitionThresholdCents(const Parameters& parameters) const noexcept;
-        [[nodiscard]] int crossfadeLengthSamples(
-            const Parameters& parameters) const noexcept;
-
-        double sampleRate_ = 48000.0;
-        int synthesisFrameSize_ = 256;
-        int synthesisHopSize_ = 64;
-        LatencyMode latencyMode_ = LatencyMode::live;
-        Phase phase_ = Phase::idle;
-
-        bool initialised_ = false;
-        bool pendingTarget_ = false;
-        bool pendingForceTransition_ = false;
-        bool beginEventPending_ = false;
-        std::uint64_t lastSeenRevision_ = 0;
-        std::uint64_t pendingRevision_ = 0;
-        std::uint64_t transitionRevision_ = 0;
-
-        double idleCents_ = 0.0;
-        double primaryCents_ = 0.0;
-        double secondaryCents_ = 0.0;
-        double secondaryVelocityCentsPerSecond_ = 0.0;
-        double transitionTargetCents_ = 0.0;
-        double pendingTargetCents_ = 0.0;
-
-        int preRollSamplesRemaining_ = 0;
-        int crossfadeSamplesTotal_ = 1;
-        int crossfadeSampleIndex_ = 0;
-        int transitionCooldownSamples_ = 0;
-        float publishedBlend_ = 0.0f;
+        double delayA = 0.0;
+        double delayB = 0.0;
+        float gainA = 1.0f;
+        float gainB = 0.0f;
     };
 
-    class SpectralVoiceShifter
+    class TransportClock
     {
     public:
-        void prepare(double sampleRate, int frameSize);
+        void prepare(int reportedLatencySamples) noexcept;
         void reset() noexcept;
-
-        [[nodiscard]] float processSample(
-            float inputSample,
-            const TransitionManager::Command& transition,
-            float desiredWetMix,
-            float formantPreservation,
-            const HarmonicNoiseContext& harmonicNoiseContext,
-            bool forcePhaseReset) noexcept;
-        [[nodiscard]] float processBypassedSample(float inputSample) noexcept;
-
-        [[nodiscard]] int getLatencySamples() const noexcept { return frameSize_; }
-        [[nodiscard]] float getBreathiness() const noexcept { return smoothedBreathiness_; }
-        [[nodiscard]] float getHarmonicity() const noexcept { return smoothedHarmonicity_; }
-        [[nodiscard]] float getNoisePathAmount() const noexcept { return smoothedNoisePathAmount_; }
-        [[nodiscard]] float getNoiseReductionDb() const noexcept { return currentNoiseReductionDb_; }
-        [[nodiscard]] float getPolyphony() const noexcept { return smoothedPolyphony_; }
-        [[nodiscard]] float getSpectralReliability() const noexcept { return smoothedSpectralReliability_; }
-        [[nodiscard]] float getMaskStability() const noexcept { return smoothedMaskStability_; }
-        [[nodiscard]] float getOutputSourceCorrespondence() const noexcept { return outputSourceCorrespondence_; }
-        [[nodiscard]] float getOutputTargetCoherence() const noexcept { return outputTargetCoherence_; }
-        [[nodiscard]] float getOutputPhysicalHarmonicFit() const noexcept { return outputPhysicalHarmonicFit_; }
-        [[nodiscard]] float getOutputLedgerHealth() const noexcept { return outputLedgerHealth_; }
-        [[nodiscard]] float getOutputPhaseCoherence() const noexcept { return outputPhaseCoherence_; }
-        [[nodiscard]] float getOutputReconstructionNeed() const noexcept { return outputReconstructionNeed_; }
-        [[nodiscard]] float getOutputMeterValid() const noexcept { return outputMeterValid_; }
-        [[nodiscard]] float getOutputSourceMirrorFit() const noexcept { return outputSourceMirrorFit_; }
-        [[nodiscard]] float getOutputDoubleFamilyRisk() const noexcept { return outputDoubleFamilyRisk_; }
-        [[nodiscard]] float getOutputLedgerDeficit() const noexcept { return outputLedgerDeficit_; }
-        [[nodiscard]] float getOutputMemoryReliability() const noexcept { return outputMemoryReliability_; }
-        [[nodiscard]] float getOutputPreIfftConsensus() const noexcept { return outputPreIfftConsensus_; }
-        [[nodiscard]] float getOutputSelectiveReconstructionNeed() const noexcept { return outputSelectiveReconstructionNeed_; }
-        [[nodiscard]] const neumaton::outputv3::RidgeLedgerDiagnostics&
-            getShadowRidgeDiagnostics() const noexcept { return shadowRidgeDiagnostics_; }
-        [[nodiscard]] const neumaton::outputv3::OutputRendererDiagnostics&
-            getV3RendererDiagnostics() const noexcept
-        {
-            return v3OutputRenderer_.getDiagnostics();
-        }
-
+        [[nodiscard]] TransportPlan next(double ratio) noexcept;
     private:
-        using Complex = std::complex<float>;
-        static constexpr int sineTableSize = 4096;
-        static constexpr int formantRatioTableSize = 256;
-        static constexpr int formantLevelCount = 32;
-        static constexpr int v61HarmonicMemorySize = 64;
-
-        struct SynthesisLayer
-        {
-            std::vector<Complex> spectrum;
-            std::vector<double> synthesisPhases;
-            std::vector<float> outputAccumulationRing;
-            bool phaseInitialised = false;
-        };
-
-        void processFrame(std::int64_t frameEndSample,
-                          const TransitionManager::Command& transition,
-                          float formantPreservation,
-                          const HarmonicNoiseContext& harmonicNoiseContext,
-                          bool forcePhaseReset) noexcept;
-        void synthesiseLayer(SynthesisLayer& layer,
-                             std::int64_t frameEndSample,
-                             double correctionCents,
-                             float formantPreservation,
-                             bool resetPhases,
-                             float phaseAnchor,
-                             int positiveBins) noexcept;
-        void beginSecondaryTransition() noexcept;
-        void clearLayerOutput(SynthesisLayer& layer) noexcept;
-        [[nodiscard]] float consumeLayerOutput(SynthesisLayer& layer,
-                                               std::int64_t sample) noexcept;
-        [[nodiscard]] float blendLayers(float primary,
-                                        float secondary,
-                                        float transitionBlend) noexcept;
-
-        void fft(std::vector<Complex>& data, bool inverse) noexcept;
-        [[nodiscard]] static double wrapPhase(double phase) noexcept;
-        void fastSinCos(double phase, float& sine, float& cosine) const noexcept;
-        [[nodiscard]] float lookupFormantGain(float envelopeRatio,
-                                              float formantAmount) const noexcept;
-        [[nodiscard]] float readInputSample(std::int64_t absoluteSample) const noexcept;
-        [[nodiscard]] float interpolateEnvelope(double binPosition) const noexcept;
-        void calculateEnvelope(int positiveBins) noexcept;
-        void calculatePeakRegions(int positiveBins) noexcept;
-        void updateHarmonicNoiseAnalysis(
-            int positiveBins,
-            float spectralFlux,
-            const HarmonicNoiseContext& context) noexcept;
-        [[nodiscard]] float binFrequency(int bin) const noexcept;
-        [[nodiscard]] float calculateHighBandFlatness(
-            int firstBin,
-            int lastBin) const noexcept;
-        void updateV6OutputDiagnostics(const SynthesisLayer& layer,
-                                       double safeRatio,
-                                       int positiveBins) noexcept;
-        // NEUMATON_V10_1_UNIVERSAL_WIDE_FIELD_OUTPUT
-        // Universal wide-field target-warp output stage.  The V8.1
-        // Experimental difficult-material treatment is promoted to the
-        // common foundation; harmonic anchors only repair deficits.
-        // Live/Experimental do not use a separate weak voiced branch.
-        void applyV62QualityActiveLedger(SynthesisLayer& layer,
-                                            double safeRatio,
-                                            float formantPreservation,
-                                            int positiveBins) noexcept;
-
-        struct AnalysisProfile
-        {
-            float combWeight = 0.46f;
-            float peakWeight = 0.25f;
-            float phaseWeight = 0.21f;
-            float periodicWeight = 0.08f;
-            float bodyFloorBase = 0.10f;
-            float bodyFloorTracking = 0.88f;
-            float bodyUpperHz = 4600.0f;
-            float maskAttackMs = 9.0f;
-            float maskReleaseMs = 38.0f;
-            float maskRisePerSecond = 34.0f;
-            float maskFallPerSecond = 13.0f;
-            float breathAttackMs = 24.0f;
-            float breathReleaseMs = 140.0f;
-            float metricAttackMs = 18.0f;
-            float metricReleaseMs = 95.0f;
-            float polyphonyAttackMs = 28.0f;
-            float polyphonyReleaseMs = 180.0f;
-            float reliabilityAttackMs = 22.0f;
-            float reliabilityReleaseMs = 120.0f;
-            float breathPersistenceStartMs = 25.0f;
-            float breathPersistenceFullMs = 130.0f;
-            float noiseDominanceStartMs = 35.0f;
-            float noiseDominanceFullMs = 180.0f;
-            float noiseDominanceThreshold = 0.80f;
-            float maximumNoiseReductionDb = 12.0f;
-            float unresolvedCombBlend = 0.35f;
-            float breathMaskBodyReduction = 0.10f;
-            float breathMaskAirReduction = 0.62f;
-            float polyphonyTrust = 1.0f;
-        };
-
-        double sampleRate_ = 48000.0;
-        int frameSize_ = 0;
-        int hopSize_ = 0;
-
-        std::vector<float> inputRing_;
-        int inputRingMask_ = 0;
-        int outputRingMask_ = 0;
-
-        std::vector<float> window_;
-        std::vector<int> fftBitReversal_;
-        std::vector<Complex> fftTwiddles_;
-        std::vector<float> sineTable_;
-        std::vector<float> formantGainTable_;
-        std::vector<Complex> fftBuffer_;
-        std::vector<float> magnitudes_;
-        std::vector<float> analysisPhases_;
-        std::vector<float> previousMagnitudes_;
-        std::vector<float> previousAnalysisPhases_;
-        std::vector<double> trueSourceBins_;
-        std::vector<double> propagatedPhases_;
-        std::vector<float> logMagnitudes_;
-        std::vector<float> rawSpectralEnvelope_;
-        std::vector<float> spectralEnvelope_;
-        std::vector<float> rawHarmonicMask_;
-        std::vector<float> harmonicMask_;
-        std::vector<float> harmonicMaskScratch_;
-        std::vector<double> prefixSum_;
-        std::vector<int> nearestPeak_;
-        std::vector<int> peakBins_;
-        std::array<SynthesisLayer, 2> layers_;
-
-        // V3 Stage B. This state is updated after analysis and before legacy
-        // synthesis. It has no output pointer and cannot alter audible samples.
-        neumaton::outputv3::NeumatonRidgeLedger shadowRidgeLedger_;
-        neumaton::outputv3::NeumatonOutputRenderer v3OutputRenderer_;
-        neumaton::outputv3::RidgeLedgerDiagnostics shadowRidgeDiagnostics_ {};
-        double shadowPreviousCorrectionCents_ = 0.0;
-        float shadowPreviousTargetPitchHz_ = 0.0f;
-        bool shadowTrajectoryInitialised_ = false;
-
-        std::int64_t inputSampleCounter_ = 0;
-        bool analysisPhaseInitialised_ = false;
-        bool phaseResetPending_ = false;
-        bool envelopeInitialised_ = false;
-        bool wetGateOpen_ = false;
-        bool dualTransitionActive_ = false;
-        bool secondaryStartPending_ = false;
-        bool bypassStatePrimed_ = false;
-        int activeLayerIndex_ = 0;
-        int secondaryLayerIndex_ = 1;
-        int envelopeFrameCounter_ = 0;
-        int envelopeUpdateInterval_ = 2;
-        float synthesisGain_ = 0.5f;
-        float wetMix_ = 0.0f;
-        float wetAttackCoefficient_ = 1.0f;
-        float wetReleaseCoefficient_ = 1.0f;
-
-        // Correlation-aware, boost-only compensation. It removes cancellation
-        // dips during wet/dry and dual-layer crossfades without changing either
-        // endpoint or applying static loudness normalisation.
-        float crossfadeEnergyCoefficient_ = 1.0f;
-        float wetDryEnergy_ = 0.0f;
-        float wetShiftedEnergy_ = 0.0f;
-        float wetDryCrossEnergy_ = 0.0f;
-        float wetLevelGain_ = 1.0f;
-        float wetCancellationGain_ = 1.0f;
-        float dryTrust_ = 1.0f;
-float dryTrustTarget_ = 1.0f;
-float dryWetCoexistenceMs_ = 0.0f;
-// NEUMATON_ASSERTIVE_AUDITORS_V2_INTERNAL_SHIFTER_STATE
-float tonalDryVeto_ = 0.0f;
-float wetArtifactVeto_ = 0.0f;
-float wetRedistributionGain_ = 1.0f;
-float frameTonalConfidence_ = 0.0f;
-float frameCorrectionAssertiveness_ = 0.0f;
-float frameHardCorrectionIntent_ = 0.0f;
-// NEUMATON_TARGET_HARMONIC_CONDITIONER_V5_STATE
-float frameHumanize_ = 0.0f;
-float frameNaturalConditionerDrive_ = 0.0f;
-bool frameScaleLockActive_ = false;
-float frameDetectedPitchHz_ = 0.0f;
-// NEUMATON_V6_OUTPUT_DIAGNOSTICS_STATE
-float outputSourceCorrespondence_ = 0.0f;
-float outputTargetCoherence_ = 0.0f;
-float outputPhysicalHarmonicFit_ = 0.0f;
-float outputLedgerHealth_ = 100.0f;
-float outputPhaseCoherence_ = 0.0f;
-float outputReconstructionNeed_ = 0.0f;
-float outputMeterValid_ = 0.0f;
-// NEUMATON_V6_1_SOURCE_MIRROR_SHADOW_LEDGER_STATE
-float outputSourceMirrorFit_ = 0.0f;
-float outputDoubleFamilyRisk_ = 0.0f;
-float outputLedgerDeficit_ = 0.0f;
-float outputMemoryReliability_ = 0.0f;
-float outputPreIfftConsensus_ = 0.0f;
-float outputSelectiveReconstructionNeed_ = 0.0f;
-std::array<float, v61HarmonicMemorySize> v61HarmonicEnergyMemory_ {};
-std::array<float, v61HarmonicMemorySize> v61HarmonicReliabilityMemory_ {};
-// NEUMATON_V6_2_QUALITY_ACTIVE_LEDGER_STATE
-float v62ActiveLedgerDrive_ = 0.0f;
-float frameTransitionBlend_ = 0.0f;
-bool frameDualTransitionActive_ = false;
-float dryWetContinuity_ = 1.0f;
-float dryLeakRisk_ = 0.0f;
-float dryTrustInstability_ = 0.0f;
-float dryTrustOpenCoefficient_ = 1.0f;
-float dryTrustCloseCoefficient_ = 1.0f;
-float dryLeakAttackCoefficient_ = 1.0f;
-float dryLeakReleaseCoefficient_ = 1.0f;
-float dryContinuityCoefficient_ = 1.0f;
-float dryCandidateFastEnvelope_ = 0.0f;
-float dryCandidateSlowEnvelope_ = 0.0f;
-float dryCandidatePeakEnvelope_ = 0.0f;
-float dryCandidateAgeMs_ = 1000.0f;
-float dryCandidateShapeTrust_ = 1.0f;
-float dryCandidateFastCoefficient_ = 1.0f;
-float dryCandidateSlowCoefficient_ = 1.0f;
-float dryCandidatePeakDecayCoefficient_ = 1.0f;
-float dryCandidateShapeCoefficient_ = 1.0f;
-        float layerPrimaryEnergy_ = 0.0f;
-        float layerSecondaryEnergy_ = 0.0f;
-        float layerCrossEnergy_ = 0.0f;
-        float layerCancellationGain_ = 1.0f;
-        float envelopeAttackCoefficient_ = 1.0f;
-        float envelopeReleaseCoefficient_ = 1.0f;
-        float smoothedFormantPreservation_ = 0.0f;
-        float formantReductionCoefficient_ = 1.0f;
-        float formantRecoveryCoefficient_ = 1.0f;
-        float transientSuppression_ = 0.0f;
-        float transientReleaseCoefficient_ = 0.99f;
-
-        // Wind Fix V4: causal harmonic/noise decomposition. The mask is
-        // smoothed in frequency and time; the residual is reconstructed at
-        // its original bins/phases inside the same IFFT as the shifted voice.
-        float smoothedBreathiness_ = 0.0f;
-        float smoothedHarmonicity_ = 1.0f;
-        float smoothedNoisePathAmount_ = 0.0f;
-        float smoothedNoiseGain_ = 1.0f;
-        float currentNoiseReductionDb_ = 0.0f;
-        float smoothedPolyphony_ = 0.0f;
-        float smoothedSpectralReliability_ = 1.0f;
-        float smoothedMaskStability_ = 1.0f;
-        float breathProtection_ = 0.0f;
-        float breathAttackCoefficient_ = 1.0f;
-        float breathReleaseCoefficient_ = 1.0f;
-        float maskAttackCoefficient_ = 1.0f;
-        float maskReleaseCoefficient_ = 1.0f;
-        float metricAttackCoefficient_ = 1.0f;
-        float metricReleaseCoefficient_ = 1.0f;
-        float noiseReductionAttackCoefficient_ = 1.0f;
-        float noiseReductionReleaseCoefficient_ = 1.0f;
-        float transientNoiseRestoreCoefficient_ = 1.0f;
-        float polyphonyAttackCoefficient_ = 1.0f;
-        float polyphonyReleaseCoefficient_ = 1.0f;
-        float reliabilityAttackCoefficient_ = 1.0f;
-        float reliabilityReleaseCoefficient_ = 1.0f;
-        float dryBreathLowPass_ = 0.0f;
-        float dryBreathLowPassCoefficient_ = 1.0f;
-        float breathPersistenceMs_ = 0.0f;
-        float noiseDominanceMs_ = 0.0f;
-        float maskRiseLimitPerFrame_ = 1.0f;
-        float maskFallLimitPerFrame_ = 1.0f;
-        AnalysisProfile profile_ {};
-
+        double phase_ = 0.5;
+        int minimumDelay_ = 8;
+        int rangeSamples_ = 240;
     };
 
-    class FixedDelay
+    class ChannelPath
     {
     public:
-        void prepare(int delaySamples);
+        void prepare(double sampleRate, int reportedLatencySamples);
         void reset() noexcept;
-        [[nodiscard]] float process(float inputSample) noexcept;
+        void setVoiceModel(const std::array<float, maximumLpcOrder>& coefficients,
+                           float formantStrength,
+                           float breathReduction) noexcept;
+        [[nodiscard]] float process(float input, const TransportPlan& plan) noexcept;
+        [[nodiscard]] float processBypassed(float input, int latencySamples) noexcept;
 
     private:
-        std::vector<float> buffer_;
-        int mask_ = 0;
-        int delaySamples_ = 0;
+        [[nodiscard]] float interpolateResidual(double absolutePosition) const noexcept;
+        static float sanitise(float value) noexcept;
+        std::array<float, transportRingSize> residualRing_ {};
+        std::array<float, transportRingSize> bypassRing_ {};
+        std::array<float, maximumLpcOrder> inputHistory_ {};
+        std::array<float, maximumLpcOrder> outputHistory_ {};
+        std::array<float, maximumLpcOrder> currentLpc_ {};
+        std::array<float, maximumLpcOrder> targetLpc_ {};
         std::int64_t sampleCounter_ = 0;
+        float coefficientSmoothing_ = 0.01f;
+        float breathLowPassCoefficient_ = 0.1f;
+        float breathLowPass_ = 0.0f;
+        float breathReduction_ = 0.0f;
+        float targetBreathReduction_ = 0.0f;
     };
 
-    [[nodiscard]] static int frameSizeForMode(double sampleRate, LatencyMode mode) noexcept;
-    [[nodiscard]] static int nextPowerOfTwo(int value) noexcept;
+    struct CorrectionState
+    {
+        bool targetValid = false;
+        bool pitchCentreValid = false;
+        double targetLog2 = 0.0;
+        double pitchCentreLog2 = 0.0;
+        double desiredCents = 0.0;
+        double currentCents = 0.0;
+        double velocityCentsPerSecond = 0.0;
+        double responseMs = 8.0;
+        double lastTargetJumpCents = 0.0;
+        std::uint64_t revision = 0;
+        int stableObservations = 0;
+    };
+
     [[nodiscard]] static float clamp01(float value) noexcept;
+    [[nodiscard]] static double safeLog2(double value) noexcept;
+    [[nodiscard]] static double wrapToNearestOctave(double cents) noexcept;
+    [[nodiscard]] static int latencyForMode(LatencyMode mode) noexcept;
+    [[nodiscard]] float adaptiveHysteresis(const Parameters& parameters,
+                                           const ScaleQuantizer& quantizer,
+                                           const PitchObservation& observation) const noexcept;
+    [[nodiscard]] double responseTimeMs(const Parameters& parameters,
+                                        bool targetChanged,
+                                        double targetJumpCents) const noexcept;
+    void updateCorrectionState(CorrectionState& state,
+                               ScaleQuantizer& quantizer,
+                               const PitchObservation& observation,
+                               const Parameters& parameters) noexcept;
+    [[nodiscard]] double advanceCorrection(CorrectionState& state) noexcept;
+    void updateLpcTarget(const juce::AudioBuffer<float>& buffer,
+                         int channels,
+                         int samples,
+                         const Parameters& parameters,
+                         const PitchObservation& observation) noexcept;
+    [[nodiscard]] static std::array<float, maximumLpcOrder>
+        calculateLpc(const float* mono, int samples) noexcept;
+    void publishMetering(const PitchObservation& observation,
+                         const CorrectionState& state,
+                         double audibleCents,
+                         const CreativeTempo::Metering& tempoMeter) noexcept;
 
     double sampleRate_ = 48000.0;
-    int preparedChannels_ = 1;
+    int maximumBlockSize_ = 512;
+    int channelCount_ = 1;
     int latencySamples_ = 256;
     LatencyMode latencyMode_ = LatencyMode::live;
-    StereoMode currentStereoMode_ = StereoMode::linkedMidSide;
-    bool bypassActive_ = false;
 
-    MultiRatePitchTracker pitchTracker_;
-    BiquadLowPass detectorConditioner_;
-    ScaleQuantizer scaleQuantizer_;
-    CorrectionController correctionController_;
-    TransitionManager transitionManager_;
+    MultiRatePitchTracker linkedTracker_;
+    std::array<MultiRatePitchTracker, maxSupportedChannels> channelTrackers_ {};
+    ScaleQuantizer linkedQuantizer_;
+    std::array<ScaleQuantizer, maxSupportedChannels> channelQuantizers_ {};
+    TransportClock linkedClock_;
+    std::array<TransportClock, maxSupportedChannels> channelClocks_ {};
+    std::array<ChannelPath, maxSupportedChannels> channelPaths_ {};
     CreativeTempo::Controller tempoController_;
-    float noteAgeTargetHz_ = 0.0f;
-    std::int64_t noteAgeSamples_ = 0;
+    std::array<CreativeTempo::Controller, maxSupportedChannels> channelTempoControllers_ {};
+    CorrectionState linkedCorrection_;
+    std::array<CorrectionState, maxSupportedChannels> channelCorrections_ {};
+    std::vector<float> monoScratch_;
+    std::array<float, maximumLpcOrder> currentLpcTarget_ {};
+    PitchObservation latestObservation_ {};
+    std::array<PitchObservation, maxSupportedChannels> latestChannelObservation_ {};
+    double audibleCorrectionCents_ = 0.0;
+    std::int64_t sustainedSamples_ = 0;
 
-    // NEUMATON_V6_TEMPORAL_OCTAVE_DIAGNOSTICS_STATE
-    bool outputTemporalInitialised_ = false;
-    float outputTemporalPreviousTargetHz_ = 0.0f;
-    float outputTemporalPreviousDetectedHz_ = 0.0f;
-    float outputTemporalPreviousCorrectionCents_ = 0.0f;
-    float outputTemporalStability_ = 0.0f;
-    float outputTargetJumpCents_ = 0.0f;
-    float outputCorrectionVelocityCentsPerSecond_ = 0.0f;
-    float outputOctaveConflict_ = 0.0f;
-    float outputTransitionStress_ = 0.0f;
-
-    // NEUMATON_V6_CSV_DIAGNOSTICS_STATE
-    // Debug-only CSV logger state.  It does not affect audio or metering values.
-    bool diagnosticCsvInitialised_ = false;
-    juce::File diagnosticCsvFile_;
-    std::uint64_t diagnosticCsvSampleCounter_ = 0;
-    std::uint64_t diagnosticCsvNextSample_ = 0;
-
-    std::array<SpectralVoiceShifter, maxSupportedChannels> shifters_;
-    std::array<FixedDelay, maxSupportedChannels> auxiliaryDelays_;
-
-    // Seqlock-style snapshot: the audio thread publishes a coherent metering
-    // frame, while the GUI can read without locks or blocking the callback.
     std::atomic<std::uint32_t> meterSequence_ { 0 };
     std::atomic<float> meterPitchHz_ { 0.0f };
     std::atomic<float> meterTargetHz_ { 0.0f };
     std::atomic<float> meterConfidence_ { 0.0f };
     std::atomic<float> meterVoicing_ { 0.0f };
-    std::atomic<float> meterBreathiness_ { 0.0f };
-    std::atomic<float> meterHarmonicity_ { 0.0f };
-    std::atomic<float> meterNoisePath_ { 0.0f };
-    std::atomic<float> meterNoiseReductionDb_ { 0.0f };
-    std::atomic<float> meterPolyphony_ { 0.0f };
-    std::atomic<float> meterSpectralReliability_ { 0.0f };
-    std::atomic<float> meterMaskStability_ { 1.0f };
-    std::atomic<float> meterSustainedNoteSeconds_ { 0.0f };
-    std::atomic<float> meterConsensus_ { 0.0f };
+    std::atomic<float> meterPeriodicity_ { 0.0f };
     std::atomic<float> meterCorrectionCents_ { 0.0f };
-    std::atomic<float> meterWetMix_ { 0.0f };
-    std::atomic<float> meterTransitionBlend_ { 0.0f };
-    std::atomic<float> meterOutputSourceCorrespondence_ { 0.0f };
-    std::atomic<float> meterOutputTargetCoherence_ { 0.0f };
-    std::atomic<float> meterOutputPhysicalHarmonicFit_ { 0.0f };
-    std::atomic<float> meterOutputLedgerHealth_ { 100.0f };
-    std::atomic<float> meterOutputPhaseCoherence_ { 0.0f };
-    std::atomic<float> meterOutputReconstructionNeed_ { 0.0f };
-    std::atomic<float> meterOutputMeterValid_ { 0.0f };
-    std::atomic<float> meterOutputTemporalStability_ { 0.0f };
-    std::atomic<float> meterOutputTargetJumpCents_ { 0.0f };
-    std::atomic<float> meterOutputCorrectionVelocityCentsPerSecond_ { 0.0f };
-    std::atomic<float> meterOutputOctaveConflict_ { 0.0f };
-    std::atomic<float> meterOutputTransitionStress_ { 0.0f };
-    // NEUMATON_V6_1_SOURCE_MIRROR_SHADOW_LEDGER_ATOMICS
-    std::atomic<float> meterOutputSourceMirrorFit_ { 0.0f };
-    std::atomic<float> meterOutputDoubleFamilyRisk_ { 0.0f };
-    std::atomic<float> meterOutputLedgerDeficit_ { 0.0f };
-    std::atomic<float> meterOutputMemoryReliability_ { 0.0f };
-    std::atomic<float> meterOutputPreIfftConsensus_ { 0.0f };
-    std::atomic<float> meterOutputSelectiveReconstructionNeed_ { 0.0f };
-    std::atomic<int> meterShadowRidgeObservationCount_ { 0 };
-    std::atomic<int> meterShadowRidgeActiveCount_ { 0 };
-    std::atomic<int> meterShadowRidgeBirthCount_ { 0 };
-    std::atomic<int> meterShadowRidgeCoastCount_ { 0 };
-    std::atomic<int> meterShadowRidgeDeathCount_ { 0 };
-    std::atomic<int> meterShadowRidgeIdentitySwitchCount_ { 0 };
-    std::atomic<float> meterShadowRidgePredictionErrorRadians_ { 0.0f };
-    std::atomic<float> meterShadowRidgeReliability_ { 0.0f };
-    std::atomic<float> meterShadowRidgeResolvedBinCoverage_ { 0.0f };
-    std::atomic<bool> meterShadowRidgeValid_ { false };
-
-    std::atomic<bool> meterDualSynthesisActive_ { false };
+    std::atomic<float> meterCorrectionVelocity_ { 0.0f };
+    std::atomic<float> meterOnsetStrength_ { 0.0f };
+    std::atomic<float> meterTargetJumpCents_ { 0.0f };
+    std::atomic<float> meterSustainedSeconds_ { 0.0f };
     std::atomic<int> meterDetectorSupport_ { 0 };
     std::atomic<int> meterOctaveState_ { 0 };
-    std::atomic<int> meterPendingOctaveObservations_ { 0 };
-    std::atomic<int> meterState_ { static_cast<int>(TrackingState::unvoiced) };
+    std::atomic<int> meterPendingOctave_ { 0 };
+    std::atomic<int> meterTrackingState_ { static_cast<int>(TrackingState::unvoiced) };
     std::atomic<float> meterTempoBpm_ { 120.0f };
     std::atomic<float> meterTempoGridPhase_ { 0.0f };
     std::atomic<float> meterTempoGlideTimeMs_ { 0.0f };
