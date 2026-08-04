@@ -1223,7 +1223,7 @@ std::uint64_t ModernPitchEngine::ScaleQuantizer::hashScale(
     constexpr std::uint64_t offset = 1469598103934665603ull;
     constexpr std::uint64_t prime = 1099511628211ull;
     std::uint64_t hash = offset;
-    const auto mix = [&hash](std::uint64_t value) noexcept
+    const auto mix = [&hash, prime](std::uint64_t value) noexcept
     {
         hash ^= value;
         hash *= prime;
