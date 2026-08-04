@@ -1,16 +1,21 @@
-# Clean ModernPitchEngine contract
+# Integrated clean ModernPitchEngine contract
 
-This branch is valid only while all of the following remain true:
+This branch is a release-candidate source branch only while every invariant below remains true.
 
-1. The proven multi-rate detector and scale decision are the only legacy DSP retained.
-2. No legacy output renderer, ridge ledger, synthesis layer, transition crossfade, dry/wet path or confidence-authority gate is compiled or present in ModernPitchEngine.
-3. Every active audio channel passes through one complete pitch-transport path.
-4. In linked stereo every channel receives the same correction trajectory; no Side component bypasses correction.
-5. In dual-mono each channel may detect and quantize independently, but neither channel may bypass its transport.
-6. Speed is only the post-attack delay before correction starts.
-7. Amount is only the tolerated output error in cents.
-8. Humanize is only the range of local pitch movement treated as the same sung note.
-9. Periodicity, breath, consonants, onset evidence and polyphony may alter envelope reconstruction or target identity checks, but never reduce correction authority and never expose unprocessed audio.
-10. The output is one time-domain full-signal transport followed by LPC envelope reconstruction; it does not remap FFT bins.
+1. **One production output.** Quality, Live and Experimental use one full-signal time-domain pitch transport followed by one LPC envelope reconstruction path. The legacy spectral renderer, dry/wet rescue, Side bypass, parallel renderer, secondary synthesis layer and confidence-authority mix are not compiled into `ModernPitchEngine`.
+2. **Replacement, never addition.** The clean transport is the complete audible ModernPitchEngine output. It is not summed with, crossfaded against or placed beside the renderer from `main`.
+3. **Equal algorithmic quality.** Quality, Live and Experimental run the same detector, scale decision, transport interpolation and LPC reconstruction. Mode changes only the reported/working latency budget and the mode-aware Scale Lock timing/hysteresis defaults; it must not select a lower-quality renderer.
+4. **Every active channel is corrected.** Linked stereo publishes one correction trajectory to every channel. Dual mono may detect and quantize independently, but every channel still passes through a complete transport and reconstruction path.
+5. **No timid authority gate.** Confidence, periodicity, onset and breath evidence may stabilise note identity, vibrato admission and envelope reconstruction. They must not expose an unprocessed parallel signal or permanently reduce a valid requested correction.
+6. **Amount is pitch depth.** `Amount` scales the correction destination in cents inside the single renderer. Zero amount produces ratio 1 through the same latency-aligned path; 100% requests the complete correction.
+7. **Speed is continuous response.** `Speed` controls a continuous critically damped pitch trajectory. A target change must never reset correction to zero. With Scale Lock active, the same GUI knob is mapped to the mode-aware 0–7 ms domain.
+8. **Humanize is audible and deterministic.** Humanize changes the same-note window, target timing and safe vibrato admission. It is not random drift and is not a dry-signal control.
+9. **Scale Lock is isolated and adaptive.** When disabled, its state does not alter normal correction. When enabled, adaptive hysteresis uses mode, tempo state, scale density, scale asymmetry and confidence. Target changes require coherent confirmation; custom and microtonal scales use their measured spacing rather than a 12-EDO assumption.
+10. **Vibrato stays inside the locked note.** Vibrato Preserve is admitted only from stable, periodic observations and is attenuated near a target boundary. Humanize may increase safe admission but may not cause target hopping.
+11. **Creative Tempo controls the pitch trajectory.** Tempo Glide changes the continuous correction time. Glide Lock freezes both audible and internal correction until release, then glides through the same renderer. Host PPQ/BPM loss falls back safely without a second audio path.
+12. **Formant and breath controls remain full-signal.** LPC strength and breath-band conditioning operate after/inside the same full-signal transport. They do not recreate dry/wet mixing.
+13. **No realtime allocation or blocking.** Audio processing performs no heap allocation, file I/O, locks or engine preparation. Scale publication and mode changes remain non-blocking for the callback.
+14. **High Latency remains legacy.** Mode 0 is not rewritten by this branch. The integration replaces only the three ModernPitchEngine modes.
+15. **Release-candidate gate.** Source is not a final binary release until Windows JUCE/VST3 CI passes and real DAW listening confirms: scale/root/custom-scale transport, obvious response from every GUI control, no wind/flanging, intelligible consonants, stable octave identity, equal perceived quality between the three modern modes and correct latency reporting.
 
-The branch must remain draft until real Windows DAW listening confirms scale transport, absence of wind/flanging, intelligible consonants and acceptable formant preservation.
+`Tests/CleanModernPitchEngineTest.cpp` is the automated minimum gate. It must verify finite stereo output, target pitch in all modes, mode latency, equal corrected pitch between modes, Amount, Speed, Humanize, Lock Hysteresis, Vibrato Preserve, Tempo division/glide length, Glide Lock strength and Smart Onset.

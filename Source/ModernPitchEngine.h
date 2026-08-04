@@ -37,14 +37,6 @@ public:
         release
     };
 
-    // Compatibility-facing parameter block. Only the controls described below
-    // influence the clean engine:
-    //   amount            -> tolerated output error in cents;
-    //   retuneTimeMs      -> delay after a note attack before correction begins;
-    //   humanize          -> pitch movement still considered the same note;
-    //   formantPreservation -> strength of LPC envelope reconstruction.
-    // The remaining fields stay in the API so the current processor/editor do
-    // not need a parallel migration. They never reduce correction authority.
     struct Parameters
     {
         float amount = 1.0f;
@@ -73,9 +65,6 @@ public:
         CreativeTempo::Settings tempo;
     };
 
-    // The editor currently reads the historical metering surface. The clean
-    // engine publishes the meaningful subset and leaves obsolete diagnostics at
-    // neutral values; none of these meters feeds the audio path.
     struct Metering
     {
         float detectedPitchHz = 0.0f;
@@ -146,7 +135,6 @@ public:
                  int maximumExpectedSamplesPerBlock,
                  int numberOfChannels,
                  LatencyMode latencyMode);
-
     void reset() noexcept;
 
     void process(juce::AudioBuffer<float>& buffer,
@@ -180,7 +168,6 @@ public:
     [[nodiscard]] Metering getMetering() const noexcept;
 
 private:
-    static constexpr int detectorRingSize = 4096;
     static constexpr int maximumLpcOrder = 12;
     static constexpr int transportRingSize = 16384;
 
@@ -202,7 +189,8 @@ private:
     class BiquadLowPass
     {
     public:
-        void prepare(double sampleRate, double cutoffHz, double q = 0.7071067811865476) noexcept;
+        void prepare(double sampleRate, double cutoffHz,
+                     double q = 0.7071067811865476) noexcept;
         void reset() noexcept;
         [[nodiscard]] float process(float input) noexcept;
 
@@ -223,8 +211,6 @@ private:
         void reset() noexcept;
         void setRange(float minimumPitchHz, float maximumPitchHz) noexcept;
         void setSensitivity(float sensitivity) noexcept;
-
-        // Returns true when a new temporally decoded observation is available.
         bool processSample(float inputSample, PitchObservation& observation) noexcept;
 
     private:
@@ -294,27 +280,25 @@ private:
                   int& writePosition,
                   int& availableSamples,
                   float sample) noexcept;
-
-        [[nodiscard]] PitchCandidate analyse(const std::array<float, ringSize>& ring,
-                                             int writePosition,
-                                             int availableSamples,
-                                             double effectiveSampleRate,
-                                             float minimumFrequency,
-                                             float maximumFrequency,
-                                             int analysisLength) noexcept;
-
+        [[nodiscard]] PitchCandidate analyse(
+            const std::array<float, ringSize>& ring,
+            int writePosition,
+            int availableSamples,
+            double effectiveSampleRate,
+            float minimumFrequency,
+            float maximumFrequency,
+            int analysisLength) noexcept;
         [[nodiscard]] int collectFreshCandidates(
             std::array<PitchCandidate, detectorPathCount>& candidates) const noexcept;
-
         [[nodiscard]] int buildConsensusHypotheses(
             const std::array<PitchCandidate, detectorPathCount>& candidates,
             int candidateCount,
             std::array<ConsensusHypothesis, maxConsensusHypotheses>& hypotheses) const noexcept;
-
         [[nodiscard]] DecoderDecision decodeCandidate(bool onsetPending) noexcept;
         [[nodiscard]] float pathReliability(int pathIndex, float frequencyHz) const noexcept;
         [[nodiscard]] float candidateBaseScore(const PitchCandidate& candidate) const noexcept;
-        [[nodiscard]] static float centsDistance(float frequencyA, float frequencyB) noexcept;
+        [[nodiscard]] static float centsDistance(float frequencyA,
+                                                 float frequencyB) noexcept;
         [[nodiscard]] static bool isOctaveLikeTransition(float fromFrequency,
                                                          float toFrequency,
                                                          int& octaveDelta,
@@ -335,7 +319,6 @@ private:
         std::array<float, ringSize> halfRateRing_ {};
         std::array<float, ringSize> quarterRateRing_ {};
         std::array<float, ringSize> eighthRateRing_ {};
-
         int fullRateWritePosition_ = 0;
         int halfRateWritePosition_ = 0;
         int quarterRateWritePosition_ = 0;
@@ -344,7 +327,6 @@ private:
         int halfRateAvailableSamples_ = 0;
         int quarterRateAvailableSamples_ = 0;
         int eighthRateAvailableSamples_ = 0;
-
         int halfRateDecimationCounter_ = 0;
         int quarterRateDecimationCounter_ = 0;
         int eighthRateDecimationCounter_ = 0;
@@ -354,11 +336,9 @@ private:
         BiquadLowPass halfRateAntiAlias_;
         BiquadLowPass quarterRateAntiAlias_;
         BiquadLowPass eighthRateAntiAlias_;
-
         float previousInput_ = 0.0f;
         float previousDcOutput_ = 0.0f;
         float dcBlockCoefficient_ = 0.995f;
-
         float fastEnergy_ = 0.0f;
         float slowEnergy_ = 0.0f;
         float fastEnergyCoefficient_ = 0.0f;
@@ -371,18 +351,15 @@ private:
         CandidateSlot halfRateCandidate_;
         CandidateSlot quarterRateCandidate_;
         CandidateSlot eighthRateCandidate_;
-
         std::array<float, maxAnalysisSize> frame_ {};
         std::array<float, maxAnalysisSize> difference_ {};
         std::array<DecoderState, decoderBeamWidth> decoderBeam_ {};
-
         float trackedPitchHz_ = 0.0f;
         float trackedConfidence_ = 0.0f;
         float trackedPeriodicity_ = 0.0f;
         float trackedConsensus_ = 0.0f;
         int trackedSupportCount_ = 0;
         int invalidHopCount_ = 0;
-
         int octaveState_ = 0;
         int pendingOctaveDelta_ = 0;
         int pendingOctaveCount_ = 0;
@@ -395,38 +372,33 @@ private:
     {
     public:
         void reset() noexcept;
-        void setScale(const double* ratios,
-                      int ratioCount,
+        bool setScale(const double* ratios, int ratioCount,
                       double rootFrequency) noexcept;
-
-        [[nodiscard]] double chooseTarget(double detectedPitchHz,
-                                          float humanize,
-                                          float minimumScaleStepCents,
-                                          bool onset,
-                                          float detectorConfidence,
-                                          int& pendingOctaveObservations,
-                                          int& octaveState) noexcept;
-
-        [[nodiscard]] double currentTargetHz() const noexcept
-        {
-            return targetValid_ ? currentTargetHz_ : 0.0;
-        }
+        [[nodiscard]] double chooseTargetLog2(double inputLog2,
+                                              float hysteresisCents,
+                                              float strictness,
+                                              float confidence,
+                                              bool hardLock,
+                                              bool onset,
+                                              int& pendingObservations) noexcept;
+        [[nodiscard]] float minimumStepCents() const noexcept { return minStepCents_; }
+        [[nodiscard]] float asymmetry() const noexcept { return asymmetry_; }
 
     private:
-        [[nodiscard]] double nearestScaleFrequency(double frequencyHz) const noexcept;
-        [[nodiscard]] static double centsBetween(double a, double b) noexcept;
-
-        std::array<double, maxScaleRatios> ratios_ {};
+        [[nodiscard]] static std::uint64_t hashScale(const double* ratios,
+                                                     int count,
+                                                     double root) noexcept;
+        std::array<double, maxScaleRatios> logRatios_ {};
         int ratioCount_ = 1;
-        double rootFrequency_ = 440.0;
-
+        double rootLog2_ = 0.0;
+        std::uint64_t hash_ = 0;
+        float minStepCents_ = 1200.0f;
+        float asymmetry_ = 0.0f;
         bool targetValid_ = false;
-        double currentTargetHz_ = 0.0;
-        double previousDetectedHz_ = 0.0;
-
-        bool pendingTargetValid_ = false;
-        double pendingTargetHz_ = 0.0;
-        int pendingTargetCount_ = 0;
+        double targetLog2_ = 0.0;
+        bool pendingValid_ = false;
+        double pendingLog2_ = 0.0;
+        int pendingCount_ = 0;
     };
 
     struct TransportPlan
@@ -443,7 +415,6 @@ private:
         void prepare(int reportedLatencySamples) noexcept;
         void reset() noexcept;
         [[nodiscard]] TransportPlan next(double ratio) noexcept;
-
     private:
         double phase_ = 0.5;
         int minimumDelay_ = 8;
@@ -455,56 +426,70 @@ private:
     public:
         void prepare(double sampleRate, int reportedLatencySamples);
         void reset() noexcept;
-        void setLpcTarget(const std::array<float, maximumLpcOrder>& coefficients,
-                          float strength) noexcept;
-
-        [[nodiscard]] float process(float input,
-                                    const TransportPlan& plan) noexcept;
-        [[nodiscard]] float processBypassed(float input,
-                                            int latencySamples) noexcept;
+        void setVoiceModel(const std::array<float, maximumLpcOrder>& coefficients,
+                           float formantStrength,
+                           float breathReduction) noexcept;
+        [[nodiscard]] float process(float input, const TransportPlan& plan) noexcept;
+        [[nodiscard]] float processBypassed(float input, int latencySamples) noexcept;
 
     private:
         [[nodiscard]] float interpolateResidual(double absolutePosition) const noexcept;
         static float sanitise(float value) noexcept;
-
         std::array<float, transportRingSize> residualRing_ {};
         std::array<float, transportRingSize> bypassRing_ {};
         std::array<float, maximumLpcOrder> inputHistory_ {};
         std::array<float, maximumLpcOrder> outputHistory_ {};
         std::array<float, maximumLpcOrder> currentLpc_ {};
         std::array<float, maximumLpcOrder> targetLpc_ {};
-
         std::int64_t sampleCounter_ = 0;
         float coefficientSmoothing_ = 0.01f;
+        float breathLowPassCoefficient_ = 0.1f;
+        float breathLowPass_ = 0.0f;
+        float breathReduction_ = 0.0f;
+        float targetBreathReduction_ = 0.0f;
     };
 
+    struct CorrectionState
+    {
+        bool targetValid = false;
+        bool pitchCentreValid = false;
+        double targetLog2 = 0.0;
+        double pitchCentreLog2 = 0.0;
+        double desiredCents = 0.0;
+        double currentCents = 0.0;
+        double velocityCentsPerSecond = 0.0;
+        double responseMs = 8.0;
+        double lastTargetJumpCents = 0.0;
+        std::uint64_t revision = 0;
+        int stableObservations = 0;
+    };
+
+    [[nodiscard]] static float clamp01(float value) noexcept;
+    [[nodiscard]] static double safeLog2(double value) noexcept;
+    [[nodiscard]] static double wrapToNearestOctave(double cents) noexcept;
+    [[nodiscard]] static int latencyForMode(LatencyMode mode) noexcept;
+    [[nodiscard]] float adaptiveHysteresis(const Parameters& parameters,
+                                           const ScaleQuantizer& quantizer,
+                                           const PitchObservation& observation) const noexcept;
+    [[nodiscard]] double responseTimeMs(const Parameters& parameters,
+                                        bool targetChanged,
+                                        double targetJumpCents) const noexcept;
+    void updateCorrectionState(CorrectionState& state,
+                               ScaleQuantizer& quantizer,
+                               const PitchObservation& observation,
+                               const Parameters& parameters) noexcept;
+    [[nodiscard]] double advanceCorrection(CorrectionState& state) noexcept;
     void updateLpcTarget(const juce::AudioBuffer<float>& buffer,
                          int channels,
                          int samples,
-                         float requestedAmount,
-                         float periodicity,
-                         float onsetStrength) noexcept;
-
+                         const Parameters& parameters,
+                         const PitchObservation& observation) noexcept;
     [[nodiscard]] static std::array<float, maximumLpcOrder>
-        calculateLpc(const float* mono,
-                     int samples) noexcept;
-
-    void updateCorrection(const PitchObservation& observation,
-                          const Parameters& parameters) noexcept;
-
-    [[nodiscard]] double correctionForObservation(double detectedHz,
-                                                  double targetHz,
-                                                  const Parameters& parameters) const noexcept;
-
-    [[nodiscard]] double currentRatioForSample() noexcept;
-    void updateChannelCorrection(int channel,
-                                 const PitchObservation& observation,
-                                 const Parameters& parameters) noexcept;
-    [[nodiscard]] double currentChannelRatioForSample(int channel) noexcept;
-    [[nodiscard]] static float clamp01(float value) noexcept;
-    [[nodiscard]] static double wrapToNearestOctave(double cents) noexcept;
-    [[nodiscard]] static int latencyForMode(LatencyMode mode) noexcept;
-    void publishMetering(const PitchObservation& observation) noexcept;
+        calculateLpc(const float* mono, int samples) noexcept;
+    void publishMetering(const PitchObservation& observation,
+                         const CorrectionState& state,
+                         double audibleCents,
+                         const CreativeTempo::Metering& tempoMeter) noexcept;
 
     double sampleRate_ = 48000.0;
     int maximumBlockSize_ = 512;
@@ -516,31 +501,19 @@ private:
     std::array<MultiRatePitchTracker, maxSupportedChannels> channelTrackers_ {};
     ScaleQuantizer linkedQuantizer_;
     std::array<ScaleQuantizer, maxSupportedChannels> channelQuantizers_ {};
-
     TransportClock linkedClock_;
     std::array<TransportClock, maxSupportedChannels> channelClocks_ {};
     std::array<ChannelPath, maxSupportedChannels> channelPaths_ {};
-
+    CreativeTempo::Controller tempoController_;
+    std::array<CreativeTempo::Controller, maxSupportedChannels> channelTempoControllers_ {};
+    CorrectionState linkedCorrection_;
+    std::array<CorrectionState, maxSupportedChannels> channelCorrections_ {};
     std::vector<float> monoScratch_;
     std::array<float, maximumLpcOrder> currentLpcTarget_ {};
-
-    double desiredCorrectionCents_ = 0.0;
-    double currentCorrectionCents_ = 0.0;
-    double correctionSmoothingCoefficient_ = 1.0;
-    int speedDelaySamplesRemaining_ = 0;
-    bool targetValid_ = false;
-    double targetPitchHz_ = 0.0;
-    std::uint64_t targetRevision_ = 0;
-
-    // Independent channel state is used only in dual-mono mode.
-    std::array<double, maxSupportedChannels> channelDesiredCorrectionCents_ {};
-    std::array<double, maxSupportedChannels> channelCurrentCorrectionCents_ {};
-    std::array<int, maxSupportedChannels> channelSpeedDelaySamplesRemaining_ {};
-    std::array<bool, maxSupportedChannels> channelTargetValid_ {};
-    std::array<double, maxSupportedChannels> channelTargetPitchHz_ {};
-
     PitchObservation latestObservation_ {};
     std::array<PitchObservation, maxSupportedChannels> latestChannelObservation_ {};
+    double audibleCorrectionCents_ = 0.0;
+    std::int64_t sustainedSamples_ = 0;
 
     std::atomic<std::uint32_t> meterSequence_ { 0 };
     std::atomic<float> meterPitchHz_ { 0.0f };
@@ -549,9 +522,19 @@ private:
     std::atomic<float> meterVoicing_ { 0.0f };
     std::atomic<float> meterPeriodicity_ { 0.0f };
     std::atomic<float> meterCorrectionCents_ { 0.0f };
+    std::atomic<float> meterCorrectionVelocity_ { 0.0f };
     std::atomic<float> meterOnsetStrength_ { 0.0f };
+    std::atomic<float> meterTargetJumpCents_ { 0.0f };
+    std::atomic<float> meterSustainedSeconds_ { 0.0f };
     std::atomic<int> meterDetectorSupport_ { 0 };
     std::atomic<int> meterOctaveState_ { 0 };
     std::atomic<int> meterPendingOctave_ { 0 };
     std::atomic<int> meterTrackingState_ { static_cast<int>(TrackingState::unvoiced) };
+    std::atomic<float> meterTempoBpm_ { 120.0f };
+    std::atomic<float> meterTempoGridPhase_ { 0.0f };
+    std::atomic<float> meterTempoGlideTimeMs_ { 0.0f };
+    std::atomic<bool> meterTempoActive_ { false };
+    std::atomic<bool> meterTempoWaiting_ { false };
+    std::atomic<bool> meterTempoHostSync_ { false };
+    std::atomic<int> meterTempoMode_ { static_cast<int>(CreativeTempo::Mode::off) };
 };
