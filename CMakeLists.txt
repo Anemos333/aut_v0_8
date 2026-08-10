@@ -90,7 +90,7 @@ target_link_libraries(Neumaton
 )
 
 option(NEUMATON_BUILD_CLEAN_ENGINE_TESTS
-       "Build the clean ModernPitchEngine invariant test" OFF)
+       "Build the clean ModernPitchEngine invariant tests" OFF)
 
 if(NEUMATON_BUILD_CLEAN_ENGINE_TESTS)
     juce_add_console_app(CleanModernPitchEngineTest
@@ -118,6 +118,36 @@ if(NEUMATON_BUILD_CLEAN_ENGINE_TESTS)
             juce::juce_recommended_warning_flags
     )
     set_target_properties(CleanModernPitchEngineTest PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/clean-engine-tests"
+        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/clean-engine-tests"
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/clean-engine-tests"
+        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/clean-engine-tests"
+        RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}/clean-engine-tests"
+    )
+
+    juce_add_console_app(VoiceEvidenceAnalyzerTest
+        PRODUCT_NAME VoiceEvidenceAnalyzerTest
+    )
+    juce_generate_juce_header(VoiceEvidenceAnalyzerTest)
+    target_sources(VoiceEvidenceAnalyzerTest
+        PRIVATE
+            Tests/VoiceEvidenceAnalyzerTest.cpp
+    )
+    target_include_directories(VoiceEvidenceAnalyzerTest PRIVATE Source)
+    target_compile_definitions(VoiceEvidenceAnalyzerTest
+        PRIVATE
+            JUCE_WEB_BROWSER=0
+            JUCE_USE_CURL=0
+    )
+    target_link_libraries(VoiceEvidenceAnalyzerTest
+        PRIVATE
+            juce::juce_audio_basics
+            juce::juce_core
+        PUBLIC
+            juce::juce_recommended_config_flags
+            juce::juce_recommended_warning_flags
+    )
+    set_target_properties(VoiceEvidenceAnalyzerTest PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/clean-engine-tests"
         RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/clean-engine-tests"
         RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/clean-engine-tests"

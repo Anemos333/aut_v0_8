@@ -4,11 +4,14 @@ on:
   pull_request:
     branches:
       - main
+      - modern-pitch-engine-clean-rewrite
     paths:
       - 'Source/ModernPitchEngine.*'
       - 'Source/LivePitchProcessor.h'
+      - 'Source/VoiceEvidenceAnalyzer.h'
       - 'CMakeLists.txt'
       - 'Tests/CleanModernPitchEngineTest.cpp'
+      - 'Tests/VoiceEvidenceAnalyzerTest.cpp'
       - 'Tests/CLEAN_MODERN_PITCH_ENGINE_CONTRACT.md'
       - '.github/workflows/clean-modern-pitch-engine.yml'
 
@@ -53,32 +56,39 @@ jobs:
             -A x64 `
             -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
 
-      - name: Build invariant test
-        run: cmake --build build-clean --config Release --target CleanModernPitchEngineTest --parallel 2
+      - name: Build invariant tests
+        run: cmake --build build-clean --config Release --target CleanModernPitchEngineTest VoiceEvidenceAnalyzerTest --parallel 2
 
-      - name: Run invariant test on Linux
+      - name: Run invariant tests on Linux
         if: runner.os == 'Linux'
-        run: ./build-clean/clean-engine-tests/CleanModernPitchEngineTest
+        run: |
+          ./build-clean/clean-engine-tests/CleanModernPitchEngineTest
+          ./build-clean/clean-engine-tests/VoiceEvidenceAnalyzerTest
 
-      - name: Run invariant test on Windows
+      - name: Run invariant tests on Windows
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $process = Start-Process `
-            -FilePath ".\build-clean\clean-engine-tests\CleanModernPitchEngineTest.exe" `
-            -Wait `
-            -PassThru `
-            -NoNewWindow `
-            -RedirectStandardOutput "clean-engine-windows-stdout.txt" `
-            -RedirectStandardError "clean-engine-windows-stderr.txt"
-          Write-Host "test_exit_code=$($process.ExitCode)"
-          if (Test-Path clean-engine-windows-stdout.txt) {
-            Get-Content clean-engine-windows-stdout.txt
+          $tests = @(
+            ".\build-clean\clean-engine-tests\CleanModernPitchEngineTest.exe",
+            ".\build-clean\clean-engine-tests\VoiceEvidenceAnalyzerTest.exe"
+          )
+          foreach ($test in $tests) {
+            $name = [System.IO.Path]::GetFileNameWithoutExtension($test)
+            $stdout = "$name-stdout.txt"
+            $stderr = "$name-stderr.txt"
+            $process = Start-Process `
+              -FilePath $test `
+              -Wait `
+              -PassThru `
+              -NoNewWindow `
+              -RedirectStandardOutput $stdout `
+              -RedirectStandardError $stderr
+            Write-Host "$name exit_code=$($process.ExitCode)"
+            if (Test-Path $stdout) { Get-Content $stdout }
+            if (Test-Path $stderr) { Get-Content $stderr }
+            if ($process.ExitCode -ne 0) { exit $process.ExitCode }
           }
-          if (Test-Path clean-engine-windows-stderr.txt) {
-            Get-Content clean-engine-windows-stderr.txt
-          }
-          if ($process.ExitCode -ne 0) { exit $process.ExitCode }
 
   windows-vst3:
     runs-on: windows-2022
@@ -119,13 +129,36 @@ jobs:
             'NEUMATON_OUTPUT_V3'
           )
           foreach ($term in $forbidden) {
-            if (Select-String -Path Source\ModernPitchEngine.cpp,Source\ModernPitchEngine.h -Pattern $term -Quiet) {
+            if (Select-String -Path Source\ModernPitchEngine.cpp,Source\ModernPitchEngine.h,Source\LivePitchProcessor.h,Source\VoiceEvidenceAnalyzer.h -Pattern $term -Quiet) {
               Write-Error "Forbidden legacy output symbol remains: $term"
               exit 1
             }
           }
           if (-not (Select-String -Path Source\ModernPitchEngine.cpp,Source\ModernPitchEngine.h -Pattern 'MultiRatePitchTracker' -Quiet)) {
             Write-Error "Proven multi-rate detector is missing"
+            exit 1
+          }
+          if (-not (Select-String -Path Source\VoiceEvidenceAnalyzer.h -Pattern 'const juce::AudioBuffer<float>&' -Quiet)) {
+            Write-Error "Voice evidence analyzer must be read-only on audio"
+            exit 1
+          }
+          $analyzerForbidden = @(
+            'SynthesisLayer',
+            'SpectralVoiceShifter',
+            'NeumatonOutputRenderer',
+            'NeumatonRidgeLedger',
+            'wetMix_',
+            'dryTrust_',
+            'processBypassed'
+          )
+          foreach ($term in $analyzerForbidden) {
+            if (Select-String -Path Source\VoiceEvidenceAnalyzer.h -Pattern $term -Quiet) {
+              Write-Error "Voice evidence analyzer contains output-path logic: $term"
+              exit 1
+            }
+          }
+          if (Select-String -Path Source\LivePitchProcessor.h -Pattern 'conditioned\.amount\s*=' -Quiet) {
+            Write-Error "Voice evidence must not attenuate Amount/correction authority"
             exit 1
           }
 
