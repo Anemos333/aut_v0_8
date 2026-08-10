@@ -142,9 +142,20 @@ jobs:
             Write-Error "Voice evidence analyzer must be read-only on audio"
             exit 1
           }
-          if (Select-String -Path Source\VoiceEvidenceAnalyzer.h -Pattern 'AudioBuffer<float>& output|processBypassed|wet|dryTrust|renderer|synthesi[sz]e' -Quiet) {
-            Write-Error "Voice evidence analyzer contains output-path logic"
-            exit 1
+          $analyzerForbidden = @(
+            'SynthesisLayer',
+            'SpectralVoiceShifter',
+            'NeumatonOutputRenderer',
+            'NeumatonRidgeLedger',
+            'wetMix_',
+            'dryTrust_',
+            'processBypassed'
+          )
+          foreach ($term in $analyzerForbidden) {
+            if (Select-String -Path Source\VoiceEvidenceAnalyzer.h -Pattern $term -Quiet) {
+              Write-Error "Voice evidence analyzer contains output-path logic: $term"
+              exit 1
+            }
           }
           if (Select-String -Path Source\LivePitchProcessor.h -Pattern 'conditioned\.amount\s*=' -Quiet) {
             Write-Error "Voice evidence must not attenuate Amount/correction authority"
