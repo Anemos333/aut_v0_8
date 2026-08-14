@@ -1440,31 +1440,34 @@ ModernPitchEngine::TransportClock::next(double ratio) noexcept
     TransportPlan plan;
     const double safeRatio = std::clamp(
         std::isfinite(ratio) ? ratio : 1.0, 0.25, 4.0);
-    const double deviation = std::abs(1.0 - safeRatio);
-
-    if (deviation < 1.0e-9)
-    {
-        phase_ = 0.5;
-        plan.delayA = static_cast<double>(minimumDelay_)
-                    + 0.5 * static_cast<double>(rangeSamples_);
-        plan.delayB = plan.delayA;
-        return plan;
-    }
-
+    const double signedDeviation = 1.0 - safeRatio;
+    const double deviation = std::abs(signedDeviation);
     const double phaseB = phase_ < 0.5 ? phase_ + 0.5 : phase_ - 0.5;
+
     const auto weight = [](double phase) noexcept
     {
         return static_cast<float>(0.5 - 0.5 * std::cos(twoPi * phase));
     };
-    const auto delay = [this, safeRatio](double phase) noexcept
-    {
-        const double direction = safeRatio >= 1.0 ? 1.0 - phase : phase;
-        return static_cast<double>(minimumDelay_)
-             + direction * static_cast<double>(rangeSamples_);
-    };
 
-    plan.delayA = delay(phase_);
-    plan.delayB = delay(phaseB);
+    // The read geometry is independent of pitch direction. Direction is
+    // carried only by signed phase velocity, so crossing unity cannot mirror
+    // both read heads to unrelated ring positions.
+    const double centreDelay = static_cast<double>(minimumDelay_)
+        + 0.5 * static_cast<double>(rangeSamples_);
+    const double sweptDelayA = static_cast<double>(minimumDelay_)
+        + phase_ * static_cast<double>(rangeSamples_);
+    const double sweptDelayB = static_cast<double>(minimumDelay_)
+        + phaseB * static_cast<double>(rangeSamples_);
+
+    // Contract the excursion continuously inside roughly 0.17-3.5 cents.
+    // At exact unity both taps read the centre position, but phase is retained
+    // rather than reset. This prevents clicks when correction reaches zero.
+    const float sweepMix = smoothStep(
+        0.00010f, 0.00200f, static_cast<float>(deviation));
+    plan.delayA = centreDelay
+        + static_cast<double>(sweepMix) * (sweptDelayA - centreDelay);
+    plan.delayB = centreDelay
+        + static_cast<double>(sweepMix) * (sweptDelayB - centreDelay);
     plan.gainA = weight(phase_);
     plan.gainB = weight(phaseB);
     const float sum = plan.gainA + plan.gainB;
@@ -1474,7 +1477,9 @@ ModernPitchEngine::TransportClock::next(double ratio) noexcept
         plan.gainB /= sum;
     }
 
-    phase_ += std::min(0.24, deviation / static_cast<double>(rangeSamples_));
+    const double phaseIncrement = std::clamp(
+        signedDeviation / static_cast<double>(rangeSamples_), -0.24, 0.24);
+    phase_ += phaseIncrement;
     phase_ -= std::floor(phase_);
     return plan;
 }
