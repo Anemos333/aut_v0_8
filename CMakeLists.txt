@@ -154,4 +154,37 @@ if(NEUMATON_BUILD_CLEAN_ENGINE_TESTS)
         RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/clean-engine-tests"
         RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}/clean-engine-tests"
     )
+
+    juce_add_console_app(TransportContinuityTest
+        PRODUCT_NAME TransportContinuityTest
+    )
+    juce_generate_juce_header(TransportContinuityTest)
+    target_sources(TransportContinuityTest
+        PRIVATE
+            Tests/TransportContinuityTest.cpp
+            Source/ModernPitchEngine.cpp
+            Source/Tempo.cpp
+    )
+    target_include_directories(TransportContinuityTest PRIVATE Source)
+    target_compile_definitions(TransportContinuityTest
+        PRIVATE
+            JUCE_WEB_BROWSER=0
+            JUCE_USE_CURL=0
+    )
+    target_link_libraries(TransportContinuityTest
+        PRIVATE
+            juce::juce_audio_basics
+            juce::juce_core
+        PUBLIC
+            juce::juce_recommended_config_flags
+            juce::juce_recommended_warning_flags
+    )
+    set_target_properties(TransportContinuityTest PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/clean-engine-tests"
+        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/clean-engine-tests"
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/clean-engine-tests"
+        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/clean-engine-tests"
+        RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}/clean-engine-tests"
+    )
+
 endif()
