@@ -6,6 +6,7 @@ on:
       - main
       - modern-pitch-engine-clean-rewrite
       - clean-rewrite-detector-integration-rc
+      - clean-rewrite-transport-continuity
     paths:
       - 'Source/ModernPitchEngine.*'
       - 'Source/LivePitchProcessor.h'
@@ -14,6 +15,7 @@ on:
       - 'Tests/CleanModernPitchEngineTest.cpp'
       - 'Tests/VoiceEvidenceAnalyzerTest.cpp'
       - 'Tests/TransportContinuityTest.cpp'
+      - 'Tests/SupervisorContinuityTest.cpp'
       - 'Tests/CLEAN_MODERN_PITCH_ENGINE_CONTRACT.md'
       - '.github/workflows/clean-modern-pitch-engine.yml'
 
@@ -59,7 +61,7 @@ jobs:
             -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
 
       - name: Build invariant tests
-        run: cmake --build build-clean --config Release --target CleanModernPitchEngineTest VoiceEvidenceAnalyzerTest TransportContinuityTest --parallel 2
+        run: cmake --build build-clean --config Release --target CleanModernPitchEngineTest VoiceEvidenceAnalyzerTest TransportContinuityTest SupervisorContinuityTest --parallel 2
 
       - name: Run invariant tests on Linux
         if: runner.os == 'Linux'
@@ -67,6 +69,7 @@ jobs:
           ./build-clean/clean-engine-tests/CleanModernPitchEngineTest
           ./build-clean/clean-engine-tests/VoiceEvidenceAnalyzerTest
           ./build-clean/clean-engine-tests/TransportContinuityTest
+          ./build-clean/clean-engine-tests/SupervisorContinuityTest
 
       - name: Run invariant tests on Windows
         if: runner.os == 'Windows'
@@ -75,7 +78,8 @@ jobs:
           $tests = @(
             ".\build-clean\clean-engine-tests\CleanModernPitchEngineTest.exe",
             ".\build-clean\clean-engine-tests\VoiceEvidenceAnalyzerTest.exe",
-            ".\build-clean\clean-engine-tests\TransportContinuityTest.exe"
+            ".\build-clean\clean-engine-tests\TransportContinuityTest.exe",
+            ".\build-clean\clean-engine-tests\SupervisorContinuityTest.exe"
           )
           foreach ($test in $tests) {
             $name = [System.IO.Path]::GetFileNameWithoutExtension($test)

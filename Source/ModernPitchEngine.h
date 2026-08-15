@@ -462,6 +462,8 @@ private:
         double lastTargetJumpCents = 0.0;
         std::uint64_t revision = 0;
         int stableObservations = 0;
+        int invalidObservations = 0;
+        TrackingState trackingState = TrackingState::unvoiced;
     };
 
     [[nodiscard]] static float clamp01(float value) noexcept;
