@@ -187,7 +187,6 @@ if(NEUMATON_BUILD_CLEAN_ENGINE_TESTS)
         RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}/clean-engine-tests"
     )
 
-
     juce_add_console_app(SupervisorContinuityTest
         PRODUCT_NAME SupervisorContinuityTest
     )
@@ -195,7 +194,7 @@ if(NEUMATON_BUILD_CLEAN_ENGINE_TESTS)
     target_sources(SupervisorContinuityTest
         PRIVATE
             Tests/SupervisorContinuityTest.cpp
-            Source/ModernPitchEngine.cpp
+            Tests/SupervisorModernPitchEngineCompile.cpp
             Source/Tempo.cpp
     )
     target_include_directories(SupervisorContinuityTest PRIVATE Source)
