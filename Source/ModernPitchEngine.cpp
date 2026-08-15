@@ -886,12 +886,50 @@ bool ModernPitchEngine::MultiRatePitchTracker::confirmOctaveTransition(
     DecoderDecision& decision,
     bool onsetPending) noexcept
 {
-    if (!decision.valid || trackedPitchHz_ <= 0.0f)
+    if (!decision.valid)
     {
         pendingOctaveDelta_ = 0;
         pendingOctaveCount_ = 0;
         pendingOctaveFrequencyHz_ = 0.0f;
-        return decision.valid;
+        return false;
+    }
+
+    // Initial register acquisition is deliberately temporal. A single fresh
+    // harmonic family can be an octave alias at a vowel onset, so the first
+    // non-exceptional decision must repeat before it becomes audible control.
+    // This is detector commitment, not reduced correction authority.
+    if (trackedPitchHz_ <= 0.0f)
+    {
+        const bool sameInitial = pendingOctaveFrequencyHz_ > 0.0f
+            && centsDistance(pendingOctaveFrequencyHz_,
+                             decision.candidate.frequencyHz) < 80.0f;
+        if (!sameInitial)
+        {
+            pendingOctaveDelta_ = 0;
+            pendingOctaveCount_ = 0;
+            pendingOctaveFrequencyHz_ = decision.candidate.frequencyHz;
+        }
+
+        if (decision.freshSupportMask != 0)
+            ++pendingOctaveCount_;
+
+        const bool exceptionalEvidence = decision.supportCount >= 2
+            && decision.directSupportCount >= 2
+            && decision.candidate.confidence >= 0.90f
+            && decision.consensus >= 0.82f;
+        const int requiredObservations = exceptionalEvidence ? 1 : 2;
+        if (pendingOctaveCount_ < requiredObservations)
+        {
+            decision.valid = false;
+            return false;
+        }
+
+        committedOctaveFrequencyHz_ = decision.candidate.frequencyHz;
+        octaveCommitGuardHops_ = 6;
+        pendingOctaveDelta_ = 0;
+        pendingOctaveCount_ = 0;
+        pendingOctaveFrequencyHz_ = 0.0f;
+        return true;
     }
 
     if (octaveCommitGuardHops_ > 0)
@@ -1778,22 +1816,26 @@ double ModernPitchEngine::responseTimeMs(
         response = std::min(7.0, response + humanTiming);
     }
 
-    if (targetChanged)
+    if (targetChanged && std::abs(targetJumpCents) > 0.1)
     {
         const double transitionMs = std::clamp(
             static_cast<double>(finiteOr(parameters.transitionTimeMs, 35.0f)),
             0.0, 2000.0);
         if (parameters.tempo.mode != CreativeTempo::Mode::off)
         {
-            // Creative Tempo controls the correction trajectory itself. The
-            // single full-signal transport remains the only audio renderer.
+            // Creative Tempo controls the same correction trajectory.
             response = std::max(response, transitionMs);
         }
         else
         {
+            // Main used a pre-rolled second synthesis layer for note changes.
+            // Keep only its useful bounded transition timing: the current
+            // single trajectory moves continuously to the exact new target.
             const double jumpWeight = std::clamp(
                 std::abs(targetJumpCents) / 600.0, 0.0, 1.0);
-            response = std::max(response, 0.35 * transitionMs * jumpWeight);
+            const double trajectoryMs = std::clamp(
+                transitionMs * (0.22 + 0.38 * jumpWeight), 0.35, 32.0);
+            response = std::max(response, trajectoryMs);
         }
     }
     return std::clamp(response, 0.35, 500.0);
@@ -1806,7 +1848,43 @@ void ModernPitchEngine::updateCorrectionState(
     const Parameters& parameters) noexcept
 {
     if (!observation.valid || observation.frequencyHz <= 0.0f)
+    {
+        ++state.invalidObservations;
+        state.stableObservations = 0;
+
+        // Keep the musical decision through very short detector holes. Once
+        // the gap is established, release the correction ratio itself toward
+        // unity on the same full-signal transport. No dry signal is opened.
+        if (state.targetValid && state.invalidObservations > 3)
+        {
+            state.trackingState = TrackingState::release;
+            state.desiredCents = 0.0;
+            const double protection = static_cast<double>(
+                clamp01(parameters.transientProtection));
+            state.responseMs = std::clamp(28.0 - 20.0 * protection,
+                                          6.0, 28.0);
+            if (state.invalidObservations > 18)
+                state.pitchCentreValid = false;
+        }
+        else if (!state.targetValid)
+        {
+            state.trackingState = TrackingState::unvoiced;
+        }
         return;
+    }
+
+    state.invalidObservations = 0;
+    if (observation.onset)
+    {
+        state.trackingState = TrackingState::attack;
+        state.stableObservations = 0;
+    }
+    else if (state.trackingState == TrackingState::unvoiced
+             || state.trackingState == TrackingState::release)
+    {
+        state.trackingState = TrackingState::acquire;
+        state.stableObservations = 0;
+    }
 
     const double observedLog2 = safeLog2(observation.frequencyHz);
     if (!state.pitchCentreValid || observation.onset)
@@ -1847,6 +1925,11 @@ void ModernPitchEngine::updateCorrectionState(
     {
         ++state.revision;
         state.lastTargetJumpCents = targetJump;
+        if (state.targetValid && std::abs(targetJump) > 0.1)
+        {
+            state.trackingState = TrackingState::transition;
+            state.stableObservations = 0;
+        }
     }
     state.targetLog2 = newTarget;
     state.targetValid = true;
@@ -1883,7 +1966,7 @@ void ModernPitchEngine::updateCorrectionState(
     else
         errorCents = std::copysign(std::abs(errorCents) - humanWindow, errorCents);
 
-    const double maximumCents = 1200.0 * std::clamp(
+    const double maximumCents = 100.0 * std::clamp(
         static_cast<double>(finiteOr(parameters.maximumCorrectionSemitones, 12.0f)),
         0.0, 48.0);
     errorCents = std::clamp(errorCents, -maximumCents, maximumCents);
@@ -1892,6 +1975,12 @@ void ModernPitchEngine::updateCorrectionState(
     state.desiredCents = errorCents
         * static_cast<double>(clamp01(parameters.amount));
     state.responseMs = responseTimeMs(parameters, targetChanged, targetJump);
+
+    if (!observation.onset && state.trackingState != TrackingState::transition)
+    {
+        state.trackingState = state.stableObservations >= 3
+            ? TrackingState::stable : TrackingState::acquire;
+    }
 
     meterPendingOctave_.store(pending, std::memory_order_relaxed);
     meterOctaveState_.store(observation.octaveState, std::memory_order_relaxed);
@@ -1925,6 +2014,12 @@ double ModernPitchEngine::advanceCorrection(CorrectionState& state) noexcept
     {
         state.currentCents = state.desiredCents;
         state.velocityCentsPerSecond = 0.0;
+        if (state.trackingState == TrackingState::transition)
+            state.trackingState = TrackingState::stable;
+        else if (state.trackingState == TrackingState::release
+                 && state.invalidObservations > 3
+                 && std::abs(state.currentCents) < 0.001)
+            state.trackingState = TrackingState::unvoiced;
     }
     return state.currentCents;
 }
@@ -1990,16 +2085,31 @@ void ModernPitchEngine::updateLpcTarget(
         monoScratch_[static_cast<std::size_t>(sample)] = static_cast<float>(
             sum / static_cast<double>(channels));
     }
-    currentLpcTarget_ = calculateLpc(monoScratch_.data(), count);
-
     const float periodicity = clamp01(observation.periodicity);
-    const float transientSafety = 1.0f
-        - clamp01(parameters.transientProtection)
-            * smoothStep(0.25f, 0.85f, observation.onsetStrength);
+    const float protection = clamp01(parameters.transientProtection);
+    const float onset = clamp01(observation.onsetStrength);
+    const float freezeThreshold = 0.72f - 0.28f * protection;
+    const bool trustworthyEnvelope = observation.valid
+        && periodicity > 0.30f && onset < freezeThreshold;
+    if (trustworthyEnvelope)
+        currentLpcTarget_ = calculateLpc(monoScratch_.data(), count);
+
+    float stateStability = 1.0f;
+    switch (linkedCorrection_.trackingState)
+    {
+        case TrackingState::unvoiced:   stateStability = 0.45f; break;
+        case TrackingState::attack:     stateStability = 0.35f; break;
+        case TrackingState::acquire:    stateStability = 0.68f; break;
+        case TrackingState::stable:     stateStability = 1.00f; break;
+        case TrackingState::transition: stateStability = 0.58f; break;
+        case TrackingState::release:    stateStability = 0.65f; break;
+    }
+    const float supervisedStability = 1.0f
+        - protection * (1.0f - stateStability);
     const float formantStrength = clamp01(parameters.formantPreservation)
-        * (0.45f + 0.55f * periodicity) * transientSafety;
+        * (0.45f + 0.55f * periodicity) * supervisedStability;
     const float breathEvidence = (1.0f - periodicity)
-        * (1.0f - 0.85f * smoothStep(0.20f, 0.75f, observation.onsetStrength));
+        * (1.0f - 0.85f * smoothStep(0.20f, 0.75f, onset));
     const float breathReduction = 0.65f * clamp01(parameters.breathReduction)
         * breathEvidence;
     for (int channel = 0; channel < channels; ++channel)
@@ -2258,14 +2368,8 @@ void ModernPitchEngine::publishMetering(
         std::memory_order_relaxed);
     meterDetectorSupport_.store(observation.detectorSupport, std::memory_order_relaxed);
     meterOctaveState_.store(observation.octaveState, std::memory_order_relaxed);
-    TrackingState tracking = TrackingState::unvoiced;
-    if (observation.valid)
-        tracking = observation.onset ? TrackingState::attack
-            : std::abs(state.desiredCents - state.currentCents) > 1.0
-            ? TrackingState::transition : TrackingState::stable;
-    else if (state.targetValid)
-        tracking = TrackingState::release;
-    meterTrackingState_.store(static_cast<int>(tracking), std::memory_order_relaxed);
+    meterTrackingState_.store(static_cast<int>(state.trackingState),
+                              std::memory_order_relaxed);
     meterTempoBpm_.store(tempoMeter.bpm, std::memory_order_relaxed);
     meterTempoGridPhase_.store(tempoMeter.gridPhase, std::memory_order_relaxed);
     meterTempoGlideTimeMs_.store(tempoMeter.glideTimeMs, std::memory_order_relaxed);

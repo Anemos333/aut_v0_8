@@ -105,13 +105,8 @@ public:
         parameters_.transientProtection = transientProtection;
         parameters_.detectorSensitivity = detectorSensitivity;
 
-        // The current clean engine multiplies this field by 1200 internally.
-        // Preserve the public API's semitone semantics here (100 cents each)
-        // without altering correction authority or mixing any dry signal.
-        // Once ModernPitchEngine itself changes its internal scalar to 100,
-        // this compatibility conversion must be removed together with its test.
         parameters_.maximumCorrectionSemitones = std::clamp(
-            maximumCorrectionSemitones, 0.0f, 48.0f) / 12.0f;
+            maximumCorrectionSemitones, 0.0f, 48.0f);
 
         parameters_.minimumPitchHz = minimumPitchHz;
         parameters_.maximumPitchHz = maximumPitchHz;
