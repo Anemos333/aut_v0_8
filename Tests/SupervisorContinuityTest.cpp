@@ -6,6 +6,7 @@
 
 #include <cmath>
 #include <iostream>
+#include <memory>
 #include <vector>
 
 namespace
@@ -21,10 +22,11 @@ int main()
 {
     bool success = true;
 
-    // A non-exceptional initial register decision must repeat once before it
-    // can drive correction. This targets the audible first-note octave alias.
-    ModernPitchEngine::MultiRatePitchTracker tracker;
-    tracker.prepare(48000.0);
+    // Keep the large tracker/engine fixtures on the heap. The production
+    // plugin already owns them as members; this only avoids the smaller
+    // default stack of the Windows console-test process.
+    auto tracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+    tracker->prepare(48000.0);
     auto makeInitialDecision = []
     {
         ModernPitchEngine::MultiRatePitchTracker::DecoderDecision d;
@@ -40,16 +42,16 @@ int main()
         return d;
     };
     auto first = makeInitialDecision();
-    const bool firstAccepted = tracker.confirmOctaveTransition(first, true);
+    const bool firstAccepted = tracker->confirmOctaveTransition(first, true);
     auto second = makeInitialDecision();
-    const bool secondAccepted = tracker.confirmOctaveTransition(second, true);
+    const bool secondAccepted = tracker->confirmOctaveTransition(second, true);
     success &= check(!firstAccepted && !first.valid,
                      "initial_register_waits_for_repeat");
     success &= check(secondAccepted,
                      "repeated_initial_register_is_committed");
 
-    ModernPitchEngine engine;
-    engine.prepare(48000.0, 256, 1, ModernPitchEngine::LatencyMode::live);
+    auto engine = std::make_unique<ModernPitchEngine>();
+    engine->prepare(48000.0, 256, 1, ModernPitchEngine::LatencyMode::live);
     ModernPitchEngine::ScaleQuantizer quantizer;
     quantizer.reset();
     ModernPitchEngine::Parameters parameters;
@@ -62,10 +64,10 @@ int main()
     releaseState.trackingState = ModernPitchEngine::TrackingState::stable;
     ModernPitchEngine::PitchObservation invalid;
     for (int i = 0; i < 3; ++i)
-        engine.updateCorrectionState(releaseState, quantizer, invalid, parameters);
+        engine->updateCorrectionState(releaseState, quantizer, invalid, parameters);
     success &= check(std::abs(releaseState.desiredCents - 100.0) < 1.0e-9,
                      "short_detector_holes_hold_musical_decision");
-    engine.updateCorrectionState(releaseState, quantizer, invalid, parameters);
+    engine->updateCorrectionState(releaseState, quantizer, invalid, parameters);
     success &= check(releaseState.trackingState == ModernPitchEngine::TrackingState::release
                      && std::abs(releaseState.desiredCents) < 1.0e-9,
                      "confirmed_unvoiced_releases_same_trajectory_to_unity");
@@ -74,7 +76,7 @@ int main()
     double previous = releaseState.currentCents;
     for (int i = 0; i < 4800; ++i)
     {
-        const double current = engine.advanceCorrection(releaseState);
+        const double current = engine->advanceCorrection(releaseState);
         maximumReleaseStep = std::max(maximumReleaseStep, std::abs(current - previous));
         previous = current;
     }
@@ -86,7 +88,7 @@ int main()
 
     parameters.retuneTimeMs = 0.0f;
     parameters.transitionTimeMs = 40.0f;
-    const double transitionResponse = engine.responseTimeMs(parameters, true, 100.0);
+    const double transitionResponse = engine->responseTimeMs(parameters, true, 100.0);
     std::cerr << "single_path_transition_response_ms=" << transitionResponse << '\n';
     success &= check(transitionResponse > 8.0 && transitionResponse < 32.1,
                      "target_revision_uses_bounded_single_path_transition");
@@ -106,7 +108,7 @@ int main()
     parameters.amount = 1.0f;
     parameters.humanize = 0.0f;
     parameters.preserveVibrato = 0.0f;
-    engine.updateCorrectionState(capState, quantizer, voiced, parameters);
+    engine->updateCorrectionState(capState, quantizer, voiced, parameters);
     std::cerr << "one_semitone_cap_cents=" << capState.desiredCents << '\n';
     success &= check(std::abs(capState.desiredCents) <= 100.001,
                      "native_semitone_limit_is_100_cents");
@@ -122,28 +124,28 @@ int main()
         block.setSample(0, i, static_cast<float>(0.7 * std::sin(phase)
                                                + 0.2 * std::sin(2.0 * phase)));
     }
-    engine.linkedCorrection_.trackingState = ModernPitchEngine::TrackingState::stable;
+    engine->linkedCorrection_.trackingState = ModernPitchEngine::TrackingState::stable;
     ModernPitchEngine::PitchObservation stableObservation;
     stableObservation.valid = true;
     stableObservation.frequencyHz = 220.0f;
     stableObservation.periodicity = 0.95f;
     stableObservation.onsetStrength = 0.0f;
     parameters.formantPreservation = 1.0f;
-    engine.updateLpcTarget(block, 1, block.getNumSamples(), parameters,
-                           stableObservation);
-    const auto stableLpc = engine.currentLpcTarget_;
+    engine->updateLpcTarget(block, 1, block.getNumSamples(), parameters,
+                            stableObservation);
+    const auto stableLpc = engine->currentLpcTarget_;
 
     block.clear();
     block.setSample(0, 0, 1.0f);
-    engine.linkedCorrection_.trackingState = ModernPitchEngine::TrackingState::attack;
+    engine->linkedCorrection_.trackingState = ModernPitchEngine::TrackingState::attack;
     ModernPitchEngine::PitchObservation transientObservation = stableObservation;
     transientObservation.onsetStrength = 1.0f;
-    engine.updateLpcTarget(block, 1, block.getNumSamples(), parameters,
-                           transientObservation);
+    engine->updateLpcTarget(block, 1, block.getNumSamples(), parameters,
+                            transientObservation);
     double lpcDifference = 0.0;
     for (std::size_t i = 0; i < stableLpc.size(); ++i)
         lpcDifference += std::abs(static_cast<double>(stableLpc[i]
-                                                   - engine.currentLpcTarget_[i]));
+                                                   - engine->currentLpcTarget_[i]));
     std::cerr << "transient_lpc_target_difference=" << lpcDifference << '\n';
     success &= check(lpcDifference < 1.0e-9,
                      "transient_freezes_last_trustworthy_lpc_envelope");
