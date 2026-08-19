@@ -1461,19 +1461,47 @@ double ModernPitchEngine::ScaleQuantizer::chooseTargetLog2(
 
 void ModernPitchEngine::TransportClock::prepare(int reportedLatencySamples) noexcept
 {
+    prepare(48000.0, reportedLatencySamples);
+}
+
+void ModernPitchEngine::TransportClock::prepare(double sampleRate,
+                                                int reportedLatencySamples) noexcept
+{
+    sampleRate_ = std::max(8000.0, finiteOr(sampleRate, 48000.0));
     minimumDelay_ = 8;
     rangeSamples_ = std::max(16,
         2 * (std::max(16, reportedLatencySamples) - minimumDelay_));
+    periodSyncSmoothing_ = std::clamp(static_cast<float>(
+        1.0 - std::exp(-1.0 / (0.0030 * sampleRate_))), 0.001f, 0.08f);
     reset();
 }
 
 void ModernPitchEngine::TransportClock::reset() noexcept
 {
     phase_ = 0.5;
+    periodNudgeSamples_ = 0.0;
+    periodSyncAmount_ = 0.0f;
 }
 
 ModernPitchEngine::TransportPlan
 ModernPitchEngine::TransportClock::next(double ratio) noexcept
+{
+    return nextInternal(ratio, 0.0, 0.0f, false);
+}
+
+ModernPitchEngine::TransportPlan
+ModernPitchEngine::TransportClock::next(double ratio,
+                                        double sourcePeriodSamples,
+                                        float syncStrength) noexcept
+{
+    return nextInternal(ratio, sourcePeriodSamples, syncStrength, true);
+}
+
+ModernPitchEngine::TransportPlan
+ModernPitchEngine::TransportClock::nextInternal(double ratio,
+                                                double sourcePeriodSamples,
+                                                float syncStrength,
+                                                bool periodAware) noexcept
 {
     TransportPlan plan;
     const double safeRatio = std::clamp(
@@ -1482,14 +1510,12 @@ ModernPitchEngine::TransportClock::next(double ratio) noexcept
     const double deviation = std::abs(signedDeviation);
     const double phaseB = phase_ < 0.5 ? phase_ + 0.5 : phase_ - 0.5;
 
-    const auto weight = [](double phase) noexcept
+    const auto weight = [periodAware](double phase) noexcept
     {
-        return static_cast<float>(0.5 - 0.5 * std::cos(twoPi * phase));
+        const float hann = static_cast<float>(0.5 - 0.5 * std::cos(twoPi * phase));
+        return periodAware ? std::pow(hann, 2.35f) : hann;
     };
 
-    // The read geometry is independent of pitch direction. Direction is
-    // carried only by signed phase velocity, so crossing unity cannot mirror
-    // both read heads to unrelated ring positions.
     const double centreDelay = static_cast<double>(minimumDelay_)
         + 0.5 * static_cast<double>(rangeSamples_);
     const double sweptDelayA = static_cast<double>(minimumDelay_)
@@ -1497,11 +1523,8 @@ ModernPitchEngine::TransportClock::next(double ratio) noexcept
     const double sweptDelayB = static_cast<double>(minimumDelay_)
         + phaseB * static_cast<double>(rangeSamples_);
 
-    // Contract the excursion continuously inside roughly 0.17-3.5 cents.
-    // At exact unity both taps read the centre position, but phase is retained
-    // rather than reset. This prevents clicks when correction reaches zero.
-    const float sweepMix = smoothStep(
-        0.00010f, 0.00200f, static_cast<float>(deviation));
+    const float sweepMix = smoothStep(0.00010f, 0.00200f,
+                                      static_cast<float>(deviation));
     plan.delayA = centreDelay
         + static_cast<double>(sweepMix) * (sweptDelayA - centreDelay);
     plan.delayB = centreDelay
@@ -1513,6 +1536,79 @@ ModernPitchEngine::TransportClock::next(double ratio) noexcept
     {
         plan.gainA /= sum;
         plan.gainB /= sum;
+    }
+
+    if (periodAware)
+    {
+        const double nominalSeparation = plan.delayB - plan.delayA;
+        const double nominalMagnitude = std::abs(nominalSeparation);
+        const float overlap = smoothStep(0.04f, 0.38f,
+                                         std::min(plan.gainA, plan.gainB));
+        const float sweepPresence = smoothStep(0.08f, 0.65f, sweepMix);
+        float requestedSync = clamp01(syncStrength) * overlap * sweepPresence;
+        double requestedNudge = 0.0;
+
+        if (std::isfinite(sourcePeriodSamples)
+            && sourcePeriodSamples >= 8.0
+            && sourcePeriodSamples <= 2048.0
+            && nominalMagnitude > 1.0)
+        {
+            const double multiple = std::round(nominalMagnitude / sourcePeriodSamples);
+            const double alignedMagnitude = multiple * sourcePeriodSamples;
+            const double maximumNudge = std::min({
+                24.0,
+                0.24 * sourcePeriodSamples,
+                0.18 * static_cast<double>(rangeSamples_)
+            });
+            requestedNudge = std::clamp(alignedMagnitude - nominalMagnitude,
+                                        -maximumNudge, maximumNudge);
+        }
+        else
+        {
+            requestedSync = 0.0f;
+        }
+
+        periodNudgeSamples_ += static_cast<double>(periodSyncSmoothing_)
+            * (requestedNudge - periodNudgeSamples_);
+        periodSyncAmount_ += periodSyncSmoothing_
+            * (requestedSync - periodSyncAmount_);
+
+        const double sign = nominalSeparation >= 0.0 ? 1.0 : -1.0;
+        double adjustedMagnitude = std::max(
+            0.0,
+            nominalMagnitude
+                + static_cast<double>(periodSyncAmount_) * periodNudgeSamples_);
+
+        const double minimum = static_cast<double>(minimumDelay_);
+        const double maximum = minimum + static_cast<double>(rangeSamples_);
+        const double gainA = static_cast<double>(plan.gainA);
+        const double gainB = static_cast<double>(plan.gainB);
+        const double weightedMean = gainA * plan.delayA + gainB * plan.delayB;
+        double maximumMagnitude = static_cast<double>(rangeSamples_);
+        constexpr double minimumGain = 1.0e-7;
+        if (sign > 0.0)
+        {
+            if (gainB > minimumGain)
+                maximumMagnitude = std::min(maximumMagnitude,
+                    (weightedMean - minimum) / gainB);
+            if (gainA > minimumGain)
+                maximumMagnitude = std::min(maximumMagnitude,
+                    (maximum - weightedMean) / gainA);
+        }
+        else
+        {
+            if (gainB > minimumGain)
+                maximumMagnitude = std::min(maximumMagnitude,
+                    (maximum - weightedMean) / gainB);
+            if (gainA > minimumGain)
+                maximumMagnitude = std::min(maximumMagnitude,
+                    (weightedMean - minimum) / gainA);
+        }
+        adjustedMagnitude = std::clamp(adjustedMagnitude, 0.0,
+                                       std::max(0.0, maximumMagnitude));
+        const double adjustedSeparation = sign * adjustedMagnitude;
+        plan.delayA = weightedMean - gainB * adjustedSeparation;
+        plan.delayB = weightedMean + gainA * adjustedSeparation;
     }
 
     const double phaseIncrement = std::clamp(
@@ -1527,8 +1623,8 @@ void ModernPitchEngine::ChannelPath::prepare(double sampleRate,
 {
     static_cast<void>(reportedLatencySamples);
     const double safeRate = std::max(8000.0, finiteOr(sampleRate, 48000.0));
-    coefficientSmoothing_ = std::clamp(static_cast<float>(
-        1.0 - std::exp(-1.0 / (0.018 * safeRate))), 0.0005f, 0.08f);
+    reflectionSmoothing_ = std::clamp(static_cast<float>(
+        1.0 - std::exp(-1.0 / (0.008 * safeRate))), 0.0008f, 0.12f);
     breathLowPassCoefficient_ = std::clamp(static_cast<float>(
         1.0 - std::exp(-twoPi * 3200.0 / safeRate)), 0.001f, 0.95f);
     reset();
@@ -1540,27 +1636,52 @@ void ModernPitchEngine::ChannelPath::reset() noexcept
     bypassRing_.fill(0.0f);
     inputHistory_.fill(0.0f);
     outputHistory_.fill(0.0f);
-    currentLpc_.fill(0.0f);
-    targetLpc_.fill(0.0f);
+    currentReflection_.fill(0.0f);
+    targetReflection_.fill(0.0f);
     sampleCounter_ = 0;
     breathLowPass_ = 0.0f;
     breathReduction_ = 0.0f;
     targetBreathReduction_ = 0.0f;
 }
 
+std::array<float, ModernPitchEngine::maximumLpcOrder>
+ModernPitchEngine::ChannelPath::reflectionToLpc(
+    const std::array<float, maximumLpcOrder>& reflectionCoefficients) noexcept
+{
+    std::array<double, maximumLpcOrder + 1> coefficients {};
+    coefficients[0] = 1.0;
+    for (int order = 1; order <= maximumLpcOrder; ++order)
+    {
+        const double reflection = std::clamp(
+            static_cast<double>(reflectionCoefficients[static_cast<std::size_t>(order - 1)]),
+            -0.94, 0.94);
+        const auto previous = coefficients;
+        coefficients[static_cast<std::size_t>(order)] = reflection;
+        for (int i = 1; i < order; ++i)
+            coefficients[static_cast<std::size_t>(i)]
+                = previous[static_cast<std::size_t>(i)]
+                - reflection * previous[static_cast<std::size_t>(order - i)];
+    }
+    std::array<float, maximumLpcOrder> result {};
+    for (int i = 0; i < maximumLpcOrder; ++i)
+        result[static_cast<std::size_t>(i)] = static_cast<float>(
+            coefficients[static_cast<std::size_t>(i + 1)]);
+    return result;
+}
+
 void ModernPitchEngine::ChannelPath::setVoiceModel(
-    const std::array<float, maximumLpcOrder>& coefficients,
+    const std::array<float, maximumLpcOrder>& reflectionCoefficients,
     float formantStrength,
     float breathReduction) noexcept
 {
-    const float safeStrength = std::clamp(formantStrength, 0.0f, 0.96f);
+    const float safeStrength = std::clamp(formantStrength, 0.0f, 0.995f);
     for (int i = 0; i < maximumLpcOrder; ++i)
     {
-        const float bandwidth = std::pow(0.94f, static_cast<float>(i + 1));
-        targetLpc_[static_cast<std::size_t>(i)] = std::clamp(
-            coefficients[static_cast<std::size_t>(i)]
+        const float bandwidth = std::pow(0.995f, static_cast<float>(i + 1));
+        targetReflection_[static_cast<std::size_t>(i)] = std::clamp(
+            reflectionCoefficients[static_cast<std::size_t>(i)]
                 * safeStrength * bandwidth,
-            -0.95f, 0.95f);
+            -0.94f, 0.94f);
     }
     targetBreathReduction_ = std::clamp(breathReduction, 0.0f, 0.75f);
 }
@@ -1577,38 +1698,36 @@ float ModernPitchEngine::ChannelPath::interpolateResidual(
 {
     if (!std::isfinite(absolutePosition))
         return 0.0f;
-    const auto lowerAbsolute = static_cast<std::int64_t>(
-        std::floor(absolutePosition));
-    const double fraction = absolutePosition
-        - static_cast<double>(lowerAbsolute);
-    const int lower = static_cast<int>(
-        lowerAbsolute & (transportRingSize - 1));
+    const auto lowerAbsolute = static_cast<std::int64_t>(std::floor(absolutePosition));
+    const double fraction = absolutePosition - static_cast<double>(lowerAbsolute);
+    const int lower = static_cast<int>(lowerAbsolute & (transportRingSize - 1));
     const int upper = (lower + 1) & (transportRingSize - 1);
     const float a = residualRing_[static_cast<std::size_t>(lower)];
     const float b = residualRing_[static_cast<std::size_t>(upper)];
     return a + static_cast<float>(fraction) * (b - a);
 }
 
-float ModernPitchEngine::ChannelPath::process(
-    float input,
-    const TransportPlan& plan) noexcept
+float ModernPitchEngine::ChannelPath::process(float input,
+                                              const TransportPlan& plan) noexcept
 {
     const float safeInput = sanitise(input);
     for (int i = 0; i < maximumLpcOrder; ++i)
     {
-        currentLpc_[static_cast<std::size_t>(i)] += coefficientSmoothing_
-            * (targetLpc_[static_cast<std::size_t>(i)]
-               - currentLpc_[static_cast<std::size_t>(i)]);
+        currentReflection_[static_cast<std::size_t>(i)] += reflectionSmoothing_
+            * (targetReflection_[static_cast<std::size_t>(i)]
+               - currentReflection_[static_cast<std::size_t>(i)]);
+        currentReflection_[static_cast<std::size_t>(i)] = std::clamp(
+            currentReflection_[static_cast<std::size_t>(i)], -0.94f, 0.94f);
     }
-    breathReduction_ += coefficientSmoothing_
+    const auto currentLpc = reflectionToLpc(currentReflection_);
+    breathReduction_ += reflectionSmoothing_
         * (targetBreathReduction_ - breathReduction_);
 
     double prediction = 0.0;
     for (int i = 0; i < maximumLpcOrder; ++i)
-        prediction += static_cast<double>(currentLpc_[static_cast<std::size_t>(i)])
+        prediction += static_cast<double>(currentLpc[static_cast<std::size_t>(i)])
                     * static_cast<double>(inputHistory_[static_cast<std::size_t>(i)]);
     const float residual = sanitise(safeInput - static_cast<float>(prediction));
-
     for (int i = maximumLpcOrder - 1; i > 0; --i)
         inputHistory_[static_cast<std::size_t>(i)]
             = inputHistory_[static_cast<std::size_t>(i - 1)];
@@ -1622,16 +1741,12 @@ float ModernPitchEngine::ChannelPath::process(
 
     double synthesisPrediction = 0.0;
     for (int i = 0; i < maximumLpcOrder; ++i)
-        synthesisPrediction += static_cast<double>(currentLpc_[static_cast<std::size_t>(i)])
+        synthesisPrediction += static_cast<double>(currentLpc[static_cast<std::size_t>(i)])
                              * static_cast<double>(outputHistory_[static_cast<std::size_t>(i)]);
     float output = sanitise(shiftedResidual + static_cast<float>(synthesisPrediction));
-
-    // Breath reduction is a post-transport spectral tilt on the same full signal.
-    // It is not a parallel dry path and cannot reduce pitch-correction authority.
     breathLowPass_ += breathLowPassCoefficient_ * (output - breathLowPass_);
     const float highBand = output - breathLowPass_;
     output = sanitise(output - highBand * breathReduction_);
-
     for (int i = maximumLpcOrder - 1; i > 0; --i)
         outputHistory_[static_cast<std::size_t>(i)]
             = outputHistory_[static_cast<std::size_t>(i - 1)];
@@ -1695,15 +1810,14 @@ void ModernPitchEngine::prepare(double sampleRate,
     channelCount_ = std::clamp(numberOfChannels, 1, maxSupportedChannels);
     latencyMode_ = latencyMode;
     latencySamples_ = latencyForMode(latencyMode_);
-    monoScratch_.assign(static_cast<std::size_t>(maximumBlockSize_), 0.0f);
 
     linkedTracker_.prepare(sampleRate_);
-    linkedClock_.prepare(latencySamples_);
+    linkedClock_.prepare(sampleRate_, latencySamples_);
     tempoController_.prepare(sampleRate_);
     for (int channel = 0; channel < maxSupportedChannels; ++channel)
     {
         channelTrackers_[static_cast<std::size_t>(channel)].prepare(sampleRate_);
-        channelClocks_[static_cast<std::size_t>(channel)].prepare(latencySamples_);
+        channelClocks_[static_cast<std::size_t>(channel)].prepare(sampleRate_, latencySamples_);
         channelPaths_[static_cast<std::size_t>(channel)].prepare(sampleRate_, latencySamples_);
         channelTempoControllers_[static_cast<std::size_t>(channel)].prepare(sampleRate_);
     }
@@ -1726,8 +1840,12 @@ void ModernPitchEngine::reset() noexcept
         channelTempoControllers_[static_cast<std::size_t>(channel)].reset();
         channelCorrections_[static_cast<std::size_t>(channel)] = {};
     }
-    std::fill(monoScratch_.begin(), monoScratch_.end(), 0.0f);
-    currentLpcTarget_.fill(0.0f);
+    lpcAnalysisRing_.fill(0.0f);
+    lpcAnalysisScratch_.fill(0.0f);
+    lpcAnalysisWritePosition_ = 0;
+    lpcAnalysisAvailableSamples_ = 0;
+    lpcAnalysisHopCounter_ = 0;
+    currentReflectionTarget_.fill(0.0f);
     latestObservation_ = {};
     latestChannelObservation_.fill(PitchObservation {});
     audibleCorrectionCents_ = 0.0;
@@ -1839,6 +1957,32 @@ double ModernPitchEngine::responseTimeMs(
         }
     }
     return std::clamp(response, 0.35, 500.0);
+}
+
+float ModernPitchEngine::transportSyncStrength(
+    const PitchObservation& observation,
+    const CorrectionState& state,
+    const Parameters& parameters) const noexcept
+{
+    if (!observation.valid || observation.frequencyHz <= 0.0f)
+        return 0.0f;
+    float stateFactor = 0.0f;
+    switch (state.trackingState)
+    {
+        case TrackingState::unvoiced:   stateFactor = 0.0f; break;
+        case TrackingState::attack:     stateFactor = 0.24f; break;
+        case TrackingState::acquire:    stateFactor = 0.62f; break;
+        case TrackingState::stable:     stateFactor = 0.90f; break;
+        case TrackingState::transition: stateFactor = 1.00f; break;
+        case TrackingState::release:    stateFactor = 0.32f; break;
+    }
+    const float evidence = clamp01(
+        0.46f * clamp01(observation.periodicity)
+      + 0.34f * clamp01(observation.confidence)
+      + 0.20f * clamp01(observation.consensus));
+    const float protection = 0.40f
+        + 0.60f * clamp01(parameters.transientProtection);
+    return clamp01(evidence * stateFactor * protection);
 }
 
 void ModernPitchEngine::updateCorrectionState(
@@ -2025,7 +2169,8 @@ double ModernPitchEngine::advanceCorrection(CorrectionState& state) noexcept
 }
 
 std::array<float, ModernPitchEngine::maximumLpcOrder>
-ModernPitchEngine::calculateLpc(const float* mono, int samples) noexcept
+ModernPitchEngine::calculateReflectionCoefficients(const float* mono,
+                                                   int samples) noexcept
 {
     std::array<float, maximumLpcOrder> result {};
     if (mono == nullptr || samples <= maximumLpcOrder + 2)
@@ -2039,6 +2184,7 @@ ModernPitchEngine::calculateLpc(const float* mono, int samples) noexcept
             sum += static_cast<double>(mono[i]) * mono[i - lag];
         autocorrelation[static_cast<std::size_t>(lag)] = sum;
     }
+    autocorrelation[0] *= 1.0008;
     double error = autocorrelation[0];
     if (!(error > 1.0e-10) || !std::isfinite(error))
         return result;
@@ -2052,39 +2198,61 @@ ModernPitchEngine::calculateLpc(const float* mono, int samples) noexcept
             numerator -= coefficients[static_cast<std::size_t>(i)]
                 * autocorrelation[static_cast<std::size_t>(order - i)];
         double reflection = numerator / std::max(1.0e-12, error);
-        reflection = std::clamp(reflection, -0.96, 0.96);
+        reflection = std::clamp(reflection, -0.94, 0.94);
+        result[static_cast<std::size_t>(order - 1)]
+            = static_cast<float>(reflection);
         const auto previous = coefficients;
         coefficients[static_cast<std::size_t>(order)] = reflection;
         for (int i = 1; i < order; ++i)
             coefficients[static_cast<std::size_t>(i)]
                 = previous[static_cast<std::size_t>(i)]
                 - reflection * previous[static_cast<std::size_t>(order - i)];
-        error *= std::max(0.02, 1.0 - reflection * reflection);
+        error *= std::max(0.04, 1.0 - reflection * reflection);
+        if (!std::isfinite(error))
+            return {};
     }
-    for (int i = 0; i < maximumLpcOrder; ++i)
-        result[static_cast<std::size_t>(i)] = static_cast<float>(
-            coefficients[static_cast<std::size_t>(i + 1)]);
     return result;
 }
 
-void ModernPitchEngine::updateLpcTarget(
-    const juce::AudioBuffer<float>& buffer,
+void ModernPitchEngine::pushLpcSample(
+    float monoInput,
     int channels,
-    int samples,
     const Parameters& parameters,
     const PitchObservation& observation) noexcept
 {
-    const int count = std::min(samples, static_cast<int>(monoScratch_.size()));
-    if (count <= maximumLpcOrder + 2 || channels <= 0)
+    lpcAnalysisRing_[static_cast<std::size_t>(lpcAnalysisWritePosition_)]
+        = sanitiseAudioSample(monoInput);
+    lpcAnalysisWritePosition_ = (lpcAnalysisWritePosition_ + 1)
+        & lpcAnalysisRingMask;
+    lpcAnalysisAvailableSamples_ = std::min(
+        lpcAnalysisAvailableSamples_ + 1, lpcAnalysisRingSize);
+    ++lpcAnalysisHopCounter_;
+    if (lpcAnalysisAvailableSamples_ < lpcAnalysisWindowSize
+        || lpcAnalysisHopCounter_ < lpcAnalysisHop)
         return;
-    for (int sample = 0; sample < count; ++sample)
+    lpcAnalysisHopCounter_ = 0;
+
+    const int start = (lpcAnalysisWritePosition_ - lpcAnalysisWindowSize
+                       + lpcAnalysisRingSize) & lpcAnalysisRingMask;
+    double mean = 0.0;
+    for (int i = 0; i < lpcAnalysisWindowSize; ++i)
     {
-        double sum = 0.0;
-        for (int channel = 0; channel < channels; ++channel)
-            sum += buffer.getSample(channel, sample);
-        monoScratch_[static_cast<std::size_t>(sample)] = static_cast<float>(
-            sum / static_cast<double>(channels));
+        const float value = lpcAnalysisRing_[static_cast<std::size_t>(
+            (start + i) & lpcAnalysisRingMask)];
+        lpcAnalysisScratch_[static_cast<std::size_t>(i)] = value;
+        mean += static_cast<double>(value);
     }
+    mean /= static_cast<double>(lpcAnalysisWindowSize);
+    for (int i = 0; i < lpcAnalysisWindowSize; ++i)
+    {
+        const double phase = static_cast<double>(i)
+            / static_cast<double>(lpcAnalysisWindowSize - 1);
+        const double window = 0.54 - 0.46 * std::cos(twoPi * phase);
+        lpcAnalysisScratch_[static_cast<std::size_t>(i)] = static_cast<float>(
+            (static_cast<double>(lpcAnalysisScratch_[static_cast<std::size_t>(i)])
+             - mean) * window);
+    }
+
     const float periodicity = clamp01(observation.periodicity);
     const float protection = clamp01(parameters.transientProtection);
     const float onset = clamp01(observation.onsetStrength);
@@ -2092,7 +2260,8 @@ void ModernPitchEngine::updateLpcTarget(
     const bool trustworthyEnvelope = observation.valid
         && periodicity > 0.30f && onset < freezeThreshold;
     if (trustworthyEnvelope)
-        currentLpcTarget_ = calculateLpc(monoScratch_.data(), count);
+        currentReflectionTarget_ = calculateReflectionCoefficients(
+            lpcAnalysisScratch_.data(), lpcAnalysisWindowSize);
 
     float stateStability = 1.0f;
     switch (linkedCorrection_.trackingState)
@@ -2114,7 +2283,28 @@ void ModernPitchEngine::updateLpcTarget(
         * breathEvidence;
     for (int channel = 0; channel < channels; ++channel)
         channelPaths_[static_cast<std::size_t>(channel)].setVoiceModel(
-            currentLpcTarget_, formantStrength, breathReduction);
+            currentReflectionTarget_, formantStrength, breathReduction);
+}
+
+void ModernPitchEngine::updateLpcTarget(
+    const juce::AudioBuffer<float>& buffer,
+    int channels,
+    int samples,
+    const Parameters& parameters,
+    const PitchObservation& observation) noexcept
+{
+    const int count = std::min(samples, buffer.getNumSamples());
+    const int safeChannels = std::min(channels, buffer.getNumChannels());
+    if (count <= 0 || safeChannels <= 0)
+        return;
+    for (int sample = 0; sample < count; ++sample)
+    {
+        double sum = 0.0;
+        for (int channel = 0; channel < safeChannels; ++channel)
+            sum += buffer.getSample(channel, sample);
+        pushLpcSample(static_cast<float>(sum / static_cast<double>(safeChannels)),
+                      safeChannels, parameters, observation);
+    }
 }
 
 void ModernPitchEngine::process(
@@ -2188,8 +2378,6 @@ void ModernPitchEngine::process(
         channelTempoControllers_[static_cast<std::size_t>(channel)].beginBlock(
             hostTempoPosition, safe.tempo, samples);
 
-    updateLpcTarget(buffer, channels, samples, safe, latestObservation_);
-
     std::array<float*, maxSupportedChannels> data {};
     for (int channel = 0; channel < channels; ++channel)
     {
@@ -2202,6 +2390,15 @@ void ModernPitchEngine::process(
     const bool dualMono = safe.stereoMode == StereoMode::dualMono && channels > 1;
     for (int sample = 0; sample < samples; ++sample)
     {
+        double envelopeAnalysis = 0.0;
+        for (int channel = 0; channel < channels; ++channel)
+            envelopeAnalysis += data[static_cast<std::size_t>(channel)][sample];
+        const PitchObservation& envelopeObservation = dualMono
+            ? latestChannelObservation_[0] : latestObservation_;
+        pushLpcSample(
+            static_cast<float>(envelopeAnalysis / static_cast<double>(channels)),
+            channels, safe, envelopeObservation);
+
         if (dualMono)
         {
             for (int channel = 0; channel < channels; ++channel)
@@ -2239,7 +2436,16 @@ void ModernPitchEngine::process(
                 }
                 const double audible = decision.controllerCents;
                 const double ratio = std::clamp(std::exp2(audible / 1200.0), 0.25, 4.0);
-                const auto plan = channelClocks_[static_cast<std::size_t>(channel)].next(ratio);
+                const auto& syncObservation
+                    = latestChannelObservation_[static_cast<std::size_t>(channel)];
+                const double sourcePeriodSamples = syncObservation.valid
+                    && syncObservation.frequencyHz > 0.0f
+                    ? sampleRate_ / static_cast<double>(syncObservation.frequencyHz)
+                    : 0.0;
+                const float syncStrength = transportSyncStrength(
+                    syncObservation, correction, safe);
+                const auto plan = channelClocks_[static_cast<std::size_t>(channel)].next(
+                    ratio, sourcePeriodSamples, syncStrength);
                 data[static_cast<std::size_t>(channel)][sample]
                     = channelPaths_[static_cast<std::size_t>(channel)].process(
                         data[static_cast<std::size_t>(channel)][sample], plan);
@@ -2282,7 +2488,14 @@ void ModernPitchEngine::process(
             audibleCorrectionCents_ = decision.controllerCents;
             const double ratio = std::clamp(
                 std::exp2(audibleCorrectionCents_ / 1200.0), 0.25, 4.0);
-            const auto plan = linkedClock_.next(ratio);
+            const double sourcePeriodSamples = latestObservation_.valid
+                && latestObservation_.frequencyHz > 0.0f
+                ? sampleRate_ / static_cast<double>(latestObservation_.frequencyHz)
+                : 0.0;
+            const float syncStrength = transportSyncStrength(
+                latestObservation_, linkedCorrection_, safe);
+            const auto plan = linkedClock_.next(
+                ratio, sourcePeriodSamples, syncStrength);
             for (int channel = 0; channel < channels; ++channel)
                 data[static_cast<std::size_t>(channel)][sample]
                     = channelPaths_[static_cast<std::size_t>(channel)].process(
