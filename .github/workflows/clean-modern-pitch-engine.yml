@@ -7,6 +7,7 @@ on:
       - modern-pitch-engine-clean-rewrite
       - clean-rewrite-detector-integration-rc
       - clean-rewrite-transport-continuity
+      - clean-rewrite-main-supervisor-integration
     paths:
       - 'Source/ModernPitchEngine.*'
       - 'Source/LivePitchProcessor.h'
@@ -16,6 +17,8 @@ on:
       - 'Tests/VoiceEvidenceAnalyzerTest.cpp'
       - 'Tests/TransportContinuityTest.cpp'
       - 'Tests/SupervisorContinuityTest.cpp'
+      - 'Tests/StableVoicePathTest.cpp'
+      - 'Tests/StableVoicePathModernPitchEngineCompile.cpp'
       - 'Tests/CLEAN_MODERN_PITCH_ENGINE_CONTRACT.md'
       - '.github/workflows/clean-modern-pitch-engine.yml'
 
@@ -61,7 +64,7 @@ jobs:
             -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
 
       - name: Build invariant tests
-        run: cmake --build build-clean --config Release --target CleanModernPitchEngineTest VoiceEvidenceAnalyzerTest TransportContinuityTest SupervisorContinuityTest --parallel 2
+        run: cmake --build build-clean --config Release --target CleanModernPitchEngineTest VoiceEvidenceAnalyzerTest TransportContinuityTest SupervisorContinuityTest StableVoicePathTest --parallel 2
 
       - name: Run invariant tests on Linux
         if: runner.os == 'Linux'
@@ -70,6 +73,7 @@ jobs:
           ./build-clean/clean-engine-tests/VoiceEvidenceAnalyzerTest
           ./build-clean/clean-engine-tests/TransportContinuityTest
           ./build-clean/clean-engine-tests/SupervisorContinuityTest
+          ./build-clean/clean-engine-tests/StableVoicePathTest
 
       - name: Run invariant tests on Windows
         if: runner.os == 'Windows'
@@ -79,7 +83,8 @@ jobs:
             ".\build-clean\clean-engine-tests\CleanModernPitchEngineTest.exe",
             ".\build-clean\clean-engine-tests\VoiceEvidenceAnalyzerTest.exe",
             ".\build-clean\clean-engine-tests\TransportContinuityTest.exe",
-            ".\build-clean\clean-engine-tests\SupervisorContinuityTest.exe"
+            ".\build-clean\clean-engine-tests\SupervisorContinuityTest.exe",
+            ".\build-clean\clean-engine-tests\StableVoicePathTest.exe"
           )
           foreach ($test in $tests) {
             $name = [System.IO.Path]::GetFileNameWithoutExtension($test)
@@ -132,19 +137,31 @@ jobs:
             'CorrectionController',
             'wetMix_',
             'dryTrust_',
+            'targetLpc_',
+            'currentLpc_',
             'NeumatonOutputRenderer',
             'NeumatonRidgeLedger',
             'NEUMATON_OUTPUT_V3'
           )
           foreach ($term in $forbidden) {
             if (Select-String -Path Source\ModernPitchEngine.cpp,Source\ModernPitchEngine.h,Source\LivePitchProcessor.h,Source\VoiceEvidenceAnalyzer.h -Pattern $term -Quiet) {
-              Write-Error "Forbidden legacy output symbol remains: $term"
+              Write-Error "Forbidden legacy/unstable output symbol remains: $term"
               exit 1
             }
           }
-          if (-not (Select-String -Path Source\ModernPitchEngine.cpp,Source\ModernPitchEngine.h -Pattern 'MultiRatePitchTracker' -Quiet)) {
-            Write-Error "Proven multi-rate detector is missing"
-            exit 1
+          $requiredVoicePath = @(
+            'MultiRatePitchTracker',
+            'currentReflectionTarget_',
+            'calculateReflectionCoefficients',
+            'lpcAnalysisHop',
+            'sourcePeriodSamples',
+            'periodNudgeSamples_'
+          )
+          foreach ($term in $requiredVoicePath) {
+            if (-not (Select-String -Path Source\ModernPitchEngine.cpp,Source\ModernPitchEngine.h -Pattern $term -Quiet)) {
+              Write-Error "Stable voice-path invariant missing: $term"
+              exit 1
+            }
           }
           if (-not (Select-String -Path Source\VoiceEvidenceAnalyzer.h -Pattern 'const juce::AudioBuffer<float>&' -Quiet)) {
             Write-Error "Voice evidence analyzer must be read-only on audio"

@@ -22,9 +22,8 @@ int main()
 {
     bool success = true;
 
-    // Keep the large tracker/engine fixtures on the heap. The production
-    // plugin already owns them as members; this only avoids the smaller
-    // default stack of the Windows console-test process.
+    // A non-exceptional initial register decision must repeat once before it
+    // can drive correction. This targets the audible first-note octave alias.
     auto tracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
     tracker->prepare(48000.0);
     auto makeInitialDecision = []
@@ -115,8 +114,8 @@ int main()
     success &= check(std::abs(capState.desiredCents) > 95.0,
                      "native_semitone_limit_is_not_divided_by_twelve");
 
-    // LPC envelope memory should not be replaced by a transient/noisy frame.
-    juce::AudioBuffer<float> block(1, 256);
+    // PARCOR envelope memory should not be replaced by a transient/noisy frame.
+    juce::AudioBuffer<float> block(1, 1024);
     for (int i = 0; i < block.getNumSamples(); ++i)
     {
         const double phase = 2.0 * 3.14159265358979323846 * 220.0
@@ -133,7 +132,7 @@ int main()
     parameters.formantPreservation = 1.0f;
     engine->updateLpcTarget(block, 1, block.getNumSamples(), parameters,
                             stableObservation);
-    const auto stableLpc = engine->currentLpcTarget_;
+    const auto stableReflection = engine->currentReflectionTarget_;
 
     block.clear();
     block.setSample(0, 0, 1.0f);
@@ -142,13 +141,14 @@ int main()
     transientObservation.onsetStrength = 1.0f;
     engine->updateLpcTarget(block, 1, block.getNumSamples(), parameters,
                             transientObservation);
-    double lpcDifference = 0.0;
-    for (std::size_t i = 0; i < stableLpc.size(); ++i)
-        lpcDifference += std::abs(static_cast<double>(stableLpc[i]
-                                                   - engine->currentLpcTarget_[i]));
-    std::cerr << "transient_lpc_target_difference=" << lpcDifference << '\n';
-    success &= check(lpcDifference < 1.0e-9,
-                     "transient_freezes_last_trustworthy_lpc_envelope");
+    double reflectionDifference = 0.0;
+    for (std::size_t i = 0; i < stableReflection.size(); ++i)
+        reflectionDifference += std::abs(static_cast<double>(stableReflection[i]
+                                      - engine->currentReflectionTarget_[i]));
+    std::cerr << "transient_reflection_target_difference="
+              << reflectionDifference << '\n';
+    success &= check(reflectionDifference < 1.0e-9,
+                     "transient_freezes_last_trustworthy_parcor_envelope");
 
     return success ? 0 : 1;
 }

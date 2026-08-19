@@ -24,3 +24,13 @@ This branch is a release-candidate source branch only while every invariant belo
 `Tests/CleanModernPitchEngineTest.cpp` is the automated minimum pitch/output gate. It must verify finite stereo output, target pitch in all modes, mode latency, equal corrected pitch between modes, Amount, Speed, Humanize, Lock Hysteresis, Vibrato Preserve, Tempo division/glide length, Glide Lock strength and Smart Onset.
 
 `Tests/VoiceEvidenceAnalyzerTest.cpp` is the analysis-only gate. It must verify second-harmonic detection, voiced-vs-noise evidence, event response, coherent metric publication and byte-for-byte preservation of the analysed audio samples.
+
+
+## Stable voice reconstruction and transport hand-off
+
+- Formant-envelope analysis is streaming and host-block independent: a fixed 512-sample analysis window advances on a fixed 64-sample hop.
+- LPC target/morph state is represented as bounded reflection coefficients (PARCOR). Every interpolated state stays inside the Schur-stable region; direct predictor coefficients are derived from that stable state and are never independently clamped or interpolated.
+- Strong onset/noisy observations may freeze the last trustworthy envelope, but they never open a dry path or attenuate correction Amount.
+- The production dual-read transport remains one renderer. Its overlap window is narrowed and its read-head separation may receive only a bounded, smoothed period-guided nudge.
+- Period guidance preserves the gain-weighted mean delay exactly, stays inside the original causal delay excursion, and cannot change declared latency.
+- Period guidance is supervisory geometry only: it cannot create a second synthesis layer, parallel renderer, dry crossfade, or confidence-authority mix.
