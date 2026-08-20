@@ -318,6 +318,14 @@ private:
         const float secondHarmonic = std::clamp(evidence.secondHarmonicDominance, 0.0f, 1.0f);
         const float polyphonyRisk = std::clamp(evidence.polyphonyRisk, 0.0f, 1.0f);
 
+        conditioned.voiceEvidenceValid = true;
+        conditioned.voiceHarmonicity = harmonicity;
+        conditioned.voiceBreathiness = breathiness;
+        conditioned.voiceBodyEnergy = std::clamp(evidence.voicedBodyEnergy, 0.0f, 1.0f);
+        conditioned.voiceSpectralReliability = reliability;
+        conditioned.voiceEventStrength = event;
+        conditioned.voiceFormantStability = formantStability;
+
         // Detector evidence may make the tracker more permissive around
         // breathy/second-harmonic-dominant material, but it never lowers
         // Amount or scales the requested correction destination.
