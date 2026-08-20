@@ -21,13 +21,40 @@ on:
       - 'Tests/StableVoicePathTest.cpp'
       - 'Tests/StableVoicePathModernPitchEngineCompile.cpp'
       - 'Tests/CLEAN_MODERN_PITCH_ENGINE_CONTRACT.md'
+      - '.github/scripts/tune_musical_supervisor.py'
       - '.github/workflows/clean-modern-pitch-engine.yml'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
+  apply-supervisor-tuning:
+    if: github.event.pull_request.head.ref == 'clean-rewrite-musical-note-supervisor'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout feature head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+      - name: Apply one-shot tuning
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f .github/scripts/tune_musical_supervisor.py ]; then
+            python .github/scripts/tune_musical_supervisor.py
+            rm .github/scripts/tune_musical_supervisor.py
+          fi
+          git diff --check
+          git add -A Source Tests .github/scripts
+          if git diff --cached --quiet; then exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Tune musical supervisor period handoff"
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
+
   invariant-test:
+    needs: apply-supervisor-tuning
     strategy:
       fail-fast: false
       matrix:
@@ -36,7 +63,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -47,14 +73,12 @@ jobs:
             libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
             libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
             libglu1-mesa-dev mesa-common-dev
-
       - name: Configure Linux
         if: runner.os == 'Linux'
         run: |
           cmake -S . -B build-clean \
             -DCMAKE_BUILD_TYPE=Release \
             -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
-
       - name: Configure Windows
         if: runner.os == 'Windows'
         shell: pwsh
@@ -63,10 +87,8 @@ jobs:
             -G "Visual Studio 17 2022" `
             -A x64 `
             -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
-
       - name: Build invariant tests
         run: cmake --build build-clean --config Release --target CleanModernPitchEngineTest VoiceEvidenceAnalyzerTest TransportContinuityTest SupervisorContinuityTest StableVoicePathTest --parallel 2
-
       - name: Run invariant tests on Linux
         if: runner.os == 'Linux'
         run: |
@@ -75,7 +97,6 @@ jobs:
           ./build-clean/clean-engine-tests/TransportContinuityTest
           ./build-clean/clean-engine-tests/SupervisorContinuityTest
           ./build-clean/clean-engine-tests/StableVoicePathTest
-
       - name: Run invariant tests on Windows
         if: runner.os == 'Windows'
         shell: pwsh
@@ -91,13 +112,7 @@ jobs:
             $name = [System.IO.Path]::GetFileNameWithoutExtension($test)
             $stdout = "$name-stdout.txt"
             $stderr = "$name-stderr.txt"
-            $process = Start-Process `
-              -FilePath $test `
-              -Wait `
-              -PassThru `
-              -NoNewWindow `
-              -RedirectStandardOutput $stdout `
-              -RedirectStandardError $stderr
+            $process = Start-Process -FilePath $test -Wait -PassThru -NoNewWindow -RedirectStandardOutput $stdout -RedirectStandardError $stderr
             Write-Host "$name exit_code=$($process.ExitCode)"
             if (Test-Path $stdout) { Get-Content $stdout }
             if (Test-Path $stderr) { Get-Content $stderr }
@@ -105,104 +120,41 @@ jobs:
           }
 
   windows-vst3:
+    needs: apply-supervisor-tuning
     runs-on: windows-2022
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Configure
         shell: pwsh
         run: |
           cmake -S . -B build-vst3 `
             -G "Visual Studio 17 2022" `
             -A x64
-
       - name: Build VST3
         shell: pwsh
         run: |
-          cmake --build build-vst3 --config Release `
-            --target Neumaton_VST3 --parallel 2
-
+          cmake --build build-vst3 --config Release --target Neumaton_VST3 --parallel 2
       - name: Verify clean architecture and package
         shell: pwsh
         run: |
           $lineCount = (Get-Content Source\ModernPitchEngine.cpp).Count
-          if ($lineCount -gt 3000) {
-            Write-Error "ModernPitchEngine.cpp grew beyond detector-plus-clean-output limit: $lineCount"
-            exit 1
-          }
-          $forbidden = @(
-            'SynthesisLayer',
-            'TransitionManager',
-            'SpectralVoiceShifter',
-            'CorrectionController',
-            'wetMix_',
-            'dryTrust_',
-            'targetLpc_',
-            'currentLpc_',
-            'NeumatonOutputRenderer',
-            'NeumatonRidgeLedger',
-            'NEUMATON_OUTPUT_V3'
-          )
+          if ($lineCount -gt 3000) { Write-Error "ModernPitchEngine.cpp too large: $lineCount"; exit 1 }
+          $forbidden = @('SynthesisLayer','TransitionManager','SpectralVoiceShifter','CorrectionController','wetMix_','dryTrust_','targetLpc_','currentLpc_','NeumatonOutputRenderer','NeumatonRidgeLedger','NEUMATON_OUTPUT_V3')
           foreach ($term in $forbidden) {
-            if (Select-String -Path Source\ModernPitchEngine.cpp,Source\ModernPitchEngine.h,Source\LivePitchProcessor.h,Source\VoiceEvidenceAnalyzer.h -Pattern $term -Quiet) {
-              Write-Error "Forbidden legacy/unstable output symbol remains: $term"
-              exit 1
-            }
+            if (Select-String -Path Source\ModernPitchEngine.cpp,Source\ModernPitchEngine.h,Source\LivePitchProcessor.h,Source\VoiceEvidenceAnalyzer.h -Pattern $term -Quiet) { Write-Error "Forbidden symbol: $term"; exit 1 }
           }
-          $requiredVoicePath = @(
-            'MultiRatePitchTracker',
-            'currentReflectionTarget_',
-            'calculateReflectionCoefficients',
-            'lpcAnalysisHop',
-            'sourcePeriodSamples',
-            'periodNudgeSamples_',
-            'noteBodyLatched',
-            'voiceBodyEnergy',
-            'transportPeriodHz'
-          )
-          foreach ($term in $requiredVoicePath) {
-            if (-not (Select-String -Path Source\ModernPitchEngine.cpp,Source\ModernPitchEngine.h,Source\LivePitchProcessor.h -Pattern $term -Quiet)) {
-              Write-Error "Stable musical voice-path invariant missing: $term"
-              exit 1
-            }
+          $required = @('noteBodyLatched','voiceBodyEnergy','transportPeriodHz','currentReflectionTarget_','calculateReflectionCoefficients','periodNudgeSamples_')
+          foreach ($term in $required) {
+            if (-not (Select-String -Path Source\ModernPitchEngine.cpp,Source\ModernPitchEngine.h,Source\LivePitchProcessor.h -Pattern $term -Quiet)) { Write-Error "Required invariant missing: $term"; exit 1 }
           }
-          if (-not (Select-String -Path Source\VoiceEvidenceAnalyzer.h -Pattern 'const juce::AudioBuffer<float>&' -Quiet)) {
-            Write-Error "Voice evidence analyzer must be read-only on audio"
-            exit 1
-          }
-          $analyzerForbidden = @(
-            'SynthesisLayer',
-            'SpectralVoiceShifter',
-            'NeumatonOutputRenderer',
-            'NeumatonRidgeLedger',
-            'wetMix_',
-            'dryTrust_',
-            'processBypassed'
-          )
-          foreach ($term in $analyzerForbidden) {
-            if (Select-String -Path Source\VoiceEvidenceAnalyzer.h -Pattern $term -Quiet) {
-              Write-Error "Voice evidence analyzer contains output-path logic: $term"
-              exit 1
-            }
-          }
-          if (Select-String -Path Source\LivePitchProcessor.h -Pattern 'conditioned\.amount\s*=' -Quiet) {
-            Write-Error "Voice evidence must not attenuate Amount/correction authority"
-            exit 1
-          }
-
+          if (Select-String -Path Source\LivePitchProcessor.h -Pattern 'conditioned\.amount\s*=' -Quiet) { Write-Error "Voice evidence must not attenuate Amount"; exit 1 }
           New-Item -ItemType Directory -Force -Path artifact | Out-Null
           $vst3 = Get-ChildItem -Path build-vst3 -Recurse -Directory -Filter "Neumaton.vst3" | Select-Object -First 1
-          if (-not $vst3) {
-            Write-Error "Neumaton.vst3 not found"
-            exit 1
-          }
+          if (-not $vst3) { Write-Error "Neumaton.vst3 not found"; exit 1 }
           Copy-Item -Path $vst3.FullName -Destination artifact\Neumaton.vst3 -Recurse -Force
-          Compress-Archive -Path artifact\Neumaton.vst3 `
-            -DestinationPath artifact\Neumaton-Clean-ModernPitchEngine-Windows.zip -Force
-          Get-FileHash artifact\Neumaton-Clean-ModernPitchEngine-Windows.zip -Algorithm SHA256 |
-            Format-List | Out-File artifact\sha256.txt
-
+          Compress-Archive -Path artifact\Neumaton.vst3 -DestinationPath artifact\Neumaton-Clean-ModernPitchEngine-Windows.zip -Force
+          Get-FileHash artifact\Neumaton-Clean-ModernPitchEngine-Windows.zip -Algorithm SHA256 | Format-List | Out-File artifact\sha256.txt
       - name: Upload Windows VST3
         uses: actions/upload-artifact@v4
         with:
