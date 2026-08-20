@@ -238,6 +238,15 @@ int main()
     success &= check(std::abs(capState.desiredCents) > 95.0,
                      "native_semitone_limit_is_not_divided_by_twelve");
 
+    // Restore a clearly voiced analysis context. The previous breath test must
+    // not make this PARCOR freeze check pass trivially by rejecting both frames.
+    parameters.voiceEvidenceValid = true;
+    parameters.voiceBodyEnergy = 0.92f;
+    parameters.voiceHarmonicity = 0.90f;
+    parameters.voiceSpectralReliability = 0.88f;
+    parameters.voiceBreathiness = 0.04f;
+    parameters.voiceEventStrength = 0.0f;
+
     // PARCOR envelope memory should not be replaced by a transient/noisy frame.
     juce::AudioBuffer<float> block(1, 1024);
     for (int i = 0; i < block.getNumSamples(); ++i)

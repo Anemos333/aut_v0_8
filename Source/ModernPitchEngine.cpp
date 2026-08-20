@@ -1472,7 +1472,7 @@ void ModernPitchEngine::TransportClock::prepare(double sampleRate,
     rangeSamples_ = std::max(16,
         2 * (std::max(16, reportedLatencySamples) - minimumDelay_));
     periodSyncSmoothing_ = std::clamp(static_cast<float>(
-        1.0 - std::exp(-1.0 / (0.0200 * sampleRate_))), 0.0005f, 0.04f);
+        1.0 - std::exp(-1.0 / (0.0080 * sampleRate_))), 0.0005f, 0.04f);
     reset();
 }
 
