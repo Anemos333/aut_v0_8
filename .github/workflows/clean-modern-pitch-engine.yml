@@ -21,13 +21,46 @@ on:
       - 'Tests/StableVoicePathTest.cpp'
       - 'Tests/StableVoicePathModernPitchEngineCompile.cpp'
       - 'Tests/CLEAN_MODERN_PITCH_ENGINE_CONTRACT.md'
+      - '.github/scripts/apply_musical_supervisor.py'
       - '.github/workflows/clean-modern-pitch-engine.yml'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
+  apply-musical-supervisor:
+    if: github.event.pull_request.head.ref == 'clean-rewrite-musical-note-supervisor'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout feature head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Apply one-shot supervisor patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f .github/scripts/apply_musical_supervisor.py ]; then
+            python .github/scripts/apply_musical_supervisor.py
+            rm .github/scripts/apply_musical_supervisor.py
+          else
+            echo "One-shot patch already applied"
+          fi
+          git diff --check
+          git add -A Source Tests .github/scripts
+          if git diff --cached --quiet; then
+            echo "No supervisor patch to publish"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Make voice state follow musical note body"
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
+
   invariant-test:
+    needs: apply-musical-supervisor
     strategy:
       fail-fast: false
       matrix:
@@ -105,6 +138,7 @@ jobs:
           }
 
   windows-vst3:
+    needs: apply-musical-supervisor
     runs-on: windows-2022
     steps:
       - name: Checkout
