@@ -2167,10 +2167,11 @@ void ModernPitchEngine::updateCorrectionState(
     else
     {
         const double distanceCents = std::abs(observedLog2 - state.pitchCentreLog2) * 1200.0;
+        const double maximumWithinNoteTolerance = std::max(
+            18.0, 0.42 * static_cast<double>(quantizer.minimumStepCents()));
         const double withinNoteTolerance = std::clamp(
             22.0 + 38.0 * static_cast<double>(humanize),
-            18.0,
-            0.42 * static_cast<double>(quantizer.minimumStepCents()));
+            18.0, maximumWithinNoteTolerance);
         double baseAlpha = distanceCents > 95.0 ? 0.30 : 0.07;
         if (state.noteBodyLatched && distanceCents <= withinNoteTolerance)
             baseAlpha = 0.018 + 0.035 * static_cast<double>(1.0f - humanize);

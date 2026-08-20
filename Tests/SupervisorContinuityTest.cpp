@@ -202,6 +202,20 @@ int main()
                      && vibratoState.trackingState == ModernPitchEngine::TrackingState::stable,
                      "long_vibrato_is_classified_as_stable_note_body");
 
+    std::array<double, 48> denseScale {};
+    for (int degree = 0; degree < 48; ++degree)
+        denseScale[static_cast<std::size_t>(degree)] = std::exp2(degree / 48.0);
+    ModernPitchEngine::ScaleQuantizer denseQuantizer;
+    denseQuantizer.reset();
+    denseQuantizer.setScale(denseScale.data(), static_cast<int>(denseScale.size()), 440.0);
+    ModernPitchEngine::CorrectionState denseState;
+    ModernPitchEngine::PitchObservation denseObservation = syncObservation;
+    denseObservation.frequencyHz = 442.0f;
+    engine->updateCorrectionState(denseState, denseQuantizer, denseObservation, vibratoParameters);
+    success &= check(std::isfinite(denseState.pitchCentreLog2)
+                     && std::isfinite(denseState.desiredCents),
+                     "dense_microtonal_scale_has_valid_within_note_tolerance");
+
     // Native API semantics: one semitone means 100 cents, with no adapter hack.
     const double unison = 1.0;
     quantizer.setScale(&unison, 1, 440.0);
