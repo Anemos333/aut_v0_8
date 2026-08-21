@@ -52,6 +52,7 @@ public:
         }
 
         voiceEvidenceAnalyzer_.prepare(sampleRate_, maximumBlockSize_, channelCount_);
+        voiceEvidencePrimed_ = false;
         activeModeIndex_.store(toModeIndex(latencyMode),
                                std::memory_order_release);
         prepared_.store(true, std::memory_order_release);
@@ -66,6 +67,7 @@ public:
             request.store(false, std::memory_order_relaxed);
 
         voiceEvidenceAnalyzer_.reset();
+        voiceEvidencePrimed_ = false;
     }
 
     // Safe from the message thread while audio is running. No prepare(), heap
@@ -160,8 +162,14 @@ public:
         parameters_.amount = amount;
         updateScaleLockContext(scaleRatios, numberOfScaleRatios);
 
-        const auto evidence = analyseEvidence(buffer);
-        const auto conditioned = conditionedParameters(evidence);
+        // Use only evidence published before this host block. The analyzer
+        // may inspect the current input to prepare the next block, but it cannot
+        // use future samples from this block to classify its first sample.
+        const auto evidence = voiceEvidenceAnalyzer_.getLatest();
+        const bool evidenceValid = voiceEvidencePrimed_;
+        static_cast<void>(analyseEvidence(buffer));
+        voiceEvidencePrimed_ = true;
+        const auto conditioned = conditionedParameters(evidence, evidenceValid);
 
         activeModernEngine().process(buffer,
                                      scaleRatios,
@@ -202,8 +210,11 @@ public:
 
         float* channels[] { data };
         juce::AudioBuffer<float> view(channels, 1, numberOfSamples);
-        const auto evidence = analyseEvidence(view);
-        const auto conditioned = conditionedParameters(evidence);
+        const auto evidence = voiceEvidenceAnalyzer_.getLatest();
+        const bool evidenceValid = voiceEvidencePrimed_;
+        static_cast<void>(analyseEvidence(view));
+        voiceEvidencePrimed_ = true;
+        const auto conditioned = conditionedParameters(evidence, evidenceValid);
 
         activeModernEngine().process(view,
                                      scaleRatios.empty() ? nullptr : scaleRatios.data(),
@@ -217,6 +228,7 @@ public:
         // Evidence continues to advance in bypass so air/event/formant state
         // does not restart from zero. It still does not render any audio.
         static_cast<void>(analyseEvidence(buffer));
+        voiceEvidencePrimed_ = true;
         activeModernEngine().processBypassed(buffer);
     }
 
@@ -306,77 +318,24 @@ private:
     }
 
     [[nodiscard]] ModernPitchEngine::Parameters conditionedParameters(
-        const VoiceEvidence& evidence) const noexcept
+        const VoiceEvidence& evidence,
+        bool evidenceValid) const noexcept
     {
         ModernPitchEngine::Parameters conditioned = parameters_;
 
-        const float reliability = std::clamp(evidence.spectralReliability, 0.0f, 1.0f);
-        const float breathiness = std::clamp(evidence.breathiness, 0.0f, 1.0f);
-        const float event = std::clamp(evidence.eventStrength, 0.0f, 1.0f);
-        const float harmonicity = std::clamp(evidence.harmonicity, 0.0f, 1.0f);
-        const float formantStability = std::clamp(evidence.formantStability, 0.0f, 1.0f);
-        const float secondHarmonic = std::clamp(evidence.secondHarmonicDominance, 0.0f, 1.0f);
-        const float polyphonyRisk = std::clamp(evidence.polyphonyRisk, 0.0f, 1.0f);
-
-        conditioned.voiceEvidenceValid = true;
-        conditioned.voiceHarmonicity = harmonicity;
-        conditioned.voiceBreathiness = breathiness;
+        // Sensor output is supervision data only. No user-authoritative audio
+        // or correction parameter is multiplied by confidence, breathiness or
+        // state evidence here. In particular Amount, Formant, Transient,
+        // Vibrato and Breath Reduction keep the exact values selected in the UI.
+        conditioned.voiceEvidenceValid = evidenceValid;
+        conditioned.voiceHarmonicity = std::clamp(evidence.harmonicity, 0.0f, 1.0f);
+        conditioned.voiceBreathiness = std::clamp(evidence.breathiness, 0.0f, 1.0f);
         conditioned.voiceBodyEnergy = std::clamp(evidence.voicedBodyEnergy, 0.0f, 1.0f);
-        conditioned.voiceSpectralReliability = reliability;
-        conditioned.voiceEventStrength = event;
-        conditioned.voiceFormantStability = formantStability;
-
-        // Detector evidence may make the tracker more permissive around
-        // breathy/second-harmonic-dominant material, but it never lowers
-        // Amount or scales the requested correction destination.
-        conditioned.detectorSensitivity = std::clamp(
-            conditioned.detectorSensitivity
-                + 0.08f * breathiness
-                + 0.06f * secondHarmonic
-                + 0.03f * (1.0f - reliability),
-            0.0f, 1.0f);
-
-        // Formant and breath controls remain user-authoritative: zero stays
-        // zero; the detectors only decide when/how strongly the requested
-        // processing should engage on the same transported signal.
-        conditioned.formantPreservation = std::clamp(
-            conditioned.formantPreservation
-                * (0.62f + 0.38f * formantStability)
-                * (1.0f - 0.30f * event),
-            0.0f, 1.0f);
-        conditioned.breathReduction = std::clamp(
-            conditioned.breathReduction * (0.10f + 0.90f * breathiness),
-            0.0f, 1.0f);
-        conditioned.transientProtection = std::clamp(
-            conditioned.transientProtection * (0.45f + 0.55f * event),
-            0.0f, 1.0f);
-
-        const float vibratoEvidence = std::clamp(
-            0.25f + 0.75f * harmonicity * formantStability,
-            0.0f, 1.0f);
-        conditioned.preserveVibrato = std::clamp(
-            conditioned.preserveVibrato * vibratoEvidence, 0.0f, 1.0f);
-        conditioned.vibratoPreserve = std::clamp(
-            conditioned.vibratoPreserve * vibratoEvidence, 0.0f, 1.0f);
-
-        if (conditioned.scaleLock)
-        {
-            const float identityGuard = std::clamp(
-                0.78f
-                + 0.18f * reliability
-                + 0.18f * secondHarmonic
-                + 0.22f * polyphonyRisk,
-                0.55f, 1.35f);
-            conditioned.lockHysteresis = std::clamp(
-                conditioned.lockHysteresis * identityGuard,
-                0.0f, 80.0f);
-            conditioned.lockStrictness = std::clamp(
-                conditioned.lockStrictness
-                    * (0.88f + 0.12f * reliability)
-                    + 0.08f * secondHarmonic,
-                0.0f, 1.0f);
-        }
-
+        conditioned.voiceSpectralReliability = std::clamp(
+            evidence.spectralReliability, 0.0f, 1.0f);
+        conditioned.voiceEventStrength = std::clamp(evidence.eventStrength, 0.0f, 1.0f);
+        conditioned.voiceFormantStability = std::clamp(
+            evidence.formantStability, 0.0f, 1.0f);
         return conditioned;
     }
 
@@ -463,6 +422,7 @@ private:
     std::atomic<bool> prepared_ { false };
     ModernPitchEngine::Parameters parameters_;
     VoiceEvidenceAnalyzer voiceEvidenceAnalyzer_;
+    bool voiceEvidencePrimed_ = false;
     double sampleRate_ = 0.0;
     int maximumBlockSize_ = 0;
     int channelCount_ = 1;
