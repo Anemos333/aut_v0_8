@@ -1,15 +1,6 @@
 name: Clean ModernPitchEngine
 
 on:
-  push:
-    branches:
-      - clean-rewrite-musical-note-supervisor
-    paths:
-      - 'Source/ModernPitchEngine.*'
-      - 'Source/LivePitchProcessor.h'
-      - 'Tests/SupervisorContinuityTest.cpp'
-      - '.github/scripts/apply_musical_note_supervisor_v2.py'
-      - '.github/workflows/clean-modern-pitch-engine.yml'
   pull_request:
     branches:
       - main
@@ -33,36 +24,10 @@ on:
       - '.github/workflows/clean-modern-pitch-engine.yml'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  apply-supervisor-v2:
-    if: github.event_name == 'push'
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Checkout feature head
-        uses: actions/checkout@v4
-        with:
-          ref: clean-rewrite-musical-note-supervisor
-          fetch-depth: 0
-      - name: Apply one-shot musical supervisor patch
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ ! -f .github/scripts/apply_musical_note_supervisor_v2.py ]; then
-            exit 0
-          fi
-          python .github/scripts/apply_musical_note_supervisor_v2.py
-          rm .github/scripts/apply_musical_note_supervisor_v2.py
-          git diff --check
-          git add -A Source Tests .github/scripts
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "Make musical note-body supervision authoritative"
-          git push origin HEAD:clean-rewrite-musical-note-supervisor
-
   invariant-test:
-    if: github.event_name == 'pull_request'
     strategy:
       fail-fast: false
       matrix:
@@ -140,7 +105,6 @@ jobs:
           }
 
   windows-vst3:
-    if: github.event_name == 'pull_request'
     runs-on: windows-2022
     steps:
       - name: Checkout
@@ -186,6 +150,43 @@ jobs:
               exit 1
             }
           }
+          $required = @(
+            'noteBodyLatched',
+            'voiceBodyEnergy',
+            'transportPeriodHz',
+            'holdPeriodGuidance',
+            'currentReflectionTarget_',
+            'calculateReflectionCoefficients',
+            'periodNudgeSamples_'
+          )
+          foreach ($term in $required) {
+            if (-not (Select-String -Path Source\ModernPitchEngine.cpp,Source\ModernPitchEngine.h,Source\LivePitchProcessor.h -Pattern $term -Quiet)) {
+              Write-Error "Musical supervisor invariant missing: $term"
+              exit 1
+            }
+          }
+          if (-not (Select-String -Path Source\VoiceEvidenceAnalyzer.h -Pattern 'const juce::AudioBuffer<float>&' -Quiet)) {
+            Write-Error "Voice evidence analyzer must remain read-only on audio"
+            exit 1
+          }
+          $sensorAuthorityWrites = @(
+            'conditioned\.amount\s*=',
+            'conditioned\.detectorSensitivity\s*=',
+            'conditioned\.formantPreservation\s*=',
+            'conditioned\.transientProtection\s*=',
+            'conditioned\.preserveVibrato\s*=',
+            'conditioned\.vibratoPreserve\s*=',
+            'conditioned\.breathReduction\s*=',
+            'conditioned\.lockHysteresis\s*=',
+            'conditioned\.lockStrictness\s*='
+          )
+          foreach ($pattern in $sensorAuthorityWrites) {
+            if (Select-String -Path Source\LivePitchProcessor.h -Pattern $pattern -Quiet) {
+              Write-Error "Voice evidence may supervise identity but may not rewrite user authority: $pattern"
+              exit 1
+            }
+          }
+
           New-Item -ItemType Directory -Force -Path artifact | Out-Null
           $vst3 = Get-ChildItem -Path build-vst3 -Recurse -Directory -Filter "Neumaton.vst3" | Select-Object -First 1
           if (-not $vst3) {
