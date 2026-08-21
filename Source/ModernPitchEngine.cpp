@@ -1622,6 +1622,15 @@ ModernPitchEngine::TransportClock::nextInternal(double ratio,
 
     const double phaseIncrement = std::clamp(
         signedDeviation / static_cast<double>(rangeSamples_), -0.24, 0.24);
+    // Exact unity is a declared-latency identity point. Preserve phase, but
+    // make both read coordinates exactly equal to the centre rather than merely
+    // numerically close after gain-weighted reconstruction.
+    if (deviation < 1.0e-12)
+    {
+        plan.delayA = centreDelay;
+        plan.delayB = centreDelay;
+    }
+
     phase_ += phaseIncrement;
     phase_ -= std::floor(phase_);
     return plan;
@@ -2253,8 +2262,18 @@ void ModernPitchEngine::updateCorrectionState(
             22.0 + 38.0 * static_cast<double>(humanize),
             maximumWithinNoteTolerance);
         double baseAlpha = distanceCents > 95.0 ? 0.30 : 0.07;
-        if (state.noteBodyLatched && distanceCents <= withinNoteTolerance)
+        const double observedDistanceFromCurrentTarget = state.targetValid
+            ? std::abs(observedLog2 - state.targetLog2) * 1200.0
+            : 0.0;
+        const double currentIdentityRadius = 0.48 * scaleStep;
+        const bool insideCurrentMusicalIdentity = !state.targetValid
+            || observedDistanceFromCurrentTarget < currentIdentityRadius;
+        if (state.noteBodyLatched
+            && insideCurrentMusicalIdentity
+            && distanceCents <= withinNoteTolerance)
+        {
             baseAlpha = 0.018 + 0.035 * static_cast<double>(1.0f - humanize);
+        }
         const double stableGate = 0.35
             + 0.65 * static_cast<double>(clamp01(observation.confidence)
                                       * clamp01(observation.periodicity));
