@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   apply:
-    if: ${{ false }}
+    if: ${{ github.actor != 'github-actions[bot]' }}
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout head branch
@@ -19,5 +19,14 @@ jobs:
         with:
           ref: single-wet-quality-reconstruction
           fetch-depth: 0
-      - name: Disabled while patch payload is refreshed
-        run: echo disabled
+
+      - name: Apply source-only single wet reconstruction
+        run: |
+          base64 -d .github/tmp_single_wet/script.py.gz.b64 | gzip -d > /tmp/apply_single_wet_quality.py
+          python /tmp/apply_single_wet_quality.py
+          rm -rf .github/tmp_single_wet
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Use historical Quality wet reconstruction as the single audio path [single-wet-applied]"
+          git push origin HEAD:single-wet-quality-reconstruction
