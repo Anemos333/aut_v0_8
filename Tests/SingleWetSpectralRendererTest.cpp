@@ -66,7 +66,7 @@ std::vector<float> render(float detectorConfidence,
 int main()
 {
     bool success = true;
-    const double targetHz = 220.0 * std::exp2(100.0 / 1200.0);
+    const double semitoneTargetHz = 220.0 * std::exp2(100.0 / 1200.0);
 
     const std::vector<std::tuple<float, float, const char*>> cases {
         { 0.95f, 0.95f, "strong_body" },
@@ -76,7 +76,7 @@ int main()
     for (const auto& [confidence, bodyConfidence, name] : cases)
     {
         const auto output = render(confidence, bodyConfidence, 100.0);
-        const double targetPower = tonePower(output, 48000.0, targetHz, 12000);
+        const double targetPower = tonePower(output, 48000.0, semitoneTargetHz, 12000);
         const double sourcePower = tonePower(output, 48000.0, 220.0, 12000);
         const double ratio = targetPower / std::max(1.0e-20, sourcePower);
         std::cerr << name << "_target_source_ratio=" << ratio << '\n';
@@ -84,10 +84,20 @@ int main()
     }
 
     const auto unity = render(0.95f, 0.95f, 0.0);
-    const double sourcePower = tonePower(unity, 48000.0, 220.0, 12000);
-    const double shiftedPower = tonePower(unity, 48000.0, targetHz, 12000);
-    success &= check(sourcePower > 4.0 * shiftedPower,
+    const double unitySourcePower = tonePower(unity, 48000.0, 220.0, 12000);
+    const double unityShiftedPower = tonePower(unity, 48000.0, semitoneTargetHz, 12000);
+    success &= check(unitySourcePower > 4.0 * unityShiftedPower,
                      "zero_correction_preserves_source_pitch");
+
+    // A full octave is deliberately used to catch the historical
+    // wrapCorrectionToNearestOctave behaviour, where +1200 cents became 0.
+    const auto octave = render(0.95f, 0.95f, 1200.0);
+    const double octaveTargetPower = tonePower(octave, 48000.0, 440.0, 12000);
+    const double octaveSourcePower = tonePower(octave, 48000.0, 220.0, 12000);
+    std::cerr << "octave_target_source_ratio="
+              << octaveTargetPower / std::max(1.0e-20, octaveSourcePower) << '\n';
+    success &= check(octaveTargetPower > 4.0 * octaveSourcePower,
+                     "octave_correction_is_not_wrapped_to_unity");
 
     return success ? 0 : 1;
 }
