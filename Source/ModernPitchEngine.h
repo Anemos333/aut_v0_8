@@ -53,6 +53,17 @@ public:
         StereoMode stereoMode = StereoMode::linkedMidSide;
         float breathReduction = 0.50f;
 
+        // Analysis-only voice evidence supplied by LivePitchProcessor. These
+        // fields classify note body vs breath; they never scale Amount or mix
+        // an alternate signal path.
+        bool voiceEvidenceValid = false;
+        float voiceHarmonicity = 0.0f;
+        float voiceBreathiness = 0.0f;
+        float voiceBodyEnergy = 0.0f;
+        float voiceSpectralReliability = 0.0f;
+        float voiceEventStrength = 0.0f;
+        float voiceFormantStability = 0.0f;
+
         bool scaleLock = false;
         float lockHysteresis = 24.0f;
         float vibratoPreserve = 0.0f;
@@ -212,6 +223,7 @@ private:
         void setRange(float minimumPitchHz, float maximumPitchHz) noexcept;
         void setSensitivity(float sensitivity) noexcept;
         bool processSample(float inputSample, PitchObservation& observation) noexcept;
+        [[nodiscard]] static constexpr int hopSize() noexcept { return detectorHop; }
 
     private:
         static constexpr int ringSize = 1024;
@@ -478,6 +490,13 @@ private:
         std::uint64_t revision = 0;
         int stableObservations = 0;
         int invalidObservations = 0;
+        int stableBodyObservations = 0;
+        int breathEvidenceSamples = 0;
+        int uncertainSamples = 0;
+        int stateAgeSamples = 0;
+        bool noteBodyLatched = false;
+        float noteBodyConfidence = 0.0f;
+        double transportPeriodHz = 0.0;
         TrackingState trackingState = TrackingState::unvoiced;
     };
 

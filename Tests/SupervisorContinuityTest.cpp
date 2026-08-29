@@ -4,6 +4,7 @@
 #include "ModernPitchEngine.h"
 #undef private
 
+#include <array>
 #include <cmath>
 #include <iostream>
 #include <memory>
@@ -16,14 +17,44 @@ bool check(bool condition, const char* name)
     std::cerr << name << '=' << (condition ? "PASS" : "FAIL") << '\n';
     return condition;
 }
+
+ModernPitchEngine::PitchObservation strongPitch(float frequency = 220.0f)
+{
+    ModernPitchEngine::PitchObservation observation;
+    observation.valid = true;
+    observation.frequencyHz = frequency;
+    observation.confidence = 0.95f;
+    observation.periodicity = 0.95f;
+    observation.consensus = 0.88f;
+    observation.voicing = 0.95f;
+    return observation;
+}
+
+void setBodyEvidence(ModernPitchEngine::Parameters& parameters)
+{
+    parameters.voiceEvidenceValid = true;
+    parameters.voiceBodyEnergy = 0.92f;
+    parameters.voiceHarmonicity = 0.90f;
+    parameters.voiceSpectralReliability = 0.88f;
+    parameters.voiceBreathiness = 0.04f;
+    parameters.voiceEventStrength = 0.0f;
+}
+
+void setBreathEvidence(ModernPitchEngine::Parameters& parameters)
+{
+    parameters.voiceEvidenceValid = true;
+    parameters.voiceBodyEnergy = 0.08f;
+    parameters.voiceHarmonicity = 0.10f;
+    parameters.voiceSpectralReliability = 0.18f;
+    parameters.voiceBreathiness = 0.92f;
+    parameters.voiceEventStrength = 0.0f;
+}
 }
 
 int main()
 {
     bool success = true;
 
-    // A non-exceptional initial register decision must repeat once before it
-    // can drive correction. This targets the audible first-note octave alias.
     auto tracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
     tracker->prepare(48000.0);
     auto makeInitialDecision = []
@@ -55,21 +86,84 @@ int main()
     quantizer.reset();
     ModernPitchEngine::Parameters parameters;
     parameters.transientProtection = 1.0f;
+    parameters.humanize = 0.65f;
+    setBodyEvidence(parameters);
 
-    ModernPitchEngine::CorrectionState releaseState;
-    releaseState.targetValid = true;
-    releaseState.desiredCents = 100.0;
-    releaseState.currentCents = 100.0;
-    releaseState.trackingState = ModernPitchEngine::TrackingState::stable;
+    ModernPitchEngine::CorrectionState dropoutState;
+    dropoutState.targetValid = true;
+    dropoutState.desiredCents = 100.0;
+    dropoutState.currentCents = 100.0;
+    dropoutState.trackingState = ModernPitchEngine::TrackingState::stable;
+    dropoutState.noteBodyLatched = true;
+    dropoutState.noteBodyConfidence = 0.9f;
+    dropoutState.transportPeriodHz = 220.0;
     ModernPitchEngine::PitchObservation invalid;
-    for (int i = 0; i < 3; ++i)
+
+    // More than 200 ms without F0 is still the same sung note when the body
+    // sensors remain positive. Correction authority and period identity hold.
+    for (int i = 0; i < 180; ++i)
+    {
+        engine->updateCorrectionState(dropoutState, quantizer, invalid, parameters);
+        for (int s = 0; s < ModernPitchEngine::MultiRatePitchTracker::hopSize(); ++s)
+            static_cast<void>(engine->advanceCorrection(dropoutState));
+    }
+    success &= check(dropoutState.trackingState == ModernPitchEngine::TrackingState::stable
+                     && dropoutState.noteBodyLatched
+                     && std::abs(dropoutState.desiredCents - 100.0) < 1.0e-9,
+                     "long_voiced_note_survives_pitch_dropouts");
+    success &= check(std::abs(dropoutState.transportPeriodHz - 220.0) < 1.0e-9,
+                     "pitch_dropout_keeps_latched_transport_period");
+
+    // Acquire is a musical state, not an F0-validity state. Once a target has
+    // been acquired, sustained body evidence can settle it even through a hole.
+    ModernPitchEngine::CorrectionState acquireState = dropoutState;
+    acquireState.trackingState = ModernPitchEngine::TrackingState::acquire;
+    acquireState.stateAgeSamples = 0;
+    acquireState.stableBodyObservations = 0;
+    for (int i = 0; i < 20; ++i)
+    {
+        engine->updateCorrectionState(acquireState, quantizer, invalid, parameters);
+        for (int s = 0; s < ModernPitchEngine::MultiRatePitchTracker::hopSize(); ++s)
+            static_cast<void>(engine->advanceCorrection(acquireState));
+    }
+    success &= check(acquireState.trackingState == ModernPitchEngine::TrackingState::stable,
+                     "latched_body_does_not_stick_in_acquire_during_f0_hole");
+
+    // Positive breath evidence releases the note even if the tracker happens to
+    // produce a strong spurious F0 on the noise.
+    ModernPitchEngine::CorrectionState spuriousBreath = dropoutState;
+    setBreathEvidence(parameters);
+    const auto falsePitchOnBreath = strongPitch(231.0f);
+    bool validBreathReleased = false;
+    for (int i = 0; i < 100; ++i)
+    {
+        engine->updateCorrectionState(spuriousBreath, quantizer,
+                                      falsePitchOnBreath, parameters);
+        if (spuriousBreath.trackingState == ModernPitchEngine::TrackingState::release)
+        {
+            validBreathReleased = true;
+            break;
+        }
+    }
+    success &= check(validBreathReleased
+                     && std::abs(spuriousBreath.desiredCents) < 1.0e-9,
+                     "breath_wins_over_spurious_valid_f0");
+
+    // The same must hold when the pitch detector correctly reports no F0.
+    ModernPitchEngine::CorrectionState releaseState = dropoutState;
+    bool invalidBreathReleased = false;
+    for (int i = 0; i < 100; ++i)
+    {
         engine->updateCorrectionState(releaseState, quantizer, invalid, parameters);
-    success &= check(std::abs(releaseState.desiredCents - 100.0) < 1.0e-9,
-                     "short_detector_holes_hold_musical_decision");
-    engine->updateCorrectionState(releaseState, quantizer, invalid, parameters);
-    success &= check(releaseState.trackingState == ModernPitchEngine::TrackingState::release
+        if (releaseState.trackingState == ModernPitchEngine::TrackingState::release)
+        {
+            invalidBreathReleased = true;
+            break;
+        }
+    }
+    success &= check(invalidBreathReleased
                      && std::abs(releaseState.desiredCents) < 1.0e-9,
-                     "confirmed_unvoiced_releases_same_trajectory_to_unity");
+                     "confirmed_breath_releases_missing_f0_note");
 
     double maximumReleaseStep = 0.0;
     double previous = releaseState.currentCents;
@@ -82,8 +176,10 @@ int main()
     std::cerr << "maximum_release_step_cents=" << maximumReleaseStep << '\n';
     success &= check(maximumReleaseStep < 1.0,
                      "unvoiced_release_has_no_correction_jump");
-    success &= check(std::abs(releaseState.currentCents) < 0.05,
-                     "unvoiced_release_reaches_unity");
+    success &= check(std::abs(releaseState.currentCents) < 0.05
+                     && releaseState.trackingState == ModernPitchEngine::TrackingState::unvoiced
+                     && !releaseState.noteBodyLatched,
+                     "unvoiced_release_reaches_unity_and_clears_note_latch");
 
     parameters.retuneTimeMs = 0.0f;
     parameters.transitionTimeMs = 40.0f;
@@ -92,21 +188,141 @@ int main()
     success &= check(transitionResponse > 8.0 && transitionResponse < 32.1,
                      "target_revision_uses_bounded_single_path_transition");
 
+    ModernPitchEngine::CorrectionState boundedTransition;
+    boundedTransition.targetValid = true;
+    boundedTransition.noteBodyLatched = true;
+    boundedTransition.noteBodyConfidence = 0.95f;
+    boundedTransition.trackingState = ModernPitchEngine::TrackingState::transition;
+    boundedTransition.desiredCents = 420.0;
+    boundedTransition.currentCents = 0.0;
+    boundedTransition.responseMs = 500.0;
+    for (int i = 0; i < 5900; ++i)
+        static_cast<void>(engine->advanceCorrection(boundedTransition));
+    std::cerr << "bounded_transition_velocity="
+              << boundedTransition.velocityCentsPerSecond << '\n';
+    success &= check(boundedTransition.trackingState == ModernPitchEngine::TrackingState::stable,
+                     "transition_has_hard_musical_time_bound");
+    success &= check(std::abs(boundedTransition.velocityCentsPerSecond) > 0.02,
+                     "stable_state_does_not_require_zero_controller_velocity");
+
+    setBodyEvidence(parameters);
+    const auto syncObservation = strongPitch();
+    ModernPitchEngine::CorrectionState syncState;
+    syncState.targetValid = true;
+    syncState.noteBodyLatched = true;
+    syncState.noteBodyConfidence = 0.9f;
+    syncState.transportPeriodHz = 220.0;
+    syncState.trackingState = ModernPitchEngine::TrackingState::transition;
+    const float transitionSync = engine->transportSyncStrength(syncObservation, syncState, parameters);
+    syncState.trackingState = ModernPitchEngine::TrackingState::stable;
+    const float stableSync = engine->transportSyncStrength(syncObservation, syncState, parameters);
+    std::cerr << "transition_period_sync=" << transitionSync << '\n';
+    std::cerr << "stable_period_sync=" << stableSync << '\n';
+    success &= check(transitionSync < 0.0f && stableSync > 0.25f,
+                     "nonstable_note_holds_period_guidance_instead_of_ramping_it");
+
+    ModernPitchEngine::TransportClock guidanceClock;
+    guidanceClock.prepare(48000.0, 256);
+    const double ratio = std::exp2(180.0 / 1200.0);
+    const double period = 48000.0 / 220.0;
+    for (int i = 0; i < 6000; ++i)
+        static_cast<void>(guidanceClock.next(ratio, period, 1.0f));
+    const double heldNudge = guidanceClock.periodNudgeSamples_;
+    const float heldAmount = guidanceClock.periodSyncAmount_;
+    for (int i = 0; i < 2400; ++i)
+        static_cast<void>(guidanceClock.next(ratio, period * 0.75, -1.0f));
+    success &= check(std::abs(guidanceClock.periodNudgeSamples_ - heldNudge) < 1.0e-12
+                     && std::abs(guidanceClock.periodSyncAmount_ - heldAmount) < 1.0e-7f,
+                     "nonstable_state_cannot_move_period_guidance_memory");
+    const auto unityHeld = guidanceClock.next(1.0, period, -1.0f);
+    success &= check(std::abs(unityHeld.delayA - 256.0) < 1.0e-9
+                     && std::abs(unityHeld.delayB - 256.0) < 1.0e-9,
+                     "held_period_guidance_still_collapses_at_unity");
+
+    // A long vibrato around one quantized note is stable musical content, not
+    // an endless note transition.
+    std::array<double, 12> chromatic {};
+    for (int degree = 0; degree < 12; ++degree)
+        chromatic[static_cast<std::size_t>(degree)] = std::exp2(degree / 12.0);
+    ModernPitchEngine::ScaleQuantizer vibratoQuantizer;
+    vibratoQuantizer.reset();
+    vibratoQuantizer.setScale(chromatic.data(), static_cast<int>(chromatic.size()), 440.0);
+    ModernPitchEngine::CorrectionState vibratoState;
+    ModernPitchEngine::Parameters vibratoParameters = parameters;
+    setBodyEvidence(vibratoParameters);
+    vibratoParameters.humanize = 0.75f;
+    bool leftMusicalBody = false;
+    for (int hop = 0; hop < 1800; ++hop)
+    {
+        const double vibratoCents = 34.0 * std::sin(2.0 * 3.14159265358979323846
+            * static_cast<double>(hop) / 150.0);
+        auto vibratoObservation = strongPitch(static_cast<float>(440.0
+            * std::exp2(vibratoCents / 1200.0)));
+        engine->updateCorrectionState(vibratoState, vibratoQuantizer,
+                                      vibratoObservation, vibratoParameters);
+        for (int sample = 0; sample < ModernPitchEngine::MultiRatePitchTracker::hopSize(); ++sample)
+            static_cast<void>(engine->advanceCorrection(vibratoState));
+        if (hop > 100
+            && (vibratoState.trackingState == ModernPitchEngine::TrackingState::unvoiced
+                || vibratoState.trackingState == ModernPitchEngine::TrackingState::release))
+        {
+            leftMusicalBody = true;
+        }
+    }
+    success &= check(!leftMusicalBody
+                     && vibratoState.noteBodyLatched
+                     && vibratoState.trackingState == ModernPitchEngine::TrackingState::stable,
+                     "long_vibrato_is_classified_as_stable_note_body");
+
+    // Humanize must not create a 12-TET-sized note-body tolerance on dense
+    // microtonal material. With zero lock hysteresis a sustained 15-cent move in
+    // 48-EDO must eventually be able to cross the 12.5-cent degree boundary.
+    std::array<double, 48> denseScale {};
+    for (int degree = 0; degree < 48; ++degree)
+        denseScale[static_cast<std::size_t>(degree)] = std::exp2(degree / 48.0);
+    ModernPitchEngine::ScaleQuantizer denseQuantizer;
+    denseQuantizer.reset();
+    denseQuantizer.setScale(denseScale.data(), static_cast<int>(denseScale.size()), 440.0);
+    ModernPitchEngine::CorrectionState denseState;
+    ModernPitchEngine::Parameters denseParameters = vibratoParameters;
+    denseParameters.scaleLock = true;
+    denseParameters.hardLockActive = false;
+    denseParameters.lockHysteresis = 0.0f;
+    denseParameters.lockStrictness = 0.0f;
+    denseParameters.humanize = 1.0f;
+    auto denseObservation = strongPitch(440.0f);
+    for (int hop = 0; hop < 12; ++hop)
+    {
+        engine->updateCorrectionState(denseState, denseQuantizer,
+                                      denseObservation, denseParameters);
+        for (int s = 0; s < ModernPitchEngine::MultiRatePitchTracker::hopSize(); ++s)
+            static_cast<void>(engine->advanceCorrection(denseState));
+    }
+    const double initialDenseTarget = denseState.targetLog2;
+    denseObservation.frequencyHz = static_cast<float>(440.0 * std::exp2(15.0 / 1200.0));
+    for (int hop = 0; hop < 36; ++hop)
+    {
+        engine->updateCorrectionState(denseState, denseQuantizer,
+                                      denseObservation, denseParameters);
+        for (int s = 0; s < ModernPitchEngine::MultiRatePitchTracker::hopSize(); ++s)
+            static_cast<void>(engine->advanceCorrection(denseState));
+    }
+    const double denseTargetMove = std::abs(
+        (denseState.targetLog2 - initialDenseTarget) * 1200.0);
+    std::cerr << "dense_scale_target_move_cents=" << denseTargetMove << '\n';
+    success &= check(denseTargetMove > 20.0,
+                     "humanize_respects_dense_microtonal_degree_spacing");
+
     // Native API semantics: one semitone means 100 cents, with no adapter hack.
     const double unison = 1.0;
     quantizer.setScale(&unison, 1, 440.0);
     ModernPitchEngine::CorrectionState capState;
-    ModernPitchEngine::PitchObservation voiced;
-    voiced.valid = true;
-    voiced.frequencyHz = static_cast<float>(440.0 * std::exp2(2.0 / 12.0));
-    voiced.confidence = 1.0f;
-    voiced.periodicity = 1.0f;
-    voiced.consensus = 1.0f;
-    voiced.voicing = 1.0f;
+    auto voiced = strongPitch(static_cast<float>(440.0 * std::exp2(2.0 / 12.0)));
     parameters.maximumCorrectionSemitones = 1.0f;
     parameters.amount = 1.0f;
     parameters.humanize = 0.0f;
     parameters.preserveVibrato = 0.0f;
+    setBodyEvidence(parameters);
     engine->updateCorrectionState(capState, quantizer, voiced, parameters);
     std::cerr << "one_semitone_cap_cents=" << capState.desiredCents << '\n';
     success &= check(std::abs(capState.desiredCents) <= 100.001,
@@ -115,6 +331,7 @@ int main()
                      "native_semitone_limit_is_not_divided_by_twelve");
 
     // PARCOR envelope memory should not be replaced by a transient/noisy frame.
+    setBodyEvidence(parameters);
     juce::AudioBuffer<float> block(1, 1024);
     for (int i = 0; i < block.getNumSamples(); ++i)
     {
@@ -124,10 +341,7 @@ int main()
                                                + 0.2 * std::sin(2.0 * phase)));
     }
     engine->linkedCorrection_.trackingState = ModernPitchEngine::TrackingState::stable;
-    ModernPitchEngine::PitchObservation stableObservation;
-    stableObservation.valid = true;
-    stableObservation.frequencyHz = 220.0f;
-    stableObservation.periodicity = 0.95f;
+    auto stableObservation = strongPitch();
     stableObservation.onsetStrength = 0.0f;
     parameters.formantPreservation = 1.0f;
     engine->updateLpcTarget(block, 1, block.getNumSamples(), parameters,
@@ -137,7 +351,7 @@ int main()
     block.clear();
     block.setSample(0, 0, 1.0f);
     engine->linkedCorrection_.trackingState = ModernPitchEngine::TrackingState::attack;
-    ModernPitchEngine::PitchObservation transientObservation = stableObservation;
+    auto transientObservation = stableObservation;
     transientObservation.onsetStrength = 1.0f;
     engine->updateLpcTarget(block, 1, block.getNumSamples(), parameters,
                             transientObservation);

@@ -1472,7 +1472,7 @@ void ModernPitchEngine::TransportClock::prepare(double sampleRate,
     rangeSamples_ = std::max(16,
         2 * (std::max(16, reportedLatencySamples) - minimumDelay_));
     periodSyncSmoothing_ = std::clamp(static_cast<float>(
-        1.0 - std::exp(-1.0 / (0.0030 * sampleRate_))), 0.001f, 0.08f);
+        1.0 - std::exp(-1.0 / (0.0080 * sampleRate_))), 0.0005f, 0.04f);
     reset();
 }
 
@@ -1540,6 +1540,8 @@ ModernPitchEngine::TransportClock::nextInternal(double ratio,
 
     if (periodAware)
     {
+        const bool holdPeriodGuidance = std::isfinite(syncStrength)
+            && syncStrength < 0.0f;
         const double nominalSeparation = plan.delayB - plan.delayA;
         const double nominalMagnitude = std::abs(nominalSeparation);
         const float overlap = smoothStep(0.04f, 0.38f,
@@ -1568,16 +1570,23 @@ ModernPitchEngine::TransportClock::nextInternal(double ratio,
             requestedSync = 0.0f;
         }
 
-        periodNudgeSamples_ += static_cast<double>(periodSyncSmoothing_)
-            * (requestedNudge - periodNudgeSamples_);
-        periodSyncAmount_ += periodSyncSmoothing_
-            * (requestedSync - periodSyncAmount_);
+        if (!holdPeriodGuidance)
+        {
+            periodNudgeSamples_ += static_cast<double>(periodSyncSmoothing_)
+                * (requestedNudge - periodNudgeSamples_);
+            periodSyncAmount_ += periodSyncSmoothing_
+                * (requestedSync - periodSyncAmount_);
+        }
 
+        // sweepPresence is applied at render time as well as acquisition time.
+        // Thus exact unity always collapses to the declared latency even when a
+        // non-stable state is deliberately holding the previous period model.
+        const double appliedPeriodAmount = static_cast<double>(periodSyncAmount_)
+            * static_cast<double>(sweepPresence);
         const double sign = nominalSeparation >= 0.0 ? 1.0 : -1.0;
         double adjustedMagnitude = std::max(
             0.0,
-            nominalMagnitude
-                + static_cast<double>(periodSyncAmount_) * periodNudgeSamples_);
+            nominalMagnitude + appliedPeriodAmount * periodNudgeSamples_);
 
         const double minimum = static_cast<double>(minimumDelay_);
         const double maximum = minimum + static_cast<double>(rangeSamples_);
@@ -1613,6 +1622,15 @@ ModernPitchEngine::TransportClock::nextInternal(double ratio,
 
     const double phaseIncrement = std::clamp(
         signedDeviation / static_cast<double>(rangeSamples_), -0.24, 0.24);
+    // Exact unity is a declared-latency identity point. Preserve phase, but
+    // make both read coordinates exactly equal to the centre rather than merely
+    // numerically close after gain-weighted reconstruction.
+    if (deviation < 1.0e-12)
+    {
+        plan.delayA = centreDelay;
+        plan.delayB = centreDelay;
+    }
+
     phase_ += phaseIncrement;
     phase_ -= std::floor(phase_);
     return plan;
@@ -1964,25 +1982,36 @@ float ModernPitchEngine::transportSyncStrength(
     const CorrectionState& state,
     const Parameters& parameters) const noexcept
 {
-    if (!observation.valid || observation.frequencyHz <= 0.0f)
+    // Period guidance is geometry supervision, not voicing authority. It is
+    // deliberately disabled during attack/acquire/transition/release so state
+    // changes cannot sound like a moving delay line. A stable note may keep
+    // using its latched period through a short F0 hole.
+    if (!state.noteBodyLatched || state.transportPeriodHz <= 0.0)
         return 0.0f;
-    float stateFactor = 0.0f;
-    switch (state.trackingState)
-    {
-        case TrackingState::unvoiced:   stateFactor = 0.0f; break;
-        case TrackingState::attack:     stateFactor = 0.24f; break;
-        case TrackingState::acquire:    stateFactor = 0.62f; break;
-        case TrackingState::stable:     stateFactor = 0.90f; break;
-        case TrackingState::transition: stateFactor = 1.00f; break;
-        case TrackingState::release:    stateFactor = 0.32f; break;
-    }
-    const float evidence = clamp01(
-        0.46f * clamp01(observation.periodicity)
-      + 0.34f * clamp01(observation.confidence)
-      + 0.20f * clamp01(observation.consensus));
-    const float protection = 0.40f
-        + 0.60f * clamp01(parameters.transientProtection);
-    return clamp01(evidence * stateFactor * protection);
+
+    // Negative strength means hold the already-established geometry. State
+    // changes must not themselves ramp the read-head separation. The stored
+    // guidance is allowed to evolve again only after the note body is stable.
+    if (state.trackingState != TrackingState::stable)
+        return -1.0f;
+
+    const float trackerEvidence = observation.valid
+        ? clamp01(0.40f * observation.periodicity
+                + 0.32f * observation.confidence
+                + 0.18f * observation.consensus
+                + 0.10f * observation.voicing)
+        : state.noteBodyConfidence;
+    const float richEvidence = parameters.voiceEvidenceValid
+        ? clamp01(0.46f * parameters.voiceBodyEnergy
+                + 0.24f * parameters.voiceHarmonicity
+                + 0.20f * parameters.voiceSpectralReliability
+                + 0.10f * (1.0f - parameters.voiceBreathiness))
+        : trackerEvidence;
+    const float evidence = clamp01(0.55f * state.noteBodyConfidence
+                                  + 0.45f * std::max(trackerEvidence, richEvidence));
+    const float protection = 0.55f
+        + 0.45f * clamp01(parameters.transientProtection);
+    return clamp01(evidence * protection);
 }
 
 void ModernPitchEngine::updateCorrectionState(
@@ -1991,47 +2020,232 @@ void ModernPitchEngine::updateCorrectionState(
     const PitchObservation& observation,
     const Parameters& parameters) noexcept
 {
-    if (!observation.valid || observation.frequencyHz <= 0.0f)
+    const int hopSamples = MultiRatePitchTracker::hopSize();
+    const double hopSeconds = static_cast<double>(hopSamples) / sampleRate_;
+    const float humanize = clamp01(parameters.humanize);
+    const bool richEvidence = parameters.voiceEvidenceValid;
+    const bool validPitch = observation.valid && observation.frequencyHz > 0.0f;
+
+    const float trackerBody = validPitch
+        ? clamp01(0.34f * observation.voicing
+                + 0.28f * observation.periodicity
+                + 0.23f * observation.confidence
+                + 0.15f * observation.consensus)
+        : 0.0f;
+    const float analysedBody = richEvidence
+        ? clamp01(0.44f * parameters.voiceBodyEnergy
+                + 0.24f * parameters.voiceHarmonicity
+                + 0.18f * parameters.voiceSpectralReliability
+                + 0.14f * (1.0f - parameters.voiceBreathiness))
+        : trackerBody;
+    const float bodyScore = richEvidence
+        ? std::max(0.72f * analysedBody, trackerBody)
+        : trackerBody;
+
+    // Entering a note requires stronger evidence than staying in one. This
+    // hysteresis is about note identity only: it never scales Amount or the
+    // correction destination.
+    const float enterBodyThreshold = 0.46f - 0.06f * humanize;
+    const float holdBodyThreshold = 0.34f - 0.05f * humanize;
+    const float bodyThreshold = state.noteBodyLatched
+        ? holdBodyThreshold : enterBodyThreshold;
+    const bool bodyPresent = bodyScore >= bodyThreshold
+        && (!richEvidence || parameters.voiceBreathiness < 0.76f
+            || parameters.voiceHarmonicity > 0.48f);
+
+    const float breathScore = richEvidence
+        ? clamp01(0.58f * parameters.voiceBreathiness
+                + 0.22f * (1.0f - parameters.voiceBodyEnergy)
+                + 0.12f * (1.0f - parameters.voiceHarmonicity)
+                + 0.08f * (1.0f - parameters.voiceSpectralReliability))
+        : 0.0f;
+    const bool confirmedBreathFrame = richEvidence
+        && breathScore > 0.62f
+        && parameters.voiceBreathiness > 0.56f
+        && parameters.voiceBodyEnergy < 0.48f
+        && parameters.voiceEventStrength < 0.82f;
+    const bool confirmedAbsenceFrame = richEvidence
+        && parameters.voiceBodyEnergy < 0.20f
+        && parameters.voiceHarmonicity < 0.22f
+        && parameters.voiceSpectralReliability < 0.28f
+        && parameters.voiceEventStrength < 0.72f;
+
+    const float bodyAttack = std::clamp(static_cast<float>(
+        1.0 - std::exp(-hopSeconds / 0.018)), 0.001f, 1.0f);
+    const float bodyRelease = std::clamp(static_cast<float>(
+        1.0 - std::exp(-hopSeconds / 0.070)), 0.001f, 1.0f);
+    const float bodyAlpha = bodyScore >= state.noteBodyConfidence
+        ? bodyAttack : bodyRelease;
+    state.noteBodyConfidence += bodyAlpha
+        * (bodyScore - state.noteBodyConfidence);
+    state.noteBodyConfidence = clamp01(state.noteBodyConfidence);
+
+    const auto setState = [&state](TrackingState next) noexcept
+    {
+        if (state.trackingState != next)
+        {
+            state.trackingState = next;
+            state.stateAgeSamples = 0;
+        }
+    };
+
+    bool bodyCounterAdvanced = false;
+    if (state.noteBodyLatched)
+    {
+        if (bodyPresent)
+        {
+            state.stableBodyObservations = std::min(32,
+                state.stableBodyObservations + 1);
+            bodyCounterAdvanced = true;
+            state.breathEvidenceSamples = std::max(0,
+                state.breathEvidenceSamples - 2 * hopSamples);
+            state.uncertainSamples = std::max(0,
+                state.uncertainSamples - 2 * hopSamples);
+        }
+        else if (confirmedBreathFrame)
+        {
+            state.breathEvidenceSamples += hopSamples;
+            state.uncertainSamples = std::max(0,
+                state.uncertainSamples - hopSamples);
+        }
+        else if (confirmedAbsenceFrame || !validPitch)
+        {
+            state.uncertainSamples += hopSamples;
+            state.breathEvidenceSamples = std::max(0,
+                state.breathEvidenceSamples - hopSamples);
+        }
+        else
+        {
+            // A valid but weak/ambiguous F0 is not enough to keep the latch
+            // forever. Accumulate absence slowly while giving the body sensors
+            // time to recover from consonants and vibrato minima.
+            state.uncertainSamples += std::max(1, hopSamples / 2);
+            state.breathEvidenceSamples = std::max(0,
+                state.breathEvidenceSamples - hopSamples);
+        }
+    }
+
+    const int breathConfirmSamples = static_cast<int>(std::lround(
+        sampleRate_ * (0.040 + 0.020 * static_cast<double>(humanize))));
+    const int ambiguousReleaseSamples = static_cast<int>(std::lround(
+        sampleRate_ * (0.160 + 0.080 * static_cast<double>(humanize))));
+    const bool confirmedBreath = state.noteBodyLatched
+        && state.breathEvidenceSamples >= breathConfirmSamples;
+    const bool confirmedAbsence = state.noteBodyLatched
+        && state.uncertainSamples >= ambiguousReleaseSamples;
+
+    // Breath/absence is positive evidence and therefore wins even if a noisy
+    // frame happens to yield a formally valid F0. This prevents breaths from
+    // keeping the pitch engine latched through a spurious detector result.
+    if (state.targetValid && (confirmedBreath || confirmedAbsence))
+    {
+        setState(TrackingState::release);
+        state.desiredCents = 0.0;
+        state.stableBodyObservations = 0;
+        const double protection = static_cast<double>(
+            clamp01(parameters.transientProtection));
+        state.responseMs = std::clamp(32.0 - 20.0 * protection,
+                                      8.0, 32.0);
+        if (confirmedAbsence
+            || state.breathEvidenceSamples > static_cast<int>(0.12 * sampleRate_))
+        {
+            state.pitchCentreValid = false;
+        }
+        return;
+    }
+
+    if (!validPitch)
     {
         ++state.invalidObservations;
-        state.stableObservations = 0;
 
-        // Keep the musical decision through very short detector holes. Once
-        // the gap is established, release the correction ratio itself toward
-        // unity on the same full-signal transport. No dry signal is opened.
-        if (state.targetValid && state.invalidObservations > 3)
+        // Missing F0 is not missing voice. A latched note keeps the exact
+        // destination while body evidence survives. Acquire/attack may also
+        // settle to stable from body evidence alone after a prior valid lock.
+        if (state.noteBodyLatched)
         {
-            state.trackingState = TrackingState::release;
-            state.desiredCents = 0.0;
-            const double protection = static_cast<double>(
-                clamp01(parameters.transientProtection));
-            state.responseMs = std::clamp(28.0 - 20.0 * protection,
-                                          6.0, 28.0);
-            if (state.invalidObservations > 18)
-                state.pitchCentreValid = false;
+            const int minimumStableSamples = static_cast<int>(std::lround(
+                0.012 * sampleRate_));
+            if (bodyPresent && state.targetValid
+                && (state.trackingState == TrackingState::attack
+                    || state.trackingState == TrackingState::acquire)
+                && state.stableBodyObservations >= 4
+                && state.stateAgeSamples >= minimumStableSamples)
+            {
+                setState(TrackingState::stable);
+            }
+            return;
         }
-        else if (!state.targetValid)
+
+        if (state.targetValid && std::abs(state.currentCents) > 0.001)
         {
-            state.trackingState = TrackingState::unvoiced;
+            setState(TrackingState::release);
+            state.desiredCents = 0.0;
+            state.responseMs = std::clamp(32.0 - 20.0
+                * static_cast<double>(clamp01(parameters.transientProtection)),
+                8.0, 32.0);
+        }
+        else
+        {
+            setState(TrackingState::unvoiced);
         }
         return;
     }
 
     state.invalidObservations = 0;
-    if (observation.onset)
+
+    // A strong breath/absence before any body latch must not become a note just
+    // because the pitch tracker found a periodic accident in the noise.
+    if (!state.noteBodyLatched && richEvidence
+        && (confirmedBreathFrame || confirmedAbsenceFrame))
     {
-        state.trackingState = TrackingState::attack;
+        setState(TrackingState::unvoiced);
+        state.desiredCents = 0.0;
+        return;
+    }
+
+    if (bodyPresent || trackerBody > 0.58f)
+    {
+        if (!state.noteBodyLatched)
+        {
+            state.noteBodyLatched = true;
+            state.stableBodyObservations = 1;
+            state.noteBodyConfidence = std::max(state.noteBodyConfidence,
+                                                bodyScore);
+        }
+        else if (!bodyCounterAdvanced)
+        {
+            state.stableBodyObservations = std::min(32,
+                state.stableBodyObservations + 1);
+        }
+    }
+    else if (!bodyCounterAdvanced)
+    {
+        state.stableBodyObservations = std::max(0,
+            state.stableBodyObservations - 1);
+    }
+
+    // A tracker onset inside an already-latched note is usually consonant or
+    // energy modulation, not a new note identity. Legato note changes are
+    // represented by target identity and transition below.
+    const bool musicalOnset = observation.onset
+        && (!state.noteBodyLatched
+            || state.trackingState == TrackingState::unvoiced
+            || state.trackingState == TrackingState::release);
+    if (musicalOnset)
+    {
+        setState(TrackingState::attack);
         state.stableObservations = 0;
+        state.stableBodyObservations = bodyPresent ? 1 : 0;
     }
     else if (state.trackingState == TrackingState::unvoiced
              || state.trackingState == TrackingState::release)
     {
-        state.trackingState = TrackingState::acquire;
+        setState(TrackingState::acquire);
         state.stableObservations = 0;
     }
 
     const double observedLog2 = safeLog2(observation.frequencyHz);
-    if (!state.pitchCentreValid || observation.onset)
+    if (!state.pitchCentreValid || musicalOnset)
     {
         state.pitchCentreLog2 = observedLog2;
         state.pitchCentreValid = true;
@@ -2040,7 +2254,26 @@ void ModernPitchEngine::updateCorrectionState(
     else
     {
         const double distanceCents = std::abs(observedLog2 - state.pitchCentreLog2) * 1200.0;
-        const double baseAlpha = distanceCents > 95.0 ? 0.30 : 0.07;
+        const double scaleStep = std::max(0.1,
+            static_cast<double>(quantizer.minimumStepCents()));
+        const double maximumWithinNoteTolerance = std::clamp(
+            0.42 * scaleStep, 0.5, 60.0);
+        const double withinNoteTolerance = std::min(
+            22.0 + 38.0 * static_cast<double>(humanize),
+            maximumWithinNoteTolerance);
+        double baseAlpha = distanceCents > 95.0 ? 0.30 : 0.07;
+        const double observedDistanceFromCurrentTarget = state.targetValid
+            ? std::abs(observedLog2 - state.targetLog2) * 1200.0
+            : 0.0;
+        const double currentIdentityRadius = 0.48 * scaleStep;
+        const bool insideCurrentMusicalIdentity = !state.targetValid
+            || observedDistanceFromCurrentTarget < currentIdentityRadius;
+        if (state.noteBodyLatched
+            && insideCurrentMusicalIdentity
+            && distanceCents <= withinNoteTolerance)
+        {
+            baseAlpha = 0.018 + 0.035 * static_cast<double>(1.0f - humanize);
+        }
         const double stableGate = 0.35
             + 0.65 * static_cast<double>(clamp01(observation.confidence)
                                       * clamp01(observation.periodicity));
@@ -2057,7 +2290,7 @@ void ModernPitchEngine::updateCorrectionState(
         parameters.lockStrictness,
         observation.confidence,
         parameters.scaleLock && parameters.hardLockActive,
-        observation.onset,
+        musicalOnset,
         pending);
     newTarget += std::round(state.pitchCentreLog2 - newTarget);
 
@@ -2065,18 +2298,49 @@ void ModernPitchEngine::updateCorrectionState(
         || std::abs(newTarget - state.targetLog2) * 1200.0 > 0.1;
     const double targetJump = state.targetValid
         ? (newTarget - state.targetLog2) * 1200.0 : 0.0;
+    const double identityThreshold = std::clamp(
+        0.18 * static_cast<double>(quantizer.minimumStepCents()), 0.5, 30.0);
+    const bool targetIdentityChanged = state.targetValid
+        && std::abs(targetJump) >= identityThreshold;
     if (targetChanged)
     {
         ++state.revision;
         state.lastTargetJumpCents = targetJump;
-        if (state.targetValid && std::abs(targetJump) > 0.1)
+        if (targetIdentityChanged && state.trackingState != TrackingState::transition)
         {
-            state.trackingState = TrackingState::transition;
+            setState(TrackingState::transition);
             state.stableObservations = 0;
+            state.stableBodyObservations = bodyPresent ? 1 : 0;
         }
     }
     state.targetLog2 = newTarget;
     state.targetValid = true;
+
+    // The period model follows musical identity, not vibrato-rate detector
+    // motion. A real target identity change is acquired while period guidance
+    // is frozen; within a stable note the central period moves on a long time
+    // constant so vibrato cannot become delay modulation.
+    if (state.noteBodyLatched && bodyPresent)
+    {
+        const double observedHz = static_cast<double>(observation.frequencyHz);
+        if (!(state.transportPeriodHz > 0.0)
+            || !std::isfinite(state.transportPeriodHz)
+            || musicalOnset || targetIdentityChanged)
+        {
+            state.transportPeriodHz = observedHz;
+        }
+        else
+        {
+            const double periodTauSeconds = 0.28
+                + 0.55 * static_cast<double>(humanize);
+            const double alpha = std::clamp(
+                1.0 - std::exp(-hopSeconds / periodTauSeconds),
+                0.0002, 0.05);
+            const double currentLog = safeLog2(state.transportPeriodHz);
+            state.transportPeriodHz = std::exp2(currentLog + alpha
+                * (safeLog2(observedHz) - currentLog));
+        }
+    }
 
     const double vibratoComponent = observedLog2 - state.pitchCentreLog2;
     const float stable = clamp01(0.45f * observation.confidence
@@ -2092,8 +2356,7 @@ void ModernPitchEngine::updateCorrectionState(
         static_cast<float>(centreError));
 
     float preserve = parameters.scaleLock
-        ? clamp01(parameters.vibratoPreserve
-                + 0.35f * clamp01(parameters.humanize))
+        ? clamp01(parameters.vibratoPreserve + 0.35f * humanize)
         : clamp01(parameters.preserveVibrato);
     preserve *= stable * periodic * boundarySafety;
 
@@ -2103,8 +2366,8 @@ void ModernPitchEngine::updateCorrectionState(
         (correctedLog2 - observedLog2) * 1200.0);
 
     const double humanWindow = parameters.scaleLock
-        ? 2.0 + 10.0 * static_cast<double>(clamp01(parameters.humanize))
-        : 1.5 + 16.0 * static_cast<double>(clamp01(parameters.humanize));
+        ? 2.0 + 10.0 * static_cast<double>(humanize)
+        : 1.5 + 16.0 * static_cast<double>(humanize);
     if (std::abs(errorCents) <= humanWindow)
         errorCents = 0.0;
     else
@@ -2115,15 +2378,35 @@ void ModernPitchEngine::updateCorrectionState(
         0.0, 48.0);
     errorCents = std::clamp(errorCents, -maximumCents, maximumCents);
 
-    // Amount scales the pitch destination itself. No unprocessed signal is mixed.
+    // Sensors determine how carefully identity is interpreted, never how much
+    // of the requested correction is applied.
     state.desiredCents = errorCents
         * static_cast<double>(clamp01(parameters.amount));
     state.responseMs = responseTimeMs(parameters, targetChanged, targetJump);
 
-    if (!observation.onset && state.trackingState != TrackingState::transition)
+    if (!musicalOnset)
     {
-        state.trackingState = state.stableObservations >= 3
-            ? TrackingState::stable : TrackingState::acquire;
+        const int minimumStableSamples = static_cast<int>(std::lround(
+            0.012 * sampleRate_));
+        if (state.trackingState == TrackingState::transition)
+        {
+            if (!targetIdentityChanged && bodyPresent
+                && state.stableBodyObservations >= 4
+                && state.stateAgeSamples >= minimumStableSamples)
+            {
+                setState(TrackingState::stable);
+            }
+        }
+        else if (state.trackingState == TrackingState::attack
+                 || state.trackingState == TrackingState::acquire)
+        {
+            if (state.noteBodyLatched && bodyPresent
+                && state.stableBodyObservations >= 4
+                && state.stateAgeSamples >= minimumStableSamples)
+            {
+                setState(TrackingState::stable);
+            }
+        }
     }
 
     meterPendingOctave_.store(pending, std::memory_order_relaxed);
@@ -2134,6 +2417,21 @@ double ModernPitchEngine::advanceCorrection(CorrectionState& state) noexcept
 {
     if (!state.targetValid)
         return 0.0;
+
+    if (state.stateAgeSamples < std::numeric_limits<int>::max())
+        ++state.stateAgeSamples;
+
+    // Transition describes a note boundary, never convergence of a second-order
+    // controller. A singing note must not remain in transition for seconds just
+    // because vibrato keeps the destination moving.
+    const int maximumTransitionSamples = static_cast<int>(std::lround(0.120 * sampleRate_));
+    if (state.trackingState == TrackingState::transition
+        && state.noteBodyLatched
+        && state.stateAgeSamples >= maximumTransitionSamples)
+    {
+        state.trackingState = TrackingState::stable;
+        state.stateAgeSamples = 0;
+    }
 
     const double dt = 1.0 / sampleRate_;
     const double responseSeconds = std::max(0.00035, state.responseMs * 0.001);
@@ -2158,12 +2456,17 @@ double ModernPitchEngine::advanceCorrection(CorrectionState& state) noexcept
     {
         state.currentCents = state.desiredCents;
         state.velocityCentsPerSecond = 0.0;
-        if (state.trackingState == TrackingState::transition)
-            state.trackingState = TrackingState::stable;
-        else if (state.trackingState == TrackingState::release
-                 && state.invalidObservations > 3
-                 && std::abs(state.currentCents) < 0.001)
+        if (state.trackingState == TrackingState::release
+            && std::abs(state.currentCents) < 0.001)
+        {
             state.trackingState = TrackingState::unvoiced;
+            state.stateAgeSamples = 0;
+            state.noteBodyLatched = false;
+            state.noteBodyConfidence = 0.0f;
+            state.transportPeriodHz = 0.0;
+            state.pitchCentreValid = false;
+            state.stableBodyObservations = 0;
+        }
     }
     return state.currentCents;
 }
@@ -2257,28 +2560,29 @@ void ModernPitchEngine::pushLpcSample(
     const float protection = clamp01(parameters.transientProtection);
     const float onset = clamp01(observation.onsetStrength);
     const float freezeThreshold = 0.72f - 0.28f * protection;
-    const bool trustworthyEnvelope = observation.valid
-        && periodicity > 0.30f && onset < freezeThreshold;
+    const bool richEvidence = parameters.voiceEvidenceValid;
+    const float analysedBody = richEvidence ? clamp01(parameters.voiceBodyEnergy)
+                                            : periodicity;
+    const float analysedHarmonicity = richEvidence
+        ? clamp01(parameters.voiceHarmonicity) : periodicity;
+    const bool trustworthyEnvelope =
+        ((observation.valid && periodicity > 0.30f)
+         || (richEvidence && analysedBody > 0.48f
+             && analysedHarmonicity > 0.30f))
+        && onset < freezeThreshold
+        && (!richEvidence || parameters.voiceBreathiness < 0.78f);
     if (trustworthyEnvelope)
         currentReflectionTarget_ = calculateReflectionCoefficients(
             lpcAnalysisScratch_.data(), lpcAnalysisWindowSize);
 
-    float stateStability = 1.0f;
-    switch (linkedCorrection_.trackingState)
-    {
-        case TrackingState::unvoiced:   stateStability = 0.45f; break;
-        case TrackingState::attack:     stateStability = 0.35f; break;
-        case TrackingState::acquire:    stateStability = 0.68f; break;
-        case TrackingState::stable:     stateStability = 1.00f; break;
-        case TrackingState::transition: stateStability = 0.58f; break;
-        case TrackingState::release:    stateStability = 0.65f; break;
-    }
-    const float supervisedStability = 1.0f
-        - protection * (1.0f - stateStability);
-    const float formantStrength = clamp01(parameters.formantPreservation)
-        * (0.45f + 0.55f * periodicity) * supervisedStability;
-    const float breathEvidence = (1.0f - periodicity)
-        * (1.0f - 0.85f * smoothStep(0.20f, 0.75f, onset));
+    // The sensors decide whether a new PARCOR model is trustworthy; they
+    // do not turn the user's formant control down. Holding the last stable
+    // envelope is the cautious behaviour.
+    const float formantStrength = clamp01(parameters.formantPreservation);
+    const float breathEvidence = richEvidence
+        ? clamp01(parameters.voiceBreathiness)
+        : (1.0f - periodicity)
+            * (1.0f - 0.85f * smoothStep(0.20f, 0.75f, onset));
     const float breathReduction = 0.65f * clamp01(parameters.breathReduction)
         * breathEvidence;
     for (int channel = 0; channel < channels; ++channel)
@@ -2336,6 +2640,12 @@ void ModernPitchEngine::process(
     safe.transientProtection = clamp01(finiteOr(safe.transientProtection, 0.85f));
     safe.detectorSensitivity = clamp01(finiteOr(safe.detectorSensitivity, 0.70f));
     safe.breathReduction = clamp01(finiteOr(safe.breathReduction, 0.50f));
+    safe.voiceHarmonicity = clamp01(finiteOr(safe.voiceHarmonicity, 0.0f));
+    safe.voiceBreathiness = clamp01(finiteOr(safe.voiceBreathiness, 0.0f));
+    safe.voiceBodyEnergy = clamp01(finiteOr(safe.voiceBodyEnergy, 0.0f));
+    safe.voiceSpectralReliability = clamp01(finiteOr(safe.voiceSpectralReliability, 0.0f));
+    safe.voiceEventStrength = clamp01(finiteOr(safe.voiceEventStrength, 0.0f));
+    safe.voiceFormantStability = clamp01(finiteOr(safe.voiceFormantStability, 0.0f));
     safe.lockHysteresis = std::clamp(finiteOr(safe.lockHysteresis, 24.0f), 0.0f, 80.0f);
     safe.vibratoPreserve = clamp01(finiteOr(safe.vibratoPreserve, 0.0f));
     safe.lockStrictness = clamp01(finiteOr(safe.lockStrictness, 0.0f));
@@ -2438,9 +2748,8 @@ void ModernPitchEngine::process(
                 const double ratio = std::clamp(std::exp2(audible / 1200.0), 0.25, 4.0);
                 const auto& syncObservation
                     = latestChannelObservation_[static_cast<std::size_t>(channel)];
-                const double sourcePeriodSamples = syncObservation.valid
-                    && syncObservation.frequencyHz > 0.0f
-                    ? sampleRate_ / static_cast<double>(syncObservation.frequencyHz)
+                const double sourcePeriodSamples = correction.transportPeriodHz > 0.0
+                    ? sampleRate_ / correction.transportPeriodHz
                     : 0.0;
                 const float syncStrength = transportSyncStrength(
                     syncObservation, correction, safe);
@@ -2488,9 +2797,8 @@ void ModernPitchEngine::process(
             audibleCorrectionCents_ = decision.controllerCents;
             const double ratio = std::clamp(
                 std::exp2(audibleCorrectionCents_ / 1200.0), 0.25, 4.0);
-            const double sourcePeriodSamples = latestObservation_.valid
-                && latestObservation_.frequencyHz > 0.0f
-                ? sampleRate_ / static_cast<double>(latestObservation_.frequencyHz)
+            const double sourcePeriodSamples = linkedCorrection_.transportPeriodHz > 0.0
+                ? sampleRate_ / linkedCorrection_.transportPeriodHz
                 : 0.0;
             const float syncStrength = transportSyncStrength(
                 latestObservation_, linkedCorrection_, safe);
@@ -2502,10 +2810,16 @@ void ModernPitchEngine::process(
                         data[static_cast<std::size_t>(channel)][sample], plan);
         }
 
-        if (latestObservation_.valid)
+        if (linkedCorrection_.noteBodyLatched
+            && linkedCorrection_.trackingState != TrackingState::unvoiced
+            && linkedCorrection_.trackingState != TrackingState::release)
+        {
             ++sustainedSamples_;
+        }
         else
+        {
             sustainedSamples_ = 0;
+        }
     }
 
     const auto tempoMeter = dualMono

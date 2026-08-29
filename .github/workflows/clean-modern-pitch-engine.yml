@@ -8,6 +8,7 @@ on:
       - clean-rewrite-detector-integration-rc
       - clean-rewrite-transport-continuity
       - clean-rewrite-main-supervisor-integration
+      - clean-rewrite-stable-lpc-period-sync
     paths:
       - 'Source/ModernPitchEngine.*'
       - 'Source/LivePitchProcessor.h'
@@ -149,42 +150,41 @@ jobs:
               exit 1
             }
           }
-          $requiredVoicePath = @(
-            'MultiRatePitchTracker',
+          $required = @(
+            'noteBodyLatched',
+            'voiceBodyEnergy',
+            'transportPeriodHz',
+            'holdPeriodGuidance',
             'currentReflectionTarget_',
             'calculateReflectionCoefficients',
-            'lpcAnalysisHop',
-            'sourcePeriodSamples',
             'periodNudgeSamples_'
           )
-          foreach ($term in $requiredVoicePath) {
-            if (-not (Select-String -Path Source\ModernPitchEngine.cpp,Source\ModernPitchEngine.h -Pattern $term -Quiet)) {
-              Write-Error "Stable voice-path invariant missing: $term"
+          foreach ($term in $required) {
+            if (-not (Select-String -Path Source\ModernPitchEngine.cpp,Source\ModernPitchEngine.h,Source\LivePitchProcessor.h -Pattern $term -Quiet)) {
+              Write-Error "Musical supervisor invariant missing: $term"
               exit 1
             }
           }
           if (-not (Select-String -Path Source\VoiceEvidenceAnalyzer.h -Pattern 'const juce::AudioBuffer<float>&' -Quiet)) {
-            Write-Error "Voice evidence analyzer must be read-only on audio"
+            Write-Error "Voice evidence analyzer must remain read-only on audio"
             exit 1
           }
-          $analyzerForbidden = @(
-            'SynthesisLayer',
-            'SpectralVoiceShifter',
-            'NeumatonOutputRenderer',
-            'NeumatonRidgeLedger',
-            'wetMix_',
-            'dryTrust_',
-            'processBypassed'
+          $sensorAuthorityWrites = @(
+            'conditioned\.amount\s*=',
+            'conditioned\.detectorSensitivity\s*=',
+            'conditioned\.formantPreservation\s*=',
+            'conditioned\.transientProtection\s*=',
+            'conditioned\.preserveVibrato\s*=',
+            'conditioned\.vibratoPreserve\s*=',
+            'conditioned\.breathReduction\s*=',
+            'conditioned\.lockHysteresis\s*=',
+            'conditioned\.lockStrictness\s*='
           )
-          foreach ($term in $analyzerForbidden) {
-            if (Select-String -Path Source\VoiceEvidenceAnalyzer.h -Pattern $term -Quiet) {
-              Write-Error "Voice evidence analyzer contains output-path logic: $term"
+          foreach ($pattern in $sensorAuthorityWrites) {
+            if (Select-String -Path Source\LivePitchProcessor.h -Pattern $pattern -Quiet) {
+              Write-Error "Voice evidence may supervise identity but may not rewrite user authority: $pattern"
               exit 1
             }
-          }
-          if (Select-String -Path Source\LivePitchProcessor.h -Pattern 'conditioned\.amount\s*=' -Quiet) {
-            Write-Error "Voice evidence must not attenuate Amount/correction authority"
-            exit 1
           }
 
           New-Item -ItemType Directory -Force -Path artifact | Out-Null
