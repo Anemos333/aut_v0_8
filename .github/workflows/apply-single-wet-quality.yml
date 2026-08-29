@@ -1,21 +1,22 @@
 name: Apply Single Wet Quality
 
 on:
-  push:
+  pull_request:
     branches:
-      - single-wet-quality-reconstruction
+      - clean-rewrite-musical-note-supervisor
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: write
 
 jobs:
   apply:
-    if: ${{ !contains(github.event.head_commit.message, '[single-wet-applied]') }}
     runs-on: ubuntu-22.04
     steps:
-      - name: Checkout
+      - name: Checkout head branch
         uses: actions/checkout@v4
         with:
+          ref: single-wet-quality-reconstruction
           fetch-depth: 0
 
       - name: Apply single wet reconstruction
