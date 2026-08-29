@@ -8,7 +8,7 @@ int nextPowerOfTwo(int v) noexcept { int r=1; while(r<v) r<<=1; return r; }
 float clamp01(float v) noexcept { return std::clamp(std::isfinite(v)?v:0.0f,0.0f,1.0f); }
 float sanitiseAudioSample(float v) noexcept { if(!std::isfinite(v)||std::fpclassify(v)==FP_SUBNORMAL) return 0.0f; return std::clamp(v,-32.0f,32.0f); }
 float smoothStep(float a,float b,float v) noexcept { if(b<=a) return v>=b?1.0f:0.0f; const float x=std::clamp((v-a)/(b-a),0.0f,1.0f); return x*x*(3.0f-2.0f*x); }
-double wrapCorrectionToNearestOctave(double c) noexcept { if(!std::isfinite(c)) return 0.0; double w=std::fmod(c+600.0,1200.0); if(w<0) w+=1200.0; return w-600.0; }
+double sanitiseCorrectionCents(double c) noexcept { return std::clamp(std::isfinite(c) ? c : 0.0, -2400.0, 2400.0); }
 }
 
 void SingleWetSpectralRenderer::prepare(double sampleRate,
@@ -129,8 +129,8 @@ void SingleWetSpectralRenderer::prepare(double sampleRate,
     // Wind Fix V6: each latency mode receives its own analysis profile.
     // A 128-sample FFT cannot be tuned as if it had the resolution of a
     // 512-sample FFT.  Short modes therefore trust the independent F0 tracker
-    // more, change the harmonic/noise mask more slowly and reduce correction
-    // authority when the spectrum becomes noise-dominant.
+    // more and change the harmonic/noise mask more slowly. These analysis
+    // profiles classify reconstruction components; they never scale correction cents.
     if (frameSize_ <= 128)
     {
         profile_.combWeight = 0.58f;
@@ -985,8 +985,8 @@ void SingleWetSpectralRenderer::updateHarmonicNoiseAnalysis(
 
     // Noise-dominant safety mode (>~80%): attenuate a sustained breath bed,
     // but never try to turn it into a pitched signal.  Polyphonic/bleed frames
-    // are preserved rather than mistaken for removable noise; their pitch
-    // correction authority is reduced through spectralReliability below.
+    // are preserved rather than mistaken for removable noise. Spectral
+    // reliability remains a reconstruction diagnostic, never correction authority.
     const float dominanceDrive = noiseDominance
         * (0.30f + 0.70f * breathEvidence)
         * (1.0f - transientEvidence);
@@ -1005,8 +1005,8 @@ void SingleWetSpectralRenderer::updateHarmonicNoiseAnalysis(
         targetNoiseGain = std::max(targetNoiseGain, 0.92f);
 
     // If almost everything is classified as noise and periodic evidence is
-    // weak, do not gate the whole signal.  The controller will move toward the
-    // aligned dry path instead; retaining at least 82% prevents breath holes.
+    // weak, do not gate the whole residual; retaining at least 82% prevents
+    // breath holes without introducing any dry path.
     if (noiseDominance > 0.55f && periodicEvidence < 0.38f)
         targetNoiseGain = std::max(targetNoiseGain, 0.82f);
 
@@ -1060,7 +1060,9 @@ void SingleWetSpectralRenderer::synthesiseLayer(
 {
     std::fill(layer.spectrum.begin(), layer.spectrum.end(), Complex {});
 
-    const double safeCents = wrapCorrectionToNearestOctave(correctionCents);
+    // Correction authority comes from the musical trajectory. The renderer
+    // must not reinterpret register or reduce the requested interval.
+    const double safeCents = sanitiseCorrectionCents(correctionCents);
     const double safeRatio = std::exp2(safeCents / 1200.0);
     const double expectedPhaseScale = twoPi * static_cast<double>(hopSize_)
                                     / static_cast<double>(frameSize_);
