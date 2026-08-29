@@ -165,7 +165,7 @@ void ModernPitchEngine::MultiRatePitchTracker::reset() noexcept
 void ModernPitchEngine::MultiRatePitchTracker::setRange(float minimumPitchHz,
                                                          float maximumPitchHz) noexcept
 {
-    minimumPitchHz_ = std::clamp(minimumPitchHz, 35.0f, 500.0f);
+    minimumPitchHz_ = std::clamp(minimumPitchHz, 25.0f, 500.0f);
     maximumPitchHz_ = std::clamp(maximumPitchHz,
                                  minimumPitchHz_ + 20.0f,
                                  3000.0f);
@@ -1837,6 +1837,7 @@ void ModernPitchEngine::prepare(double sampleRate,
         channelTrackers_[static_cast<std::size_t>(channel)].prepare(sampleRate_);
         channelClocks_[static_cast<std::size_t>(channel)].prepare(sampleRate_, latencySamples_);
         channelPaths_[static_cast<std::size_t>(channel)].prepare(sampleRate_, latencySamples_);
+        wetRenderers_[static_cast<std::size_t>(channel)].prepare(sampleRate_, latencySamples_);
         channelTempoControllers_[static_cast<std::size_t>(channel)].prepare(sampleRate_);
     }
     reset();
@@ -1855,6 +1856,7 @@ void ModernPitchEngine::reset() noexcept
         channelQuantizers_[static_cast<std::size_t>(channel)].reset();
         channelClocks_[static_cast<std::size_t>(channel)].reset();
         channelPaths_[static_cast<std::size_t>(channel)].reset();
+        wetRenderers_[static_cast<std::size_t>(channel)].reset();
         channelTempoControllers_[static_cast<std::size_t>(channel)].reset();
         channelCorrections_[static_cast<std::size_t>(channel)] = {};
     }
@@ -2025,6 +2027,11 @@ void ModernPitchEngine::updateCorrectionState(
     const float humanize = clamp01(parameters.humanize);
     const bool richEvidence = parameters.voiceEvidenceValid;
     const bool validPitch = observation.valid && observation.frequencyHz > 0.0f;
+    if (validPitch)
+        state.pitchStaleSamples = 0;
+    else if (state.noteBodyLatched)
+        state.pitchStaleSamples = std::min(std::numeric_limits<int>::max() - hopSamples,
+                                           state.pitchStaleSamples + hopSamples);
 
     const float trackerBody = validPitch
         ? clamp01(0.34f * observation.voicing
@@ -2163,16 +2170,9 @@ void ModernPitchEngine::updateCorrectionState(
         // settle to stable from body evidence alone after a prior valid lock.
         if (state.noteBodyLatched)
         {
-            const int minimumStableSamples = static_cast<int>(std::lround(
-                0.012 * sampleRate_));
-            if (bodyPresent && state.targetValid
-                && (state.trackingState == TrackingState::attack
-                    || state.trackingState == TrackingState::acquire)
-                && state.stableBodyObservations >= 4
-                && state.stateAgeSamples >= minimumStableSamples)
-            {
-                setState(TrackingState::stable);
-            }
+            const int reacquireSamples = static_cast<int>(std::lround(0.070 * sampleRate_));
+            if (state.pitchStaleSamples >= reacquireSamples)
+                setState(TrackingState::acquire);
             return;
         }
 
@@ -2464,6 +2464,7 @@ double ModernPitchEngine::advanceCorrection(CorrectionState& state) noexcept
             state.noteBodyLatched = false;
             state.noteBodyConfidence = 0.0f;
             state.transportPeriodHz = 0.0;
+            state.pitchStaleSamples = 0;
             state.pitchCentreValid = false;
             state.stableBodyObservations = 0;
         }
@@ -2698,23 +2699,43 @@ void ModernPitchEngine::process(
     }
 
     const bool dualMono = safe.stereoMode == StereoMode::dualMono && channels > 1;
+    const auto rendererContext = [this, &safe](const PitchObservation& observation,
+                                               const CorrectionState& correction) noexcept
+    {
+        SingleWetSpectralRenderer::Context context;
+        const float latchedPitch = correction.transportPeriodHz > 0.0
+            ? static_cast<float>(correction.transportPeriodHz) : observation.frequencyHz;
+        context.detectedPitchHz = observation.valid ? observation.frequencyHz : latchedPitch;
+        context.noteBodyLatched = correction.noteBodyLatched;
+        context.noteBodyConfidence = correction.noteBodyConfidence;
+        context.confidence = std::max(observation.confidence, correction.noteBodyLatched
+            ? 0.85f * correction.noteBodyConfidence : 0.0f);
+        context.voicing = std::max(observation.voicing, correction.noteBodyLatched
+            ? 0.80f * correction.noteBodyConfidence : 0.0f);
+        context.consensus = std::max(observation.consensus, correction.noteBodyLatched
+            ? 0.65f * correction.noteBodyConfidence : 0.0f);
+        context.onsetStrength = observation.onsetStrength;
+        context.breathReduction = safe.breathReduction;
+        context.noteAgeSeconds = static_cast<float>(std::max(0, correction.stateAgeSamples) / sampleRate_);
+        context.stableMusicalBody = correction.trackingState == TrackingState::stable;
+        context.transitionBody = correction.trackingState == TrackingState::transition;
+        return context;
+    };
     for (int sample = 0; sample < samples; ++sample)
     {
-        double envelopeAnalysis = 0.0;
-        for (int channel = 0; channel < channels; ++channel)
-            envelopeAnalysis += data[static_cast<std::size_t>(channel)][sample];
-        const PitchObservation& envelopeObservation = dualMono
-            ? latestChannelObservation_[0] : latestObservation_;
-        pushLpcSample(
-            static_cast<float>(envelopeAnalysis / static_cast<double>(channels)),
-            channels, safe, envelopeObservation);
-
         if (dualMono)
         {
             for (int channel = 0; channel < channels; ++channel)
             {
                 PitchObservation observation;
                 auto& tracker = channelTrackers_[static_cast<std::size_t>(channel)];
+                auto& correction = channelCorrections_[static_cast<std::size_t>(channel)];
+                const bool rescueSearch = correction.noteBodyLatched
+                    && correction.pitchStaleSamples >= static_cast<int>(0.060 * sampleRate_);
+                tracker.setRange(rescueSearch ? std::min(safe.minimumPitchHz, 28.0f) : safe.minimumPitchHz,
+                                 safe.maximumPitchHz);
+                tracker.setSensitivity(rescueSearch ? std::max(safe.detectorSensitivity, 0.98f)
+                                                    : safe.detectorSensitivity);
                 if (tracker.processSample(data[static_cast<std::size_t>(channel)][sample],
                                           observation))
                 {
@@ -2725,7 +2746,6 @@ void ModernPitchEngine::process(
                         observation, safe);
                 }
 
-                auto& correction = channelCorrections_[static_cast<std::size_t>(channel)];
                 const double controllerCents = advanceCorrection(correction);
                 const auto decision = channelTempoControllers_[static_cast<std::size_t>(channel)]
                     .processSample(controllerCents,
@@ -2745,19 +2765,12 @@ void ModernPitchEngine::process(
                     correction.velocityCentsPerSecond = 0.0;
                 }
                 const double audible = decision.controllerCents;
-                const double ratio = std::clamp(std::exp2(audible / 1200.0), 0.25, 4.0);
-                const auto& syncObservation
-                    = latestChannelObservation_[static_cast<std::size_t>(channel)];
-                const double sourcePeriodSamples = correction.transportPeriodHz > 0.0
-                    ? sampleRate_ / correction.transportPeriodHz
-                    : 0.0;
-                const float syncStrength = transportSyncStrength(
-                    syncObservation, correction, safe);
-                const auto plan = channelClocks_[static_cast<std::size_t>(channel)].next(
-                    ratio, sourcePeriodSamples, syncStrength);
-                data[static_cast<std::size_t>(channel)][sample]
-                    = channelPaths_[static_cast<std::size_t>(channel)].process(
-                        data[static_cast<std::size_t>(channel)][sample], plan);
+                const auto context = rendererContext(
+                    latestChannelObservation_[static_cast<std::size_t>(channel)], correction);
+                data[static_cast<std::size_t>(channel)][sample] =
+                    wetRenderers_[static_cast<std::size_t>(channel)].processSample(
+                        data[static_cast<std::size_t>(channel)][sample], audible,
+                        safe.formantPreservation, context);
                 if (channel == 0)
                 {
                     latestObservation_ = latestChannelObservation_[0];
@@ -2772,6 +2785,12 @@ void ModernPitchEngine::process(
             for (int channel = 0; channel < channels; ++channel)
                 analysis += data[static_cast<std::size_t>(channel)][sample];
             PitchObservation observation;
+            const bool rescueSearch = linkedCorrection_.noteBodyLatched
+                && linkedCorrection_.pitchStaleSamples >= static_cast<int>(0.060 * sampleRate_);
+            linkedTracker_.setRange(rescueSearch ? std::min(safe.minimumPitchHz, 28.0f) : safe.minimumPitchHz,
+                                    safe.maximumPitchHz);
+            linkedTracker_.setSensitivity(rescueSearch ? std::max(safe.detectorSensitivity, 0.98f)
+                                                       : safe.detectorSensitivity);
             if (linkedTracker_.processSample(
                 static_cast<float>(analysis / static_cast<double>(channels)), observation))
             {
@@ -2795,19 +2814,12 @@ void ModernPitchEngine::process(
                 linkedCorrection_.velocityCentsPerSecond = 0.0;
             }
             audibleCorrectionCents_ = decision.controllerCents;
-            const double ratio = std::clamp(
-                std::exp2(audibleCorrectionCents_ / 1200.0), 0.25, 4.0);
-            const double sourcePeriodSamples = linkedCorrection_.transportPeriodHz > 0.0
-                ? sampleRate_ / linkedCorrection_.transportPeriodHz
-                : 0.0;
-            const float syncStrength = transportSyncStrength(
-                latestObservation_, linkedCorrection_, safe);
-            const auto plan = linkedClock_.next(
-                ratio, sourcePeriodSamples, syncStrength);
+            const auto context = rendererContext(latestObservation_, linkedCorrection_);
             for (int channel = 0; channel < channels; ++channel)
-                data[static_cast<std::size_t>(channel)][sample]
-                    = channelPaths_[static_cast<std::size_t>(channel)].process(
-                        data[static_cast<std::size_t>(channel)][sample], plan);
+                data[static_cast<std::size_t>(channel)][sample] =
+                    wetRenderers_[static_cast<std::size_t>(channel)].processSample(
+                        data[static_cast<std::size_t>(channel)][sample], audibleCorrectionCents_,
+                        safe.formantPreservation, context);
         }
 
         if (linkedCorrection_.noteBodyLatched
@@ -2863,9 +2875,9 @@ void ModernPitchEngine::processBypassed(juce::AudioBuffer<float>& buffer)
     for (int channel = 0; channel < channels; ++channel)
     {
         float* data = buffer.getWritePointer(channel);
-        auto& path = channelPaths_[static_cast<std::size_t>(channel)];
+        auto& renderer = wetRenderers_[static_cast<std::size_t>(channel)];
         for (int sample = 0; sample < samples; ++sample)
-            data[sample] = path.processBypassed(data[sample], latencySamples_);
+            data[sample] = renderer.processBypassedSample(data[sample]);
     }
 }
 

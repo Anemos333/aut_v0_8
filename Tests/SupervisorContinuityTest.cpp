@@ -99,23 +99,25 @@ int main()
     dropoutState.transportPeriodHz = 220.0;
     ModernPitchEngine::PitchObservation invalid;
 
-    // More than 200 ms without F0 is still the same sung note when the body
-    // sensors remain positive. Correction authority and period identity hold.
+    // More than 70 ms without F0 is still the same sung note, but it is no
+    // longer allowed to report stable pitch. Body and correction hold while
+    // the detector returns to acquire/search.
     for (int i = 0; i < 180; ++i)
     {
         engine->updateCorrectionState(dropoutState, quantizer, invalid, parameters);
         for (int s = 0; s < ModernPitchEngine::MultiRatePitchTracker::hopSize(); ++s)
             static_cast<void>(engine->advanceCorrection(dropoutState));
     }
-    success &= check(dropoutState.trackingState == ModernPitchEngine::TrackingState::stable
+    success &= check(dropoutState.trackingState == ModernPitchEngine::TrackingState::acquire
                      && dropoutState.noteBodyLatched
+                     && dropoutState.pitchStaleSamples > 0
                      && std::abs(dropoutState.desiredCents - 100.0) < 1.0e-9,
-                     "long_voiced_note_survives_pitch_dropouts");
+                     "stale_pitch_reacquires_without_reducing_correction");
     success &= check(std::abs(dropoutState.transportPeriodHz - 220.0) < 1.0e-9,
                      "pitch_dropout_keeps_latched_transport_period");
 
-    // Acquire is a musical state, not an F0-validity state. Once a target has
-    // been acquired, sustained body evidence can settle it even through a hole.
+    // Acquire persists while pitch is stale; positive body evidence must not
+    // falsely promote a five-second detector hole back to stable.
     ModernPitchEngine::CorrectionState acquireState = dropoutState;
     acquireState.trackingState = ModernPitchEngine::TrackingState::acquire;
     acquireState.stateAgeSamples = 0;
@@ -126,8 +128,10 @@ int main()
         for (int s = 0; s < ModernPitchEngine::MultiRatePitchTracker::hopSize(); ++s)
             static_cast<void>(engine->advanceCorrection(acquireState));
     }
-    success &= check(acquireState.trackingState == ModernPitchEngine::TrackingState::stable,
-                     "latched_body_does_not_stick_in_acquire_during_f0_hole");
+    success &= check(acquireState.trackingState == ModernPitchEngine::TrackingState::acquire
+                     && acquireState.noteBodyLatched
+                     && std::abs(acquireState.desiredCents - 100.0) < 1.0e-9,
+                     "stale_f0_cannot_masquerade_as_stable_note");
 
     // Positive breath evidence releases the note even if the tracker happens to
     // produce a strong spurious F0 on the noise.

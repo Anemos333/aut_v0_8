@@ -2,6 +2,7 @@
 
 #include <JuceHeader.h>
 #include "Tempo.h"
+#include "SingleWetSpectralRenderer.h"
 
 #include <array>
 #include <atomic>
@@ -494,6 +495,7 @@ private:
         int breathEvidenceSamples = 0;
         int uncertainSamples = 0;
         int stateAgeSamples = 0;
+        int pitchStaleSamples = 0;
         bool noteBodyLatched = false;
         float noteBodyConfidence = 0.0f;
         double transportPeriodHz = 0.0;
@@ -546,7 +548,8 @@ private:
     std::array<ScaleQuantizer, maxSupportedChannels> channelQuantizers_ {};
     TransportClock linkedClock_;
     std::array<TransportClock, maxSupportedChannels> channelClocks_ {};
-    std::array<ChannelPath, maxSupportedChannels> channelPaths_ {};
+    std::array<ChannelPath, maxSupportedChannels> channelPaths_ {}; // retained only for invariant comparison; not in audio path
+    std::array<SingleWetSpectralRenderer, maxSupportedChannels> wetRenderers_ {};
     CreativeTempo::Controller tempoController_;
     std::array<CreativeTempo::Controller, maxSupportedChannels> channelTempoControllers_ {};
     CorrectionState linkedCorrection_;
