@@ -157,6 +157,8 @@ if(NEUMATON_BUILD_CLEAN_ENGINE_TESTS)
         RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}/clean-engine-tests"
     )
 
+    # Retained as dormant regression fixtures for the superseded transport/LPC
+    # implementation. They are intentionally not part of the single-wet CI gate.
     juce_add_console_app(TransportContinuityTest
         PRODUCT_NAME TransportContinuityTest
     )
@@ -169,18 +171,10 @@ if(NEUMATON_BUILD_CLEAN_ENGINE_TESTS)
             Source/Tempo.cpp
     )
     target_include_directories(TransportContinuityTest PRIVATE Source)
-    target_compile_definitions(TransportContinuityTest
-        PRIVATE
-            JUCE_WEB_BROWSER=0
-            JUCE_USE_CURL=0
-    )
+    target_compile_definitions(TransportContinuityTest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
     target_link_libraries(TransportContinuityTest
-        PRIVATE
-            juce::juce_audio_basics
-            juce::juce_core
-        PUBLIC
-            juce::juce_recommended_config_flags
-            juce::juce_recommended_warning_flags
+        PRIVATE juce::juce_audio_basics juce::juce_core
+        PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags
     )
     set_target_properties(TransportContinuityTest PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/clean-engine-tests"
@@ -202,18 +196,10 @@ if(NEUMATON_BUILD_CLEAN_ENGINE_TESTS)
             Source/Tempo.cpp
     )
     target_include_directories(SupervisorContinuityTest PRIVATE Source)
-    target_compile_definitions(SupervisorContinuityTest
-        PRIVATE
-            JUCE_WEB_BROWSER=0
-            JUCE_USE_CURL=0
-    )
+    target_compile_definitions(SupervisorContinuityTest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
     target_link_libraries(SupervisorContinuityTest
-        PRIVATE
-            juce::juce_audio_basics
-            juce::juce_core
-        PUBLIC
-            juce::juce_recommended_config_flags
-            juce::juce_recommended_warning_flags
+        PRIVATE juce::juce_audio_basics juce::juce_core
+        PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags
     )
     set_target_properties(SupervisorContinuityTest PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/clean-engine-tests"
@@ -222,7 +208,6 @@ if(NEUMATON_BUILD_CLEAN_ENGINE_TESTS)
         RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/clean-engine-tests"
         RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}/clean-engine-tests"
     )
-
 
     juce_add_console_app(StableVoicePathTest
         PRODUCT_NAME StableVoicePathTest
@@ -236,18 +221,10 @@ if(NEUMATON_BUILD_CLEAN_ENGINE_TESTS)
             Source/Tempo.cpp
     )
     target_include_directories(StableVoicePathTest PRIVATE Source)
-    target_compile_definitions(StableVoicePathTest
-        PRIVATE
-            JUCE_WEB_BROWSER=0
-            JUCE_USE_CURL=0
-    )
+    target_compile_definitions(StableVoicePathTest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
     target_link_libraries(StableVoicePathTest
-        PRIVATE
-            juce::juce_audio_basics
-            juce::juce_core
-        PUBLIC
-            juce::juce_recommended_config_flags
-            juce::juce_recommended_warning_flags
+        PRIVATE juce::juce_audio_basics juce::juce_core
+        PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags
     )
     set_target_properties(StableVoicePathTest PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/clean-engine-tests"
@@ -256,5 +233,27 @@ if(NEUMATON_BUILD_CLEAN_ENGINE_TESTS)
         RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/clean-engine-tests"
         RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}/clean-engine-tests"
     )
-\n    juce_add_console_app(SingleWetSpectralRendererTest PRODUCT_NAME SingleWetSpectralRendererTest)\n    juce_generate_juce_header(SingleWetSpectralRendererTest)\n    target_sources(SingleWetSpectralRendererTest PRIVATE Tests/SingleWetSpectralRendererTest.cpp Source/SingleWetSpectralRenderer.cpp)\n    target_include_directories(SingleWetSpectralRendererTest PRIVATE Source)\n    target_compile_definitions(SingleWetSpectralRendererTest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)\n    target_link_libraries(SingleWetSpectralRendererTest PRIVATE juce::juce_core PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)\n    set_target_properties(SingleWetSpectralRendererTest PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/clean-engine-tests" RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/clean-engine-tests")\n
+
+    juce_add_console_app(SingleWetSpectralRendererTest
+        PRODUCT_NAME SingleWetSpectralRendererTest
+    )
+    juce_generate_juce_header(SingleWetSpectralRendererTest)
+    target_sources(SingleWetSpectralRendererTest
+        PRIVATE
+            Tests/SingleWetSpectralRendererTest.cpp
+            Source/SingleWetSpectralRenderer.cpp
+    )
+    target_include_directories(SingleWetSpectralRendererTest PRIVATE Source)
+    target_compile_definitions(SingleWetSpectralRendererTest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+    target_link_libraries(SingleWetSpectralRendererTest
+        PRIVATE juce::juce_core
+        PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags
+    )
+    set_target_properties(SingleWetSpectralRendererTest PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/clean-engine-tests"
+        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/clean-engine-tests"
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/clean-engine-tests"
+        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/clean-engine-tests"
+        RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}/clean-engine-tests"
+    )
 endif()
