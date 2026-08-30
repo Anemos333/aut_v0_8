@@ -16,8 +16,7 @@ text = text.replace('    static constexpr int maximumLpcOrder = 12;\n    static 
 text = between(text, '    struct TransportPlan\n', '    struct CorrectionState\n')
 text = between(text, '    [[nodiscard]] float transportSyncStrength(', '    void publishMetering(')
 text = text.replace('    TransportClock linkedClock_;\n    std::array<TransportClock, maxSupportedChannels> channelClocks_ {};\n    std::array<ChannelPath, maxSupportedChannels> channelPaths_ {}; // retained only for invariant comparison; not in audio path\n', '', 1)
-text = between(text, '    static constexpr int lpcAnalysisRingSize = 1024;\n', '    PitchObservation latestObservation_ {};
-')
+text = between(text, '    static constexpr int lpcAnalysisRingSize = 1024;\n', '    PitchObservation latestObservation_ {};\n')
 h.write_text(text)
 
 cpp = Path('Source/ModernPitchEngine.cpp')
