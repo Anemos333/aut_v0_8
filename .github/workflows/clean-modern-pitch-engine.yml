@@ -54,7 +54,7 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "Transport the complete spectrum through one pitch path"
+          git commit -m "Keep full-spectrum transport on one stable lattice"
           git push origin HEAD:single-wet-quality-reconstruction
 
   invariant-test:
@@ -100,20 +100,24 @@ jobs:
       - name: Build invariant tests
         run: cmake --build build-clean --config Release --target CleanModernPitchEngineTest VoiceEvidenceAnalyzerTest SupervisorContinuityTest SingleWetSpectralRendererTest GuiAudibilityTest GuiAudioControlContractTest --parallel 2
 
-      - name: Run invariant tests on Linux
+      - name: Run all invariant tests on Linux
         if: runner.os == 'Linux'
+        shell: bash
         run: |
-          ./build-clean/clean-engine-tests/CleanModernPitchEngineTest
-          ./build-clean/clean-engine-tests/VoiceEvidenceAnalyzerTest
-          ./build-clean/clean-engine-tests/SupervisorContinuityTest
-          ./build-clean/clean-engine-tests/SingleWetSpectralRendererTest
-          ./build-clean/clean-engine-tests/GuiAudibilityTest
-          ./build-clean/clean-engine-tests/GuiAudioControlContractTest
+          failed=0
+          ./build-clean/clean-engine-tests/CleanModernPitchEngineTest || failed=1
+          ./build-clean/clean-engine-tests/VoiceEvidenceAnalyzerTest || failed=1
+          ./build-clean/clean-engine-tests/SupervisorContinuityTest || failed=1
+          ./build-clean/clean-engine-tests/SingleWetSpectralRendererTest || failed=1
+          ./build-clean/clean-engine-tests/GuiAudibilityTest || failed=1
+          ./build-clean/clean-engine-tests/GuiAudioControlContractTest || failed=1
+          exit $failed
 
-      - name: Run invariant tests on Windows
+      - name: Run all invariant tests on Windows
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          $failed = $false
           $tests = @(
             ".\build-clean\clean-engine-tests\CleanModernPitchEngineTest.exe",
             ".\build-clean\clean-engine-tests\VoiceEvidenceAnalyzerTest.exe",
@@ -136,8 +140,9 @@ jobs:
             Write-Host "$name exit_code=$($process.ExitCode)"
             if (Test-Path $stdout) { Get-Content $stdout }
             if (Test-Path $stderr) { Get-Content $stderr }
-            if ($process.ExitCode -ne 0) { exit $process.ExitCode }
+            if ($process.ExitCode -ne 0) { $failed = $true }
           }
+          if ($failed) { exit 1 }
 
   windows-vst3:
     needs: apply-unified-transport
@@ -180,7 +185,8 @@ jobs:
             'NEUMATON_OUTPUT_V3',
             'layer.spectrum[sourceIndex] += fftBuffer_[sourceIndex]',
             'const float harmonicMagnitude',
-            'targetPosition = static_cast<double>(sourceBin) * safeRatio'
+            'const double sourcePosition = std::clamp(',
+            'phaseGuidance = clamp01(harmonicMask_[sourceIndex])'
           )
           foreach ($term in $forbiddenRenderer) {
             if (Select-String -Path $rendererFiles -Pattern $term -SimpleMatch -Quiet) {
@@ -191,10 +197,12 @@ jobs:
 
           $requiredRenderer = @(
             'FULL_SPECTRUM_SINGLE_TRANSPORT_V1',
-            'const float phaseGuidance',
+            'UNIFIED_VOICED_PHASE_GUIDANCE_V2',
+            'STABLE_SINGLE_LATTICE_TRANSPORT_V3',
+            'const float phaseGuidance = clamp01(smoothedSpectralReliability_)',
             'const float aperiodicEvidence',
-            'trueSourceBins_[sourceIndex]',
-            'const double targetPosition = sourcePosition * safeRatio',
+            'const double targetPosition = static_cast<double>(sourceBin) * safeRatio',
+            'trueSourceBins_[static_cast<std::size_t>(sourceBin)]',
             'context.pitchAnchorFresh'
           )
           foreach ($term in $requiredRenderer) {
