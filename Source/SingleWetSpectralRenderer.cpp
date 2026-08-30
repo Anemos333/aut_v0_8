@@ -1033,14 +1033,14 @@ void SingleWetSpectralRenderer::synthesiseLayer(
         const float aperiodicEvidence = 1.0f
             - clamp01(harmonicMask_[sourceIndex]);
 
-        // Use the instantaneous-frequency estimate rather than the integer FFT
-        // bin centre. This is essential in Live/Experimental, where a short FFT
-        // otherwise quantises the reconstructed pitch into very coarse bins.
-        const double sourcePosition = std::clamp(
-            trueSourceBins_[sourceIndex],
-            0.0,
-            static_cast<double>(positiveBins));
-        const double targetPosition = sourcePosition * safeRatio;
+        // STABLE_SINGLE_LATTICE_TRANSPORT_V3
+        // Magnitudes keep one stable FFT geometry. trueSourceBins_ is an
+        // instantaneous-frequency / phase-velocity estimate and belongs in the
+        // synthesis phase integrator above; using it again as magnitude geometry
+        // makes neighbouring leakage bins jump independently and fragments the
+        // reconstructed voice. Every bin is transported once from the common
+        // analysis lattice through the exact same correction ratio.
+        const double targetPosition = static_cast<double>(sourceBin) * safeRatio;
         if (targetPosition > static_cast<double>(positiveBins) + 1.0)
             continue;
 
