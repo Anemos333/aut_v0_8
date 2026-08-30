@@ -19,7 +19,7 @@ jobs:
         with:
           ref: single-wet-quality-reconstruction
           fetch-depth: 0
-      - name: Remove dormant transport and LPC code
+      - name: Remove dormant transport and LPC code (retry)
         run: |
           python .github/tmp_remove_dormant_paths.py
           rm .github/tmp_remove_dormant_paths.py
