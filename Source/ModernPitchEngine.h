@@ -180,9 +180,6 @@ public:
     [[nodiscard]] Metering getMetering() const noexcept;
 
 private:
-    static constexpr int maximumLpcOrder = 12;
-    static constexpr int transportRingSize = 16384;
-
     struct PitchObservation
     {
         float frequencyHz = 0.0f;
@@ -414,69 +411,6 @@ private:
         int pendingCount_ = 0;
     };
 
-    struct TransportPlan
-    {
-        double delayA = 0.0;
-        double delayB = 0.0;
-        float gainA = 1.0f;
-        float gainB = 0.0f;
-    };
-
-    class TransportClock
-    {
-    public:
-        void prepare(int reportedLatencySamples) noexcept;
-        void prepare(double sampleRate, int reportedLatencySamples) noexcept;
-        void reset() noexcept;
-        [[nodiscard]] TransportPlan next(double ratio) noexcept;
-        [[nodiscard]] TransportPlan next(double ratio,
-                                         double sourcePeriodSamples,
-                                         float syncStrength) noexcept;
-    private:
-        [[nodiscard]] TransportPlan nextInternal(double ratio,
-                                                 double sourcePeriodSamples,
-                                                 float syncStrength,
-                                                 bool periodAware) noexcept;
-        double phase_ = 0.5;
-        int minimumDelay_ = 8;
-        int rangeSamples_ = 240;
-        double sampleRate_ = 48000.0;
-        double periodNudgeSamples_ = 0.0;
-        float periodSyncAmount_ = 0.0f;
-        float periodSyncSmoothing_ = 0.01f;
-    };
-
-    class ChannelPath
-    {
-    public:
-        void prepare(double sampleRate, int reportedLatencySamples);
-        void reset() noexcept;
-        void setVoiceModel(
-            const std::array<float, maximumLpcOrder>& reflectionCoefficients,
-            float formantStrength,
-            float breathReduction) noexcept;
-        [[nodiscard]] float process(float input, const TransportPlan& plan) noexcept;
-        [[nodiscard]] float processBypassed(float input, int latencySamples) noexcept;
-
-    private:
-        [[nodiscard]] float interpolateResidual(double absolutePosition) const noexcept;
-        [[nodiscard]] static std::array<float, maximumLpcOrder> reflectionToLpc(
-            const std::array<float, maximumLpcOrder>& reflectionCoefficients) noexcept;
-        static float sanitise(float value) noexcept;
-        std::array<float, transportRingSize> residualRing_ {};
-        std::array<float, transportRingSize> bypassRing_ {};
-        std::array<float, maximumLpcOrder> inputHistory_ {};
-        std::array<float, maximumLpcOrder> outputHistory_ {};
-        std::array<float, maximumLpcOrder> currentReflection_ {};
-        std::array<float, maximumLpcOrder> targetReflection_ {};
-        std::int64_t sampleCounter_ = 0;
-        float reflectionSmoothing_ = 0.01f;
-        float breathLowPassCoefficient_ = 0.1f;
-        float breathLowPass_ = 0.0f;
-        float breathReduction_ = 0.0f;
-        float targetBreathReduction_ = 0.0f;
-    };
-
     struct CorrectionState
     {
         bool targetValid = false;
@@ -517,20 +451,6 @@ private:
                                const PitchObservation& observation,
                                const Parameters& parameters) noexcept;
     [[nodiscard]] double advanceCorrection(CorrectionState& state) noexcept;
-    [[nodiscard]] float transportSyncStrength(const PitchObservation& observation,
-                                              const CorrectionState& state,
-                                              const Parameters& parameters) const noexcept;
-    void pushLpcSample(float monoInput,
-                       int channels,
-                       const Parameters& parameters,
-                       const PitchObservation& observation) noexcept;
-    void updateLpcTarget(const juce::AudioBuffer<float>& buffer,
-                         int channels,
-                         int samples,
-                         const Parameters& parameters,
-                         const PitchObservation& observation) noexcept;
-    [[nodiscard]] static std::array<float, maximumLpcOrder>
-        calculateReflectionCoefficients(const float* mono, int samples) noexcept;
     void publishMetering(const PitchObservation& observation,
                          const CorrectionState& state,
                          double audibleCents,
@@ -546,26 +466,11 @@ private:
     std::array<MultiRatePitchTracker, maxSupportedChannels> channelTrackers_ {};
     ScaleQuantizer linkedQuantizer_;
     std::array<ScaleQuantizer, maxSupportedChannels> channelQuantizers_ {};
-    TransportClock linkedClock_;
-    std::array<TransportClock, maxSupportedChannels> channelClocks_ {};
-    std::array<ChannelPath, maxSupportedChannels> channelPaths_ {}; // retained only for invariant comparison; not in audio path
     std::array<SingleWetSpectralRenderer, maxSupportedChannels> wetRenderers_ {};
     CreativeTempo::Controller tempoController_;
     std::array<CreativeTempo::Controller, maxSupportedChannels> channelTempoControllers_ {};
     CorrectionState linkedCorrection_;
     std::array<CorrectionState, maxSupportedChannels> channelCorrections_ {};
-    static constexpr int lpcAnalysisRingSize = 1024;
-    static constexpr int lpcAnalysisRingMask = lpcAnalysisRingSize - 1;
-    static constexpr int lpcAnalysisWindowSize = 512;
-    static constexpr int lpcAnalysisHop = 64;
-    static_assert((lpcAnalysisRingSize & (lpcAnalysisRingSize - 1)) == 0,
-                  "LPC analysis ring size must be a power of two");
-    std::array<float, lpcAnalysisRingSize> lpcAnalysisRing_ {};
-    std::array<float, lpcAnalysisWindowSize> lpcAnalysisScratch_ {};
-    int lpcAnalysisWritePosition_ = 0;
-    int lpcAnalysisAvailableSamples_ = 0;
-    int lpcAnalysisHopCounter_ = 0;
-    std::array<float, maximumLpcOrder> currentReflectionTarget_ {};
     PitchObservation latestObservation_ {};
     std::array<PitchObservation, maxSupportedChannels> latestChannelObservation_ {};
     double audibleCorrectionCents_ = 0.0;

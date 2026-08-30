@@ -157,33 +157,6 @@ if(NEUMATON_BUILD_CLEAN_ENGINE_TESTS)
         RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}/clean-engine-tests"
     )
 
-    # Retained as dormant regression fixtures for the superseded transport/LPC
-    # implementation. They are intentionally not part of the single-wet CI gate.
-    juce_add_console_app(TransportContinuityTest
-        PRODUCT_NAME TransportContinuityTest
-    )
-    juce_generate_juce_header(TransportContinuityTest)
-    target_sources(TransportContinuityTest
-        PRIVATE
-            Tests/TransportContinuityTest.cpp
-            Source/ModernPitchEngine.cpp
-            Source/SingleWetSpectralRenderer.cpp
-            Source/Tempo.cpp
-    )
-    target_include_directories(TransportContinuityTest PRIVATE Source)
-    target_compile_definitions(TransportContinuityTest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
-    target_link_libraries(TransportContinuityTest
-        PRIVATE juce::juce_audio_basics juce::juce_core
-        PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags
-    )
-    set_target_properties(TransportContinuityTest PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}/clean-engine-tests"
-    )
-
     juce_add_console_app(SupervisorContinuityTest
         PRODUCT_NAME SupervisorContinuityTest
     )
@@ -202,31 +175,6 @@ if(NEUMATON_BUILD_CLEAN_ENGINE_TESTS)
         PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags
     )
     set_target_properties(SupervisorContinuityTest PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}/clean-engine-tests"
-    )
-
-    juce_add_console_app(StableVoicePathTest
-        PRODUCT_NAME StableVoicePathTest
-    )
-    juce_generate_juce_header(StableVoicePathTest)
-    target_sources(StableVoicePathTest
-        PRIVATE
-            Tests/StableVoicePathTest.cpp
-            Tests/StableVoicePathModernPitchEngineCompile.cpp
-            Source/SingleWetSpectralRenderer.cpp
-            Source/Tempo.cpp
-    )
-    target_include_directories(StableVoicePathTest PRIVATE Source)
-    target_compile_definitions(StableVoicePathTest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
-    target_link_libraries(StableVoicePathTest
-        PRIVATE juce::juce_audio_basics juce::juce_core
-        PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags
-    )
-    set_target_properties(StableVoicePathTest PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/clean-engine-tests"
         RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/clean-engine-tests"
         RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/clean-engine-tests"
