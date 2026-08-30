@@ -25,12 +25,13 @@ if sentinel in renderer:
 renderer = require_once(
     renderer,
     r"    // Wind Fix V6: each latency mode receives its own analysis profile\..*?    const double envelopeUpdateSeconds",
-    """    // FULL_SPECTRUM_SINGLE_TRANSPORT_V1\n"
-    "    // Quality, Live and Experimental share one reconstruction law. Frame\n"
-    "    // size may change latency/resolution, but classification is never a\n"
-    "    // licence to route spectral energy through a different reconstruction.\n"
-    "    profile_ = AnalysisProfile {};\n\n"
-    "    const double envelopeUpdateSeconds""",
+    """    // FULL_SPECTRUM_SINGLE_TRANSPORT_V1
+    // Quality, Live and Experimental share one reconstruction law. Frame
+    // size may change latency/resolution, but classification is never a
+    // licence to route spectral energy through a different reconstruction.
+    profile_ = AnalysisProfile {};
+
+    const double envelopeUpdateSeconds""",
     "replace mode-specific reconstruction profiles",
     flags=re.S,
 )
@@ -38,8 +39,8 @@ renderer = require_once(
 renderer = require_once(
     renderer,
     r"    noiseReductionAttackCoefficient_ = frameCoefficient\(\n        frameSize_ <= 128 \? 42\.0f : frameSize_ <= 256 \? 34\.0f : 28\.0f\);\n    noiseReductionReleaseCoefficient_ = frameCoefficient\(\n        frameSize_ <= 128 \? 260\.0f : frameSize_ <= 256 \? 220\.0f : 180\.0f\);",
-    """    noiseReductionAttackCoefficient_ = frameCoefficient(28.0f);\n"
-    "    noiseReductionReleaseCoefficient_ = frameCoefficient(180.0f);""",
+    """    noiseReductionAttackCoefficient_ = frameCoefficient(28.0f);
+    noiseReductionReleaseCoefficient_ = frameCoefficient(180.0f);""",
     "unify de-breath time constants",
 )
 
@@ -53,18 +54,25 @@ renderer = require_once(
 renderer = require_once(
     renderer,
     r"    const bool reliableF0 = f0 >= 42\.0f\n                         && f0 <= static_cast<float>\(sampleRate_ \* 0\.22\)\n                         && context\.confidence >= 0\.20f;",
-    """    const bool reliableF0 = context.pitchAnchorFresh\n"
-    "                         && f0 >= 42.0f\n"
-    "                         && f0 <= static_cast<float>(sampleRate_ * 0.22)\n"
-    "                         && context.confidence >= 0.20f;""",
+    """    const bool reliableF0 = context.pitchAnchorFresh
+                         && f0 >= 42.0f
+                         && f0 <= static_cast<float>(sampleRate_ * 0.22)
+                         && context.confidence >= 0.20f;""",
     "require fresh pitch anchor for F0-guided reconstruction",
 )
 
-renderer = renderer.replace(
-    """        // Low-confidence frames must not redraw the complete mask.  Retain the\n        // previous spectral classification and allow only bounded, mode-aware\n        // movement per frame.  Falling mask values expose more residual, so\n        // they deliberately move more slowly in Live/Experimental.\n""",
-    """        // Low-confidence frames must not redraw the complete guidance map.\n        // This map controls reconstruction care/phase locking only. It never\n        // decides which spectral energy is transported to the target pitch.\n""",
-    1,
-)
+old_guidance_comment = """        // Low-confidence frames must not redraw the complete mask.  Retain the
+        // previous spectral classification and allow only bounded, mode-aware
+        // movement per frame.  Falling mask values expose more residual, so
+        // they deliberately move more slowly in Live/Experimental.
+"""
+new_guidance_comment = """        // Low-confidence frames must not redraw the complete guidance map.
+        // This map controls reconstruction care/phase locking only. It never
+        // decides which spectral energy is transported to the target pitch.
+"""
+if old_guidance_comment not in renderer:
+    raise RuntimeError("guidance comment: expected old block")
+renderer = renderer.replace(old_guidance_comment, new_guidance_comment, 1)
 
 synthesis_pattern = re.compile(
     r"        const float harmonicWeight = clamp01\(harmonicMask_\[sourceIndex\]\);\n"
@@ -75,7 +83,61 @@ synthesis_pattern = re.compile(
     re.S,
 )
 
-synthesis_replacement = """        // The classifier is advisory only. Every spectral bin has exactly one\n        // transported coordinate. Tonal/aperiodic evidence changes how strongly\n        // the phase is locked and how de-breath gain is shaped, never whether a\n        // fraction of the bin remains at its source pitch.\n        const float phaseGuidance = clamp01(harmonicMask_[sourceIndex]);\n        const float aperiodicEvidence = 1.0f - phaseGuidance;\n\n        // Use the instantaneous-frequency estimate rather than the integer FFT\n        // bin centre. This is essential in Live/Experimental, where a short FFT\n        // otherwise quantises the reconstructed pitch into very coarse bins.\n        const double sourcePosition = std::clamp(\n            trueSourceBins_[sourceIndex],\n            0.0,\n            static_cast<double>(positiveBins));\n        const double targetPosition = sourcePosition * safeRatio;\n        if (targetPosition > static_cast<double>(positiveBins) + 1.0)\n            continue;\n\n        const int peak = nearestPeak_[sourceIndex];\n        const double relativeAnalysisPhase = wrapPhase(\n            static_cast<double>(analysisPhases_[sourceIndex])\n            - static_cast<double>(analysisPhases_[static_cast<std::size_t>(peak)]));\n        const double ownTransportPhase = initialiseLayer\n            ? static_cast<double>(analysisPhases_[sourceIndex])\n            : propagatedPhases_[sourceIndex];\n        const double peakLockedPhase = initialiseLayer\n            ? static_cast<double>(analysisPhases_[sourceIndex])\n            : propagatedPhases_[static_cast<std::size_t>(peak)]\n                + relativeAnalysisPhase;\n        const double outputPhase = ownTransportPhase\n            + static_cast<double>(phaseGuidance)\n                * wrapPhase(peakLockedPhase - ownTransportPhase);\n\n        const float sourceEnvelope = std::max(\n            1.0e-8f,\n            spectralEnvelope_[sourceIndex]);\n        const float targetEnvelope = std::max(\n            1.0e-8f,\n            interpolateEnvelope(targetPosition));\n        const float envelopeRatio = std::clamp(\n            targetEnvelope / sourceEnvelope,\n            0.56f,\n            1.78f);\n        const float formantGain = lookupFormantGain(envelopeRatio, safeFormant);\n\n        const float frequencyHz = binFrequency(sourceBin);\n        const float deBreathBandStrength = 0.16f\n            + 0.84f * smoothStep(850.0f, 6200.0f, frequencyHz);\n        const float reconstructionGain = 1.0f\n            - aperiodicEvidence * deBreathBandStrength\n                * (1.0f - smoothedNoiseGain_);\n        const float outputMagnitude = magnitude\n                                    * reconstructionGain\n                                    * formantGain\n                                    * energyScale;"""
+synthesis_replacement = """        // The classifier is advisory only. Every spectral bin has exactly one
+        // transported coordinate. Tonal/aperiodic evidence changes how strongly
+        // the phase is locked and how de-breath gain is shaped, never whether a
+        // fraction of the bin remains at its source pitch.
+        const float phaseGuidance = clamp01(harmonicMask_[sourceIndex]);
+        const float aperiodicEvidence = 1.0f - phaseGuidance;
+
+        // Use the instantaneous-frequency estimate rather than the integer FFT
+        // bin centre. This is essential in Live/Experimental, where a short FFT
+        // otherwise quantises the reconstructed pitch into very coarse bins.
+        const double sourcePosition = std::clamp(
+            trueSourceBins_[sourceIndex],
+            0.0,
+            static_cast<double>(positiveBins));
+        const double targetPosition = sourcePosition * safeRatio;
+        if (targetPosition > static_cast<double>(positiveBins) + 1.0)
+            continue;
+
+        const int peak = nearestPeak_[sourceIndex];
+        const double relativeAnalysisPhase = wrapPhase(
+            static_cast<double>(analysisPhases_[sourceIndex])
+            - static_cast<double>(analysisPhases_[static_cast<std::size_t>(peak)]));
+        const double ownTransportPhase = initialiseLayer
+            ? static_cast<double>(analysisPhases_[sourceIndex])
+            : propagatedPhases_[sourceIndex];
+        const double peakLockedPhase = initialiseLayer
+            ? static_cast<double>(analysisPhases_[sourceIndex])
+            : propagatedPhases_[static_cast<std::size_t>(peak)]
+                + relativeAnalysisPhase;
+        const double outputPhase = ownTransportPhase
+            + static_cast<double>(phaseGuidance)
+                * wrapPhase(peakLockedPhase - ownTransportPhase);
+
+        const float sourceEnvelope = std::max(
+            1.0e-8f,
+            spectralEnvelope_[sourceIndex]);
+        const float targetEnvelope = std::max(
+            1.0e-8f,
+            interpolateEnvelope(targetPosition));
+        const float envelopeRatio = std::clamp(
+            targetEnvelope / sourceEnvelope,
+            0.56f,
+            1.78f);
+        const float formantGain = lookupFormantGain(envelopeRatio, safeFormant);
+
+        const float frequencyHz = binFrequency(sourceBin);
+        const float deBreathBandStrength = 0.16f
+            + 0.84f * smoothStep(850.0f, 6200.0f, frequencyHz);
+        const float reconstructionGain = 1.0f
+            - aperiodicEvidence * deBreathBandStrength
+                * (1.0f - smoothedNoiseGain_);
+        const float outputMagnitude = magnitude
+                                    * reconstructionGain
+                                    * formantGain
+                                    * energyScale;"""
 renderer, count = synthesis_pattern.subn(synthesis_replacement, renderer, count=1)
 if count != 1:
     raise RuntimeError(f"single-coordinate synthesis: expected exactly one match, found {count}")
@@ -90,9 +152,10 @@ if "targetPosition = static_cast<double>(sourceBin) * safeRatio" in renderer:
 engine = require_once(
     engine,
     r"        context\.noteBodyLatched = correction\.noteBodyLatched;\n",
-    """        context.noteBodyLatched = correction.noteBodyLatched;\n"
-    "        context.pitchAnchorFresh = observation.valid\n"
-    "            && correction.pitchStaleSamples == 0;\n""",
+    """        context.noteBodyLatched = correction.noteBodyLatched;
+        context.pitchAnchorFresh = observation.valid
+            && correction.pitchStaleSamples == 0;
+""",
     "publish pitch freshness to renderer",
 )
 
@@ -100,7 +163,7 @@ supervisor = require_once(
     supervisor,
     r"    setBodyEvidence\(parameters\);\n    const auto syncObservation = strongPitch\(\);.*?"
     r"    // A long vibrato around one quantized note is stable musical content, not\n",
-    """    // A long vibrato around one quantized note is stable musical content, not\n""",
+    "    // A long vibrato around one quantized note is stable musical content, not\n",
     "remove obsolete TransportClock invariants",
     flags=re.S,
 )
@@ -116,25 +179,48 @@ supervisor = require_once(
 supervisor = require_once(
     supervisor,
     r"    bool leftMusicalBody = false;\n    for \(int hop = 0; hop < 1800; \+\+hop\)",
-    """    bool leftMusicalBody = false;\n"
-    "    bool vibratoTargetCaptured = false;\n"
-    "    bool vibratoChangedTargetIdentity = false;\n"
-    "    double vibratoTargetReference = 0.0;\n"
-    "    for (int hop = 0; hop < 1800; ++hop)""",
+    """    bool leftMusicalBody = false;
+    bool vibratoTargetCaptured = false;
+    bool vibratoChangedTargetIdentity = false;
+    double vibratoTargetReference = 0.0;
+    for (int hop = 0; hop < 1800; ++hop)""",
     "add vibrato target identity tracking",
 )
 
 supervisor = require_once(
     supervisor,
     r"        if \(hop > 100\n            && \(vibratoState\.trackingState == ModernPitchEngine::TrackingState::unvoiced\n                \|\| vibratoState\.trackingState == ModernPitchEngine::TrackingState::release\)\)\n        \{\n            leftMusicalBody = true;\n        \}\n",
-    """        if (hop > 100\n            && (vibratoState.trackingState == ModernPitchEngine::TrackingState::unvoiced\n                || vibratoState.trackingState == ModernPitchEngine::TrackingState::release))\n        {\n            leftMusicalBody = true;\n        }\n        if (hop > 100 && vibratoState.targetValid)\n        {\n            if (!vibratoTargetCaptured)\n            {\n                vibratoTargetReference = vibratoState.targetLog2;\n                vibratoTargetCaptured = true;\n            }\n            else if (std::abs(vibratoState.targetLog2 - vibratoTargetReference) * 1200.0 > 0.5)\n            {\n                vibratoChangedTargetIdentity = true;\n            }\n        }\n""",
+    """        if (hop > 100
+            && (vibratoState.trackingState == ModernPitchEngine::TrackingState::unvoiced
+                || vibratoState.trackingState == ModernPitchEngine::TrackingState::release))
+        {
+            leftMusicalBody = true;
+        }
+        if (hop > 100 && vibratoState.targetValid)
+        {
+            if (!vibratoTargetCaptured)
+            {
+                vibratoTargetReference = vibratoState.targetLog2;
+                vibratoTargetCaptured = true;
+            }
+            else if (std::abs(vibratoState.targetLog2 - vibratoTargetReference) * 1200.0 > 0.5)
+            {
+                vibratoChangedTargetIdentity = true;
+            }
+        }
+""",
     "track vibrato target identity",
 )
 
 supervisor = require_once(
     supervisor,
     r"    success &= check\(!leftMusicalBody\n                     && vibratoState\.noteBodyLatched\n                     && vibratoState\.trackingState == ModernPitchEngine::TrackingState::stable,\n                     \"long_vibrato_is_classified_as_stable_note_body\"\);",
-    """    success &= check(!leftMusicalBody\n                     && vibratoState.noteBodyLatched\n                     && vibratoState.trackingState == ModernPitchEngine::TrackingState::stable,\n                     \"long_vibrato_is_classified_as_stable_note_body\");\n    success &= check(vibratoTargetCaptured && !vibratoChangedTargetIdentity,\n                     \"vibrato_does_not_become_a_note_identity_change\");""",
+    """    success &= check(!leftMusicalBody
+                     && vibratoState.noteBodyLatched
+                     && vibratoState.trackingState == ModernPitchEngine::TrackingState::stable,
+                     "long_vibrato_is_classified_as_stable_note_body");
+    success &= check(vibratoTargetCaptured && !vibratoChangedTargetIdentity,
+                     "vibrato_does_not_become_a_note_identity_change");""",
     "assert vibrato identity stability",
 )
 
