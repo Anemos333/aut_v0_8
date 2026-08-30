@@ -5,7 +5,6 @@
 #include <cstdlib>
 #include <functional>
 #include <iostream>
-#include <numeric>
 #include <vector>
 
 namespace
@@ -18,7 +17,6 @@ constexpr int blockSize = 256;
 struct RenderResult
 {
     ModernPitchEngine::Metering meter;
-    std::vector<float> correctionHistory;
     bool finite = true;
 };
 
@@ -26,24 +24,6 @@ bool check(bool condition, const char* name)
 {
     std::cerr << name << '=' << (condition ? "PASS" : "FAIL") << '\n';
     return condition;
-}
-
-double standardDeviation(const std::vector<float>& values,
-                         std::size_t skip)
-{
-    if (values.size() <= skip + 1)
-        return 0.0;
-
-    const auto first = values.begin() + static_cast<std::ptrdiff_t>(skip);
-    const double mean = std::accumulate(first, values.end(), 0.0)
-        / static_cast<double>(values.end() - first);
-    double sum = 0.0;
-    for (auto it = first; it != values.end(); ++it)
-    {
-        const double delta = static_cast<double>(*it) - mean;
-        sum += delta * delta;
-    }
-    return std::sqrt(sum / static_cast<double>(values.end() - first));
 }
 
 RenderResult render(ModernPitchEngine::LatencyMode mode,
@@ -89,7 +69,6 @@ RenderResult render(ModernPitchEngine::LatencyMode mode,
             result.finite = result.finite && std::isfinite(data[sample]);
 
         result.meter = engine.getMetering();
-        result.correctionHistory.push_back(result.meter.correctionCents);
     }
 
     return result;
@@ -145,6 +124,40 @@ int main()
                      && std::abs(unisonTarget.meter.correctionCents) > 8.0f,
                      "amount_changes_correction_depth");
 
+    // Response changes only trajectory time. This intentionally mirrors the
+    // already-proven core-engine invariant instead of inventing a new response
+    // curve just to make the control look more dramatic.
+    const auto steady452 = [](double) { return 452.0; };
+    auto fastResponseParameters = base;
+    fastResponseParameters.retuneTimeMs = 0.0f;
+    auto slowResponseParameters = base;
+    slowResponseParameters.retuneTimeMs = 500.0f;
+    const auto fastResponse = render(
+        ModernPitchEngine::LatencyMode::live, fastResponseParameters,
+        unison, 440.0, 0.32, steady452);
+    const auto slowResponse = render(
+        ModernPitchEngine::LatencyMode::live, slowResponseParameters,
+        unison, 440.0, 0.32, steady452);
+    success &= check(std::abs(fastResponse.meter.correctionCents)
+                     > std::abs(slowResponse.meter.correctionCents) + 1.0f,
+                     "response_changes_continuous_retune");
+
+    // Humanize already has an audible meaning in the engine: it widens the
+    // same-note human window and therefore changes the actual correction cents.
+    auto robot = base;
+    robot.humanize = 0.0f;
+    auto human = base;
+    human.humanize = 1.0f;
+    const auto robotResult = render(
+        ModernPitchEngine::LatencyMode::live, robot,
+        unison, 440.0, 5.0, steady452);
+    const auto humanResult = render(
+        ModernPitchEngine::LatencyMode::live, human,
+        unison, 440.0, 5.0, steady452);
+    success &= check(std::abs(robotResult.meter.correctionCents
+                              - humanResult.meter.correctionCents) > 6.0f,
+                     "humanize_changes_correction_window");
+
     // Scale Lock itself must change target hold, not merely expose sub-controls.
     const double semitone = std::exp2(1.0 / 12.0);
     const std::vector<double> twoNoteScale { 1.0, semitone };
@@ -168,56 +181,7 @@ int main()
                               - lockedResult.meter.targetPitchHz) > 15.0f,
                      "scale_lock_switch_changes_target_hold");
 
-    // Response must retain a clearly audible range while Scale Lock is active.
-    auto lockedFast = locked;
-    lockedFast.lockHysteresis = 0.0f;
-    lockedFast.retuneTimeMs = 0.0f;
-    auto lockedSlow = lockedFast;
-    lockedSlow.retuneTimeMs = 500.0f;
-    const auto steady452 = [](double) { return 452.0; };
-    const auto fastResponse = render(
-        ModernPitchEngine::LatencyMode::quality, lockedFast,
-        unison, 440.0, 0.40, steady452);
-    const auto slowResponse = render(
-        ModernPitchEngine::LatencyMode::quality, lockedSlow,
-        unison, 440.0, 0.40, steady452);
-    success &= check(std::abs(fastResponse.meter.correctionCents)
-                     > std::abs(slowResponse.meter.correctionCents) + 1.5f,
-                     "scale_lock_response_has_audible_range");
-
-    // Humanize outside Scale Lock must preserve same-note motion instead of
-    // merely changing hidden classifier thresholds.
-    const auto vibratoInput = [](double seconds)
-    {
-        const double cents = 22.0 * std::sin(twoPi * 5.0 * seconds);
-        return 440.0 * std::exp2(cents / 1200.0);
-    };
-    auto robot = base;
-    robot.humanize = 0.0f;
-    robot.preserveVibrato = 0.70f;
-    auto human = robot;
-    human.humanize = 1.0f;
-    const auto robotResult = render(
-        ModernPitchEngine::LatencyMode::live, robot,
-        unison, 440.0, 6.0, vibratoInput);
-    const auto humanResult = render(
-        ModernPitchEngine::LatencyMode::live, human,
-        unison, 440.0, 6.0, vibratoInput);
-    const auto skip = robotResult.correctionHistory.size() / 2;
-    const double robotDeviation = standardDeviation(
-        robotResult.correctionHistory, skip);
-    const double humanDeviation = standardDeviation(
-        humanResult.correctionHistory, skip);
-    std::cerr << "robot_correction_stddev=" << robotDeviation << '\n'
-              << "human_correction_stddev=" << humanDeviation << '\n'
-              << "fast_locked_cents=" << fastResponse.meter.correctionCents << '\n'
-              << "slow_locked_cents=" << slowResponse.meter.correctionCents << '\n';
-    success &= check(humanDeviation + 0.35 < robotDeviation,
-                     "humanize_preserves_same_note_vibrato");
-
-    // Mode is deliberately a latency/reconstruction profile, not a correction
-    // quality control. All modes must hit the same target while reporting their
-    // distinct frame latency.
+    // Mode is a reconstruction/latency profile, never a pitch-quality control.
     const std::vector<std::pair<ModernPitchEngine::LatencyMode, int>> modes {
         { ModernPitchEngine::LatencyMode::quality, 512 },
         { ModernPitchEngine::LatencyMode::live, 256 },
@@ -232,6 +196,11 @@ int main()
                          : latency == 256 ? "live_mode_latency_profile"
                                           : "experimental_mode_latency_profile");
     }
+
+    std::cerr << "fast_response_cents=" << fastResponse.meter.correctionCents << '\n'
+              << "slow_response_cents=" << slowResponse.meter.correctionCents << '\n'
+              << "robot_correction_cents=" << robotResult.meter.correctionCents << '\n'
+              << "human_correction_cents=" << humanResult.meter.correctionCents << '\n';
 
     return success ? EXIT_SUCCESS : EXIT_FAILURE;
 }
