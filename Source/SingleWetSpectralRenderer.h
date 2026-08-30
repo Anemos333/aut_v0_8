@@ -46,8 +46,7 @@ private:
                       float formantPreservation, const Context& context) noexcept;
     void synthesiseLayer(SynthesisLayer& layer, std::int64_t frameEndSample,
                          double correctionCents, float formantPreservation,
-                         bool resetPhases, float phaseAnchor,
-                         int positiveBins) noexcept;
+                         bool resetPhases, int positiveBins) noexcept;
     void clearLayerOutput(SynthesisLayer& layer) noexcept;
     [[nodiscard]] float consumeLayerOutput(SynthesisLayer& layer,
                                            std::int64_t sample) noexcept;
