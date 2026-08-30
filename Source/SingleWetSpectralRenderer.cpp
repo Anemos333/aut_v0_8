@@ -1025,8 +1025,13 @@ void SingleWetSpectralRenderer::synthesiseLayer(
         // transported coordinate. Tonal/aperiodic evidence changes how strongly
         // the phase is locked and how de-breath gain is shaped, never whether a
         // fraction of the bin remains at its source pitch.
-        const float phaseGuidance = clamp01(harmonicMask_[sourceIndex]);
-        const float aperiodicEvidence = 1.0f - phaseGuidance;
+        // UNIFIED_VOICED_PHASE_GUIDANCE_V2
+        // One voiced/reconstruction confidence controls phase coherence for the
+        // complete spectrum. The harmonic map may still describe local noise
+        // for de-breath treatment, but it no longer partitions phase behaviour.
+        const float phaseGuidance = clamp01(smoothedSpectralReliability_);
+        const float aperiodicEvidence = 1.0f
+            - clamp01(harmonicMask_[sourceIndex]);
 
         // Use the instantaneous-frequency estimate rather than the integer FFT
         // bin centre. This is essential in Live/Experimental, where a short FFT
