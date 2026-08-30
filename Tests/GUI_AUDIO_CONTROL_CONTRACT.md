@@ -7,9 +7,9 @@ The release rule is **no placebo controls**. A user-facing sound control must ei
 | Scale | all | changes the quantizer degree set and therefore target pitch |
 | Root | all | transposes the quantizer reference and target pitch |
 | Mode | all | selects untouched High Latency/YIN or one of the single-wet frame/latency profiles |
-| Response | all | changes correction trajectory time; with Scale Lock the full knob must retain a clearly audible mode-aware range |
+| Response | all | changes correction trajectory time; when Scale Lock remaps Response, the displayed ms value follows the same DSP curve |
 | Amount | all | scales correction cents; it is never a dry/wet control |
-| Humanize | modern only | changes same-note tolerance and retained vibrato; disabled in High Latency |
+| Humanize | modern only | changes same-note tolerance/correction window; disabled in High Latency |
 | Scale Lock | modern only | changes target-identity hold/commit behaviour; disabled in High Latency |
 | Hold | modern + Scale Lock | changes scale-degree hysteresis; hidden/disabled otherwise |
 | Vibrato Preserve | modern + Scale Lock | changes retained same-note vibrato; hidden/disabled otherwise |
