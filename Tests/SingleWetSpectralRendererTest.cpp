@@ -122,6 +122,23 @@ int main()
                                             : "experimental_obeys_exact_transport");
     }
 
+    // Sensor state may change detector/supervisor decisions upstream, but once
+    // the correction/formant request reaches the renderer it must not alter a
+    // single output sample. This catches hidden protective audio modulation.
+    const auto highGuidance = renderTone(512, 0.95f, 0.95f, true, 100.0);
+    const auto noGuidance = renderTone(512, 0.0f, 0.0f, false, 100.0);
+    double sensorAudioMaxDifference = 0.0;
+    for (std::size_t sample = 0; sample < highGuidance.size(); ++sample)
+    {
+        sensorAudioMaxDifference = std::max(
+            sensorAudioMaxDifference,
+            std::abs(static_cast<double>(highGuidance[sample])
+                     - static_cast<double>(noGuidance[sample])));
+    }
+    std::cerr << "sensor_audio_max_difference=" << sensorAudioMaxDifference << '\n';
+    success &= check(sensorAudioMaxDifference < 1.0e-7,
+                     "sensor_evidence_cannot_modify_audio_reconstruction");
+
     // Sensor confidence cannot authorize part of the spectrum to remain at the
     // source pitch while a correction request exists.
     const auto lowConfidence = renderTone(512, 0.05f, 0.92f, true, 100.0);
@@ -147,8 +164,8 @@ int main()
                      "octave_correction_is_not_wrapped_or_split");
 
     // Deliberately remove voiced/F0 guidance and feed an inharmonic signal.
-    // The classifier is now allowed only to choose reconstruction technique;
-    // it cannot decide that a residual fraction stays at source coordinates.
+    // Evidence is observer-only here: it cannot alter, attenuate or split the
+    // requested transport.
     const auto inharmonic = renderInharmonicOctaveShift();
     constexpr std::array<double, 4> sourceFrequencies { 277.0, 401.0, 593.0, 877.0 };
     double inharmonicSourcePower = 0.0;
@@ -162,7 +179,7 @@ int main()
         / std::max(1.0e-20, inharmonicSourcePower);
     std::cerr << "inharmonic_full_transport_ratio=" << inharmonicRatio << '\n';
     success &= check(inharmonicTargetPower > 2.0 * inharmonicSourcePower,
-                     "aperiodic_evidence_cannot_create_hidden_dry_spectrum");
+                     "aperiodic_evidence_cannot_modify_or_split_transport");
 
     return success ? 0 : 1;
 }
