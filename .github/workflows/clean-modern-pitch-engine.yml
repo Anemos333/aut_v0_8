@@ -47,14 +47,14 @@ jobs:
       - name: Commit transformed source only
         shell: bash
         run: |
-          git add Source/SingleWetSpectralRenderer.cpp Source/ModernPitchEngine.cpp Tests/SupervisorContinuityTest.cpp
+          git add Source/SingleWetSpectralRenderer.cpp
           if git diff --cached --quiet; then
             echo "No source transformation needed"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "Keep full-spectrum transport on one stable lattice"
+          git commit -m "Remove protective modulation from spectral audio path"
           git push origin HEAD:single-wet-quality-reconstruction
 
   invariant-test:
@@ -166,7 +166,7 @@ jobs:
           cmake --build build-vst3 --config Release `
             --target Neumaton_VST3 --parallel 2
 
-      - name: Verify one-coordinate spectral architecture and package
+      - name: Verify pure single-coordinate spectral architecture and package
         shell: pwsh
         run: |
           $rendererFiles = @(
@@ -186,28 +186,32 @@ jobs:
             'layer.spectrum[sourceIndex] += fftBuffer_[sourceIndex]',
             'const float harmonicMagnitude',
             'const double sourcePosition = std::clamp(',
-            'phaseGuidance = clamp01(harmonicMask_[sourceIndex])'
+            'phaseGuidance',
+            'peakLockedPhase',
+            'reconstructionGain',
+            'phaseAnchor',
+            'aperiodicEvidence'
           )
           foreach ($term in $forbiddenRenderer) {
             if (Select-String -Path $rendererFiles -Pattern $term -SimpleMatch -Quiet) {
-              Write-Error "Forbidden split/parallel audio symbol: $term"
+              Write-Error "Forbidden protective/split audio symbol: $term"
               exit 1
             }
           }
 
           $requiredRenderer = @(
             'FULL_SPECTRUM_SINGLE_TRANSPORT_V1',
-            'UNIFIED_VOICED_PHASE_GUIDANCE_V2',
             'STABLE_SINGLE_LATTICE_TRANSPORT_V3',
-            'const float phaseGuidance = clamp01(smoothedSpectralReliability_)',
-            'const float aperiodicEvidence',
+            'PURE_SINGLE_TRANSPORT_V4',
             'const double targetPosition = static_cast<double>(sourceBin) * safeRatio',
             'trueSourceBins_[static_cast<std::size_t>(sourceBin)]',
+            'const double outputPhase = propagatedPhases_[sourceIndex]',
+            'const float outputMagnitude = magnitude',
             'context.pitchAnchorFresh'
           )
           foreach ($term in $requiredRenderer) {
             if (-not (Select-String -Path $rendererFiles -Pattern $term -SimpleMatch -Quiet)) {
-              Write-Error "Unified transport invariant missing: $term"
+              Write-Error "Pure transport invariant missing: $term"
               exit 1
             }
           }
