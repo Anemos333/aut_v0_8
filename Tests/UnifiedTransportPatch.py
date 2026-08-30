@@ -14,7 +14,8 @@ if sentinel in renderer:
     print("V5 minimal renderer already applied")
     raise SystemExit(0)
 
-# Remove all harmonic/noise classifier storage from prepare().
+# Remove all harmonic/noise classifier storage from prepare(). The prefix sum is
+# part of the user-controlled formant envelope and is restored immediately below.
 renderer, count = re.subn(
     r"    rawHarmonicMask_\.assign\(.*?    peakBins_\.reserve\(.*?\);\n",
     "",
@@ -24,6 +25,15 @@ renderer, count = re.subn(
 )
 if count != 1:
     raise RuntimeError(f"prepare classifier storage: expected one block, found {count}")
+
+layer_marker = "    layer_.spectrum.assign(static_cast<std::size_t>(frameSize_), Complex {});\n"
+if renderer.count(layer_marker) != 1:
+    raise RuntimeError(f"layer allocation marker: expected one, found {renderer.count(layer_marker)}")
+renderer = renderer.replace(
+    layer_marker,
+    "    prefixSum_.assign(static_cast<std::size_t>(positiveBinCount + 1), 0.0);\n\n" + layer_marker,
+    1,
+)
 
 # Keep only the envelope/formant coefficients used by the actual renderer.
 renderer, count = re.subn(
@@ -70,6 +80,7 @@ renderer, count = re.subn(
     std::fill(logMagnitudes_.begin(), logMagnitudes_.end(), 0.0f);
     std::fill(rawSpectralEnvelope_.begin(), rawSpectralEnvelope_.end(), 1.0f);
     std::fill(spectralEnvelope_.begin(), spectralEnvelope_.end(), 1.0f);
+    std::fill(prefixSum_.begin(), prefixSum_.end(), 0.0);
     std::fill(layer_.spectrum.begin(), layer_.spectrum.end(), Complex {});
     std::fill(layer_.synthesisPhases.begin(), layer_.synthesisPhases.end(), 0.0);
     clearLayerOutput(layer_);
@@ -285,10 +296,11 @@ for forbidden in (
     "noiseDominanceMs_",
     "breathProtection_",
     "smoothedSpectralReliability_",
-    "rendererContext",
 ):
-    if forbidden in renderer or (forbidden == "rendererContext" and forbidden in engine):
+    if forbidden in renderer:
         raise RuntimeError(f"protective runtime symbol remains: {forbidden}")
+if "rendererContext" in engine:
+    raise RuntimeError("rendererContext remains in ModernPitchEngine")
 
 renderer_path.write_text(renderer, encoding="utf-8")
 engine_path.write_text(engine, encoding="utf-8")
