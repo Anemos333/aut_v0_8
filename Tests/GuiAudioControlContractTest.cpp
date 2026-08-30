@@ -115,8 +115,8 @@ int main()
                      "single_wet_has_no_dormant_transport_renderer");
 
     success &= check(has(renderer, "FULL_SPECTRUM_SINGLE_TRANSPORT_V1")
-                         && has(renderer, "UNIFIED_VOICED_PHASE_GUIDANCE_V2")
                          && has(renderer, "STABLE_SINGLE_LATTICE_TRANSPORT_V3")
+                         && has(renderer, "PURE_SINGLE_TRANSPORT_V4")
                          && has(renderer,
                                 "const double targetPosition = static_cast<double>(sourceBin) * safeRatio")
                          && has(renderer,
@@ -124,21 +124,27 @@ int main()
                          && has(renderer,
                                 "* trueSourceBins_[static_cast<std::size_t>(sourceBin)]")
                          && has(renderer,
-                                "const float phaseGuidance = clamp01(smoothedSpectralReliability_)"),
-                     "renderer_uses_one_transport_law_and_one_phase_policy");
+                                "const double outputPhase = propagatedPhases_[sourceIndex]")
+                         && has(renderer,
+                                "const float outputMagnitude = magnitude"),
+                     "renderer_uses_one_unconditional_audio_transport");
 
     success &= check(!has(renderer,
                           "layer.spectrum[sourceIndex] += fftBuffer_[sourceIndex]")
                          && !has(renderer, "const float harmonicMagnitude")
                          && !has(renderer, "const double sourcePosition = std::clamp(")
-                         && !has(renderer, "phaseGuidance = clamp01(harmonicMask_[sourceIndex])")
+                         && !has(renderer, "phaseGuidance")
+                         && !has(renderer, "peakLockedPhase")
+                         && !has(renderer, "reconstructionGain")
+                         && !has(renderer, "phaseAnchor")
+                         && !has(renderer, "aperiodicEvidence")
                          && !has(renderer, "aperiodic residual stays at its original bin"),
-                     "renderer_has_no_hidden_dry_or_per_bin_phase_branch");
+                     "sensors_cannot_modify_audio_reconstruction");
 
     success &= check(has(rendererHeader, "bool pitchAnchorFresh = false")
                          && has(engine, "context.pitchAnchorFresh = observation.valid")
                          && has(renderer, "const bool reliableF0 = context.pitchAnchorFresh"),
-                     "stale_f0_cannot_drive_reconstruction_guidance");
+                     "stale_f0_cannot_drive_analysis_guidance");
 
     success &= check(has(renderer, "profile_ = AnalysisProfile {}")
                          && !has(renderer, "Wind Fix V6")
