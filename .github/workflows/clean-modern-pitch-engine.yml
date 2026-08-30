@@ -47,14 +47,14 @@ jobs:
       - name: Commit transformed source only
         shell: bash
         run: |
-          git add Source/SingleWetSpectralRenderer.cpp
+          git add Source/SingleWetSpectralRenderer.cpp Source/ModernPitchEngine.cpp
           if git diff --cached --quiet; then
             echo "No source transformation needed"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "Remove protective modulation from spectral audio path"
+          git commit -m "Remove protective analysis from renderer runtime"
           git push origin HEAD:single-wet-quality-reconstruction
 
   invariant-test:
@@ -166,7 +166,7 @@ jobs:
           cmake --build build-vst3 --config Release `
             --target Neumaton_VST3 --parallel 2
 
-      - name: Verify pure single-coordinate spectral architecture and package
+      - name: Verify minimal single-coordinate spectral architecture and package
         shell: pwsh
         run: |
           $rendererFiles = @(
@@ -190,11 +190,18 @@ jobs:
             'peakLockedPhase',
             'reconstructionGain',
             'phaseAnchor',
-            'aperiodicEvidence'
+            'aperiodicEvidence',
+            'updateHarmonicNoiseAnalysis',
+            'harmonicMask',
+            'noisePath',
+            'noiseDominance',
+            'breathProtection',
+            'smoothedSpectralReliability_',
+            'struct Context'
           )
           foreach ($term in $forbiddenRenderer) {
             if (Select-String -Path $rendererFiles -Pattern $term -SimpleMatch -Quiet) {
-              Write-Error "Forbidden protective/split audio symbol: $term"
+              Write-Error "Forbidden protective/split renderer symbol: $term"
               exit 1
             }
           }
@@ -203,15 +210,15 @@ jobs:
             'FULL_SPECTRUM_SINGLE_TRANSPORT_V1',
             'STABLE_SINGLE_LATTICE_TRANSPORT_V3',
             'PURE_SINGLE_TRANSPORT_V4',
+            'MINIMAL_RENDERER_V5',
             'const double targetPosition = static_cast<double>(sourceBin) * safeRatio',
             'trueSourceBins_[static_cast<std::size_t>(sourceBin)]',
             'const double outputPhase = propagatedPhases_[sourceIndex]',
-            'const float outputMagnitude = magnitude',
-            'context.pitchAnchorFresh'
+            'const float outputMagnitude = magnitude'
           )
           foreach ($term in $requiredRenderer) {
             if (-not (Select-String -Path $rendererFiles -Pattern $term -SimpleMatch -Quiet)) {
-              Write-Error "Pure transport invariant missing: $term"
+              Write-Error "Minimal transport invariant missing: $term"
               exit 1
             }
           }
@@ -230,8 +237,8 @@ jobs:
             Write-Error "Production audio is not routed directly through the single renderer"
             exit 1
           }
-          if (Select-String -Path Source\ModernPitchEngine.cpp -Pattern 'TransportClock|ChannelPath::|updateLpcTarget' -Quiet) {
-            Write-Error "Removed transport/LPC audio machinery returned"
+          if (Select-String -Path Source\ModernPitchEngine.cpp -Pattern 'TransportClock|ChannelPath::|updateLpcTarget|rendererContext' -Quiet) {
+            Write-Error "Removed audio/sensor routing machinery returned"
             exit 1
           }
 
