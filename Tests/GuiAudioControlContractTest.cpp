@@ -117,6 +117,7 @@ int main()
     success &= check(has(renderer, "FULL_SPECTRUM_SINGLE_TRANSPORT_V1")
                          && has(renderer, "STABLE_SINGLE_LATTICE_TRANSPORT_V3")
                          && has(renderer, "PURE_SINGLE_TRANSPORT_V4")
+                         && has(renderer, "MINIMAL_RENDERER_V5")
                          && has(renderer,
                                 "const double targetPosition = static_cast<double>(sourceBin) * safeRatio")
                          && has(renderer,
@@ -127,27 +128,44 @@ int main()
                                 "const double outputPhase = propagatedPhases_[sourceIndex]")
                          && has(renderer,
                                 "const float outputMagnitude = magnitude"),
-                     "renderer_uses_one_unconditional_audio_transport");
+                     "renderer_uses_one_minimal_audio_transport");
 
-    success &= check(!has(renderer,
-                          "layer.spectrum[sourceIndex] += fftBuffer_[sourceIndex]")
-                         && !has(renderer, "const float harmonicMagnitude")
-                         && !has(renderer, "const double sourcePosition = std::clamp(")
-                         && !has(renderer, "phaseGuidance")
-                         && !has(renderer, "peakLockedPhase")
-                         && !has(renderer, "reconstructionGain")
-                         && !has(renderer, "phaseAnchor")
-                         && !has(renderer, "aperiodicEvidence")
-                         && !has(renderer, "aperiodic residual stays at its original bin"),
-                     "sensors_cannot_modify_audio_reconstruction");
+    const std::vector<std::string> forbiddenRendererTerms {
+        "layer.spectrum[sourceIndex] += fftBuffer_[sourceIndex]",
+        "const float harmonicMagnitude",
+        "const double sourcePosition = std::clamp(",
+        "phaseGuidance",
+        "peakLockedPhase",
+        "reconstructionGain",
+        "phaseAnchor",
+        "aperiodicEvidence",
+        "updateHarmonicNoiseAnalysis",
+        "harmonicMask",
+        "noisePath",
+        "noiseDominance",
+        "breathProtection",
+        "smoothedSpectralReliability_",
+        "struct Context"
+    };
+    bool rendererClean = true;
+    for (const auto& term : forbiddenRendererTerms)
+        rendererClean = rendererClean && !has(renderer, term) && !has(rendererHeader, term);
+    success &= check(rendererClean,
+                     "protective_logic_is_physically_absent_from_renderer");
 
-    success &= check(has(rendererHeader, "bool pitchAnchorFresh = false")
-                         && has(engine, "context.pitchAnchorFresh = observation.valid")
-                         && has(renderer, "const bool reliableF0 = context.pitchAnchorFresh"),
-                     "stale_f0_cannot_drive_analysis_guidance");
+    success &= check(!has(rendererHeader, "confidence")
+                         && !has(rendererHeader, "voicing")
+                         && !has(rendererHeader, "breathReduction")
+                         && !has(rendererHeader, "noteBodyLatched")
+                         && !has(engine, "rendererContext"),
+                     "voice_state_has_no_renderer_audio_api");
 
-    success &= check(has(renderer, "profile_ = AnalysisProfile {}")
-                         && !has(renderer, "Wind Fix V6")
+    success &= check(has(engine, "pitchStaleSamples")
+                         && has(engine, "noteBodyLatched")
+                         && has(engine, "vibratoPreserve"),
+                     "voice_state_and_vibrato_remain_upstream_supervision");
+
+    success &= check(!has(renderer, "Wind Fix V6")
                          && !has(renderer, "frameSize_ <= 128 ? 42.0f")
                          && !has(renderer, "frameSize_ <= 256 ? 34.0f"),
                      "modern_modes_share_one_reconstruction_law");
