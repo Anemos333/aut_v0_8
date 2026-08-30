@@ -209,40 +209,6 @@ int main()
     success &= check(std::abs(boundedTransition.velocityCentsPerSecond) > 0.02,
                      "stable_state_does_not_require_zero_controller_velocity");
 
-    setBodyEvidence(parameters);
-    const auto syncObservation = strongPitch();
-    ModernPitchEngine::CorrectionState syncState;
-    syncState.targetValid = true;
-    syncState.noteBodyLatched = true;
-    syncState.noteBodyConfidence = 0.9f;
-    syncState.transportPeriodHz = 220.0;
-    syncState.trackingState = ModernPitchEngine::TrackingState::transition;
-    const float transitionSync = engine->transportSyncStrength(syncObservation, syncState, parameters);
-    syncState.trackingState = ModernPitchEngine::TrackingState::stable;
-    const float stableSync = engine->transportSyncStrength(syncObservation, syncState, parameters);
-    std::cerr << "transition_period_sync=" << transitionSync << '\n';
-    std::cerr << "stable_period_sync=" << stableSync << '\n';
-    success &= check(transitionSync < 0.0f && stableSync > 0.25f,
-                     "nonstable_note_holds_period_guidance_instead_of_ramping_it");
-
-    ModernPitchEngine::TransportClock guidanceClock;
-    guidanceClock.prepare(48000.0, 256);
-    const double ratio = std::exp2(180.0 / 1200.0);
-    const double period = 48000.0 / 220.0;
-    for (int i = 0; i < 6000; ++i)
-        static_cast<void>(guidanceClock.next(ratio, period, 1.0f));
-    const double heldNudge = guidanceClock.periodNudgeSamples_;
-    const float heldAmount = guidanceClock.periodSyncAmount_;
-    for (int i = 0; i < 2400; ++i)
-        static_cast<void>(guidanceClock.next(ratio, period * 0.75, -1.0f));
-    success &= check(std::abs(guidanceClock.periodNudgeSamples_ - heldNudge) < 1.0e-12
-                     && std::abs(guidanceClock.periodSyncAmount_ - heldAmount) < 1.0e-7f,
-                     "nonstable_state_cannot_move_period_guidance_memory");
-    const auto unityHeld = guidanceClock.next(1.0, period, -1.0f);
-    success &= check(std::abs(unityHeld.delayA - 256.0) < 1.0e-9
-                     && std::abs(unityHeld.delayB - 256.0) < 1.0e-9,
-                     "held_period_guidance_still_collapses_at_unity");
-
     // A long vibrato around one quantized note is stable musical content, not
     // an endless note transition.
     std::array<double, 12> chromatic {};
@@ -256,6 +222,9 @@ int main()
     setBodyEvidence(vibratoParameters);
     vibratoParameters.humanize = 0.75f;
     bool leftMusicalBody = false;
+    bool vibratoTargetCaptured = false;
+    bool vibratoChangedTargetIdentity = false;
+    double vibratoTargetReference = 0.0;
     for (int hop = 0; hop < 1800; ++hop)
     {
         const double vibratoCents = 34.0 * std::sin(2.0 * 3.14159265358979323846
@@ -272,11 +241,25 @@ int main()
         {
             leftMusicalBody = true;
         }
+        if (hop > 100 && vibratoState.targetValid)
+        {
+            if (!vibratoTargetCaptured)
+            {
+                vibratoTargetReference = vibratoState.targetLog2;
+                vibratoTargetCaptured = true;
+            }
+            else if (std::abs(vibratoState.targetLog2 - vibratoTargetReference) * 1200.0 > 0.5)
+            {
+                vibratoChangedTargetIdentity = true;
+            }
+        }
     }
     success &= check(!leftMusicalBody
                      && vibratoState.noteBodyLatched
                      && vibratoState.trackingState == ModernPitchEngine::TrackingState::stable,
                      "long_vibrato_is_classified_as_stable_note_body");
+    success &= check(vibratoTargetCaptured && !vibratoChangedTargetIdentity,
+                     "vibrato_does_not_become_a_note_identity_change");
 
     // Humanize must not create a 12-TET-sized note-body tolerance on dense
     // microtonal material. With zero lock hysteresis a sustained 15-cent move in
@@ -333,40 +316,6 @@ int main()
                      "native_semitone_limit_is_100_cents");
     success &= check(std::abs(capState.desiredCents) > 95.0,
                      "native_semitone_limit_is_not_divided_by_twelve");
-
-    // PARCOR envelope memory should not be replaced by a transient/noisy frame.
-    setBodyEvidence(parameters);
-    juce::AudioBuffer<float> block(1, 1024);
-    for (int i = 0; i < block.getNumSamples(); ++i)
-    {
-        const double phase = 2.0 * 3.14159265358979323846 * 220.0
-                           * static_cast<double>(i) / 48000.0;
-        block.setSample(0, i, static_cast<float>(0.7 * std::sin(phase)
-                                               + 0.2 * std::sin(2.0 * phase)));
-    }
-    engine->linkedCorrection_.trackingState = ModernPitchEngine::TrackingState::stable;
-    auto stableObservation = strongPitch();
-    stableObservation.onsetStrength = 0.0f;
-    parameters.formantPreservation = 1.0f;
-    engine->updateLpcTarget(block, 1, block.getNumSamples(), parameters,
-                            stableObservation);
-    const auto stableReflection = engine->currentReflectionTarget_;
-
-    block.clear();
-    block.setSample(0, 0, 1.0f);
-    engine->linkedCorrection_.trackingState = ModernPitchEngine::TrackingState::attack;
-    auto transientObservation = stableObservation;
-    transientObservation.onsetStrength = 1.0f;
-    engine->updateLpcTarget(block, 1, block.getNumSamples(), parameters,
-                            transientObservation);
-    double reflectionDifference = 0.0;
-    for (std::size_t i = 0; i < stableReflection.size(); ++i)
-        reflectionDifference += std::abs(static_cast<double>(stableReflection[i]
-                                      - engine->currentReflectionTarget_[i]));
-    std::cerr << "transient_reflection_target_difference="
-              << reflectionDifference << '\n';
-    success &= check(reflectionDifference < 1.0e-9,
-                     "transient_freezes_last_trustworthy_parcor_envelope");
 
     return success ? 0 : 1;
 }

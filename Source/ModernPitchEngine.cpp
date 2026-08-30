@@ -2189,6 +2189,8 @@ void ModernPitchEngine::process(
             ? static_cast<float>(correction.transportPeriodHz) : observation.frequencyHz;
         context.detectedPitchHz = observation.valid ? observation.frequencyHz : latchedPitch;
         context.noteBodyLatched = correction.noteBodyLatched;
+        context.pitchAnchorFresh = observation.valid
+            && correction.pitchStaleSamples == 0;
         context.noteBodyConfidence = correction.noteBodyConfidence;
         context.confidence = std::max(observation.confidence, correction.noteBodyLatched
             ? 0.85f * correction.noteBodyConfidence : 0.0f);

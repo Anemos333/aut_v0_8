@@ -126,101 +126,11 @@ void SingleWetSpectralRenderer::prepare(double sampleRate,
     layer_.outputAccumulationRing.assign(static_cast<std::size_t>(outputRingSize), 0.0f);
     layer_.phaseInitialised = false;
 
-    // Wind Fix V6: each latency mode receives its own analysis profile.
-    // A 128-sample FFT cannot be tuned as if it had the resolution of a
-    // 512-sample FFT.  Short modes therefore trust the independent F0 tracker
-    // more and change the harmonic/noise mask more slowly. These analysis
-    // profiles classify reconstruction components; they never scale correction cents.
-    if (frameSize_ <= 128)
-    {
-        profile_.combWeight = 0.58f;
-        profile_.peakWeight = 0.15f;
-        profile_.phaseWeight = 0.12f;
-        profile_.periodicWeight = 0.15f;
-        profile_.bodyFloorBase = 0.30f;
-        profile_.bodyFloorTracking = 0.70f;
-        profile_.bodyUpperHz = 5200.0f;
-        profile_.maskAttackMs = 24.0f;
-        profile_.maskReleaseMs = 110.0f;
-        profile_.maskRisePerSecond = 22.0f;
-        profile_.maskFallPerSecond = 7.0f;
-        profile_.breathAttackMs = 35.0f;
-        profile_.breathReleaseMs = 220.0f;
-        profile_.metricAttackMs = 30.0f;
-        profile_.metricReleaseMs = 180.0f;
-        profile_.polyphonyAttackMs = 45.0f;
-        profile_.polyphonyReleaseMs = 260.0f;
-        profile_.reliabilityAttackMs = 35.0f;
-        profile_.reliabilityReleaseMs = 180.0f;
-        profile_.breathPersistenceStartMs = 40.0f;
-        profile_.breathPersistenceFullMs = 180.0f;
-        profile_.noiseDominanceStartMs = 60.0f;
-        profile_.noiseDominanceFullMs = 220.0f;
-        profile_.noiseDominanceThreshold = 0.80f;
-        profile_.maximumNoiseReductionDb = 10.0f;
-        profile_.unresolvedCombBlend = 0.78f;
-        profile_.breathMaskBodyReduction = 0.03f;
-        profile_.breathMaskAirReduction = 0.32f;
-        profile_.polyphonyTrust = 0.45f;
-    }
-    else if (frameSize_ <= 256)
-    {
-        profile_.combWeight = 0.54f;
-        profile_.peakWeight = 0.20f;
-        profile_.phaseWeight = 0.16f;
-        profile_.periodicWeight = 0.10f;
-        profile_.bodyFloorBase = 0.22f;
-        profile_.bodyFloorTracking = 0.78f;
-        profile_.bodyUpperHz = 4900.0f;
-        profile_.maskAttackMs = 16.0f;
-        profile_.maskReleaseMs = 75.0f;
-        profile_.maskRisePerSecond = 30.0f;
-        profile_.maskFallPerSecond = 9.0f;
-        profile_.breathAttackMs = 28.0f;
-        profile_.breathReleaseMs = 180.0f;
-        profile_.metricAttackMs = 22.0f;
-        profile_.metricReleaseMs = 130.0f;
-        profile_.polyphonyAttackMs = 35.0f;
-        profile_.polyphonyReleaseMs = 220.0f;
-        profile_.reliabilityAttackMs = 28.0f;
-        profile_.reliabilityReleaseMs = 150.0f;
-        profile_.breathPersistenceStartMs = 32.0f;
-        profile_.breathPersistenceFullMs = 150.0f;
-        profile_.noiseDominanceStartMs = 48.0f;
-        profile_.noiseDominanceFullMs = 200.0f;
-        profile_.noiseDominanceThreshold = 0.80f;
-        profile_.maximumNoiseReductionDb = 11.0f;
-        profile_.unresolvedCombBlend = 0.58f;
-        profile_.breathMaskBodyReduction = 0.06f;
-        profile_.breathMaskAirReduction = 0.48f;
-        profile_.polyphonyTrust = 0.75f;
-    }
-    else
-    {
-        profile_ = AnalysisProfile {};
-        profile_.maskAttackMs = 8.0f;
-        profile_.maskReleaseMs = 42.0f;
-        profile_.maskRisePerSecond = 50.0f;
-        profile_.maskFallPerSecond = 16.0f;
-        profile_.breathAttackMs = 18.0f;
-        profile_.breathReleaseMs = 120.0f;
-        profile_.metricAttackMs = 12.0f;
-        profile_.metricReleaseMs = 80.0f;
-        profile_.polyphonyAttackMs = 25.0f;
-        profile_.polyphonyReleaseMs = 160.0f;
-        profile_.reliabilityAttackMs = 18.0f;
-        profile_.reliabilityReleaseMs = 100.0f;
-        profile_.breathPersistenceStartMs = 24.0f;
-        profile_.breathPersistenceFullMs = 125.0f;
-        profile_.noiseDominanceStartMs = 35.0f;
-        profile_.noiseDominanceFullMs = 180.0f;
-        profile_.maximumNoiseReductionDb = 12.0f;
-        profile_.unresolvedCombBlend = 0.30f;
-        profile_.breathMaskBodyReduction = 0.10f;
-        profile_.breathMaskAirReduction = 0.62f;
-        profile_.polyphonyTrust = 1.0f;
-    }
-
+    // FULL_SPECTRUM_SINGLE_TRANSPORT_V1
+    // Quality, Live and Experimental share one reconstruction law. Frame
+    // size may change latency/resolution, but classification is never a
+    // licence to route spectral energy through a different reconstruction.
+    profile_ = AnalysisProfile {};
 
     const double envelopeUpdateSeconds = static_cast<double>(
         hopSize_ * envelopeUpdateInterval_) / sampleRate_;
@@ -257,10 +167,8 @@ void SingleWetSpectralRenderer::prepare(double sampleRate,
     maskFallLimitPerFrame_ = static_cast<float>(frameSeconds)
         * profile_.maskFallPerSecond;
 
-    noiseReductionAttackCoefficient_ = frameCoefficient(
-        frameSize_ <= 128 ? 42.0f : frameSize_ <= 256 ? 34.0f : 28.0f);
-    noiseReductionReleaseCoefficient_ = frameCoefficient(
-        frameSize_ <= 128 ? 260.0f : frameSize_ <= 256 ? 220.0f : 180.0f);
+    noiseReductionAttackCoefficient_ = frameCoefficient(28.0f);
+    noiseReductionReleaseCoefficient_ = frameCoefficient(180.0f);
     transientNoiseRestoreCoefficient_ = frameCoefficient(6.0f);
     reset();
 }
@@ -612,7 +520,8 @@ void SingleWetSpectralRenderer::updateHarmonicNoiseAnalysis(
     const float binWidthHz = static_cast<float>(sampleRate_
         / static_cast<double>(frameSize_));
     const float f0 = context.detectedPitchHz;
-    const bool reliableF0 = f0 >= 42.0f
+    const bool reliableF0 = context.pitchAnchorFresh
+                         && f0 >= 42.0f
                          && f0 <= static_cast<float>(sampleRate_ * 0.22)
                          && context.confidence >= 0.20f;
     float periodicEvidence = clamp01(
@@ -778,7 +687,7 @@ void SingleWetSpectralRenderer::updateHarmonicNoiseAnalysis(
     // Frequency smoothing radius depends on resolution.  Wider smoothing in
     // short modes avoids isolated mask islands, a common source of musical
     // noise and the perceived "wind" modulation.
-    const int smoothingRadius = frameSize_ <= 128 ? 2 : 1;
+    const int smoothingRadius = 1;
     for (int bin = 0; bin <= positiveBins; ++bin)
     {
         float weightedSum = 0.0f;
@@ -897,10 +806,9 @@ void SingleWetSpectralRenderer::updateHarmonicNoiseAnalysis(
             harmonicMaskScratch_[index]
             * std::clamp(breathMaskScale, 0.28f, 1.0f));
 
-        // Low-confidence frames must not redraw the complete mask.  Retain the
-        // previous spectral classification and allow only bounded, mode-aware
-        // movement per frame.  Falling mask values expose more residual, so
-        // they deliberately move more slowly in Live/Experimental.
+        // Low-confidence frames must not redraw the complete guidance map.
+        // This map controls reconstruction care/phase locking only. It never
+        // decides which spectral energy is transported to the target pitch.
         const float analysisTrust = clamp01(
             (0.18f + 0.82f * periodicEvidence)
             * (1.0f - 0.70f * smoothedPolyphony_)
@@ -1113,31 +1021,21 @@ void SingleWetSpectralRenderer::synthesiseLayer(
         if (magnitude <= 1.0e-12f)
             continue;
 
-        const float harmonicWeight = clamp01(harmonicMask_[sourceIndex]);
-        const float noiseWeight = 1.0f - harmonicWeight;
+        // The classifier is advisory only. Every spectral bin has exactly one
+        // transported coordinate. Tonal/aperiodic evidence changes how strongly
+        // the phase is locked and how de-breath gain is shaped, never whether a
+        // fraction of the bin remains at its source pitch.
+        const float phaseGuidance = clamp01(harmonicMask_[sourceIndex]);
+        const float aperiodicEvidence = 1.0f - phaseGuidance;
 
-        // The aperiodic residual stays at its original bin and analysis phase.
-        // The aperiodic residual and shifted harmonic body are committed into the
-        // same spectrum and the same IFFT; there is no parallel dry signal.
-        // V5 applies a smooth, frequency-shaped attenuation only here: low
-        // bands retain body while the air band receives the full de-breath
-        // gain.  No extra FFT/IFFT or audio delay is introduced.
-        if (noiseWeight > 1.0e-5f)
-        {
-            const float frequencyHz = binFrequency(sourceBin);
-            const float bandStrength = 0.16f
-                + 0.84f * smoothStep(850.0f, 6200.0f, frequencyHz);
-            const float residualGain = 1.0f
-                - bandStrength * (1.0f - smoothedNoiseGain_);
-            layer.spectrum[sourceIndex] += fftBuffer_[sourceIndex]
-                * (noiseWeight * residualGain);
-        }
-
-        const float harmonicMagnitude = magnitude * harmonicWeight;
-        if (harmonicMagnitude <= 1.0e-12f)
-            continue;
-
-        const double targetPosition = static_cast<double>(sourceBin) * safeRatio;
+        // Use the instantaneous-frequency estimate rather than the integer FFT
+        // bin centre. This is essential in Live/Experimental, where a short FFT
+        // otherwise quantises the reconstructed pitch into very coarse bins.
+        const double sourcePosition = std::clamp(
+            trueSourceBins_[sourceIndex],
+            0.0,
+            static_cast<double>(positiveBins));
+        const double targetPosition = sourcePosition * safeRatio;
         if (targetPosition > static_cast<double>(positiveBins) + 1.0)
             continue;
 
@@ -1145,10 +1043,16 @@ void SingleWetSpectralRenderer::synthesiseLayer(
         const double relativeAnalysisPhase = wrapPhase(
             static_cast<double>(analysisPhases_[sourceIndex])
             - static_cast<double>(analysisPhases_[static_cast<std::size_t>(peak)]));
-        const double outputPhase = initialiseLayer
+        const double ownTransportPhase = initialiseLayer
+            ? static_cast<double>(analysisPhases_[sourceIndex])
+            : propagatedPhases_[sourceIndex];
+        const double peakLockedPhase = initialiseLayer
             ? static_cast<double>(analysisPhases_[sourceIndex])
             : propagatedPhases_[static_cast<std::size_t>(peak)]
                 + relativeAnalysisPhase;
+        const double outputPhase = ownTransportPhase
+            + static_cast<double>(phaseGuidance)
+                * wrapPhase(peakLockedPhase - ownTransportPhase);
 
         const float sourceEnvelope = std::max(
             1.0e-8f,
@@ -1161,7 +1065,15 @@ void SingleWetSpectralRenderer::synthesiseLayer(
             0.56f,
             1.78f);
         const float formantGain = lookupFormantGain(envelopeRatio, safeFormant);
-        const float outputMagnitude = harmonicMagnitude
+
+        const float frequencyHz = binFrequency(sourceBin);
+        const float deBreathBandStrength = 0.16f
+            + 0.84f * smoothStep(850.0f, 6200.0f, frequencyHz);
+        const float reconstructionGain = 1.0f
+            - aperiodicEvidence * deBreathBandStrength
+                * (1.0f - smoothedNoiseGain_);
+        const float outputMagnitude = magnitude
+                                    * reconstructionGain
                                     * formantGain
                                     * energyScale;
         float phaseSine = 0.0f;
