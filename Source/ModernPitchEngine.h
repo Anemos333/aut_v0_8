@@ -220,6 +220,7 @@ private:
         void reset() noexcept;
         void setRange(float minimumPitchHz, float maximumPitchHz) noexcept;
         void setSensitivity(float sensitivity) noexcept;
+        void setRescueMode(bool enabled) noexcept { rescueMode_ = enabled; }
         bool processSample(float inputSample, PitchObservation& observation) noexcept;
         [[nodiscard]] static constexpr int hopSize() noexcept { return detectorHop; }
 
@@ -324,6 +325,7 @@ private:
         float minimumPitchHz_ = 45.0f;
         float maximumPitchHz_ = 1600.0f;
         float sensitivity_ = 0.70f;
+        bool rescueMode_ = false;
 
         std::array<float, ringSize> fullRateRing_ {};
         std::array<float, ringSize> halfRateRing_ {};

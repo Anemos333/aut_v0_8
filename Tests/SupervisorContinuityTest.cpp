@@ -80,6 +80,36 @@ int main()
     success &= check(secondAccepted,
                      "repeated_initial_register_is_committed");
 
+
+    auto rescueTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+    rescueTracker->prepare(48000.0);
+    rescueTracker->trackedPitchHz_ = 220.0f;
+    rescueTracker->trackedConfidence_ = 0.88f;
+    rescueTracker->trackedPeriodicity_ = 0.90f;
+    rescueTracker->trackedConsensus_ = 0.75f;
+    rescueTracker->trackedSupportCount_ = 2;
+    auto& rescueSlot = rescueTracker->halfRateCandidate_;
+    rescueSlot.candidate.valid = true;
+    rescueSlot.candidate.frequencyHz = static_cast<float>(220.0 * std::exp2(200.0 / 1200.0));
+    rescueSlot.candidate.confidence = 0.74f;
+    rescueSlot.candidate.periodicity = 0.82f;
+    rescueSlot.candidate.pathIndex = 1;
+    rescueSlot.candidate.ageInHops = 0;
+    rescueSlot.ageInHops = 0;
+
+    rescueTracker->setRescueMode(false);
+    auto normalSingleFamily = rescueTracker->decodeCandidate(false);
+    success &= check(!normalSingleFamily.valid,
+                     "single_family_does_not_override_normal_tracking");
+
+    rescueTracker->decoderBeam_.fill({});
+    rescueTracker->setRescueMode(true);
+    auto rescuedSingleFamily = rescueTracker->decodeCandidate(false);
+    success &= check(rescuedSingleFamily.valid
+                     && std::abs(1200.0 * std::log2(
+                         rescuedSingleFamily.candidate.frequencyHz / 220.0f)) > 140.0,
+                     "stale_f0_accepts_credible_single_family_rescue");
+
     auto engine = std::make_unique<ModernPitchEngine>();
     engine->prepare(48000.0, 256, 1, ModernPitchEngine::LatencyMode::live);
     ModernPitchEngine::ScaleQuantizer quantizer;
@@ -115,6 +145,52 @@ int main()
                      "stale_pitch_reacquires_without_reducing_correction");
     success &= check(std::abs(dropoutState.transportPeriodHz - 220.0) < 1.0e-9,
                      "pitch_dropout_keeps_latched_transport_period");
+
+
+    // Reproduces the real failure mode: normal-level sung body survives while
+    // the primary F0 is missing, then a recovered F0 has moved musically. The
+    // correction must stop using the stale anchor and return to stable tracking.
+    ModernPitchEngine::ScaleQuantizer recoveryQuantizer;
+    recoveryQuantizer.reset();
+    const double recoveryUnison = 1.0;
+    recoveryQuantizer.setScale(&recoveryUnison, 1, 440.0);
+    ModernPitchEngine::CorrectionState recoveryState;
+    auto recoveryObservation = strongPitch(220.0f);
+    for (int hop = 0; hop < 16; ++hop)
+    {
+        engine->updateCorrectionState(recoveryState, recoveryQuantizer,
+                                      recoveryObservation, parameters);
+        for (int s = 0; s < ModernPitchEngine::MultiRatePitchTracker::hopSize(); ++s)
+            static_cast<void>(engine->advanceCorrection(recoveryState));
+    }
+    for (int hop = 0; hop < 130; ++hop)
+    {
+        engine->updateCorrectionState(recoveryState, recoveryQuantizer,
+                                      invalid, parameters);
+        for (int s = 0; s < ModernPitchEngine::MultiRatePitchTracker::hopSize(); ++s)
+            static_cast<void>(engine->advanceCorrection(recoveryState));
+    }
+    const double staleCentre = recoveryState.pitchCentreLog2;
+    const double staleDesired = recoveryState.desiredCents;
+    recoveryObservation = strongPitch(static_cast<float>(220.0
+        * std::exp2(200.0 / 1200.0)));
+    for (int hop = 0; hop < 24; ++hop)
+    {
+        engine->updateCorrectionState(recoveryState, recoveryQuantizer,
+                                      recoveryObservation, parameters);
+        for (int s = 0; s < ModernPitchEngine::MultiRatePitchTracker::hopSize(); ++s)
+            static_cast<void>(engine->advanceCorrection(recoveryState));
+    }
+    const double recoveredCentreMove = std::abs(
+        (recoveryState.pitchCentreLog2 - staleCentre) * 1200.0);
+    std::cerr << "recovered_pitch_centre_move_cents=" << recoveredCentreMove << '\n';
+    success &= check(recoveryState.pitchStaleSamples == 0
+                     && recoveryState.noteBodyLatched
+                     && recoveryState.trackingState != ModernPitchEngine::TrackingState::acquire,
+                     "rescued_f0_refreshes_anchor_and_exits_acquire");
+    success &= check(recoveredCentreMove > 80.0
+                     && std::abs(recoveryState.desiredCents - staleDesired) > 40.0,
+                     "rescued_f0_retargets_instead_of_freezing_old_correction");
 
     // Acquire persists while pitch is stale; positive body evidence must not
     // falsely promote a five-second detector hole back to stable.

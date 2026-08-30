@@ -153,6 +153,7 @@ void ModernPitchEngine::MultiRatePitchTracker::reset() noexcept
     trackedConsensus_ = 0.0f;
     trackedSupportCount_ = 0;
     invalidHopCount_ = 0;
+    rescueMode_ = false;
 
     octaveState_ = 0;
     pendingOctaveDelta_ = 0;
@@ -294,7 +295,8 @@ ModernPitchEngine::MultiRatePitchTracker::analyse(
     }
 
     const float yinThreshold = 0.12f + 0.16f * sensitivity_;
-    const float fallbackThreshold = 0.26f + 0.20f * sensitivity_;
+    const float fallbackThreshold = 0.26f + 0.20f * sensitivity_
+        + (rescueMode_ ? 0.08f : 0.0f);
 
     int thresholdTau = -1;
     int globalTau = tauMinimum;
@@ -391,7 +393,8 @@ ModernPitchEngine::MultiRatePitchTracker::analyse(
         }
     }
 
-    if (bestTau < 2 || bestScore < 0.45f)
+    const float minimumCandidateScore = rescueMode_ ? 0.34f : 0.45f;
+    if (bestTau < 2 || bestScore < minimumCandidateScore)
         return result;
 
     double refinedTau = static_cast<double>(bestTau);
@@ -858,7 +861,43 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
         }
     }
 
-    if (matchedHypothesis < 0 || matchedDistance > 65.0f)
+    if ((matchedHypothesis < 0 || matchedDistance > 65.0f)
+        && rescueMode_ && trackedPitchHz_ > 0.0f)
+    {
+        float bestRescueScore = -1000.0f;
+        int bestRescueHypothesis = -1;
+        for (int index = 0; index < hypothesisCount; ++index)
+        {
+            const auto& candidate = hypotheses[static_cast<std::size_t>(index)];
+            if (!candidate.valid || candidate.supportCount <= 0)
+                continue;
+            const float distance = centsDistance(candidate.frequencyHz,
+                                                 trackedPitchHz_);
+            if (distance > 700.0f || candidate.periodicity < 0.46f
+                || candidate.confidence < 0.40f)
+            {
+                continue;
+            }
+            const float continuity = 1.0f - smoothStep(180.0f, 700.0f, distance);
+            const float rescueScore = candidate.evidenceScore
+                + 0.55f * continuity
+                + 0.12f * static_cast<float>(candidate.directSupportCount);
+            if (rescueScore > bestRescueScore)
+            {
+                bestRescueScore = rescueScore;
+                bestRescueHypothesis = index;
+            }
+        }
+        if (bestRescueHypothesis >= 0)
+        {
+            matchedHypothesis = bestRescueHypothesis;
+            matchedDistance = centsDistance(
+                hypotheses[static_cast<std::size_t>(matchedHypothesis)].frequencyHz,
+                trackedPitchHz_);
+        }
+    }
+
+    if (matchedHypothesis < 0 || (!rescueMode_ && matchedDistance > 65.0f))
         return {}; // the winning branch is only a decaying hold state
 
     const auto& hypothesis = hypotheses[static_cast<std::size_t>(matchedHypothesis)];
@@ -878,7 +917,16 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
         && centsDistance(trackedPitchHz_, decision.candidate.frequencyHz) < 95.0f;
     const bool sufficientInitialEvidence = decision.supportCount >= 2
         || decision.candidate.confidence >= 0.78f;
-    decision.valid = closeToTrack || sufficientInitialEvidence;
+    const float rescueDistance = trackedPitchHz_ > 0.0f
+        ? centsDistance(trackedPitchHz_, decision.candidate.frequencyHz)
+        : 100000.0f;
+    const bool rescueEvidence = rescueMode_
+        && trackedPitchHz_ > 0.0f
+        && rescueDistance <= 700.0f
+        && decision.supportCount >= 1
+        && decision.candidate.confidence >= 0.40f
+        && decision.candidate.periodicity >= 0.46f;
+    decision.valid = closeToTrack || sufficientInitialEvidence || rescueEvidence;
     return decision;
 }
 
@@ -2196,6 +2244,7 @@ void ModernPitchEngine::process(
                                  safe.maximumPitchHz);
                 tracker.setSensitivity(rescueSearch ? std::max(safe.detectorSensitivity, 0.98f)
                                                     : safe.detectorSensitivity);
+                tracker.setRescueMode(rescueSearch); // PITCH_RESCUE_V1
                 if (tracker.processSample(data[static_cast<std::size_t>(channel)][sample],
                                           observation))
                 {
@@ -2249,6 +2298,7 @@ void ModernPitchEngine::process(
                                     safe.maximumPitchHz);
             linkedTracker_.setSensitivity(rescueSearch ? std::max(safe.detectorSensitivity, 0.98f)
                                                        : safe.detectorSensitivity);
+            linkedTracker_.setRescueMode(rescueSearch); // PITCH_RESCUE_V1
             if (linkedTracker_.processSample(
                 static_cast<float>(analysis / static_cast<double>(channels)), observation))
             {
