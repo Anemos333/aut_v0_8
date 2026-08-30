@@ -40,6 +40,8 @@ int main()
     const auto editor = readFile("Source/PluginEditor.cpp");
     const auto editorHeader = readFile("Source/PluginEditor.h");
     const auto engine = readFile("Source/ModernPitchEngine.cpp");
+    const auto renderer = readFile("Source/SingleWetSpectralRenderer.cpp");
+    const auto rendererHeader = readFile("Source/SingleWetSpectralRenderer.h");
     const auto tempo = readFile("Source/Tempo.cpp");
 
     const std::vector<std::string> parameterIds {
@@ -108,8 +110,36 @@ int main()
     success &= check(!has(engine, "TransportClock")
                          && !has(engine, "ChannelPath::")
                          && !has(engine, "calculateReflectionCoefficients")
+                         && !has(engine, "updateLpcTarget")
                          && has(engine, "wetRenderers_"),
                      "single_wet_has_no_dormant_transport_renderer");
+
+    success &= check(has(renderer, "FULL_SPECTRUM_SINGLE_TRANSPORT_V1")
+                         && has(renderer, "const float phaseGuidance")
+                         && has(renderer, "const float aperiodicEvidence")
+                         && has(renderer, "trueSourceBins_[sourceIndex]")
+                         && has(renderer,
+                                "const double targetPosition = sourcePosition * safeRatio"),
+                     "renderer_transports_every_bin_through_one_coordinate");
+
+    success &= check(!has(renderer,
+                          "layer.spectrum[sourceIndex] += fftBuffer_[sourceIndex]")
+                         && !has(renderer, "const float harmonicMagnitude")
+                         && !has(renderer,
+                                 "targetPosition = static_cast<double>(sourceBin) * safeRatio")
+                         && !has(renderer, "aperiodic residual stays at its original bin"),
+                     "renderer_has_no_hidden_dry_spectral_branch");
+
+    success &= check(has(rendererHeader, "bool pitchAnchorFresh = false")
+                         && has(engine, "context.pitchAnchorFresh = observation.valid")
+                         && has(renderer, "const bool reliableF0 = context.pitchAnchorFresh"),
+                     "stale_f0_cannot_drive_reconstruction_guidance");
+
+    success &= check(has(renderer, "profile_ = AnalysisProfile {}")
+                         && !has(renderer, "Wind Fix V6")
+                         && !has(renderer, "frameSize_ <= 128 ? 42.0f")
+                         && !has(renderer, "frameSize_ <= 256 ? 34.0f"),
+                     "modern_modes_share_one_reconstruction_law");
 
     return success ? EXIT_SUCCESS : EXIT_FAILURE;
 }
