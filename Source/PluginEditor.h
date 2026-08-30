@@ -38,7 +38,6 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
 
-    // CustomScaleEditorListener
     void customScaleEditorClosed() override;
 
 private:
@@ -48,29 +47,27 @@ private:
     neumaton::lab::OutputKnobLookAndFeel outputKnobLookAndFeel;
     neumaton::lab::UtilityRailSliderLookAndFeel utilityRailLookAndFeel {
         neumaton::lab::UtilityRailSliderLookAndFeel::Options {
-            false,  // perspectiveScale
-            false,  // showEndLabels
-            true,   // strongGlow
-            1.0f    // thumbScale
+            false,
+            false,
+            true,
+            1.0f
         }
     };
     neumaton::lab::LabLeverToggleLookAndFeel scaleLockLeverLookAndFeel;
 
     neumaton::lab::LabLeverToggleLookAndFeel analogLeverLookAndFeel {
         neumaton::lab::LabLeverToggleLookAndFeel::Options {
-            true,   // compact
-            false,  // dangerOff
-            0.92f   // leverScale
+            true,
+            false,
+            0.92f
         }
     };
 
     MicrotonalAutotuneAudioProcessor& processorRef;
 
-    // Background image
     juce::Image bgImage;
     juce::Image bgImageScaleEditor;
 
-    // Main page components
     juce::ComboBox scaleSelector;
     juce::Label scaleSelectorLabel;
 
@@ -89,7 +86,6 @@ private:
     juce::Label humanizeLabel;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> humanizeAttachment;
 
-    // Scale Lock & Analog Mode
     juce::ToggleButton scaleLockButton { "Scale Lock" };
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> scaleLockAttachment;
 
@@ -108,11 +104,9 @@ private:
     juce::Label outVolumeLabel;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> outVolumeAttachment;
 
-    // Custom scale editor (shown/hidden)
     std::unique_ptr<CustomScaleEditor> customScaleEditorPage;
     bool showingScaleEditor = false;
 
-    // Processing mode selector (replaces old LIVE button)
     juce::ComboBox modeSelector;
     juce::Label modeSelectorLabel;
     juce::ComboBox presetSelector;
@@ -123,8 +117,6 @@ private:
     void showControlRoom();
     void closeControlRoom();
 
-    // Third page: creative tempo controls. This is intentionally separate
-    // from the main processing-mode selector.
     juce::TextButton tempoPageButton { "Tempo" };
     juce::TextButton tempoBackButton { "Indietro" };
     juce::TextButton tempoOffButton { "Off" };
@@ -148,7 +140,6 @@ private:
         tempoSmartOnsetAttachment;
     bool showingTempoPage = false;
 
-    // Methods
     void buildScaleMenu();
     void onScaleSelected();
     void showCustomScaleEditor();
@@ -169,7 +160,6 @@ private:
     void drawMeterPanel (juce::Graphics& g, juce::Rectangle<int> bounds);
     void drawTempoPage (juce::Graphics& g, juce::Rectangle<int> bounds);
 
-    // State tracking for optimized timer updates
     bool lastScaleLockState_ = false;
     bool lastAnalogModeState_ = false;
 
@@ -177,12 +167,8 @@ private:
     float visualCorrectionGlowCents_ = 0.0f;
     float visualConsensusGlow_ = 0.0f;
 
-    // A GUI control is never allowed to look active while its owning DSP
-    // function cannot affect audio. The legacy High Latency/YIN path remains
-    // intentionally unchanged, so modern-only controls are disabled there.
-    // Likewise Tempo sub-controls are enabled only in the modes that consume
-    // them. This guard changes UI applicability only; it never changes an
-    // audio parameter value or correction authority.
+    // No placebo controls: this guard changes UI applicability only. It never
+    // rewrites parameter values, sensor authority or correction depth.
     class AudioControlAvailabilityGuard final : private juce::Timer
     {
     public:
@@ -190,7 +176,6 @@ private:
             MicrotonalAutotuneAudioProcessorEditor& editor)
             : owner (editor)
         {
-            installSpeedTextMapping();
             refresh();
             startTimerHz (20);
         }
@@ -201,27 +186,6 @@ private:
         }
 
     private:
-        void installSpeedTextMapping()
-        {
-            owner.speedKnob.textFromValueFunction = [this] (double value)
-            {
-                if (owner.scaleLockButton.getToggleState())
-                {
-                    const int mode = owner.processorRef.processingMode.load();
-                    if (mode > 0)
-                    {
-                        const double norm = std::pow (
-                            juce::jlimit (0.0, 1.0, value / 500.0), 1.35);
-                        const double mapped = mode == 1 ? 3.0 + 92.0 * norm
-                            : mode == 2 ? 1.5 + 63.5 * norm
-                                        : 0.35 + 39.65 * norm;
-                        return juce::String (mapped, 2) + " ms";
-                    }
-                }
-                return juce::String (value, 1) + " ms";
-            };
-        }
-
         void timerCallback() override
         {
             refresh();
@@ -237,6 +201,10 @@ private:
                 && !owner.showingScaleEditor
                 && !owner.showingControlRoom;
 
+            // High Latency intentionally stays the untouched legacy YIN path.
+            // Controls not consumed there are disabled instead of becoming
+            // placebo controls. Scale/root/Response/Amount/Analog/Output remain
+            // enabled because the legacy path genuinely consumes them.
             owner.humanizeSlider.setEnabled (modernMode);
             owner.humanizeLabel.setEnabled (modernMode);
             owner.scaleLockButton.setEnabled (modernMode);
@@ -247,9 +215,6 @@ private:
             owner.vibratoPreserveSlider.setEnabled (scaleLockActive);
             owner.vibratoPreserveLabel.setEnabled (scaleLockActive);
 
-            // Dependent Scale Lock controls are not merely greyed out: when
-            // High Latency owns the audio path they disappear from the active
-            // control surface, preventing a placebo interaction.
             owner.lockHysteresisSlider.setVisible (mainPage && scaleLockActive);
             owner.lockHysteresisLabel.setVisible (mainPage && scaleLockActive);
             owner.vibratoPreserveSlider.setVisible (mainPage && scaleLockActive);
@@ -273,9 +238,6 @@ private:
             owner.tempoLockStrengthLabel.setEnabled (glideLockMode);
             owner.tempoSmartOnset.setEnabled (glideLockMode);
 
-            // If a host automation switches to the untouched legacy mode while
-            // the Tempo page is open, return to the main page rather than leave
-            // an apparently active page with no DSP consumer.
             if (!modernMode && owner.showingTempoPage)
                 owner.closeTempoPage();
 
@@ -285,6 +247,8 @@ private:
             {
                 lastProcessingMode_ = processingMode;
                 lastScaleLockState_ = lockState;
+                // PluginEditor.cpp already maps the displayed Response value to
+                // the exact Scale Lock response curve used by the engine.
                 owner.speedKnob.updateText();
             }
         }
@@ -294,7 +258,6 @@ private:
         bool lastScaleLockState_ = false;
     };
 
-    // Declared last so every component it touches is already constructed.
     AudioControlAvailabilityGuard audioControlAvailabilityGuard_ { *this };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MicrotonalAutotuneAudioProcessorEditor)
