@@ -963,7 +963,6 @@ void SingleWetSpectralRenderer::synthesiseLayer(
     double correctionCents,
     float formantPreservation,
     bool resetPhases,
-    float phaseAnchor,
     int positiveBins) noexcept
 {
     std::fill(layer.spectrum.begin(), layer.spectrum.end(), Complex {});
@@ -998,13 +997,6 @@ void SingleWetSpectralRenderer::synthesiseLayer(
             // the lookup-table oscillator independent of song duration.
             synthesisPhase -= twoPi * std::nearbyint(synthesisPhase / twoPi);
 
-            if (phaseAnchor > 0.0f)
-            {
-                const double phaseError = wrapPhase(
-                    analysisPhase - synthesisPhase);
-                synthesisPhase += static_cast<double>(phaseAnchor) * phaseError;
-                synthesisPhase -= twoPi * std::nearbyint(synthesisPhase / twoPi);
-            }
         }
 
         propagatedPhases_[static_cast<std::size_t>(sourceBin)] =
@@ -1021,17 +1013,11 @@ void SingleWetSpectralRenderer::synthesiseLayer(
         if (magnitude <= 1.0e-12f)
             continue;
 
-        // The classifier is advisory only. Every spectral bin has exactly one
-        // transported coordinate. Tonal/aperiodic evidence changes how strongly
-        // the phase is locked and how de-breath gain is shaped, never whether a
-        // fraction of the bin remains at its source pitch.
-        // UNIFIED_VOICED_PHASE_GUIDANCE_V2
-        // One voiced/reconstruction confidence controls phase coherence for the
-        // complete spectrum. The harmonic map may still describe local noise
-        // for de-breath treatment, but it no longer partitions phase behaviour.
-        const float phaseGuidance = clamp01(smoothedSpectralReliability_);
-        const float aperiodicEvidence = 1.0f
-            - clamp01(harmonicMask_[sourceIndex]);
+        // PURE_SINGLE_TRANSPORT_V4
+        // Detector, voiced, breath, harmonicity and reliability state are
+        // observers/supervisors only. They cannot select a second phase law,
+        // attenuate spectral pieces or pull reconstruction toward dry analysis.
+        // Every bin follows the one propagated transport phase.
 
         // STABLE_SINGLE_LATTICE_TRANSPORT_V3
         // Magnitudes keep one stable FFT geometry. trueSourceBins_ is an
@@ -1044,20 +1030,7 @@ void SingleWetSpectralRenderer::synthesiseLayer(
         if (targetPosition > static_cast<double>(positiveBins) + 1.0)
             continue;
 
-        const int peak = nearestPeak_[sourceIndex];
-        const double relativeAnalysisPhase = wrapPhase(
-            static_cast<double>(analysisPhases_[sourceIndex])
-            - static_cast<double>(analysisPhases_[static_cast<std::size_t>(peak)]));
-        const double ownTransportPhase = initialiseLayer
-            ? static_cast<double>(analysisPhases_[sourceIndex])
-            : propagatedPhases_[sourceIndex];
-        const double peakLockedPhase = initialiseLayer
-            ? static_cast<double>(analysisPhases_[sourceIndex])
-            : propagatedPhases_[static_cast<std::size_t>(peak)]
-                + relativeAnalysisPhase;
-        const double outputPhase = ownTransportPhase
-            + static_cast<double>(phaseGuidance)
-                * wrapPhase(peakLockedPhase - ownTransportPhase);
+        const double outputPhase = propagatedPhases_[sourceIndex];
 
         const float sourceEnvelope = std::max(
             1.0e-8f,
@@ -1071,14 +1044,9 @@ void SingleWetSpectralRenderer::synthesiseLayer(
             1.78f);
         const float formantGain = lookupFormantGain(envelopeRatio, safeFormant);
 
-        const float frequencyHz = binFrequency(sourceBin);
-        const float deBreathBandStrength = 0.16f
-            + 0.84f * smoothStep(850.0f, 6200.0f, frequencyHz);
-        const float reconstructionGain = 1.0f
-            - aperiodicEvidence * deBreathBandStrength
-                * (1.0f - smoothedNoiseGain_);
+        // Formant is an explicit user control. No detector/classifier state
+        // is allowed to scale the reconstructed spectrum.
         const float outputMagnitude = magnitude
-                                    * reconstructionGain
                                     * formantGain
                                     * energyScale;
         float phaseSine = 0.0f;
@@ -1187,8 +1155,6 @@ void SingleWetSpectralRenderer::processFrame(
                             || !analysisPhaseInitialised_;
     phaseResetPending_ = false;
 
-    const float phaseAnchor = resetAnalysis ? 0.0f
-        : 0.32f * smoothStep(0.24f, 0.72f, spectralFlux);
     const double expectedPhaseScale = twoPi * static_cast<double>(hopSize_)
                                     / static_cast<double>(frameSize_);
     const double binFromPhaseScale = static_cast<double>(frameSize_)
@@ -1220,7 +1186,7 @@ void SingleWetSpectralRenderer::processFrame(
                                 context);
 
     synthesiseLayer(layer_, frameEndSample, correctionCents, formantPreservation,
-                    resetAnalysis, phaseAnchor, positiveBins);
+                    resetAnalysis, positiveBins);
 
     for (int bin = 0; bin <= positiveBins; ++bin)
     {
