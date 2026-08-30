@@ -23,6 +23,7 @@ on:
       - 'Tests/GuiAudibilityTest.cpp'
       - 'Tests/GuiAudioControlContractTest.cpp'
       - 'Tests/UnifiedTransportPatch.py'
+      - 'Tests/PitchRescuePatch.py'
       - 'Tests/CLEAN_MODERN_PITCH_ENGINE_CONTRACT.md'
       - 'Tests/GUI_AUDIO_CONTROL_CONTRACT.md'
       - '.github/workflows/clean-modern-pitch-engine.yml'
@@ -42,19 +43,21 @@ jobs:
           fetch-depth: 1
 
       - name: Apply guarded source transformation
-        run: python3 Tests/UnifiedTransportPatch.py
+        run: |
+          python3 Tests/UnifiedTransportPatch.py
+          python3 Tests/PitchRescuePatch.py
 
       - name: Commit transformed source only
         shell: bash
         run: |
-          git add Source/SingleWetSpectralRenderer.cpp Source/ModernPitchEngine.cpp
+          git add Source/SingleWetSpectralRenderer.cpp Source/ModernPitchEngine.cpp Source/ModernPitchEngine.h Tests/SupervisorContinuityTest.cpp
           if git diff --cached --quiet; then
             echo "No source transformation needed"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "Remove protective analysis from renderer runtime"
+          git commit -m "Reacquire stale F0 without touching audio renderer"
           git push origin HEAD:single-wet-quality-reconstruction
 
   invariant-test:
@@ -239,6 +242,10 @@ jobs:
           }
           if (Select-String -Path Source\ModernPitchEngine.cpp -Pattern 'TransportClock|ChannelPath::|updateLpcTarget|rendererContext' -Quiet) {
             Write-Error "Removed audio/sensor routing machinery returned"
+            exit 1
+          }
+          if (-not (Select-String -Path Source\ModernPitchEngine.cpp -Pattern 'PITCH_RESCUE_V1' -SimpleMatch -Quiet)) {
+            Write-Error "Bounded stale-F0 reacquisition is missing"
             exit 1
           }
 
