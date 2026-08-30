@@ -97,13 +97,17 @@ int main()
                          && has(editor, "processorRef.updateProcessingMode (newMode)"),
                      "scale_root_and_mode_selectors_reach_audio_state");
 
-    success &= check(has(editorHeader, "3.0 + 92.0 * norm")
-                         && has(editorHeader, "1.5 + 63.5 * norm")
-                         && has(editorHeader, "0.35 + 39.65 * norm"),
-                     "response_display_matches_full_audible_range");
+    success &= check(has(editor, "3.0 + 4.0 * norm")
+                         && has(editor, "1.5 + 3.5 * norm")
+                         && has(editor, "0.35 + 2.65 * norm")
+                         && has(engine, "3.0 + 4.0 * norm")
+                         && has(engine, "1.5 + 3.5 * norm")
+                         && has(engine, "0.35 + 2.65 * norm"),
+                     "response_display_matches_dsp_curve");
 
     success &= check(!has(engine, "TransportClock")
                          && !has(engine, "ChannelPath::")
+                         && !has(engine, "calculateReflectionCoefficients")
                          && has(engine, "wetRenderers_"),
                      "single_wet_has_no_dormant_transport_renderer");
 
