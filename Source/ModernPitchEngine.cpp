@@ -2181,30 +2181,6 @@ void ModernPitchEngine::process(
     }
 
     const bool dualMono = safe.stereoMode == StereoMode::dualMono && channels > 1;
-    const auto rendererContext = [this, &safe](const PitchObservation& observation,
-                                               const CorrectionState& correction) noexcept
-    {
-        SingleWetSpectralRenderer::Context context;
-        const float latchedPitch = correction.transportPeriodHz > 0.0
-            ? static_cast<float>(correction.transportPeriodHz) : observation.frequencyHz;
-        context.detectedPitchHz = observation.valid ? observation.frequencyHz : latchedPitch;
-        context.noteBodyLatched = correction.noteBodyLatched;
-        context.pitchAnchorFresh = observation.valid
-            && correction.pitchStaleSamples == 0;
-        context.noteBodyConfidence = correction.noteBodyConfidence;
-        context.confidence = std::max(observation.confidence, correction.noteBodyLatched
-            ? 0.85f * correction.noteBodyConfidence : 0.0f);
-        context.voicing = std::max(observation.voicing, correction.noteBodyLatched
-            ? 0.80f * correction.noteBodyConfidence : 0.0f);
-        context.consensus = std::max(observation.consensus, correction.noteBodyLatched
-            ? 0.65f * correction.noteBodyConfidence : 0.0f);
-        context.onsetStrength = observation.onsetStrength;
-        context.breathReduction = safe.breathReduction;
-        context.noteAgeSeconds = static_cast<float>(std::max(0, correction.stateAgeSamples) / sampleRate_);
-        context.stableMusicalBody = correction.trackingState == TrackingState::stable;
-        context.transitionBody = correction.trackingState == TrackingState::transition;
-        return context;
-    };
     for (int sample = 0; sample < samples; ++sample)
     {
         if (dualMono)
@@ -2249,12 +2225,10 @@ void ModernPitchEngine::process(
                     correction.velocityCentsPerSecond = 0.0;
                 }
                 const double audible = decision.controllerCents;
-                const auto context = rendererContext(
-                    latestChannelObservation_[static_cast<std::size_t>(channel)], correction);
                 data[static_cast<std::size_t>(channel)][sample] =
                     wetRenderers_[static_cast<std::size_t>(channel)].processSample(
                         data[static_cast<std::size_t>(channel)][sample], audible,
-                        safe.formantPreservation, context);
+                        safe.formantPreservation);
                 if (channel == 0)
                 {
                     latestObservation_ = latestChannelObservation_[0];
@@ -2298,12 +2272,11 @@ void ModernPitchEngine::process(
                 linkedCorrection_.velocityCentsPerSecond = 0.0;
             }
             audibleCorrectionCents_ = decision.controllerCents;
-            const auto context = rendererContext(latestObservation_, linkedCorrection_);
             for (int channel = 0; channel < channels; ++channel)
                 data[static_cast<std::size_t>(channel)][sample] =
                     wetRenderers_[static_cast<std::size_t>(channel)].processSample(
                         data[static_cast<std::size_t>(channel)][sample], audibleCorrectionCents_,
-                        safe.formantPreservation, context);
+                        safe.formantPreservation);
         }
 
         if (linkedCorrection_.noteBodyLatched
