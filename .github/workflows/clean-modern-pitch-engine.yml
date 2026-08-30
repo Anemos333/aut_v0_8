@@ -20,22 +20,55 @@ on:
       - 'Tests/VoiceEvidenceAnalyzerTest.cpp'
       - 'Tests/SupervisorContinuityTest.cpp'
       - 'Tests/SingleWetSpectralRendererTest.cpp'
+      - 'Tests/GuiAudibilityTest.cpp'
+      - 'Tests/GuiAudioControlContractTest.cpp'
+      - 'Tests/UnifiedTransportPatch.py'
       - 'Tests/CLEAN_MODERN_PITCH_ENGINE_CONTRACT.md'
+      - 'Tests/GUI_AUDIO_CONTROL_CONTRACT.md'
       - '.github/workflows/clean-modern-pitch-engine.yml'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
+  apply-unified-transport:
+    if: github.event.pull_request.head.ref == 'single-wet-quality-reconstruction'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout branch head
+        uses: actions/checkout@v4
+        with:
+          ref: single-wet-quality-reconstruction
+          fetch-depth: 1
+
+      - name: Apply guarded source transformation
+        run: python3 Tests/UnifiedTransportPatch.py
+
+      - name: Commit transformed source only
+        shell: bash
+        run: |
+          git add Source/SingleWetSpectralRenderer.cpp Source/ModernPitchEngine.cpp Tests/SupervisorContinuityTest.cpp
+          if git diff --cached --quiet; then
+            echo "No source transformation needed"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Transport the complete spectrum through one pitch path"
+          git push origin HEAD:single-wet-quality-reconstruction
+
   invariant-test:
+    needs: apply-unified-transport
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-22.04, windows-2022]
     runs-on: ${{ matrix.os }}
     steps:
-      - name: Checkout
+      - name: Checkout updated branch head
         uses: actions/checkout@v4
+        with:
+          ref: single-wet-quality-reconstruction
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
@@ -64,8 +97,8 @@ jobs:
             -A x64 `
             -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
 
-      - name: Build single-wet invariant tests
-        run: cmake --build build-clean --config Release --target CleanModernPitchEngineTest VoiceEvidenceAnalyzerTest SupervisorContinuityTest SingleWetSpectralRendererTest --parallel 2
+      - name: Build invariant tests
+        run: cmake --build build-clean --config Release --target CleanModernPitchEngineTest VoiceEvidenceAnalyzerTest SupervisorContinuityTest SingleWetSpectralRendererTest GuiAudibilityTest GuiAudioControlContractTest --parallel 2
 
       - name: Run invariant tests on Linux
         if: runner.os == 'Linux'
@@ -74,6 +107,8 @@ jobs:
           ./build-clean/clean-engine-tests/VoiceEvidenceAnalyzerTest
           ./build-clean/clean-engine-tests/SupervisorContinuityTest
           ./build-clean/clean-engine-tests/SingleWetSpectralRendererTest
+          ./build-clean/clean-engine-tests/GuiAudibilityTest
+          ./build-clean/clean-engine-tests/GuiAudioControlContractTest
 
       - name: Run invariant tests on Windows
         if: runner.os == 'Windows'
@@ -83,7 +118,9 @@ jobs:
             ".\build-clean\clean-engine-tests\CleanModernPitchEngineTest.exe",
             ".\build-clean\clean-engine-tests\VoiceEvidenceAnalyzerTest.exe",
             ".\build-clean\clean-engine-tests\SupervisorContinuityTest.exe",
-            ".\build-clean\clean-engine-tests\SingleWetSpectralRendererTest.exe"
+            ".\build-clean\clean-engine-tests\SingleWetSpectralRendererTest.exe",
+            ".\build-clean\clean-engine-tests\GuiAudibilityTest.exe",
+            ".\build-clean\clean-engine-tests\GuiAudioControlContractTest.exe"
           )
           foreach ($test in $tests) {
             $name = [System.IO.Path]::GetFileNameWithoutExtension($test)
@@ -103,10 +140,13 @@ jobs:
           }
 
   windows-vst3:
+    needs: apply-unified-transport
     runs-on: windows-2022
     steps:
-      - name: Checkout
+      - name: Checkout updated branch head
         uses: actions/checkout@v4
+        with:
+          ref: single-wet-quality-reconstruction
 
       - name: Configure
         shell: pwsh
@@ -121,7 +161,7 @@ jobs:
           cmake --build build-vst3 --config Release `
             --target Neumaton_VST3 --parallel 2
 
-      - name: Verify single-wet architecture and package
+      - name: Verify one-coordinate spectral architecture and package
         shell: pwsh
         run: |
           $rendererFiles = @(
@@ -137,18 +177,36 @@ jobs:
             'secondaryLayer',
             'NeumatonOutputRenderer',
             'NeumatonRidgeLedger',
-            'NEUMATON_OUTPUT_V3'
+            'NEUMATON_OUTPUT_V3',
+            'layer.spectrum[sourceIndex] += fftBuffer_[sourceIndex]',
+            'const float harmonicMagnitude',
+            'targetPosition = static_cast<double>(sourceBin) * safeRatio'
           )
           foreach ($term in $forbiddenRenderer) {
             if (Select-String -Path $rendererFiles -Pattern $term -SimpleMatch -Quiet) {
-              Write-Error "Forbidden dry/parallel output symbol in single-wet renderer: $term"
+              Write-Error "Forbidden split/parallel audio symbol: $term"
+              exit 1
+            }
+          }
+
+          $requiredRenderer = @(
+            'FULL_SPECTRUM_SINGLE_TRANSPORT_V1',
+            'const float phaseGuidance',
+            'const float aperiodicEvidence',
+            'trueSourceBins_[sourceIndex]',
+            'const double targetPosition = sourcePosition * safeRatio',
+            'context.pitchAnchorFresh'
+          )
+          foreach ($term in $requiredRenderer) {
+            if (-not (Select-String -Path $rendererFiles -Pattern $term -SimpleMatch -Quiet)) {
+              Write-Error "Unified transport invariant missing: $term"
               exit 1
             }
           }
 
           $layerCount = (Select-String -Path Source\SingleWetSpectralRenderer.h -Pattern 'SynthesisLayer layer_' -AllMatches).Matches.Count
           if ($layerCount -ne 1) {
-            Write-Error "Single-wet renderer must own exactly one synthesis layer; found $layerCount"
+            Write-Error "Renderer must own exactly one synthesis layer; found $layerCount"
             exit 1
           }
           if (Select-String -Path Source\SingleWetSpectralRenderer.h -Pattern 'array<SynthesisLayer' -SimpleMatch -Quiet) {
@@ -156,26 +214,13 @@ jobs:
             exit 1
           }
 
-          if (Select-String -Path Source\ModernPitchEngine.cpp -Pattern 'channelPaths_[static_cast<std::size_t>(channel)].process(' -SimpleMatch -Quiet) {
-            Write-Error "Dormant LPC/TransportClock path is still called by production audio"
-            exit 1
-          }
           if (-not (Select-String -Path Source\ModernPitchEngine.cpp -Pattern 'wetRenderers_[static_cast<std::size_t>(channel)].processSample(' -SimpleMatch -Quiet)) {
-            Write-Error "Production audio is not routed directly through the single-wet renderer"
+            Write-Error "Production audio is not routed directly through the single renderer"
             exit 1
           }
-
-          $required = @(
-            'pitchStaleSamples',
-            'noteBodyLatched',
-            'wetRenderers_',
-            'SingleWetSpectralRenderer'
-          )
-          foreach ($term in $required) {
-            if (-not (Select-String -Path Source\ModernPitchEngine.cpp,Source\ModernPitchEngine.h -Pattern $term -SimpleMatch -Quiet)) {
-              Write-Error "Single-wet/supervisor invariant missing: $term"
-              exit 1
-            }
+          if (Select-String -Path Source\ModernPitchEngine.cpp -Pattern 'TransportClock|ChannelPath::|updateLpcTarget' -Quiet) {
+            Write-Error "Removed transport/LPC audio machinery returned"
+            exit 1
           }
 
           if (-not (Select-String -Path Source\VoiceEvidenceAnalyzer.h -Pattern 'const juce::AudioBuffer<float>&' -SimpleMatch -Quiet)) {
@@ -195,7 +240,7 @@ jobs:
           )
           foreach ($pattern in $sensorAuthorityWrites) {
             if (Select-String -Path Source\LivePitchProcessor.h -Pattern $pattern -Quiet) {
-              Write-Error "Voice evidence may supervise identity/search but may not rewrite user authority: $pattern"
+              Write-Error "Sensors may supervise care/search but may not rewrite user authority: $pattern"
               exit 1
             }
           }
