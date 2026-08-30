@@ -33,7 +33,6 @@ juce_add_plugin(Neumaton
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT FALSE
     NEEDS_MIDI_OUTPUT FALSE
-    IS_MIDI_EFFECT FALSE
     EDITOR_WANTS_KEYBOARD_FOCUS FALSE
     COPY_PLUGIN_AFTER_BUILD TRUE
     PLUGIN_MANUFACTURER_CODE Mtal
@@ -175,6 +174,44 @@ if(NEUMATON_BUILD_CLEAN_ENGINE_TESTS)
         PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags
     )
     set_target_properties(SupervisorContinuityTest PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/clean-engine-tests"
+        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/clean-engine-tests"
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/clean-engine-tests"
+        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/clean-engine-tests"
+        RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}/clean-engine-tests"
+    )
+
+    juce_add_console_app(GuiAudibilityTest
+        PRODUCT_NAME GuiAudibilityTest
+    )
+    juce_generate_juce_header(GuiAudibilityTest)
+    target_sources(GuiAudibilityTest
+        PRIVATE
+            Tests/GuiAudibilityTest.cpp
+            Source/ModernPitchEngine.cpp
+            Source/SingleWetSpectralRenderer.cpp
+            Source/Tempo.cpp
+    )
+    target_include_directories(GuiAudibilityTest PRIVATE Source)
+    target_compile_definitions(GuiAudibilityTest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+    target_link_libraries(GuiAudibilityTest
+        PRIVATE juce::juce_audio_basics juce::juce_core
+        PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags
+    )
+    set_target_properties(GuiAudibilityTest PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/clean-engine-tests"
+        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/clean-engine-tests"
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/clean-engine-tests"
+        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/clean-engine-tests"
+        RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}/clean-engine-tests"
+    )
+
+    add_executable(GuiAudioControlContractTest
+        Tests/GuiAudioControlContractTest.cpp
+    )
+    set_target_properties(GuiAudioControlContractTest PROPERTIES
+        CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED ON
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/clean-engine-tests"
         RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/clean-engine-tests"
         RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/clean-engine-tests"
