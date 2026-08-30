@@ -4,7 +4,6 @@
 #include <array>
 #include <cmath>
 #include <iostream>
-#include <tuple>
 #include <vector>
 
 namespace
@@ -37,24 +36,11 @@ double tonePower(const std::vector<float>& signal,
 }
 
 std::vector<float> renderTone(int frameSize,
-                              float detectorConfidence,
-                              float noteBodyConfidence,
-                              bool noteBodyLatched,
                               double correctionCents,
                               double inputFrequencyHz = 220.0)
 {
     SingleWetSpectralRenderer renderer;
     renderer.prepare(sampleRate, frameSize);
-
-    SingleWetSpectralRenderer::Context context;
-    context.detectedPitchHz = noteBodyLatched ? static_cast<float>(inputFrequencyHz) : 0.0f;
-    context.pitchAnchorFresh = noteBodyLatched;
-    context.confidence = detectorConfidence;
-    context.voicing = detectorConfidence;
-    context.consensus = detectorConfidence;
-    context.noteBodyLatched = noteBodyLatched;
-    context.noteBodyConfidence = noteBodyConfidence;
-    context.stableMusicalBody = noteBodyLatched;
 
     std::vector<float> output(48000);
     for (int sample = 0; sample < static_cast<int>(output.size()); ++sample)
@@ -62,7 +48,7 @@ std::vector<float> renderTone(int frameSize,
         const float input = 0.22f * static_cast<float>(std::sin(
             2.0 * pi * inputFrequencyHz * static_cast<double>(sample) / sampleRate));
         output[static_cast<std::size_t>(sample)] = renderer.processSample(
-            input, correctionCents, 0.9f, context);
+            input, correctionCents, 0.9f);
     }
     return output;
 }
@@ -71,15 +57,6 @@ std::vector<float> renderInharmonicOctaveShift()
 {
     SingleWetSpectralRenderer renderer;
     renderer.prepare(sampleRate, 512);
-
-    SingleWetSpectralRenderer::Context context;
-    context.detectedPitchHz = 0.0f;
-    context.pitchAnchorFresh = false;
-    context.confidence = 0.0f;
-    context.voicing = 0.0f;
-    context.consensus = 0.0f;
-    context.noteBodyLatched = false;
-    context.noteBodyConfidence = 0.0f;
 
     constexpr std::array<double, 4> frequencies { 277.0, 401.0, 593.0, 877.0 };
     constexpr std::array<double, 4> phases { 0.17, 0.73, 1.31, 2.03 };
@@ -94,7 +71,7 @@ std::vector<float> renderInharmonicOctaveShift()
                 + phases[index]);
         }
         output[static_cast<std::size_t>(sample)] = renderer.processSample(
-            static_cast<float>(input), 1200.0, 0.0f, context);
+            static_cast<float>(input), 1200.0, 0.0f);
     }
     return output;
 }
@@ -105,13 +82,11 @@ int main()
     bool success = true;
     const double semitoneTargetHz = 220.0 * std::exp2(100.0 / 1200.0);
 
-    // Quality, Live and Experimental may differ in frame latency, but the
-    // correction law is identical: every mode must move energy toward the same
-    // requested target instead of exposing an unshifted residual in short modes.
+    // The same transport law must work at all three production frame sizes.
     const std::array<int, 3> frameSizes { 512, 256, 128 };
     for (const int frameSize : frameSizes)
     {
-        const auto output = renderTone(frameSize, 0.95f, 0.95f, true, 100.0);
+        const auto output = renderTone(frameSize, 100.0);
         const double targetPower = tonePower(output, semitoneTargetHz, 12000);
         const double sourcePower = tonePower(output, 220.0, 12000);
         const double ratio = targetPower / std::max(1.0e-20, sourcePower);
@@ -122,32 +97,7 @@ int main()
                                             : "experimental_obeys_exact_transport");
     }
 
-    // Sensor state may change detector/supervisor decisions upstream, but once
-    // the correction/formant request reaches the renderer it must not alter a
-    // single output sample. This catches hidden protective audio modulation.
-    const auto highGuidance = renderTone(512, 0.95f, 0.95f, true, 100.0);
-    const auto noGuidance = renderTone(512, 0.0f, 0.0f, false, 100.0);
-    double sensorAudioMaxDifference = 0.0;
-    for (std::size_t sample = 0; sample < highGuidance.size(); ++sample)
-    {
-        sensorAudioMaxDifference = std::max(
-            sensorAudioMaxDifference,
-            std::abs(static_cast<double>(highGuidance[sample])
-                     - static_cast<double>(noGuidance[sample])));
-    }
-    std::cerr << "sensor_audio_max_difference=" << sensorAudioMaxDifference << '\n';
-    success &= check(sensorAudioMaxDifference < 1.0e-7,
-                     "sensor_evidence_cannot_modify_audio_reconstruction");
-
-    // Sensor confidence cannot authorize part of the spectrum to remain at the
-    // source pitch while a correction request exists.
-    const auto lowConfidence = renderTone(512, 0.05f, 0.92f, true, 100.0);
-    const double lowTargetPower = tonePower(lowConfidence, semitoneTargetHz, 12000);
-    const double lowSourcePower = tonePower(lowConfidence, 220.0, 12000);
-    success &= check(lowTargetPower > 4.0 * lowSourcePower,
-                     "latched_low_confidence_still_obeys_full_transport");
-
-    const auto unity = renderTone(512, 0.95f, 0.95f, true, 0.0);
+    const auto unity = renderTone(512, 0.0);
     const double unitySourcePower = tonePower(unity, 220.0, 12000);
     const double unityShiftedPower = tonePower(unity, semitoneTargetHz, 12000);
     success &= check(unitySourcePower > 4.0 * unityShiftedPower,
@@ -155,7 +105,7 @@ int main()
 
     // A full octave catches both historical octave wrapping and any hidden
     // original-position contribution.
-    const auto octave = renderTone(512, 0.95f, 0.95f, true, 1200.0);
+    const auto octave = renderTone(512, 1200.0);
     const double octaveTargetPower = tonePower(octave, 440.0, 12000);
     const double octaveSourcePower = tonePower(octave, 220.0, 12000);
     std::cerr << "octave_target_source_ratio="
@@ -163,9 +113,8 @@ int main()
     success &= check(octaveTargetPower > 4.0 * octaveSourcePower,
                      "octave_correction_is_not_wrapped_or_split");
 
-    // Deliberately remove voiced/F0 guidance and feed an inharmonic signal.
-    // Evidence is observer-only here: it cannot alter, attenuate or split the
-    // requested transport.
+    // An inharmonic signal has no special branch: every component must obey the
+    // same requested transport.
     const auto inharmonic = renderInharmonicOctaveShift();
     constexpr std::array<double, 4> sourceFrequencies { 277.0, 401.0, 593.0, 877.0 };
     double inharmonicSourcePower = 0.0;
@@ -179,7 +128,7 @@ int main()
         / std::max(1.0e-20, inharmonicSourcePower);
     std::cerr << "inharmonic_full_transport_ratio=" << inharmonicRatio << '\n';
     success &= check(inharmonicTargetPower > 2.0 * inharmonicSourcePower,
-                     "aperiodic_evidence_cannot_modify_or_split_transport");
+                     "inharmonic_signal_uses_same_transport");
 
     return success ? 0 : 1;
 }
