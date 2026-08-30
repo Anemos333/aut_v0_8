@@ -7,66 +7,55 @@ renderer = renderer_path.read_text(encoding="utf-8")
 engine = engine_path.read_text(encoding="utf-8")
 
 if "PURE_SINGLE_TRANSPORT_V4" not in renderer:
-    raise RuntimeError("V4 pure transport must exist before V5 physical cleanup")
-
-sentinel = "MINIMAL_RENDERER_V5"
-if sentinel in renderer:
+    raise RuntimeError("V4 pure transport must exist before V5 cleanup")
+if "MINIMAL_RENDERER_V5" in renderer:
     print("V5 minimal renderer already applied")
     raise SystemExit(0)
 
-# Remove all harmonic/noise classifier storage from prepare(). The prefix sum is
-# part of the user-controlled formant envelope and is restored immediately below.
-renderer, count = re.subn(
-    r"    rawHarmonicMask_\.assign\(.*?    peakBins_\.reserve\(.*?\);\n",
-    "",
+
+def sub_once(text, pattern, replacement, label):
+    updated, count = re.subn(pattern, replacement, text, count=1, flags=re.S)
+    if count != 1:
+        raise RuntimeError(f"{label}: expected one block, found {count}")
+    return updated
+
+
+# Classifier storage disappears; prefixSum remains because it belongs to the
+# user-controlled formant envelope, not to voice/noise classification.
+renderer = sub_once(
     renderer,
-    count=1,
-    flags=re.S,
-)
-if count != 1:
-    raise RuntimeError(f"prepare classifier storage: expected one block, found {count}")
-
-layer_marker = "    layer_.spectrum.assign(static_cast<std::size_t>(frameSize_), Complex {});\n"
-if renderer.count(layer_marker) != 1:
-    raise RuntimeError(f"layer allocation marker: expected one, found {renderer.count(layer_marker)}")
-renderer = renderer.replace(
-    layer_marker,
-    "    prefixSum_.assign(static_cast<std::size_t>(positiveBinCount + 1), 0.0);\n\n" + layer_marker,
-    1,
+    r"    rawHarmonicMask_\.assign\(.*?    peakBins_\.reserve\(.*?\);\n",
+    "    prefixSum_.assign(static_cast<std::size_t>(positiveBinCount + 1), 0.0);\n",
+    "classifier storage",
 )
 
-# Keep only the envelope/formant coefficients used by the actual renderer.
-renderer, count = re.subn(
+# Prepare only coefficients that directly belong to envelope/formant rendering.
+renderer = sub_once(
+    renderer,
     r"    // FULL_SPECTRUM_SINGLE_TRANSPORT_V1\n.*?    reset\(\);",
     """    // FULL_SPECTRUM_SINGLE_TRANSPORT_V1
     // STABLE_SINGLE_LATTICE_TRANSPORT_V3
     // PURE_SINGLE_TRANSPORT_V4
     // MINIMAL_RENDERER_V5
-    // The renderer owns only analysis FFT, one spectral transport, formant
-    // shaping, one inverse FFT and one OLA. Voice-state classifiers live
-    // upstream and have no runtime hook into this object.
+    // One analysis FFT -> one spectral transport -> one IFFT/OLA. Voice-state
+    // analysis is upstream and has no runtime hook into this renderer.
     const double envelopeUpdateSeconds = static_cast<double>(
         hopSize_ * envelopeUpdateInterval_) / sampleRate_;
     envelopeAttackCoefficient_ = static_cast<float>(
         1.0 - std::exp(-envelopeUpdateSeconds / 0.008));
     envelopeReleaseCoefficient_ = static_cast<float>(
         1.0 - std::exp(-envelopeUpdateSeconds / 0.035));
-
     formantReductionCoefficient_ = static_cast<float>(
         1.0 - std::exp(-1.0 / (0.004 * sampleRate_)));
     formantRecoveryCoefficient_ = static_cast<float>(
         1.0 - std::exp(-1.0 / (0.028 * sampleRate_)));
     reset();""",
-    renderer,
-    count=1,
-    flags=re.S,
+    "protective prepare block",
 )
-if count != 1:
-    raise RuntimeError(f"prepare protective coefficient block: expected one, found {count}")
 
-# Replace reset() so no dead classifier state remains.
-renderer, count = re.subn(
-    r"void SingleWetSpectralRenderer::reset\(\) noexcept\n\{.*?\n\}\n\ndouble SingleWetSpectralRenderer::wrapPhase",
+renderer = sub_once(
+    renderer,
+    r"void SingleWetSpectralRenderer::reset\(\) noexcept\s*\{.*?\n\}\n\ndouble SingleWetSpectralRenderer::wrapPhase",
     """void SingleWetSpectralRenderer::reset() noexcept
 {
     std::fill(inputRing_.begin(), inputRing_.end(), 0.0f);
@@ -94,50 +83,35 @@ renderer, count = re.subn(
 }
 
 double SingleWetSpectralRenderer::wrapPhase""",
-    renderer,
-    count=1,
-    flags=re.S,
+    "reset cleanup",
 )
-if count != 1:
-    raise RuntimeError(f"reset cleanup: expected one block, found {count}")
 
-# Peak-region tracking existed only to support the removed phase/classifier policy.
-renderer, count = re.subn(
-    r"void SingleWetSpectralRenderer::calculatePeakRegions\(int positiveBins\) noexcept.*?float SingleWetSpectralRenderer::interpolateEnvelope",
+# Peak maps and all harmonic/noise helpers are physically deleted.
+renderer = sub_once(
+    renderer,
+    r"void SingleWetSpectralRenderer::calculatePeakRegions\(\s*int positiveBins\) noexcept.*?float SingleWetSpectralRenderer::interpolateEnvelope",
     "float SingleWetSpectralRenderer::interpolateEnvelope",
-    renderer,
-    count=1,
-    flags=re.S,
+    "peak-region removal",
 )
-if count != 1:
-    raise RuntimeError(f"peak-region removal: expected one block, found {count}")
-
-# Remove all remaining protective analysis helpers in one contiguous block.
-renderer, count = re.subn(
+renderer = sub_once(
+    renderer,
     r"float SingleWetSpectralRenderer::binFrequency\(int bin\) const noexcept.*?void SingleWetSpectralRenderer::synthesiseLayer",
     "void SingleWetSpectralRenderer::synthesiseLayer",
-    renderer,
-    count=1,
-    flags=re.S,
+    "harmonic/noise analyzer removal",
 )
-if count != 1:
-    raise RuntimeError(f"harmonic/noise analyzer removal: expected one block, found {count}")
 
-# Rebuild processFrame as the minimal audio path. No Context enters this method.
-minimal_process_frame = r'''void SingleWetSpectralRenderer::processFrame(
+minimal_frame = r'''void SingleWetSpectralRenderer::processFrame(
     std::int64_t frameEndSample,
     double correctionCents,
     float formantPreservation) noexcept
 {
     const std::int64_t frameStartSample = frameEndSample - frameSize_ + 1;
-
     for (int index = 0; index < frameSize_; ++index)
     {
         const float input = readInputSample(frameStartSample + index);
         fftBuffer_[static_cast<std::size_t>(index)] = Complex(
             input * window_[static_cast<std::size_t>(index)], 0.0f);
     }
-
     fft(fftBuffer_, false);
 
     const int positiveBins = frameSize_ / 2;
@@ -162,7 +136,6 @@ minimal_process_frame = r'''void SingleWetSpectralRenderer::processFrame(
                                     / static_cast<double>(frameSize_);
     const double binFromPhaseScale = static_cast<double>(frameSize_)
                                    / (twoPi * static_cast<double>(hopSize_));
-
     for (int sourceBin = 0; sourceBin <= positiveBins; ++sourceBin)
     {
         const double analysisPhase =
@@ -184,7 +157,6 @@ minimal_process_frame = r'''void SingleWetSpectralRenderer::processFrame(
 
     synthesiseLayer(layer_, frameEndSample, correctionCents,
                     formantPreservation, resetAnalysis, positiveBins);
-
     for (int bin = 0; bin <= positiveBins; ++bin)
     {
         previousMagnitudes_[static_cast<std::size_t>(bin)] =
@@ -196,20 +168,14 @@ minimal_process_frame = r'''void SingleWetSpectralRenderer::processFrame(
 }
 
 float SingleWetSpectralRenderer::consumeLayerOutput'''
-renderer, count = re.subn(
-    r"void SingleWetSpectralRenderer::processFrame\(.*?float SingleWetSpectralRenderer::consumeLayerOutput",
-    minimal_process_frame,
+renderer = sub_once(
     renderer,
-    count=1,
-    flags=re.S,
+    r"void SingleWetSpectralRenderer::processFrame\(.*?float SingleWetSpectralRenderer::consumeLayerOutput",
+    minimal_frame,
+    "minimal processFrame",
 )
-if count != 1:
-    raise RuntimeError(f"minimal processFrame: expected one block, found {count}")
 
-# Remove Context from the sample API as well.
-renderer, count = re.subn(
-    r"float SingleWetSpectralRenderer::processSample\(float inputSample,double correctionCents,float formantPreservation,const Context& context\) noexcept\n\{.*?\n\}\nfloat SingleWetSpectralRenderer::processBypassedSample",
-    """float SingleWetSpectralRenderer::processSample(
+minimal_sample = r'''float SingleWetSpectralRenderer::processSample(
     float inputSample,
     double correctionCents,
     float formantPreservation) noexcept
@@ -217,88 +183,62 @@ renderer, count = re.subn(
     inputSample = sanitiseAudioSample(inputSample);
     if (frameSize_ <= 0 || inputRing_.empty())
         return inputSample;
-
     const std::int64_t currentSample = inputSampleCounter_;
     inputRing_[static_cast<std::size_t>(currentSample & inputRingMask_)] = inputSample;
-    const float formantTarget = clamp01(formantPreservation);
-    const float coefficient = formantTarget < smoothedFormantPreservation_
+    const float target = clamp01(formantPreservation);
+    const float coefficient = target < smoothedFormantPreservation_
         ? formantReductionCoefficient_ : formantRecoveryCoefficient_;
     smoothedFormantPreservation_ += coefficient
-        * (formantTarget - smoothedFormantPreservation_);
-
+        * (target - smoothedFormantPreservation_);
     if (((currentSample + 1) % hopSize_) == 0)
         processFrame(currentSample, correctionCents, smoothedFormantPreservation_);
-
     const float shifted = consumeLayerOutput(layer_, currentSample);
     ++inputSampleCounter_;
     return sanitiseAudioSample(shifted);
 }
-float SingleWetSpectralRenderer::processBypassedSample""",
+float SingleWetSpectralRenderer::processBypassedSample'''
+renderer = sub_once(
     renderer,
-    count=1,
-    flags=re.S,
+    r"float SingleWetSpectralRenderer::processSample\(float inputSample,double correctionCents,float formantPreservation,const Context& context\) noexcept.*?float SingleWetSpectralRenderer::processBypassedSample",
+    minimal_sample,
+    "sensor-free processSample",
 )
-if count != 1:
-    raise RuntimeError(f"processSample Context removal: expected one block, found {count}")
 
-# Remove the renderer-context adapter from ModernPitchEngine. Voice evidence still
-# supervises note state/target upstream; it is no longer passed to the renderer.
-engine, count = re.subn(
+# Voice evidence remains in ModernPitchEngine supervisor/detector state only.
+engine = sub_once(
+    engine,
     r"    const auto rendererContext = \[this, &safe\].*?    \};\n    for \(int sample",
     "    for (int sample",
-    engine,
-    count=1,
-    flags=re.S,
+    "rendererContext removal",
 )
-if count != 1:
-    raise RuntimeError(f"rendererContext removal: expected one block, found {count}")
-
-old_dual = """                const double audible = decision.controllerCents;
-                const auto context = rendererContext(
-                    latestChannelObservation_[static_cast<std::size_t>(channel)], correction);
+engine = sub_once(
+    engine,
+    r"                const double audible = decision\.controllerCents;\n                const auto context = rendererContext\(.*?safe\.formantPreservation, context\);",
+    """                const double audible = decision.controllerCents;
                 data[static_cast<std::size_t>(channel)][sample] =
                     wetRenderers_[static_cast<std::size_t>(channel)].processSample(
                         data[static_cast<std::size_t>(channel)][sample], audible,
-                        safe.formantPreservation, context);
-"""
-new_dual = """                const double audible = decision.controllerCents;
-                data[static_cast<std::size_t>(channel)][sample] =
-                    wetRenderers_[static_cast<std::size_t>(channel)].processSample(
-                        data[static_cast<std::size_t>(channel)][sample], audible,
-                        safe.formantPreservation);
-"""
-if engine.count(old_dual) != 1:
-    raise RuntimeError(f"dual-mono renderer call: expected one match, found {engine.count(old_dual)}")
-engine = engine.replace(old_dual, new_dual, 1)
-
-old_linked = """            audibleCorrectionCents_ = decision.controllerCents;
-            const auto context = rendererContext(latestObservation_, linkedCorrection_);
+                        safe.formantPreservation);""",
+    "dual-mono sensor adapter removal",
+)
+engine = sub_once(
+    engine,
+    r"            audibleCorrectionCents_ = decision\.controllerCents;\n            const auto context = rendererContext\(latestObservation_, linkedCorrection_\);\n            for \(int channel = 0; channel < channels; \+\+channel\)\n                data\[static_cast<std::size_t>\(channel\)\]\[sample\] =\n                    wetRenderers_\[static_cast<std::size_t>\(channel\)\]\.processSample\(\n                        data\[static_cast<std::size_t>\(channel\)\]\[sample\], audibleCorrectionCents_,\n                        safe\.formantPreservation, context\);",
+    """            audibleCorrectionCents_ = decision.controllerCents;
             for (int channel = 0; channel < channels; ++channel)
                 data[static_cast<std::size_t>(channel)][sample] =
                     wetRenderers_[static_cast<std::size_t>(channel)].processSample(
                         data[static_cast<std::size_t>(channel)][sample], audibleCorrectionCents_,
-                        safe.formantPreservation, context);
-"""
-new_linked = """            audibleCorrectionCents_ = decision.controllerCents;
-            for (int channel = 0; channel < channels; ++channel)
-                data[static_cast<std::size_t>(channel)][sample] =
-                    wetRenderers_[static_cast<std::size_t>(channel)].processSample(
-                        data[static_cast<std::size_t>(channel)][sample], audibleCorrectionCents_,
-                        safe.formantPreservation);
-"""
-if engine.count(old_linked) != 1:
-    raise RuntimeError(f"linked renderer call: expected one match, found {engine.count(old_linked)}")
-engine = engine.replace(old_linked, new_linked, 1)
+                        safe.formantPreservation);""",
+    "linked sensor adapter removal",
+)
 
-for forbidden in (
-    "updateHarmonicNoiseAnalysis",
-    "harmonicMask_",
-    "noiseDominanceMs_",
-    "breathProtection_",
-    "smoothedSpectralReliability_",
+for term in (
+    "updateHarmonicNoiseAnalysis", "harmonicMask_", "noiseDominanceMs_",
+    "breathProtection_", "smoothedSpectralReliability_"
 ):
-    if forbidden in renderer:
-        raise RuntimeError(f"protective runtime symbol remains: {forbidden}")
+    if term in renderer:
+        raise RuntimeError(f"protective renderer symbol remains: {term}")
 if "rendererContext" in engine:
     raise RuntimeError("rendererContext remains in ModernPitchEngine")
 
