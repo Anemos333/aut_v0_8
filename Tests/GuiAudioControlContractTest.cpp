@@ -115,20 +115,25 @@ int main()
                      "single_wet_has_no_dormant_transport_renderer");
 
     success &= check(has(renderer, "FULL_SPECTRUM_SINGLE_TRANSPORT_V1")
-                         && has(renderer, "const float phaseGuidance")
-                         && has(renderer, "const float aperiodicEvidence")
-                         && has(renderer, "trueSourceBins_[sourceIndex]")
+                         && has(renderer, "UNIFIED_VOICED_PHASE_GUIDANCE_V2")
+                         && has(renderer, "STABLE_SINGLE_LATTICE_TRANSPORT_V3")
                          && has(renderer,
-                                "const double targetPosition = sourcePosition * safeRatio"),
-                     "renderer_transports_every_bin_through_one_coordinate");
+                                "const double targetPosition = static_cast<double>(sourceBin) * safeRatio")
+                         && has(renderer,
+                                "synthesisPhase += expectedPhaseScale")
+                         && has(renderer,
+                                "* trueSourceBins_[static_cast<std::size_t>(sourceBin)]")
+                         && has(renderer,
+                                "const float phaseGuidance = clamp01(smoothedSpectralReliability_)"),
+                     "renderer_uses_one_transport_law_and_one_phase_policy");
 
     success &= check(!has(renderer,
                           "layer.spectrum[sourceIndex] += fftBuffer_[sourceIndex]")
                          && !has(renderer, "const float harmonicMagnitude")
-                         && !has(renderer,
-                                 "targetPosition = static_cast<double>(sourceBin) * safeRatio")
+                         && !has(renderer, "const double sourcePosition = std::clamp(")
+                         && !has(renderer, "phaseGuidance = clamp01(harmonicMask_[sourceIndex])")
                          && !has(renderer, "aperiodic residual stays at its original bin"),
-                     "renderer_has_no_hidden_dry_spectral_branch");
+                     "renderer_has_no_hidden_dry_or_per_bin_phase_branch");
 
     success &= check(has(rendererHeader, "bool pitchAnchorFresh = false")
                          && has(engine, "context.pitchAnchorFresh = observation.valid")
