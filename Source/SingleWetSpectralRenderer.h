@@ -19,6 +19,7 @@ public:
         float noteAgeSeconds = 0.0f;
         float noteBodyConfidence = 0.0f;
         bool noteBodyLatched = false;
+        bool pitchAnchorFresh = false;
         bool stableMusicalBody = false;
         bool transitionBody = false;
     };
