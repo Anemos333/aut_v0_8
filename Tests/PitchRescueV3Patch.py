@@ -26,4 +26,5 @@ if 'wideTransitionObservations = 8' not in cpp:
 runpy.run_path('Tests/RapVoicingV1Patch.py', run_name='__main__')
 runpy.run_path('Tests/RapVoicingV2TestPatch.py', run_name='__main__')
 runpy.run_path('Tests/RapVoicingV2CorrectionPatch.py', run_name='__main__')
+runpy.run_path('Tests/RapVoicingV2FixNewlinePatch.py', run_name='__main__')
 print('Pitch rescue V3/V4 verified; rap presence, zero-path and zero-consensus correction guards applied')
