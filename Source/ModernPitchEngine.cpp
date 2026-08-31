@@ -2224,18 +2224,19 @@ void ModernPitchEngine::updateCorrectionState(
         const double observedDistanceFromCurrentTarget = state.targetValid
             ? std::abs(observedLog2 - state.targetLog2) * 1200.0
             : 0.0;
-        const double currentIdentityRadius = 0.72 * scaleStep;
+        const double currentIdentityRadius = 0.48 * scaleStep;
+        const double liveIdentityBreakRadius = 0.72 * scaleStep;
         const bool insideCurrentMusicalIdentity = !state.targetValid
             || observedDistanceFromCurrentTarget < currentIdentityRadius;
 
-        // SOUND_EQUALS_CORRECTION_V2: live pitch outside the current musical
-        // identity is a new authority immediately. Consensus/confidence may
-        // describe evidence quality, but cannot make the supervisor crawl from
-        // a stale centre while audible input is already somewhere else.
+        // SOUND_EQUALS_CORRECTION_V2_DENSE_SAFE: live pitch outside a clear
+        // 0.72-step boundary owns identity immediately, while the original
+        // 0.48-step within-note boundary remains intact for dense microtonal
+        // tracking. Consensus/confidence never gates the forced live change.
         liveIdentityBreak = observation.audioPresent
             && state.targetValid
-            && !insideCurrentMusicalIdentity
-            && distanceCents >= currentIdentityRadius;
+            && observedDistanceFromCurrentTarget >= liveIdentityBreakRadius
+            && distanceCents >= liveIdentityBreakRadius;
         if (liveIdentityBreak)
         {
             state.pitchCentreLog2 = observedLog2;
