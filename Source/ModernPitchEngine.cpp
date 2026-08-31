@@ -883,14 +883,13 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
             const float distance = centsDistance(candidate.frequencyHz,
                                                  rescueReferenceHz);
             const bool sameNoteWindow = distance <= sameNoteRescueCents;
-            const bool exceptionalTransition = distance <= wideRescueCents
-                && onsetPending
-                && candidate.supportCount >= 2
+            const bool wideTransitionChallenger = distance <= wideRescueCents
+                && candidate.supportCount >= 3
                 && candidate.directSupportCount >= 2
-                && candidate.confidence >= 0.90f
-                && candidate.periodicity >= 0.72f
-                && candidate.consensus >= 0.68f;
-            if ((!sameNoteWindow && !exceptionalTransition)
+                && candidate.confidence >= 0.92f
+                && candidate.periodicity >= 0.80f
+                && candidate.consensus >= 0.78f;
+            if ((!sameNoteWindow && !wideTransitionChallenger)
                 || candidate.periodicity < 0.46f
                 || candidate.confidence < 0.40f)
             {
@@ -902,7 +901,7 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
             const float rescueScore = candidate.evidenceScore
                 + 0.62f * continuity
                 + 0.14f * static_cast<float>(candidate.directSupportCount)
-                + (exceptionalTransition ? 0.08f : 0.0f);
+                + (wideTransitionChallenger ? 0.02f : 0.0f);
             if (rescueScore > bestRescueScore)
             {
                 bestRescueScore = rescueScore;
@@ -953,16 +952,15 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
         ? centsDistance(rescueReferenceHz, decision.candidate.frequencyHz)
         : 100000.0f;
     const bool sameNoteRescue = rescueDistance <= sameNoteRescueCents;
-    const bool exceptionalRescueTransition = rescueDistance <= wideRescueCents
-        && onsetPending
-        && decision.supportCount >= 2
+    const bool wideRescueChallenger = rescueDistance <= wideRescueCents
+        && decision.supportCount >= 3
         && decision.directSupportCount >= 2
-        && decision.candidate.confidence >= 0.90f
-        && decision.candidate.periodicity >= 0.72f
-        && decision.consensus >= 0.68f;
+        && decision.candidate.confidence >= 0.92f
+        && decision.candidate.periodicity >= 0.80f
+        && decision.consensus >= 0.78f;
     const bool rescueEvidence = rescueMode_
         && rescueReferenceHz > 0.0f
-        && (sameNoteRescue || exceptionalRescueTransition)
+        && (sameNoteRescue || wideRescueChallenger)
         && decision.supportCount >= 1
         && decision.candidate.confidence >= 0.40f
         && decision.candidate.periodicity >= 0.46f;
@@ -998,14 +996,13 @@ bool ModernPitchEngine::MultiRatePitchTracker::confirmOctaveTransition(
         const float distance = centsDistance(reacquisitionAnchorHz_,
                                              decision.candidate.frequencyHz);
         const bool sameNoteWindow = distance <= sameNoteRescueCents;
-        const bool exceptionalTransition = distance <= wideRescueCents
-            && onsetPending
-            && decision.supportCount >= 2
+        const bool wideTransitionChallenger = distance <= wideRescueCents
+            && decision.supportCount >= 3
             && decision.directSupportCount >= 2
-            && decision.candidate.confidence >= 0.90f
-            && decision.candidate.periodicity >= 0.72f
-            && decision.consensus >= 0.68f;
-        if (!sameNoteWindow && !exceptionalTransition)
+            && decision.candidate.confidence >= 0.92f
+            && decision.candidate.periodicity >= 0.80f
+            && decision.consensus >= 0.78f;
+        if (!sameNoteWindow && !wideTransitionChallenger)
         {
             decision.valid = false;
             pendingOctaveDelta_ = 0;
@@ -1030,7 +1027,10 @@ bool ModernPitchEngine::MultiRatePitchTracker::confirmOctaveTransition(
             && decision.directSupportCount >= 1
             && decision.candidate.confidence >= 0.78f
             && decision.candidate.periodicity >= 0.70f;
-        const int requiredObservations = strongSameRegister ? 1 : 2;
+        constexpr int wideTransitionObservations = 8;
+        const int requiredObservations = sameNoteWindow
+            ? (strongSameRegister ? 1 : 2)
+            : wideTransitionObservations;
         if (pendingOctaveCount_ < requiredObservations)
         {
             decision.valid = false;

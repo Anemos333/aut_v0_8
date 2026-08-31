@@ -196,6 +196,54 @@ int main()
                          bypassDecision.candidate.frequencyHz, 220.0f) <= 360.0f,
                      "strong_subharmonic_cannot_bypass_rescue_anchor");
 
+
+    // A phonetic/raw onset is not a musical note transition.  A wide rescue
+    // challenger must therefore persist across several fresh observations
+    // before it can replace the latched register.  This models a voiced word
+    // onset such as /j/ in "Your": transient periodic structure may be strong,
+    // but one or two hops must never become audible pitch control.
+    auto phoneticTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+    phoneticTracker->prepare(48000.0);
+    phoneticTracker->setReacquisitionAnchor(220.0f);
+    phoneticTracker->setRescueMode(true);
+    auto makeWideChallenger = []
+    {
+        ModernPitchEngine::MultiRatePitchTracker::DecoderDecision d;
+        d.valid = true;
+        d.candidate.valid = true;
+        d.candidate.frequencyHz = 165.0f; // ~-498 cents: plausible alias / perfect-fourth challenger
+        d.candidate.confidence = 0.97f;
+        d.candidate.periodicity = 0.93f;
+        d.consensus = 0.86f;
+        d.supportCount = 4;
+        d.directSupportCount = 3;
+        d.freshSupportMask = 0x0f;
+        return d;
+    };
+    bool phoneticBurstCommitted = false;
+    for (int hop = 0; hop < 4; ++hop)
+    {
+        auto d = makeWideChallenger();
+        phoneticBurstCommitted = phoneticTracker->confirmOctaveTransition(d, true)
+            || phoneticBurstCommitted;
+    }
+    success &= check(!phoneticBurstCommitted,
+                     "raw_phonetic_onset_cannot_immediately_authorize_wide_rescue");
+
+    // A genuine large melodic move is still recoverable: strong direct
+    // evidence that persists beyond the transient window eventually owns the
+    // new register even without relying on raw onsetPending.
+    phoneticTracker->pendingOctaveCount_ = 0;
+    phoneticTracker->pendingOctaveFrequencyHz_ = 0.0f;
+    bool persistentWideCommitted = false;
+    for (int hop = 0; hop < 8; ++hop)
+    {
+        auto d = makeWideChallenger();
+        persistentWideCommitted = phoneticTracker->confirmOctaveTransition(d, false);
+    }
+    success &= check(persistentWideCommitted,
+                     "persistent_multi_evidence_wide_rescue_can_commit_real_note_change");
+
     auto engine = std::make_unique<ModernPitchEngine>();
     engine->prepare(48000.0, 256, 1, ModernPitchEngine::LatencyMode::live);
     ModernPitchEngine::ScaleQuantizer quantizer;
