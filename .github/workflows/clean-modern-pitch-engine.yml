@@ -25,6 +25,7 @@ on:
       - 'Tests/UnifiedTransportPatch.py'
       - 'Tests/PitchRescuePatch.py'
       - 'Tests/PitchRescueV2Patch.py'
+      - 'Tests/PitchRescueV3Patch.py'
       - 'Tests/CLEAN_MODERN_PITCH_ENGINE_CONTRACT.md'
       - 'Tests/GUI_AUDIO_CONTROL_CONTRACT.md'
       - '.github/workflows/clean-modern-pitch-engine.yml'
@@ -63,6 +64,7 @@ jobs:
           python3 Tests/UnifiedTransportPatch.py
           python3 Tests/PitchRescuePatch.py
           python3 Tests/PitchRescueV2Patch.py
+          python3 Tests/PitchRescueV3Patch.py
 
       - name: Commit transformed source only
         shell: bash
@@ -74,7 +76,7 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "Keep F0 rescue anchor across detector expiry"
+          git commit -m "Guard F0 rescue against subharmonic register reset"
           git push origin HEAD:single-wet-quality-reconstruction
 
   invariant-test:
@@ -267,6 +269,10 @@ jobs:
           }
           if (-not (Select-String -Path Source\ModernPitchEngine.cpp -Pattern 'PITCH_RESCUE_V2_PERSISTENT_ANCHOR' -SimpleMatch -Quiet)) {
             Write-Error "Persistent note-body F0 rescue anchor is missing"
+            exit 1
+          }
+          if (-not (Select-String -Path Source\ModernPitchEngine.cpp -Pattern 'PITCH_RESCUE_V3_REGISTER_GUARD' -SimpleMatch -Quiet)) {
+            Write-Error "Rescue register/subharmonic guard is missing"
             exit 1
           }
           if (-not (Select-String -Path Source\ModernPitchEngine.h -Pattern 'reacquisitionAnchorHz_' -SimpleMatch -Quiet)) {
