@@ -2369,6 +2369,13 @@ void ModernPitchEngine::updateCorrectionState(
         : clamp01(parameters.preserveVibrato);
     preserve *= stable * periodic * boundarySafety;
 
+    const bool absoluteScaleLock = parameters.scaleLock
+        && parameters.hardLockActive
+        && clamp01(parameters.lockStrictness) >= 0.99999f
+        && clamp01(parameters.amount) >= 0.99999f
+        && humanize <= 0.00001f
+        && clamp01(parameters.vibratoPreserve) <= 0.00001f;
+
     double correctedLog2 = state.targetLog2
         + static_cast<double>(preserve) * vibratoComponent;
     double humanWindow = 1.5 + 16.0 * static_cast<double>(humanize);
@@ -2377,9 +2384,7 @@ void ModernPitchEngine::updateCorrectionState(
     {
         // MICROTONAL_HARD_LOCK_V3: Humanize and preserved vibrato are allowed
         // to live inside the selected target, but their COMBINED steady-state
-        // residual is bounded by the scale spacing.  On 48-EDO (25 cents) the
-        // full budget is <=4.5 cents, so a 20-25 cent residual can never mean
-        // "one nearby degree" while still being called locked.
+        // residual is bounded by the scale spacing.
         const double minimumStep = std::max(0.1,
             static_cast<double>(quantizer.minimumStepCents()));
         const double lockStrictness = static_cast<double>(
@@ -2400,16 +2405,32 @@ void ModernPitchEngine::updateCorrectionState(
             -vibratoBudgetCents,
             vibratoBudgetCents);
         correctedLog2 = state.targetLog2 + preservedVibratoCents / 1200.0;
+
+        // ABSOLUTE_SCALE_LOCK_V4: the fully rigid endpoint contains no hidden
+        // musical softness. With Amount=100%, Humanize=0, Scale-Lock Vibrato=0
+        // and Hard Lock/Strictness at maximum, correction destination is the
+        // exact selected reference frequency. Hysteresis may decide WHICH scale
+        // degree owns identity, and Speed may decide HOW FAST we arrive, but
+        // neither is allowed to leave pitch offset around that chosen target.
+        if (absoluteScaleLock)
+        {
+            preserve = 0.0f;
+            correctedLog2 = state.targetLog2;
+            humanWindow = 0.0;
+        }
     }
 
     // SOUND_EQUALS_CORRECTION_V2: targetLog2 and observedLog2 are absolute
     // pitches in the same live register. Never wrap their error by an octave:
     // +/-1200 cents must not collapse to zero and create an audible bypass.
     double errorCents = (correctedLog2 - observedLog2) * 1200.0;
-    if (std::abs(errorCents) <= humanWindow)
-        errorCents = 0.0;
-    else
-        errorCents = std::copysign(std::abs(errorCents) - humanWindow, errorCents);
+    if (!absoluteScaleLock)
+    {
+        if (std::abs(errorCents) <= humanWindow)
+            errorCents = 0.0;
+        else
+            errorCents = std::copysign(std::abs(errorCents) - humanWindow, errorCents);
+    }
 
     const double maximumCents = 100.0 * std::clamp(
         static_cast<double>(finiteOr(parameters.maximumCorrectionSemitones, 12.0f)),
@@ -2418,8 +2439,9 @@ void ModernPitchEngine::updateCorrectionState(
 
     // Sensors determine how carefully identity is interpreted, never how much
     // of the requested correction is applied.
-    state.desiredCents = errorCents
-        * static_cast<double>(clamp01(parameters.amount));
+    state.desiredCents = absoluteScaleLock
+        ? errorCents
+        : errorCents * static_cast<double>(clamp01(parameters.amount));
     state.responseMs = responseTimeMs(parameters, targetChanged, targetJump);
 
     if (!musicalOnset)

@@ -821,6 +821,119 @@ int main()
     success &= check(denseScaleLockResponse <= 3.001,
                      "scale_lock_target_change_stays_in_live_speed_budget");
 
+    // ABSOLUTE_SCALE_LOCK_V4: the rigid endpoint is a mathematical
+    // reference lock, not a tolerance band.  The selected degree may still be
+    // chosen with hysteresis, but once chosen the requested steady-state pitch
+    // must contain zero voluntary residual.
+    ModernPitchEngine::Parameters absoluteLockParameters;
+    setBodyEvidence(absoluteLockParameters);
+    absoluteLockParameters.scaleLock = true;
+    absoluteLockParameters.hardLockActive = true;
+    absoluteLockParameters.lockStrictness = 1.0f;
+    absoluteLockParameters.lockHysteresis = 80.0f;
+    absoluteLockParameters.amount = 1.0f;
+    absoluteLockParameters.retuneTimeMs = 0.0f;
+    absoluteLockParameters.humanize = 0.0f;
+    absoluteLockParameters.vibratoPreserve = 0.0f;
+    absoluteLockParameters.preserveVibrato = 0.0f;
+    absoluteLockParameters.maximumCorrectionSemitones = 24.0f;
+
+    const auto checkAbsoluteScaleLock = [&](int edo,
+                                            double sourceOffsetCents,
+                                            float consensus,
+                                            const char* name)
+    {
+        std::vector<double> ratios(static_cast<std::size_t>(edo));
+        for (int degree = 0; degree < edo; ++degree)
+            ratios[static_cast<std::size_t>(degree)] = std::exp2(
+                static_cast<double>(degree) / static_cast<double>(edo));
+
+        ModernPitchEngine::ScaleQuantizer exactQuantizer;
+        exactQuantizer.reset();
+        exactQuantizer.setScale(ratios.data(), edo, 440.0);
+        ModernPitchEngine::CorrectionState exactState;
+        auto exactObservation = strongPitch(static_cast<float>(
+            440.0 * std::exp2(sourceOffsetCents / 1200.0)));
+        exactObservation.audioPresent = true;
+        exactObservation.consensus = consensus;
+        if (consensus <= 0.0f)
+        {
+            exactObservation.confidence = 0.01f;
+            exactObservation.periodicity = 0.05f;
+        }
+
+        engine->updateCorrectionState(exactState, exactQuantizer,
+                                      exactObservation, absoluteLockParameters);
+        const double observedLog2 = std::log2(
+            static_cast<double>(exactObservation.frequencyHz));
+        const double requestedTargetError =
+            (exactState.targetLog2 - observedLog2) * 1200.0;
+        const double destinationResidual = std::abs(
+            (observedLog2 + exactState.desiredCents / 1200.0
+             - exactState.targetLog2) * 1200.0);
+        std::cerr << name << "_destination_residual_cents="
+                  << destinationResidual << '\n';
+
+        bool localSuccess = exactState.targetValid
+            && std::abs(exactState.desiredCents - requestedTargetError) < 1.0e-9
+            && destinationResidual < 1.0e-9;
+
+        // Verify the single correction trajectory also reaches the exact
+        // destination rather than merely requesting it.
+        for (int sample = 0; sample < 4800; ++sample)
+            static_cast<void>(engine->advanceCorrection(exactState));
+        const double convergedResidual = std::abs(
+            (observedLog2 + exactState.currentCents / 1200.0
+             - exactState.targetLog2) * 1200.0);
+        std::cerr << name << "_converged_residual_cents="
+                  << convergedResidual << '\n';
+        localSuccess = localSuccess && convergedResidual < 0.001;
+        return check(localSuccess, name);
+    };
+
+    success &= checkAbsoluteScaleLock(12, 37.0, 0.88f,
+                                      "absolute_scale_lock_zero_residual_12tet");
+    success &= checkAbsoluteScaleLock(31, 15.0, 0.88f,
+                                      "absolute_scale_lock_zero_residual_31edo");
+    success &= checkAbsoluteScaleLock(48, 10.0, 0.88f,
+                                      "absolute_scale_lock_zero_residual_48edo");
+    success &= checkAbsoluteScaleLock(96, 5.0, 0.88f,
+                                      "absolute_scale_lock_zero_residual_96edo");
+    success &= checkAbsoluteScaleLock(48, 10.0, 0.0f,
+                                      "absolute_scale_lock_zero_consensus_zero_residual");
+
+    // An asymmetric custom scale with a very narrow local interval receives
+    // the same exact-target contract; density changes target selection safety,
+    // never steady-state authority.
+    std::array<double, 6> asymmetricScale {
+        1.0,
+        std::exp2(17.0 / 1200.0),
+        std::exp2(143.0 / 1200.0),
+        std::exp2(311.0 / 1200.0),
+        std::exp2(702.0 / 1200.0),
+        std::exp2(947.0 / 1200.0)
+    };
+    ModernPitchEngine::ScaleQuantizer asymmetricQuantizer;
+    asymmetricQuantizer.reset();
+    asymmetricQuantizer.setScale(asymmetricScale.data(),
+                                 static_cast<int>(asymmetricScale.size()),
+                                 440.0);
+    ModernPitchEngine::CorrectionState asymmetricState;
+    auto asymmetricObservation = strongPitch(static_cast<float>(
+        440.0 * std::exp2(7.0 / 1200.0)));
+    asymmetricObservation.audioPresent = true;
+    engine->updateCorrectionState(asymmetricState, asymmetricQuantizer,
+                                  asymmetricObservation, absoluteLockParameters);
+    const double asymmetricObservedLog2 = std::log2(
+        static_cast<double>(asymmetricObservation.frequencyHz));
+    const double asymmetricResidual = std::abs(
+        (asymmetricObservedLog2 + asymmetricState.desiredCents / 1200.0
+         - asymmetricState.targetLog2) * 1200.0);
+    std::cerr << "absolute_custom_scale_residual_cents="
+              << asymmetricResidual << '\n';
+    success &= check(asymmetricState.targetValid && asymmetricResidual < 1.0e-9,
+                     "absolute_scale_lock_zero_residual_asymmetric_custom");
+
     // Native API semantics: one semitone means 100 cents, with no adapter hack.
     const double unison = 1.0;
     quantizer.setScale(&unison, 1, 440.0);
