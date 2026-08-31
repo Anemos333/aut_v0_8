@@ -790,11 +790,15 @@ int main()
     // 48-EDO must still request enough correction to leave <=3 cents residual
     // under strict hard lock. This is the steady-state pitch contract; renderer
     // and trajectory tests cover convergence separately.
+    ModernPitchEngine::ScaleQuantizer hardDenseResidualQuantizer;
+    hardDenseResidualQuantizer.reset();
+    hardDenseResidualQuantizer.setScale(
+        denseScale.data(), static_cast<int>(denseScale.size()), 440.0);
     ModernPitchEngine::CorrectionState hardDenseState;
     auto hardDenseOffset = strongPitch(static_cast<float>(
         440.0 * std::exp2(10.0 / 1200.0)));
     hardDenseOffset.audioPresent = true;
-    engine->updateCorrectionState(hardDenseState, denseQuantizer,
+    engine->updateCorrectionState(hardDenseState, hardDenseResidualQuantizer,
                                   hardDenseOffset, hardDenseParameters);
     const double hardDenseObservedCents = 1200.0 * std::log2(
         static_cast<double>(hardDenseOffset.frequencyHz) / 440.0);
