@@ -858,16 +858,90 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
     if (candidateCount <= 0)
         return {};
 
+    // RAP_VOICING_V2_ZERO_CONSENSUS_CORRECTION: consensus is diagnostic
+    // evidence, never permission to correct. If audio is present and at least
+    // one detector path has a period estimate, publish the best register-safe
+    // F0 even when the consensus decoder cannot form an authoritative cluster.
+    const auto makePresenceFallback = [&]() noexcept
+    {
+        DecoderDecision fallback;
+        if (!presenceMode_ || candidateCount <= 0)
+            return fallback;
+
+        const float referenceHz = trackedPitchHz_ > 0.0f
+            ? trackedPitchHz_ : reacquisitionAnchorHz_;
+        float bestScore = -1000.0f;
+
+        for (int index = 0; index < candidateCount; ++index)
+        {
+            const auto& raw = candidates[static_cast<std::size_t>(index)];
+            if (!raw.valid || raw.frequencyHz <= 0.0f)
+                continue;
+
+            float selectedFrequency = raw.frequencyHz;
+            float selectedDistance = referenceHz > 0.0f
+                ? centsDistance(selectedFrequency, referenceHz) : 0.0f;
+            int selectedOctaveShift = 0;
+
+            if (referenceHz > 0.0f)
+            {
+                for (int octaveShift = -2; octaveShift <= 2; ++octaveShift)
+                {
+                    const float shifted = std::ldexp(raw.frequencyHz, octaveShift);
+                    if (shifted < minimumPitchHz_ || shifted > maximumPitchHz_)
+                        continue;
+
+                    const float distance = centsDistance(shifted, referenceHz);
+                    if (distance < selectedDistance)
+                    {
+                        selectedDistance = distance;
+                        selectedFrequency = shifted;
+                        selectedOctaveShift = octaveShift;
+                    }
+                }
+
+                // The existing rescue register guard remains authoritative.
+                // Presence fallback can recover weak evidence, not invent a
+                // register outside the bounded musical search window.
+                if (rescueMode_ && selectedDistance > 700.0f)
+                    continue;
+            }
+
+            const float continuity = referenceHz > 0.0f
+                ? (1.0f - smoothStep(120.0f, 700.0f, selectedDistance))
+                : 0.0f;
+            const float score = candidateBaseScore(raw)
+                * (0.65f + 0.35f * pathReliability(raw.pathIndex, raw.frequencyHz))
+                + 0.45f * continuity;
+            if (score <= bestScore)
+                continue;
+
+            bestScore = score;
+            fallback.candidate = raw;
+            fallback.candidate.frequencyHz = selectedFrequency;
+            fallback.candidate.valid = true;
+            fallback.consensus = 0.0f;
+            fallback.supportCount = 1;
+            fallback.directSupportCount = selectedOctaveShift == 0 ? 1 : 0;
+            fallback.freshSupportMask = raw.ageInHops == 0 && raw.pathIndex >= 0
+                ? static_cast<std::uint8_t>(1u << raw.pathIndex) : 0;
+            fallback.decoderOctaveIndex = octaveState_;
+            fallback.valid = true;
+        }
+
+        return fallback;
+    };
+
     std::array<ConsensusHypothesis, maxConsensusHypotheses> hypotheses {};
     const int hypothesisCount = buildConsensusHypotheses(candidates,
                                                          candidateCount,
                                                          hypotheses);
     if (hypothesisCount <= 0)
-        return {};
+        return makePresenceFallback();
 
     updateDecoderBeam(hypotheses, hypothesisCount, onsetPending);
     if (!decoderBeam_[0].valid)
-        return {};
+        return makePresenceFallback();
 
     const float decodedFrequency = static_cast<float>(
         std::exp2(decoderBeam_[0].logFrequency));
@@ -941,7 +1015,11 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
         }
 
         if (matchedHypothesis < 0 || matchedDistance > 65.0f)
+        {
+            if (presenceMode_)
+                return makePresenceFallback();
             return {}; // the winning branch is only a decaying hold state
+        }
     }
 
     const auto& hypothesis = hypotheses[static_cast<std::size_t>(matchedHypothesis)];
@@ -987,7 +1065,8 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
     // let a strong subharmonic become a new F0 during acquire.
     decision.valid = rescueMode_
         ? rescueEvidence
-        : (closeToTrack || sufficientInitialEvidence || presenceInitialEvidence);
+        : (presenceMode_ || closeToTrack
+            || sufficientInitialEvidence || presenceInitialEvidence);
     return decision;
 }
 
@@ -1063,10 +1142,23 @@ bool ModernPitchEngine::MultiRatePitchTracker::confirmOctaveTransition(
         return true;
     }
 
-    // Initial register acquisition is deliberately temporal. A single fresh
-    // harmonic family can be an octave alias at a vowel onset, so the first
-    // non-exceptional decision must repeat before it becomes audible control.
-    // This is detector commitment, not reduced correction authority.
+    // Presence owns correction authority. With actual input present, the first
+    // register-safe F0 becomes audible control immediately even at zero
+    // consensus. Subsequent octave/subharmonic changes still pass through the
+    // existing register guards, so this removes timidity without weakening
+    // continuity after lock.
+    if (trackedPitchHz_ <= 0.0f && presenceMode_)
+    {
+        committedOctaveFrequencyHz_ = decision.candidate.frequencyHz;
+        octaveCommitGuardHops_ = 6;
+        pendingOctaveDelta_ = 0;
+        pendingOctaveCount_ = 0;
+        pendingOctaveFrequencyHz_ = 0.0f;
+        return true;
+    }
+
+    // Initial register acquisition without explicit audio presence remains
+    // deliberately temporal for synthetic/offline detector-only use.
     if (trackedPitchHz_ <= 0.0f)
     {
         const bool sameInitial = pendingOctaveFrequencyHz_ > 0.0f

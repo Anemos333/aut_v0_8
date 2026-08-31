@@ -255,6 +255,7 @@ int main()
     int rapPresenceHops = 0;
     int rapMaxDetectorSupport = 0;
     int rapMinDetectorSupport = 4;
+    int rapPitchlessPresentHops = 0;
     float rapMinimumVoicing = 1.0f;
     ModernPitchEngine::PitchObservation rapObservation;
     for (int sample = 0; sample < 12000; ++sample)
@@ -273,6 +274,8 @@ int main()
                                              rapObservation.detectorSupport);
             rapMinimumVoicing = std::min(rapMinimumVoicing,
                                          rapObservation.voicing);
+            if (!rapObservation.valid || rapObservation.frequencyHz <= 0.0f)
+                ++rapPitchlessPresentHops;
         }
     }
     success &= check(rapPresenceHops > 20 && rapMinimumVoicing > 0.99f,
@@ -281,12 +284,61 @@ int main()
                      "nonzero_audio_keeps_detector_paths_alive");
     success &= check(rapPresenceHops > 20 && rapMinDetectorSupport > 0,
                      "nonzero_audio_never_reports_zero_detector_paths");
+    success &= check(rapPresenceHops > 20 && rapPitchlessPresentHops == 0,
+                     "nonzero_audio_never_reports_pitchless_stable");
+
+    // Zero consensus is explicitly allowed to drive correction. A single weak
+    // path is still better than pitchless "stable": presence must publish an
+    // F0 and the supervisor must turn that F0 into a real target/correction.
+    auto zeroConsensusTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+    zeroConsensusTracker->prepare(48000.0);
+    zeroConsensusTracker->presenceMode_ = true;
+    auto& zeroConsensusSlot = zeroConsensusTracker->halfRateCandidate_;
+    zeroConsensusSlot.candidate.valid = true;
+    zeroConsensusSlot.candidate.frequencyHz = 452.0f;
+    zeroConsensusSlot.candidate.confidence = 0.01f;
+    zeroConsensusSlot.candidate.periodicity = 0.01f;
+    zeroConsensusSlot.candidate.pathIndex = 1;
+    zeroConsensusSlot.candidate.ageInHops = 0;
+    zeroConsensusSlot.ageInHops = 0;
+    zeroConsensusTracker->decoderBeam_.fill({});
+    const auto zeroConsensusDecision = zeroConsensusTracker->decodeCandidate(false);
+    success &= check(zeroConsensusDecision.valid
+                     && zeroConsensusDecision.candidate.frequencyHz > 0.0f
+                     && std::abs(zeroConsensusDecision.consensus) < 1.0e-7f,
+                     "zero_consensus_presence_fallback_yields_valid_f0");
+
+    auto firstPresenceLock = zeroConsensusDecision;
+    const bool firstPresenceAccepted = zeroConsensusTracker->confirmOctaveTransition(
+        firstPresenceLock, false);
+    success &= check(firstPresenceAccepted && firstPresenceLock.valid,
+                     "presence_first_lock_does_not_wait_for_consensus");
 
     auto engine = std::make_unique<ModernPitchEngine>();
     engine->prepare(48000.0, 256, 1, ModernPitchEngine::LatencyMode::live);
     ModernPitchEngine::ScaleQuantizer quantizer;
     quantizer.reset();
     ModernPitchEngine::Parameters parameters;
+    ModernPitchEngine::ScaleQuantizer zeroConsensusQuantizer;
+    zeroConsensusQuantizer.reset();
+    const double zeroConsensusUnison = 1.0;
+    zeroConsensusQuantizer.setScale(&zeroConsensusUnison, 1, 440.0);
+    ModernPitchEngine::CorrectionState zeroConsensusState;
+    ModernPitchEngine::PitchObservation zeroConsensusObservation;
+    zeroConsensusObservation.audioPresent = true;
+    zeroConsensusObservation.valid = true;
+    zeroConsensusObservation.frequencyHz = 452.0f;
+    zeroConsensusObservation.voicing = 1.0f;
+    zeroConsensusObservation.confidence = 0.01f;
+    zeroConsensusObservation.periodicity = 0.01f;
+    zeroConsensusObservation.consensus = 0.0f;
+    zeroConsensusObservation.detectorSupport = 1;
+    engine->updateCorrectionState(zeroConsensusState, zeroConsensusQuantizer,
+                                  zeroConsensusObservation, parameters);
+    success &= check(zeroConsensusState.targetValid
+                     && std::abs(zeroConsensusState.desiredCents) > 5.0,
+                     "zero_consensus_valid_f0_drives_real_correction");
+
     // Even if the rich analyzer describes the current block as breath/noise,
     // explicit input presence owns the voice state. Detector uncertainty is
     // allowed to affect F0 search, never voiced/unvoiced authority.
