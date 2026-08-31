@@ -153,6 +153,49 @@ int main()
     success &= check(!noBodyAnchorDecision.valid,
                      "released_note_body_removes_rescue_authority");
 
+
+    // A strong low-period alias must never be allowed to restart the register
+    // just because trackedPitchHz_ expired.  This was the real-audio failure:
+    // acquire became shorter, but a subharmonic could be promoted to F0.
+    auto subharmonicTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+    subharmonicTracker->prepare(48000.0);
+    subharmonicTracker->setReacquisitionAnchor(220.0f);
+    subharmonicTracker->setRescueMode(true);
+    ModernPitchEngine::MultiRatePitchTracker::DecoderDecision subharmonicDecision;
+    subharmonicDecision.valid = true;
+    subharmonicDecision.candidate.valid = true;
+    subharmonicDecision.candidate.frequencyHz = 110.0f;
+    subharmonicDecision.candidate.confidence = 0.99f;
+    subharmonicDecision.candidate.periodicity = 0.99f;
+    subharmonicDecision.consensus = 0.94f;
+    subharmonicDecision.supportCount = 4;
+    subharmonicDecision.directSupportCount = 4;
+    subharmonicDecision.freshSupportMask = 0x0f;
+    const bool subharmonicCommitted = subharmonicTracker->confirmOctaveTransition(
+        subharmonicDecision, false);
+    success &= check(!subharmonicCommitted && !subharmonicDecision.valid,
+                     "rescue_subharmonic_cannot_restart_register");
+
+    // Even high-confidence raw evidence outside the anchor window cannot use
+    // sufficientInitialEvidence to bypass rescue continuity.
+    auto bypassTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+    bypassTracker->prepare(48000.0);
+    bypassTracker->setReacquisitionAnchor(220.0f);
+    bypassTracker->setRescueMode(true);
+    auto& bypassSlot = bypassTracker->halfRateCandidate_;
+    bypassSlot.candidate.valid = true;
+    bypassSlot.candidate.frequencyHz = 130.0f;
+    bypassSlot.candidate.confidence = 0.99f;
+    bypassSlot.candidate.periodicity = 0.96f;
+    bypassSlot.candidate.pathIndex = 1;
+    bypassSlot.candidate.ageInHops = 0;
+    bypassSlot.ageInHops = 0;
+    const auto bypassDecision = bypassTracker->decodeCandidate(false);
+    success &= check(!bypassDecision.valid
+                     || ModernPitchEngine::MultiRatePitchTracker::centsDistance(
+                         bypassDecision.candidate.frequencyHz, 220.0f) <= 360.0f,
+                     "strong_subharmonic_cannot_bypass_rescue_anchor");
+
     auto engine = std::make_unique<ModernPitchEngine>();
     engine->prepare(48000.0, 256, 1, ModernPitchEngine::LatencyMode::live);
     ModernPitchEngine::ScaleQuantizer quantizer;

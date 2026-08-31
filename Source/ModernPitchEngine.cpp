@@ -860,59 +860,77 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
         std::exp2(decoderBeam_[0].logFrequency));
     const float rescueReferenceHz = trackedPitchHz_ > 0.0f
         ? trackedPitchHz_ : reacquisitionAnchorHz_;
+    constexpr float sameNoteRescueCents = 360.0f;
+    constexpr float wideRescueCents = 700.0f;
 
     int matchedHypothesis = -1;
     float matchedDistance = 100000.0f;
-    for (int index = 0; index < hypothesisCount; ++index)
-    {
-        const float distance = centsDistance(
-            hypotheses[static_cast<std::size_t>(index)].frequencyHz,
-            decodedFrequency);
-        if (distance < matchedDistance)
-        {
-            matchedDistance = distance;
-            matchedHypothesis = index;
-        }
-    }
 
-    if ((matchedHypothesis < 0 || matchedDistance > 65.0f)
-        && rescueMode_ && rescueReferenceHz > 0.0f)
+    // PITCH_RESCUE_V3_REGISTER_GUARD: once a musical note body owns a
+    // persistent anchor, rescue is an anchor-constrained register search.  The
+    // decoder beam is still useful evidence, but it may not restart the pitch
+    // register from an unrelated subharmonic simply because trackedPitchHz_
+    // has expired.
+    if (rescueMode_ && rescueReferenceHz > 0.0f)
     {
         float bestRescueScore = -1000.0f;
-        int bestRescueHypothesis = -1;
         for (int index = 0; index < hypothesisCount; ++index)
         {
             const auto& candidate = hypotheses[static_cast<std::size_t>(index)];
             if (!candidate.valid || candidate.supportCount <= 0)
                 continue;
+
             const float distance = centsDistance(candidate.frequencyHz,
                                                  rescueReferenceHz);
-            if (distance > 700.0f || candidate.periodicity < 0.46f
+            const bool sameNoteWindow = distance <= sameNoteRescueCents;
+            const bool exceptionalTransition = distance <= wideRescueCents
+                && onsetPending
+                && candidate.supportCount >= 2
+                && candidate.directSupportCount >= 2
+                && candidate.confidence >= 0.90f
+                && candidate.periodicity >= 0.72f
+                && candidate.consensus >= 0.68f;
+            if ((!sameNoteWindow && !exceptionalTransition)
+                || candidate.periodicity < 0.46f
                 || candidate.confidence < 0.40f)
             {
                 continue;
             }
-            const float continuity = 1.0f - smoothStep(180.0f, 700.0f, distance);
+
+            const float continuity = 1.0f - smoothStep(
+                120.0f, sameNoteRescueCents, distance);
             const float rescueScore = candidate.evidenceScore
-                + 0.55f * continuity
-                + 0.12f * static_cast<float>(candidate.directSupportCount);
+                + 0.62f * continuity
+                + 0.14f * static_cast<float>(candidate.directSupportCount)
+                + (exceptionalTransition ? 0.08f : 0.0f);
             if (rescueScore > bestRescueScore)
             {
                 bestRescueScore = rescueScore;
-                bestRescueHypothesis = index;
+                matchedHypothesis = index;
+                matchedDistance = distance;
             }
         }
-        if (bestRescueHypothesis >= 0)
-        {
-            matchedHypothesis = bestRescueHypothesis;
-            matchedDistance = centsDistance(
-                hypotheses[static_cast<std::size_t>(matchedHypothesis)].frequencyHz,
-                rescueReferenceHz);
-        }
-    }
 
-    if (matchedHypothesis < 0 || (!rescueMode_ && matchedDistance > 65.0f))
-        return {}; // the winning branch is only a decaying hold state
+        if (matchedHypothesis < 0)
+            return {};
+    }
+    else
+    {
+        for (int index = 0; index < hypothesisCount; ++index)
+        {
+            const float distance = centsDistance(
+                hypotheses[static_cast<std::size_t>(index)].frequencyHz,
+                decodedFrequency);
+            if (distance < matchedDistance)
+            {
+                matchedDistance = distance;
+                matchedHypothesis = index;
+            }
+        }
+
+        if (matchedHypothesis < 0 || matchedDistance > 65.0f)
+            return {}; // the winning branch is only a decaying hold state
+    }
 
     const auto& hypothesis = hypotheses[static_cast<std::size_t>(matchedHypothesis)];
     DecoderDecision decision;
@@ -934,13 +952,27 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
     const float rescueDistance = rescueReferenceHz > 0.0f
         ? centsDistance(rescueReferenceHz, decision.candidate.frequencyHz)
         : 100000.0f;
+    const bool sameNoteRescue = rescueDistance <= sameNoteRescueCents;
+    const bool exceptionalRescueTransition = rescueDistance <= wideRescueCents
+        && onsetPending
+        && decision.supportCount >= 2
+        && decision.directSupportCount >= 2
+        && decision.candidate.confidence >= 0.90f
+        && decision.candidate.periodicity >= 0.72f
+        && decision.consensus >= 0.68f;
     const bool rescueEvidence = rescueMode_
         && rescueReferenceHz > 0.0f
-        && rescueDistance <= 700.0f
+        && (sameNoteRescue || exceptionalRescueTransition)
         && decision.supportCount >= 1
         && decision.candidate.confidence >= 0.40f
         && decision.candidate.periodicity >= 0.46f;
-    decision.valid = closeToTrack || sufficientInitialEvidence || rescueEvidence;
+
+    // Strong evidence may acquire an initial register, but it may not bypass a
+    // latched note body's rescue anchor.  This closes the path that previously
+    // let a strong subharmonic become a new F0 during acquire.
+    decision.valid = rescueMode_
+        ? rescueEvidence
+        : (closeToTrack || sufficientInitialEvidence);
     return decision;
 }
 
@@ -954,6 +986,64 @@ bool ModernPitchEngine::MultiRatePitchTracker::confirmOctaveTransition(
         pendingOctaveCount_ = 0;
         pendingOctaveFrequencyHz_ = 0.0f;
         return false;
+    }
+
+    // If current F0 expired while a musical note body is still latched,
+    // reacquisition is NOT an initial register acquisition.  The persistent
+    // anchor owns the register and a subharmonic may not restart it.
+    if (trackedPitchHz_ <= 0.0f && rescueMode_ && reacquisitionAnchorHz_ > 0.0f)
+    {
+        constexpr float sameNoteRescueCents = 360.0f;
+        constexpr float wideRescueCents = 700.0f;
+        const float distance = centsDistance(reacquisitionAnchorHz_,
+                                             decision.candidate.frequencyHz);
+        const bool sameNoteWindow = distance <= sameNoteRescueCents;
+        const bool exceptionalTransition = distance <= wideRescueCents
+            && onsetPending
+            && decision.supportCount >= 2
+            && decision.directSupportCount >= 2
+            && decision.candidate.confidence >= 0.90f
+            && decision.candidate.periodicity >= 0.72f
+            && decision.consensus >= 0.68f;
+        if (!sameNoteWindow && !exceptionalTransition)
+        {
+            decision.valid = false;
+            pendingOctaveDelta_ = 0;
+            pendingOctaveCount_ = 0;
+            pendingOctaveFrequencyHz_ = 0.0f;
+            return false;
+        }
+
+        const bool samePending = pendingOctaveFrequencyHz_ > 0.0f
+            && centsDistance(pendingOctaveFrequencyHz_,
+                             decision.candidate.frequencyHz) < 70.0f;
+        if (!samePending)
+        {
+            pendingOctaveDelta_ = 0;
+            pendingOctaveCount_ = 0;
+            pendingOctaveFrequencyHz_ = decision.candidate.frequencyHz;
+        }
+        if (decision.freshSupportMask != 0)
+            ++pendingOctaveCount_;
+
+        const bool strongSameRegister = distance <= 180.0f
+            && decision.directSupportCount >= 1
+            && decision.candidate.confidence >= 0.78f
+            && decision.candidate.periodicity >= 0.70f;
+        const int requiredObservations = strongSameRegister ? 1 : 2;
+        if (pendingOctaveCount_ < requiredObservations)
+        {
+            decision.valid = false;
+            return false;
+        }
+
+        decision.decoderOctaveIndex = octaveState_;
+        committedOctaveFrequencyHz_ = decision.candidate.frequencyHz;
+        octaveCommitGuardHops_ = 6;
+        pendingOctaveDelta_ = 0;
+        pendingOctaveCount_ = 0;
+        pendingOctaveFrequencyHz_ = 0.0f;
+        return true;
     }
 
     // Initial register acquisition is deliberately temporal. A single fresh
