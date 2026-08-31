@@ -1916,8 +1916,13 @@ float ModernPitchEngine::adaptiveHysteresis(
     // more notes.  Keep the GUI range, then cap the effective musical margin
     // relative to the actual minimum step of the selected/custom scale.
     const float minimumStep = std::max(0.1f, quantizer.minimumStepCents());
+    // ABSOLUTE_SCALE_LOCK_V4_INTEGRATION: preserve an audible Hysteresis
+    // control on sparse/wide scales without weakening the strict microtonal
+    // endpoint. At strictness=1 this is still exactly 0.12 of the minimum
+    // scale step (3 cents in 48-EDO); at lower strictness the user deliberately
+    // requests more target-hold behaviour, capped well below half a degree.
     const float degreeSafeCap = std::clamp(
-        minimumStep * (0.18f - 0.06f * lockStrictness),
+        minimumStep * (0.30f - 0.18f * lockStrictness),
         0.35f, 36.0f);
     return std::min(requestedHysteresis, degreeSafeCap);
 }
