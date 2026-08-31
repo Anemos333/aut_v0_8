@@ -374,8 +374,95 @@ int main()
     engine->updateCorrectionState(presenceState, presenceQuantizer,
                                   presentWithoutF0, presenceParameters);
     success &= check(presenceState.noteBodyLatched
-                     && presenceState.trackingState == ModernPitchEngine::TrackingState::stable,
-                     "audio_presence_overrides_unvoiced_and_acquire_timidity");
+                     && !presenceState.targetValid
+                     && presenceState.trackingState == ModernPitchEngine::TrackingState::acquire,
+                     "presence_without_f0_cannot_claim_stable_without_target");
+
+    // SOUND_EQUALS_CORRECTION_V1 regression: a stereo vocal that is
+    // exactly anti-phase must still create a target and audible correction.
+    // The old linked L+R detector input cancelled this signal to zero forever.
+    ModernPitchEngine antiphaseEngine;
+    antiphaseEngine.prepare(48000.0, 256, 2, ModernPitchEngine::LatencyMode::live);
+    ModernPitchEngine::Parameters antiphaseParameters;
+    antiphaseParameters.amount = 1.0f;
+    antiphaseParameters.retuneTimeMs = 0.0f;
+    antiphaseParameters.humanize = 0.0f;
+    antiphaseParameters.preserveVibrato = 0.0f;
+    antiphaseParameters.minimumPitchHz = 70.0f;
+    antiphaseParameters.maximumPitchHz = 1000.0f;
+    antiphaseParameters.stereoMode = ModernPitchEngine::StereoMode::linkedMidSide;
+    const double authorityUnison = 1.0;
+    double antiphasePhase = 0.0;
+    constexpr double antiphaseFrequency = 452.0;
+    juce::AudioBuffer<float> antiphaseBlock(2, 256);
+    for (int blockIndex = 0; blockIndex < 220; ++blockIndex)
+    {
+        auto* left = antiphaseBlock.getWritePointer(0);
+        auto* right = antiphaseBlock.getWritePointer(1);
+        for (int sample = 0; sample < antiphaseBlock.getNumSamples(); ++sample)
+        {
+            antiphasePhase += 2.0 * 3.14159265358979323846
+                * antiphaseFrequency / 48000.0;
+            if (antiphasePhase >= 2.0 * 3.14159265358979323846)
+                antiphasePhase -= 2.0 * 3.14159265358979323846;
+            const float value = static_cast<float>(0.28 * std::sin(antiphasePhase));
+            left[sample] = value;
+            right[sample] = -value;
+        }
+        antiphaseEngine.process(antiphaseBlock, &authorityUnison, 1, 440.0,
+                                antiphaseParameters);
+    }
+    const auto antiphaseMeter = antiphaseEngine.getMetering();
+    success &= check(antiphaseMeter.detectedPitchHz > 430.0f
+                     && antiphaseMeter.detectedPitchHz < 470.0f
+                     && antiphaseMeter.targetPitchHz > 430.0f
+                     && std::abs(antiphaseMeter.correctionCents) > 5.0f,
+                     "sound_equals_correction_antiphase_stereo");
+
+    // A stale rescue anchor is never allowed to veto a new live F0. This is the
+    // sung-note failure mode that could otherwise hold an implausible register
+    // for seconds after pitch reacquisition.
+    auto liveRescueTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+    liveRescueTracker->prepare(48000.0);
+    liveRescueTracker->presenceMode_ = true;
+    liveRescueTracker->setRescueMode(true);
+    liveRescueTracker->setReacquisitionAnchor(220.0f);
+    ModernPitchEngine::MultiRatePitchTracker::DecoderDecision liveRescueDecision;
+    liveRescueDecision.valid = true;
+    liveRescueDecision.candidate.valid = true;
+    liveRescueDecision.candidate.frequencyHz = 440.0f;
+    liveRescueDecision.candidate.confidence = 0.18f;
+    liveRescueDecision.candidate.periodicity = 0.24f;
+    liveRescueDecision.consensus = 0.0f;
+    liveRescueDecision.supportCount = 1;
+    liveRescueDecision.directSupportCount = 1;
+    liveRescueDecision.freshSupportMask = 0x01;
+    const bool liveRescueAccepted = liveRescueTracker->confirmOctaveTransition(
+        liveRescueDecision, false);
+    success &= check(liveRescueAccepted && liveRescueDecision.valid
+                     && std::abs(liveRescueDecision.candidate.frequencyHz - 440.0f) < 0.1f,
+                     "live_presence_replaces_stale_rescue_register_immediately");
+
+    // Acquire is permitted to describe detector search, but it must never mute
+    // an already acquired correction. Presence plus a temporary F0 dropout holds
+    // the exact destination until the next live F0 arrives.
+    ModernPitchEngine::CorrectionState heldCorrectionState;
+    heldCorrectionState.targetValid = true;
+    heldCorrectionState.targetLog2 = std::log2(440.0);
+    heldCorrectionState.desiredCents = -42.0;
+    heldCorrectionState.currentCents = -42.0;
+    heldCorrectionState.noteBodyLatched = true;
+    heldCorrectionState.trackingState = ModernPitchEngine::TrackingState::stable;
+    ModernPitchEngine::PitchObservation presentDropout;
+    presentDropout.audioPresent = true;
+    presentDropout.voicing = 1.0f;
+    engine->updateCorrectionState(heldCorrectionState, presenceQuantizer,
+                                  presentDropout, presenceParameters);
+    success &= check(heldCorrectionState.trackingState
+                         == ModernPitchEngine::TrackingState::acquire
+                     && heldCorrectionState.targetValid
+                     && std::abs(heldCorrectionState.desiredCents + 42.0) < 1.0e-9,
+                     "acquire_search_never_mutes_existing_correction");
 
     parameters.transientProtection = 1.0f;
     parameters.humanize = 0.65f;

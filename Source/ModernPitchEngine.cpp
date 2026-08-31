@@ -868,8 +868,11 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
         if (!presenceMode_ || candidateCount <= 0)
             return fallback;
 
-        const float referenceHz = trackedPitchHz_ > 0.0f
-            ? trackedPitchHz_ : reacquisitionAnchorHz_;
+        // SOUND_EQUALS_CORRECTION_V1: when audible input is present, a raw
+        // detector candidate is pitch authority. Never fold it toward a stale
+        // track/anchor merely to look continuous: that is exactly how a sung
+        // note can remain implausibly stuck for seconds after reacquisition.
+        const float referenceHz = 0.0f;
         float bestScore = -1000.0f;
 
         for (int index = 0; index < candidateCount; ++index)
@@ -958,7 +961,7 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
     // decoder beam is still useful evidence, but it may not restart the pitch
     // register from an unrelated subharmonic simply because trackedPitchHz_
     // has expired.
-    if (rescueMode_ && rescueReferenceHz > 0.0f)
+    if (rescueMode_ && !presenceMode_ && rescueReferenceHz > 0.0f)
     {
         float bestRescueScore = -1000.0f;
         for (int index = 0; index < hypothesisCount; ++index)
@@ -1063,10 +1066,11 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
     // Strong evidence may acquire an initial register, but it may not bypass a
     // latched note body's rescue anchor.  This closes the path that previously
     // let a strong subharmonic become a new F0 during acquire.
-    decision.valid = rescueMode_
-        ? rescueEvidence
-        : (presenceMode_ || closeToTrack
-            || sufficientInitialEvidence || presenceInitialEvidence);
+    decision.valid = presenceMode_
+        ? (decision.candidate.valid && decision.candidate.frequencyHz > 0.0f)
+        : (rescueMode_
+            ? rescueEvidence
+            : (closeToTrack || sufficientInitialEvidence || presenceInitialEvidence));
     return decision;
 }
 
@@ -1080,6 +1084,41 @@ bool ModernPitchEngine::MultiRatePitchTracker::confirmOctaveTransition(
         pendingOctaveCount_ = 0;
         pendingOctaveFrequencyHz_ = 0.0f;
         return false;
+    }
+
+    // SOUND_EQUALS_CORRECTION_V1: audible input plus a finite F0 is enough
+    // to own pitch immediately. No consensus/confirmation gate is allowed to
+    // turn a real vocal signal into an effective bypass or hold a stale note.
+    if (presenceMode_)
+    {
+        if (!decision.candidate.valid
+            || !std::isfinite(decision.candidate.frequencyHz)
+            || decision.candidate.frequencyHz <= 0.0f)
+        {
+            decision.valid = false;
+            return false;
+        }
+
+        if (trackedPitchHz_ > 0.0f)
+        {
+            int octaveDelta = 0;
+            float residualCents = 0.0f;
+            if (isOctaveLikeTransition(trackedPitchHz_,
+                                       decision.candidate.frequencyHz,
+                                       octaveDelta,
+                                       residualCents))
+            {
+                octaveState_ = std::clamp(octaveState_ + octaveDelta, -4, 4);
+            }
+        }
+
+        committedOctaveFrequencyHz_ = decision.candidate.frequencyHz;
+        octaveCommitGuardHops_ = 0;
+        pendingOctaveDelta_ = 0;
+        pendingOctaveCount_ = 0;
+        pendingOctaveFrequencyHz_ = 0.0f;
+        decision.decoderOctaveIndex = octaveState_;
+        return true;
     }
 
     // If current F0 expired while a musical note body is still latched,
@@ -2061,10 +2100,10 @@ void ModernPitchEngine::updateCorrectionState(
     {
         ++state.invalidObservations;
 
-        // Audio presence is authoritative for voiced/unvoiced classification.
-        // F0 confidence may fall to zero on rap, consonants or rough phonation,
-        // but that is a pitch-search problem, never permission to call a
-        // non-silent vocal signal unvoiced or timidly leave it in acquire.
+        // SOUND_EQUALS_CORRECTION_V1: audio presence owns the voice, but
+        // Stable is forbidden until a real target exists. Acquire is now only
+        // detector-search telemetry: an already acquired target/correction is
+        // preserved exactly while F0 is temporarily missing.
         if (observation.audioPresent)
         {
             state.noteBodyLatched = true;
@@ -2072,7 +2111,7 @@ void ModernPitchEngine::updateCorrectionState(
             state.stableBodyObservations = std::max(4, state.stableBodyObservations);
             state.breathEvidenceSamples = 0;
             state.uncertainSamples = 0;
-            setState(TrackingState::stable);
+            setState(TrackingState::acquire);
             return;
         }
 
@@ -2470,6 +2509,32 @@ void ModernPitchEngine::process(
     }
 
     const bool dualMono = safe.stereoMode == StereoMode::dualMono && channels > 1;
+
+    // SOUND_EQUALS_CORRECTION_V1: linked pitch analysis must not average L+R.
+    // Anti-phase or side-heavy vocals can cancel in that sum and make a clearly
+    // audible signal look pitchless. Choose one coherent, highest-energy input
+    // channel for this block; this changes analysis authority only, never audio.
+    int linkedAnalysisChannel = 0;
+    if (!dualMono && channels > 1)
+    {
+        double bestEnergy = -1.0;
+        for (int channel = 0; channel < channels; ++channel)
+        {
+            double energy = 0.0;
+            const float* channelData = data[static_cast<std::size_t>(channel)];
+            for (int sample = 0; sample < samples; ++sample)
+            {
+                const double value = static_cast<double>(channelData[sample]);
+                energy += value * value;
+            }
+            if (energy > bestEnergy)
+            {
+                bestEnergy = energy;
+                linkedAnalysisChannel = channel;
+            }
+        }
+    }
+
     for (int sample = 0; sample < samples; ++sample)
     {
         if (dualMono)
@@ -2533,9 +2598,7 @@ void ModernPitchEngine::process(
         }
         else
         {
-            double analysis = 0.0;
-            for (int channel = 0; channel < channels; ++channel)
-                analysis += data[static_cast<std::size_t>(channel)][sample];
+            const float analysis = data[static_cast<std::size_t>(linkedAnalysisChannel)][sample];
             PitchObservation observation;
             if (linkedCorrection_.noteBodyLatched && linkedCorrection_.transportPeriodHz > 0.0)
                 linkedTracker_.setReacquisitionAnchor(
@@ -2549,8 +2612,7 @@ void ModernPitchEngine::process(
             linkedTracker_.setSensitivity(rescueSearch ? std::max(safe.detectorSensitivity, 0.98f)
                                                        : safe.detectorSensitivity);
             linkedTracker_.setRescueMode(rescueSearch); // PITCH_RESCUE_V1
-            if (linkedTracker_.processSample(
-                static_cast<float>(analysis / static_cast<double>(channels)), observation))
+            if (linkedTracker_.processSample(analysis, observation))
             {
                 latestObservation_ = observation;
                 updateCorrectionState(linkedCorrection_, linkedQuantizer_, observation, safe);
