@@ -15,6 +15,7 @@ on:
       - 'Source/SingleWetSpectralRenderer.*'
       - 'Source/LivePitchProcessor.h'
       - 'Source/VoiceEvidenceAnalyzer.h'
+      - 'Source/PluginEditor.cpp'
       - 'CMakeLists.txt'
       - 'Tests/CleanModernPitchEngineTest.cpp'
       - 'Tests/VoiceEvidenceAnalyzerTest.cpp'
@@ -26,6 +27,8 @@ on:
       - 'Tests/PitchRescuePatch.py'
       - 'Tests/PitchRescueV2Patch.py'
       - 'Tests/PitchRescueV3Patch.py'
+      - 'Tests/CorrectionAuthorityV4Patch.py'
+      - 'Tests/CorrectionAuthorityV4IntegrationPatch.py'
       - 'Tests/CLEAN_MODERN_PITCH_ENGINE_CONTRACT.md'
       - 'Tests/GUI_AUDIO_CONTROL_CONTRACT.md'
       - '.github/workflows/clean-modern-pitch-engine.yml'
@@ -66,17 +69,17 @@ jobs:
           python3 Tests/PitchRescueV2Patch.py
           python3 Tests/PitchRescueV3Patch.py
 
-      - name: Commit transformed source only
+      - name: Commit transformed source and contracts
         shell: bash
         run: |
-          git add Source/SingleWetSpectralRenderer.cpp Source/ModernPitchEngine.cpp Source/ModernPitchEngine.h Tests/SupervisorContinuityTest.cpp
+          git add Source/SingleWetSpectralRenderer.cpp Source/ModernPitchEngine.cpp Source/ModernPitchEngine.h Source/PluginEditor.cpp Tests/SupervisorContinuityTest.cpp Tests/GuiAudioControlContractTest.cpp
           if git diff --cached --quiet; then
             echo "No source transformation needed"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "Guard F0 rescue against subharmonic register reset"
+          git commit -m "Materialize guarded correction and GUI contracts"
           git push origin HEAD:single-wet-quality-reconstruction
 
   invariant-test:
