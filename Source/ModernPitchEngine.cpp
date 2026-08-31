@@ -1789,9 +1789,17 @@ double ModernPitchEngine::wrapToNearestOctave(double cents) noexcept
 
 int ModernPitchEngine::latencyForMode(LatencyMode mode) noexcept
 {
+    // SINGLE_WET_PURITY_V6
+    // The 128-sample spectral lattice is not a valid production transport for
+    // this renderer: the measured +100-cent target/source power ratio is only
+    // about 2.07 (roughly 3 dB), which is an audibly strong source-frequency
+    // component.  256 samples is the smallest currently proven single-wet
+    // lattice (>2000:1 on the same regression), so Experimental must report
+    // and use that honest latency until a genuinely low-latency transport can
+    // satisfy the same spectral-purity contract.
     switch (mode)
     {
-        case LatencyMode::ultraLive: return 128;
+        case LatencyMode::ultraLive: return 256;
         case LatencyMode::live:      return 256;
         case LatencyMode::quality:   return 512;
     }

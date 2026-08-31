@@ -185,7 +185,7 @@ int main()
     const std::vector<std::pair<ModernPitchEngine::LatencyMode, int>> modes {
         { ModernPitchEngine::LatencyMode::quality, 512 },
         { ModernPitchEngine::LatencyMode::live, 256 },
-        { ModernPitchEngine::LatencyMode::ultraLive, 128 }
+        { ModernPitchEngine::LatencyMode::ultraLive, 256 }
     };
     for (const auto& [mode, latency] : modes)
     {

@@ -365,7 +365,7 @@ int main()
     std::cout << "=== ModernPitchEngine Integration Tests ===\n\n";
 
     std::cout << "Test 1: Latency reporting\n";
-    testLatency(ModernPitchEngine::LatencyMode::ultraLive, 128, "Ultra Live");
+    testLatency(ModernPitchEngine::LatencyMode::ultraLive, 256, "Ultra Live");
     testLatency(ModernPitchEngine::LatencyMode::live,      256, "Live");
     testLatency(ModernPitchEngine::LatencyMode::quality,   512, "Quality");
 
