@@ -24,4 +24,5 @@ if 'wideTransitionObservations = 8' not in cpp:
 # Audio-presence authority is analysis/supervisor only; the frozen renderer is
 # never opened by this chain.
 runpy.run_path('Tests/RapVoicingV1Patch.py', run_name='__main__')
-print('Pitch rescue V3/V4 verified; rap-presence guard applied')
+runpy.run_path('Tests/RapVoicingV2TestPatch.py', run_name='__main__')
+print('Pitch rescue V3/V4 verified; rap-presence and strict 0/4 guards applied')
