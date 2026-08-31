@@ -2203,6 +2203,7 @@ void ModernPitchEngine::updateCorrectionState(
     }
 
     const double observedLog2 = safeLog2(observation.frequencyHz);
+    bool liveIdentityBreak = false;
     if (!state.pitchCentreValid || musicalOnset)
     {
         state.pitchCentreLog2 = observedLog2;
@@ -2223,21 +2224,38 @@ void ModernPitchEngine::updateCorrectionState(
         const double observedDistanceFromCurrentTarget = state.targetValid
             ? std::abs(observedLog2 - state.targetLog2) * 1200.0
             : 0.0;
-        const double currentIdentityRadius = 0.48 * scaleStep;
+        const double currentIdentityRadius = 0.72 * scaleStep;
         const bool insideCurrentMusicalIdentity = !state.targetValid
             || observedDistanceFromCurrentTarget < currentIdentityRadius;
-        if (state.noteBodyLatched
-            && insideCurrentMusicalIdentity
-            && distanceCents <= withinNoteTolerance)
+
+        // SOUND_EQUALS_CORRECTION_V2: live pitch outside the current musical
+        // identity is a new authority immediately. Consensus/confidence may
+        // describe evidence quality, but cannot make the supervisor crawl from
+        // a stale centre while audible input is already somewhere else.
+        liveIdentityBreak = observation.audioPresent
+            && state.targetValid
+            && !insideCurrentMusicalIdentity
+            && distanceCents >= currentIdentityRadius;
+        if (liveIdentityBreak)
         {
-            baseAlpha = 0.018 + 0.035 * static_cast<double>(1.0f - humanize);
+            state.pitchCentreLog2 = observedLog2;
+            state.stableObservations = 0;
         }
-        const double stableGate = 0.35
-            + 0.65 * static_cast<double>(clamp01(observation.confidence)
-                                      * clamp01(observation.periodicity));
-        state.pitchCentreLog2 += baseAlpha * stableGate
-            * (observedLog2 - state.pitchCentreLog2);
-        ++state.stableObservations;
+        else
+        {
+            if (state.noteBodyLatched
+                && insideCurrentMusicalIdentity
+                && distanceCents <= withinNoteTolerance)
+            {
+                baseAlpha = 0.018 + 0.035 * static_cast<double>(1.0f - humanize);
+            }
+            const double stableGate = 0.35
+                + 0.65 * static_cast<double>(clamp01(observation.confidence)
+                                          * clamp01(observation.periodicity));
+            state.pitchCentreLog2 += baseAlpha * stableGate
+                * (observedLog2 - state.pitchCentreLog2);
+            ++state.stableObservations;
+        }
     }
 
     const float hysteresis = adaptiveHysteresis(parameters, quantizer, observation);
@@ -2248,9 +2266,13 @@ void ModernPitchEngine::updateCorrectionState(
         parameters.lockStrictness,
         observation.confidence,
         parameters.scaleLock && parameters.hardLockActive,
-        musicalOnset,
+        musicalOnset || liveIdentityBreak,
         pending);
-    newTarget += std::round(state.pitchCentreLog2 - newTarget);
+
+    // SOUND_EQUALS_CORRECTION_V2: target register follows the current live F0,
+    // never a stale centre. This keeps an octave/register mistake from becoming
+    // a mathematically zero correction.
+    newTarget += std::round(observedLog2 - newTarget);
 
     const bool targetChanged = !state.targetValid
         || std::abs(newTarget - state.targetLog2) * 1200.0 > 0.1;
@@ -2283,7 +2305,7 @@ void ModernPitchEngine::updateCorrectionState(
         const double observedHz = static_cast<double>(observation.frequencyHz);
         if (!(state.transportPeriodHz > 0.0)
             || !std::isfinite(state.transportPeriodHz)
-            || musicalOnset || targetIdentityChanged)
+            || musicalOnset || liveIdentityBreak || targetIdentityChanged)
         {
             state.transportPeriodHz = observedHz;
         }
@@ -2320,8 +2342,10 @@ void ModernPitchEngine::updateCorrectionState(
 
     const double correctedLog2 = state.targetLog2
         + static_cast<double>(preserve) * vibratoComponent;
-    double errorCents = wrapToNearestOctave(
-        (correctedLog2 - observedLog2) * 1200.0);
+    // SOUND_EQUALS_CORRECTION_V2: targetLog2 and observedLog2 are absolute
+    // pitches in the same live register. Never wrap their error by an octave:
+    // +/-1200 cents must not collapse to zero and create an audible bypass.
+    double errorCents = (correctedLog2 - observedLog2) * 1200.0;
 
     const double humanWindow = parameters.scaleLock
         ? 2.0 + 10.0 * static_cast<double>(humanize)

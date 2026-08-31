@@ -464,6 +464,49 @@ int main()
                      && std::abs(heldCorrectionState.desiredCents + 42.0) < 1.0e-9,
                      "acquire_search_never_mutes_existing_correction");
 
+    // SOUND_EQUALS_CORRECTION_V2 regression: reproduce the audible
+    // intermittent bypass. The supervisor starts one octave stale, then a live
+    // F0 arrives around 452 Hz with zero consensus and almost no confidence.
+    // The old octave wrap converted the stale -1200-ish-cent relation to 0.
+    ModernPitchEngine::ScaleQuantizer staleRegisterQuantizer;
+    staleRegisterQuantizer.reset();
+    const double staleRegisterUnison = 1.0;
+    staleRegisterQuantizer.setScale(&staleRegisterUnison, 1, 440.0);
+    ModernPitchEngine::Parameters staleRegisterParameters;
+    staleRegisterParameters.amount = 1.0f;
+    staleRegisterParameters.humanize = 0.0f;
+    staleRegisterParameters.preserveVibrato = 0.0f;
+    staleRegisterParameters.maximumCorrectionSemitones = 12.0f;
+    ModernPitchEngine::CorrectionState staleRegisterState;
+    staleRegisterState.pitchCentreValid = true;
+    staleRegisterState.pitchCentreLog2 = std::log2(220.0);
+    staleRegisterState.targetValid = true;
+    staleRegisterState.targetLog2 = std::log2(220.0);
+    staleRegisterState.transportPeriodHz = 220.0;
+    staleRegisterState.noteBodyLatched = true;
+    staleRegisterState.noteBodyConfidence = 1.0f;
+    staleRegisterState.trackingState = ModernPitchEngine::TrackingState::stable;
+    ModernPitchEngine::PitchObservation zeroConsensusRegisterJump;
+    zeroConsensusRegisterJump.valid = true;
+    zeroConsensusRegisterJump.audioPresent = true;
+    zeroConsensusRegisterJump.frequencyHz = 452.0f;
+    zeroConsensusRegisterJump.voicing = 1.0f;
+    zeroConsensusRegisterJump.confidence = 0.01f;
+    zeroConsensusRegisterJump.periodicity = 0.05f;
+    zeroConsensusRegisterJump.consensus = 0.0f;
+    zeroConsensusRegisterJump.detectorSupport = 1;
+    engine->updateCorrectionState(staleRegisterState,
+                                  staleRegisterQuantizer,
+                                  zeroConsensusRegisterJump,
+                                  staleRegisterParameters);
+    const double staleRegisterTargetHz = std::exp2(staleRegisterState.targetLog2);
+    success &= check(staleRegisterTargetHz > 430.0
+                     && staleRegisterTargetHz < 450.0
+                     && std::abs(staleRegisterState.desiredCents) > 5.0
+                     && std::abs((staleRegisterState.pitchCentreLog2
+                                  - std::log2(452.0)) * 1200.0) < 0.1,
+                     "zero_consensus_stale_register_never_collapses_to_zero");
+
     parameters.transientProtection = 1.0f;
     parameters.humanize = 0.65f;
     setBodyEvidence(parameters);
