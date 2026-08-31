@@ -768,6 +768,55 @@ int main()
     success &= check(denseTargetMove > 20.0,
                      "humanize_respects_dense_microtonal_degree_spacing");
 
+    // MICROTONAL_HARD_LOCK_V3: even with the GUI hysteresis at its
+    // maximum, a 48-EDO target selector must not be allowed to hold the old
+    // degree by a musically significant portion of the 25-cent step.
+    ModernPitchEngine::Parameters hardDenseParameters = denseParameters;
+    hardDenseParameters.scaleLock = true;
+    hardDenseParameters.hardLockActive = true;
+    hardDenseParameters.lockHysteresis = 80.0f;
+    hardDenseParameters.lockStrictness = 1.0f;
+    hardDenseParameters.humanize = 1.0f;
+    hardDenseParameters.vibratoPreserve = 1.0f;
+    auto hardDenseObservation = strongPitch(440.0f);
+    const float denseEffectiveHysteresis = engine->adaptiveHysteresis(
+        hardDenseParameters, denseQuantizer, hardDenseObservation);
+    std::cerr << "dense_effective_hysteresis_cents="
+              << denseEffectiveHysteresis << '\n';
+    success &= check(denseEffectiveHysteresis <= 3.01f,
+                     "dense_scale_lock_hysteresis_is_degree_safe");
+
+    // At maximum Humanize + Vibrato Preserve, a 10-cent input deviation on
+    // 48-EDO must still request enough correction to leave <=3 cents residual
+    // under strict hard lock. This is the steady-state pitch contract; renderer
+    // and trajectory tests cover convergence separately.
+    ModernPitchEngine::CorrectionState hardDenseState;
+    auto hardDenseOffset = strongPitch(static_cast<float>(
+        440.0 * std::exp2(10.0 / 1200.0)));
+    hardDenseOffset.audioPresent = true;
+    engine->updateCorrectionState(hardDenseState, denseQuantizer,
+                                  hardDenseOffset, hardDenseParameters);
+    const double hardDenseObservedCents = 1200.0 * std::log2(
+        static_cast<double>(hardDenseOffset.frequencyHz) / 440.0);
+    const double hardDenseResidualCents = std::abs(
+        hardDenseObservedCents + hardDenseState.desiredCents);
+    std::cerr << "dense_scale_lock_residual_budget_cents="
+              << hardDenseResidualCents << '\n';
+    success &= check(hardDenseResidualCents <= 3.05,
+                     "dense_scale_lock_residual_budget_is_degree_safe");
+
+    // The target-change path must remain inside Scale Lock's own fast range;
+    // the general 35-40 ms transition control may not stretch it again.
+    hardDenseParameters.retuneTimeMs = 500.0f;
+    hardDenseParameters.transitionTimeMs = 80.0f;
+    hardDenseParameters.tempo.mode = CreativeTempo::Mode::off;
+    const double denseScaleLockResponse = engine->responseTimeMs(
+        hardDenseParameters, true, 25.0);
+    std::cerr << "dense_scale_lock_response_ms="
+              << denseScaleLockResponse << '\n';
+    success &= check(denseScaleLockResponse <= 3.001,
+                     "scale_lock_target_change_stays_in_live_speed_budget");
+
     // Native API semantics: one semitone means 100 cents, with no adapter hack.
     const double unison = 1.0;
     quantizer.setScale(&unison, 1, 440.0);

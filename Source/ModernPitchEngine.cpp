@@ -1902,10 +1902,24 @@ float ModernPitchEngine::adaptiveHysteresis(
             * (1.0f - 0.32f * quantizer.asymmetry()),
         0.22f, 1.40f);
     const float confidenceFactor = 0.65f + 0.70f * clamp01(observation.confidence);
-    const float strictnessFactor = 1.0f - 0.28f * clamp01(parameters.lockStrictness);
-    return std::clamp(finiteOr(parameters.lockHysteresis, 24.0f)
-        * modeFactor * tempoFactor * densityFactor
-        * confidenceFactor * strictnessFactor, 0.0f, 80.0f);
+    const float lockStrictness = clamp01(parameters.lockStrictness);
+    const float strictnessFactor = 1.0f - 0.28f * lockStrictness;
+    const float requestedHysteresis = std::clamp(
+        finiteOr(parameters.lockHysteresis, 24.0f)
+            * modeFactor * tempoFactor * densityFactor
+            * confidenceFactor * strictnessFactor,
+        0.0f, 80.0f);
+
+    // MICROTONAL_HARD_LOCK_V3: hysteresis may stabilise target identity, but
+    // it may never become a significant fraction of a dense scale degree.
+    // Otherwise 24/31/48-EDO can legally hold the previous target by one or
+    // more notes.  Keep the GUI range, then cap the effective musical margin
+    // relative to the actual minimum step of the selected/custom scale.
+    const float minimumStep = std::max(0.1f, quantizer.minimumStepCents());
+    const float degreeSafeCap = std::clamp(
+        minimumStep * (0.18f - 0.06f * lockStrictness),
+        0.35f, 36.0f);
+    return std::min(requestedHysteresis, degreeSafeCap);
 }
 
 double ModernPitchEngine::responseTimeMs(
@@ -1921,14 +1935,28 @@ double ModernPitchEngine::responseTimeMs(
     if (parameters.scaleLock)
     {
         const double norm = std::pow(requested / 500.0, 1.35);
+        double modeMaximumMs = 3.0;
         switch (latencyMode_)
         {
-            case LatencyMode::quality:   response = 3.0 + 4.0 * norm; break;
-            case LatencyMode::live:      response = 1.5 + 3.5 * norm; break;
-            case LatencyMode::ultraLive: response = 0.35 + 2.65 * norm; break;
+            // MICROTONAL_HARD_LOCK_V3: Scale Lock owns its documented fast
+            // trajectory.  The normal transition controller must not stretch
+            // a dense-scale note change into tens of milliseconds.
+            case LatencyMode::quality:
+                response = 3.0 + 2.0 * norm;
+                modeMaximumMs = 5.0;
+                break;
+            case LatencyMode::live:
+                response = 1.5 + 1.5 * norm;
+                modeMaximumMs = 3.0;
+                break;
+            case LatencyMode::ultraLive:
+                response = 0.35 + 1.15 * norm;
+                modeMaximumMs = 1.5;
+                break;
         }
-        const double humanTiming = 0.8 * static_cast<double>(clamp01(parameters.humanize));
-        response = std::min(7.0, response + humanTiming);
+        const double humanTiming = 0.40
+            * static_cast<double>(clamp01(parameters.humanize));
+        response = std::min(modeMaximumMs, response + humanTiming);
     }
 
     if (targetChanged && std::abs(targetJumpCents) > 0.1)
@@ -1941,11 +1969,11 @@ double ModernPitchEngine::responseTimeMs(
             // Creative Tempo controls the same correction trajectory.
             response = std::max(response, transitionMs);
         }
-        else
+        else if (!parameters.scaleLock)
         {
             // Main used a pre-rolled second synthesis layer for note changes.
-            // Keep only its useful bounded transition timing: the current
-            // single trajectory moves continuously to the exact new target.
+            // Keep only its useful bounded transition timing outside Scale
+            // Lock. Scale Lock already has its own <=5/3/1.5 ms trajectory.
             const double jumpWeight = std::clamp(
                 std::abs(targetJumpCents) / 600.0, 0.0, 1.0);
             const double trajectoryMs = std::clamp(
@@ -2341,16 +2369,43 @@ void ModernPitchEngine::updateCorrectionState(
         : clamp01(parameters.preserveVibrato);
     preserve *= stable * periodic * boundarySafety;
 
-    const double correctedLog2 = state.targetLog2
+    double correctedLog2 = state.targetLog2
         + static_cast<double>(preserve) * vibratoComponent;
+    double humanWindow = 1.5 + 16.0 * static_cast<double>(humanize);
+
+    if (parameters.scaleLock)
+    {
+        // MICROTONAL_HARD_LOCK_V3: Humanize and preserved vibrato are allowed
+        // to live inside the selected target, but their COMBINED steady-state
+        // residual is bounded by the scale spacing.  On 48-EDO (25 cents) the
+        // full budget is <=4.5 cents, so a 20-25 cent residual can never mean
+        // "one nearby degree" while still being called locked.
+        const double minimumStep = std::max(0.1,
+            static_cast<double>(quantizer.minimumStepCents()));
+        const double lockStrictness = static_cast<double>(
+            clamp01(parameters.lockStrictness));
+        const double residualBudgetCents = std::clamp(
+            minimumStep * (0.18 - 0.06 * lockStrictness),
+            1.0, 6.0);
+        humanWindow = std::min(
+            0.40 + 1.60 * static_cast<double>(humanize),
+            0.30 * residualBudgetCents);
+
+        const double vibratoBudgetCents = std::max(
+            0.0, residualBudgetCents - humanWindow);
+        const double requestedVibratoCents =
+            static_cast<double>(preserve) * vibratoComponent * 1200.0;
+        const double preservedVibratoCents = std::clamp(
+            requestedVibratoCents,
+            -vibratoBudgetCents,
+            vibratoBudgetCents);
+        correctedLog2 = state.targetLog2 + preservedVibratoCents / 1200.0;
+    }
+
     // SOUND_EQUALS_CORRECTION_V2: targetLog2 and observedLog2 are absolute
     // pitches in the same live register. Never wrap their error by an octave:
     // +/-1200 cents must not collapse to zero and create an audible bypass.
     double errorCents = (correctedLog2 - observedLog2) * 1200.0;
-
-    const double humanWindow = parameters.scaleLock
-        ? 2.0 + 10.0 * static_cast<double>(humanize)
-        : 1.5 + 16.0 * static_cast<double>(humanize);
     if (std::abs(errorCents) <= humanWindow)
         errorCents = 0.0;
     else
