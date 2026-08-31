@@ -490,6 +490,7 @@ private:
     std::atomic<float> meterConfidence_ { 0.0f };
     std::atomic<float> meterVoicing_ { 0.0f };
     std::atomic<float> meterPeriodicity_ { 0.0f };
+    std::atomic<float> meterConsensus_ { 0.0f };
     std::atomic<float> meterCorrectionCents_ { 0.0f };
     std::atomic<float> meterCorrectionVelocity_ { 0.0f };
     std::atomic<float> meterOnsetStrength_ { 0.0f };

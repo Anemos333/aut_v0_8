@@ -339,6 +339,27 @@ int main()
                      && std::abs(zeroConsensusState.desiredCents) > 5.0,
                      "zero_consensus_valid_f0_drives_real_correction");
 
+    ModernPitchEngine::PitchObservation meterConsensusObservation;
+    meterConsensusObservation.valid = true;
+    meterConsensusObservation.audioPresent = true;
+    meterConsensusObservation.frequencyHz = 452.0f;
+    meterConsensusObservation.confidence = 0.12f;
+    meterConsensusObservation.periodicity = 0.73f;
+    meterConsensusObservation.voicing = 1.0f;
+    meterConsensusObservation.consensus = 0.0f;
+    ModernPitchEngine::CorrectionState meterConsensusState;
+    meterConsensusState.targetValid = true;
+    meterConsensusState.targetLog2 = std::log2(440.0);
+    CreativeTempo::Metering meterTempo;
+    engine->publishMetering(meterConsensusObservation, meterConsensusState,
+                            -37.0, meterTempo);
+    const auto zeroConsensusMeter = engine->getMetering();
+    success &= check(std::abs(zeroConsensusMeter.consensus) < 1.0e-7f
+                     && zeroConsensusMeter.harmonicity > 0.70f,
+                     "meter_consensus_is_real_detector_consensus");
+    success &= check(std::abs(zeroConsensusMeter.correctionCents + 37.0f) < 0.01f,
+                     "zero_consensus_meter_can_report_active_correction");
+
     // Even if the rich analyzer describes the current block as breath/noise,
     // explicit input presence owns the voice state. Detector uncertainty is
     // allowed to affect F0 search, never voiced/unvoiced authority.

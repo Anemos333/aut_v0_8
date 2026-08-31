@@ -1806,6 +1806,7 @@ void ModernPitchEngine::reset() noexcept
     meterConfidence_.store(0.0f, std::memory_order_relaxed);
     meterVoicing_.store(0.0f, std::memory_order_relaxed);
     meterPeriodicity_.store(0.0f, std::memory_order_relaxed);
+    meterConsensus_.store(0.0f, std::memory_order_relaxed);
     meterCorrectionCents_.store(0.0f, std::memory_order_relaxed);
     meterCorrectionVelocity_.store(0.0f, std::memory_order_relaxed);
     meterOnsetStrength_.store(0.0f, std::memory_order_relaxed);
@@ -2651,6 +2652,7 @@ void ModernPitchEngine::publishMetering(
     meterConfidence_.store(observation.confidence, std::memory_order_relaxed);
     meterVoicing_.store(observation.voicing, std::memory_order_relaxed);
     meterPeriodicity_.store(observation.periodicity, std::memory_order_relaxed);
+    meterConsensus_.store(observation.consensus, std::memory_order_relaxed);
     meterCorrectionCents_.store(static_cast<float>(audibleCents),
                                 std::memory_order_relaxed);
     meterCorrectionVelocity_.store(static_cast<float>(state.velocityCentsPerSecond),
@@ -2694,7 +2696,7 @@ ModernPitchEngine::Metering ModernPitchEngine::getMetering() const noexcept
                                            + 0.45f * result.harmonicity);
         result.maskStability = result.harmonicity;
         result.sustainedNoteSeconds = meterSustainedSeconds_.load(std::memory_order_relaxed);
-        result.consensus = result.harmonicity;
+        result.consensus = meterConsensus_.load(std::memory_order_relaxed);
         result.correctionCents = meterCorrectionCents_.load(std::memory_order_relaxed);
         result.wetMix = 1.0f;
         result.outputSourceCorrespondence = 100.0f * result.spectralReliability;
