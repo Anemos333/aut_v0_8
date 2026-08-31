@@ -254,6 +254,7 @@ int main()
     std::uint32_t rapNoise = 0x12345678u;
     int rapPresenceHops = 0;
     int rapMaxDetectorSupport = 0;
+    int rapMinDetectorSupport = 4;
     float rapMinimumVoicing = 1.0f;
     ModernPitchEngine::PitchObservation rapObservation;
     for (int sample = 0; sample < 12000; ++sample)
@@ -268,6 +269,8 @@ int main()
             ++rapPresenceHops;
             rapMaxDetectorSupport = std::max(rapMaxDetectorSupport,
                                              rapObservation.detectorSupport);
+            rapMinDetectorSupport = std::min(rapMinDetectorSupport,
+                                             rapObservation.detectorSupport);
             rapMinimumVoicing = std::min(rapMinimumVoicing,
                                          rapObservation.voicing);
         }
@@ -276,6 +279,8 @@ int main()
                      "nonzero_audio_cannot_be_unvoiced");
     success &= check(rapMaxDetectorSupport > 0,
                      "nonzero_audio_keeps_detector_paths_alive");
+    success &= check(rapPresenceHops > 20 && rapMinDetectorSupport > 0,
+                     "nonzero_audio_never_reports_zero_detector_paths");
 
     auto engine = std::make_unique<ModernPitchEngine>();
     engine->prepare(48000.0, 256, 1, ModernPitchEngine::LatencyMode::live);
