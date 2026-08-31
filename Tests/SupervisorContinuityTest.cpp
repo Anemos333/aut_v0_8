@@ -244,11 +244,61 @@ int main()
     success &= check(persistentWideCommitted,
                      "persistent_multi_evidence_wide_rescue_can_commit_real_note_change");
 
+    // Rap/rough-speech regression: even deliberately aperiodic non-zero audio
+    // must publish authoritative voice presence and must keep detector paths
+    // alive instead of collapsing to 0/4 before the supervisor can search F0.
+    auto rapTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+    rapTracker->prepare(48000.0);
+    rapTracker->setRange(45.0f, 900.0f);
+    rapTracker->setSensitivity(0.70f);
+    std::uint32_t rapNoise = 0x12345678u;
+    int rapPresenceHops = 0;
+    int rapMaxDetectorSupport = 0;
+    float rapMinimumVoicing = 1.0f;
+    ModernPitchEngine::PitchObservation rapObservation;
+    for (int sample = 0; sample < 12000; ++sample)
+    {
+        rapNoise = 1664525u * rapNoise + 1013904223u;
+        const float noise = (static_cast<float>((rapNoise >> 8) & 0x00ffffffu)
+            / static_cast<float>(0x007fffffu) - 1.0f) * 0.085f;
+        const float syllabic = (sample % 1100) < 760 ? 1.0f : 0.22f;
+        if (rapTracker->processSample(noise * syllabic, rapObservation)
+            && sample > 1400 && rapObservation.audioPresent)
+        {
+            ++rapPresenceHops;
+            rapMaxDetectorSupport = std::max(rapMaxDetectorSupport,
+                                             rapObservation.detectorSupport);
+            rapMinimumVoicing = std::min(rapMinimumVoicing,
+                                         rapObservation.voicing);
+        }
+    }
+    success &= check(rapPresenceHops > 20 && rapMinimumVoicing > 0.99f,
+                     "nonzero_audio_cannot_be_unvoiced");
+    success &= check(rapMaxDetectorSupport > 0,
+                     "nonzero_audio_keeps_detector_paths_alive");
+
     auto engine = std::make_unique<ModernPitchEngine>();
     engine->prepare(48000.0, 256, 1, ModernPitchEngine::LatencyMode::live);
     ModernPitchEngine::ScaleQuantizer quantizer;
     quantizer.reset();
     ModernPitchEngine::Parameters parameters;
+    // Even if the rich analyzer describes the current block as breath/noise,
+    // explicit input presence owns the voice state. Detector uncertainty is
+    // allowed to affect F0 search, never voiced/unvoiced authority.
+    ModernPitchEngine::ScaleQuantizer presenceQuantizer;
+    presenceQuantizer.reset();
+    ModernPitchEngine::Parameters presenceParameters;
+    setBreathEvidence(presenceParameters);
+    ModernPitchEngine::CorrectionState presenceState;
+    ModernPitchEngine::PitchObservation presentWithoutF0;
+    presentWithoutF0.audioPresent = true;
+    presentWithoutF0.voicing = 1.0f;
+    engine->updateCorrectionState(presenceState, presenceQuantizer,
+                                  presentWithoutF0, presenceParameters);
+    success &= check(presenceState.noteBodyLatched
+                     && presenceState.trackingState == ModernPitchEngine::TrackingState::stable,
+                     "audio_presence_overrides_unvoiced_and_acquire_timidity");
+
     parameters.transientProtection = 1.0f;
     parameters.humanize = 0.65f;
     setBodyEvidence(parameters);

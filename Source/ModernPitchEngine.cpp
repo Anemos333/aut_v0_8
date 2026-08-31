@@ -10,6 +10,8 @@ namespace
 constexpr double pi = 3.1415926535897932384626433832795;
 constexpr double twoPi = 2.0 * pi;
 constexpr float minimumDetectorRms = 0.0012f;
+constexpr float numericalPresenceSample = 1.0e-8f;
+constexpr float numericalPresenceRms = 1.0e-8f;
 
 [[nodiscard]] float sanitiseAudioSample(float value) noexcept
 {
@@ -155,6 +157,8 @@ void ModernPitchEngine::MultiRatePitchTracker::reset() noexcept
     trackedSupportCount_ = 0;
     invalidHopCount_ = 0;
     rescueMode_ = false;
+    presenceMode_ = false;
+    presenceSinceLastHop_ = false;
 
     octaveState_ = 0;
     pendingOctaveDelta_ = 0;
@@ -240,7 +244,12 @@ ModernPitchEngine::MultiRatePitchTracker::analyse(
 
     const float rms = static_cast<float>(std::sqrt(
         squaredSum / static_cast<double>(analysisLength)));
-    if (rms < minimumDetectorRms)
+    // RAP_VOICING_V1_AUDIO_PRESENCE: detector confidence may be poor, but a
+    // numerically non-silent input is never allowed to erase the voice.  In
+    // presence mode analyse the best available period instead of returning no
+    // path merely because YIN confidence is low.
+    const float rmsFloor = presenceMode_ ? numericalPresenceRms : minimumDetectorRms;
+    if (rms < rmsFloor)
         return result;
 
     const int tauMinimum = std::clamp(
@@ -336,7 +345,7 @@ ModernPitchEngine::MultiRatePitchTracker::analyse(
         }
     }
 
-    if (thresholdTau < 0 && globalValue > fallbackThreshold)
+    if (!presenceMode_ && thresholdTau < 0 && globalValue > fallbackThreshold)
         return result;
 
     // Alternative periods are deliberately retained because a weak fundamental
@@ -405,7 +414,8 @@ ModernPitchEngine::MultiRatePitchTracker::analyse(
         }
     }
 
-    const float minimumCandidateScore = rescueMode_ ? 0.34f : 0.45f;
+    const float minimumCandidateScore = presenceMode_
+        ? 0.0f : (rescueMode_ ? 0.34f : 0.45f);
     if (bestTau < 2 || bestScore < minimumCandidateScore)
         return result;
 
@@ -609,7 +619,9 @@ int ModernPitchEngine::MultiRatePitchTracker::buildConsensusHypotheses(
             // Octave-transposed support is useful as harmonic evidence, but it
             // must be genuinely strong; otherwise it is ignored rather than
             // being allowed to manufacture a low subharmonic.
-            if ((!direct && baseScore < 0.60f) || weight < 0.10f)
+            const float minimumOctaveSupport = presenceMode_ ? 0.24f : 0.60f;
+            const float minimumWeight = presenceMode_ ? 0.02f : 0.10f;
+            if ((!direct && baseScore < minimumOctaveSupport) || weight < minimumWeight)
                 continue;
 
             weightedLogFrequency += static_cast<double>(weight)
@@ -655,7 +667,8 @@ int ModernPitchEngine::MultiRatePitchTracker::buildConsensusHypotheses(
                                  * (0.70f + 0.30f * hypothesis.consensus)
                                  + 0.045f * static_cast<float>(directSupportCount)
                                  - directPenalty;
-        hypothesis.valid = hypothesis.evidenceScore > 0.20f;
+        hypothesis.valid = hypothesis.evidenceScore
+            > (presenceMode_ ? 0.055f : 0.20f);
 
         if (!hypothesis.valid)
             continue;
@@ -948,6 +961,10 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
         && centsDistance(trackedPitchHz_, decision.candidate.frequencyHz) < 95.0f;
     const bool sufficientInitialEvidence = decision.supportCount >= 2
         || decision.candidate.confidence >= 0.78f;
+    const bool presenceInitialEvidence = presenceMode_
+        && decision.supportCount >= 1
+        && decision.candidate.confidence >= 0.05f
+        && decision.candidate.periodicity >= 0.18f;
     const float rescueDistance = rescueReferenceHz > 0.0f
         ? centsDistance(rescueReferenceHz, decision.candidate.frequencyHz)
         : 100000.0f;
@@ -970,7 +987,7 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
     // let a strong subharmonic become a new F0 during acquire.
     decision.valid = rescueMode_
         ? rescueEvidence
-        : (closeToTrack || sufficientInitialEvidence);
+        : (closeToTrack || sufficientInitialEvidence || presenceInitialEvidence);
     return decision;
 }
 
@@ -1173,6 +1190,8 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
 {
     observation = {};
     inputSample = sanitiseAudioSample(inputSample);
+    if (std::abs(inputSample) > numericalPresenceSample)
+        presenceSinceLastHop_ = true;
 
     const float dcBlocked = inputSample - previousInput_
                           + dcBlockCoefficient_ * previousDcOutput_;
@@ -1229,6 +1248,8 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
 
     hopCounter_ = 0;
     ++analysisHopCounter_;
+    presenceMode_ = presenceSinceLastHop_;
+    presenceSinceLastHop_ = false;
 
     ++fullRateCandidate_.ageInHops;
     ++halfRateCandidate_.ageInHops;
@@ -1308,6 +1329,8 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
         }
     }
 
+    std::array<PitchCandidate, detectorPathCount> rawCandidates {};
+    const int rawDetectorSupport = collectFreshCandidates(rawCandidates);
     DecoderDecision decision = decodeCandidate(onsetPending_);
     const int previousOctaveState = octaveState_;
     const bool decoderDecisionAccepted = confirmOctaveTransition(decision,
@@ -1353,14 +1376,16 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
         observation.confidence = trackedConfidence_;
         observation.periodicity = trackedPeriodicity_;
         observation.consensus = trackedConsensus_;
-        observation.detectorSupport = trackedSupportCount_;
+        observation.detectorSupport = std::max(trackedSupportCount_, rawDetectorSupport);
         observation.octaveState = octaveState_;
         observation.pendingOctaveObservations = pendingOctaveCount_;
-        observation.voicing = clamp01(rmsGate
+        const float detectorVoicing = clamp01(rmsGate
             * (0.48f * confidenceGate
              + 0.30f * periodicityGate
              + 0.22f * consensusGate));
-        observation.valid = observation.voicing > 0.08f;
+        observation.audioPresent = presenceMode_;
+        observation.voicing = presenceMode_ ? 1.0f : detectorVoicing;
+        observation.valid = presenceMode_ || detectorVoicing > 0.08f;
     }
     else
     {
@@ -1386,10 +1411,11 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
         observation.confidence = trackedConfidence_;
         observation.periodicity = trackedPeriodicity_;
         observation.consensus = trackedConsensus_;
-        observation.detectorSupport = trackedSupportCount_;
+        observation.detectorSupport = rawDetectorSupport;
         observation.octaveState = octaveState_;
         observation.pendingOctaveObservations = pendingOctaveCount_;
-        observation.voicing = 0.0f;
+        observation.audioPresent = presenceMode_;
+        observation.voicing = presenceMode_ ? 1.0f : 0.0f;
         observation.valid = false;
     }
 
@@ -1830,9 +1856,10 @@ void ModernPitchEngine::updateCorrectionState(
     const float holdBodyThreshold = 0.34f - 0.05f * humanize;
     const float bodyThreshold = state.noteBodyLatched
         ? holdBodyThreshold : enterBodyThreshold;
-    const bool bodyPresent = bodyScore >= bodyThreshold
-        && (!richEvidence || parameters.voiceBreathiness < 0.76f
-            || parameters.voiceHarmonicity > 0.48f);
+    const bool bodyPresent = observation.audioPresent
+        || (bodyScore >= bodyThreshold
+            && (!richEvidence || parameters.voiceBreathiness < 0.76f
+                || parameters.voiceHarmonicity > 0.48f));
 
     const float breathScore = richEvidence
         ? clamp01(0.58f * parameters.voiceBreathiness
@@ -1841,11 +1868,13 @@ void ModernPitchEngine::updateCorrectionState(
                 + 0.08f * (1.0f - parameters.voiceSpectralReliability))
         : 0.0f;
     const bool confirmedBreathFrame = richEvidence
+        && !observation.audioPresent
         && breathScore > 0.62f
         && parameters.voiceBreathiness > 0.56f
         && parameters.voiceBodyEnergy < 0.48f
         && parameters.voiceEventStrength < 0.82f;
     const bool confirmedAbsenceFrame = richEvidence
+        && !observation.audioPresent
         && parameters.voiceBodyEnergy < 0.20f
         && parameters.voiceHarmonicity < 0.22f
         && parameters.voiceSpectralReliability < 0.28f
@@ -1938,6 +1967,21 @@ void ModernPitchEngine::updateCorrectionState(
     if (!validPitch)
     {
         ++state.invalidObservations;
+
+        // Audio presence is authoritative for voiced/unvoiced classification.
+        // F0 confidence may fall to zero on rap, consonants or rough phonation,
+        // but that is a pitch-search problem, never permission to call a
+        // non-silent vocal signal unvoiced or timidly leave it in acquire.
+        if (observation.audioPresent)
+        {
+            state.noteBodyLatched = true;
+            state.noteBodyConfidence = 1.0f;
+            state.stableBodyObservations = std::max(4, state.stableBodyObservations);
+            state.breathEvidenceSamples = 0;
+            state.uncertainSamples = 0;
+            setState(TrackingState::stable);
+            return;
+        }
 
         // Missing F0 is not missing voice. A latched note keeps the exact
         // destination while body evidence survives. Acquire/attack may also

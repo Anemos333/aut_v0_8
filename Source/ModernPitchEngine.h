@@ -193,6 +193,7 @@ private:
         int pendingOctaveObservations = 0;
         bool valid = false;
         bool onset = false;
+        bool audioPresent = false;
     };
 
     class BiquadLowPass
@@ -328,6 +329,8 @@ private:
         float maximumPitchHz_ = 1600.0f;
         float sensitivity_ = 0.70f;
         bool rescueMode_ = false;
+        bool presenceMode_ = false;
+        bool presenceSinceLastHop_ = false;
 
         std::array<float, ringSize> fullRateRing_ {};
         std::array<float, ringSize> halfRateRing_ {};
