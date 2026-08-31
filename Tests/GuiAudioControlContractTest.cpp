@@ -99,12 +99,12 @@ int main()
                          && has(editor, "processorRef.updateProcessingMode (newMode)"),
                      "scale_root_and_mode_selectors_reach_audio_state");
 
-    success &= check(has(editor, "3.0 + 4.0 * norm")
-                         && has(editor, "1.5 + 3.5 * norm")
-                         && has(editor, "0.35 + 2.65 * norm")
-                         && has(engine, "3.0 + 4.0 * norm")
-                         && has(engine, "1.5 + 3.5 * norm")
-                         && has(engine, "0.35 + 2.65 * norm"),
+    success &= check(has(editor, "3.0 + 2.0 * norm")
+                         && has(editor, "1.5 + 1.5 * norm")
+                         && has(editor, "0.35 + 1.15 * norm")
+                         && has(engine, "3.0 + 2.0 * norm")
+                         && has(engine, "1.5 + 1.5 * norm")
+                         && has(engine, "0.35 + 1.15 * norm"),
                      "response_display_matches_dsp_curve");
 
     success &= check(!has(engine, "TransportClock")
