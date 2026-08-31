@@ -221,6 +221,8 @@ private:
         void setRange(float minimumPitchHz, float maximumPitchHz) noexcept;
         void setSensitivity(float sensitivity) noexcept;
         void setRescueMode(bool enabled) noexcept { rescueMode_ = enabled; }
+        void setReacquisitionAnchor(float frequencyHz) noexcept;
+        void clearReacquisitionAnchor() noexcept { reacquisitionAnchorHz_ = 0.0f; }
         bool processSample(float inputSample, PitchObservation& observation) noexcept;
         [[nodiscard]] static constexpr int hopSize() noexcept { return detectorHop; }
 
@@ -367,6 +369,7 @@ private:
         std::array<float, maxAnalysisSize> difference_ {};
         std::array<DecoderState, decoderBeamWidth> decoderBeam_ {};
         float trackedPitchHz_ = 0.0f;
+        float reacquisitionAnchorHz_ = 0.0f;
         float trackedConfidence_ = 0.0f;
         float trackedPeriodicity_ = 0.0f;
         float trackedConsensus_ = 0.0f;

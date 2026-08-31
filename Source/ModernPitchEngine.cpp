@@ -148,6 +148,7 @@ void ModernPitchEngine::MultiRatePitchTracker::reset() noexcept
     decoderBeam_.fill({});
 
     trackedPitchHz_ = 0.0f;
+    reacquisitionAnchorHz_ = 0.0f;
     trackedConfidence_ = 0.0f;
     trackedPeriodicity_ = 0.0f;
     trackedConsensus_ = 0.0f;
@@ -175,6 +176,17 @@ void ModernPitchEngine::MultiRatePitchTracker::setRange(float minimumPitchHz,
 void ModernPitchEngine::MultiRatePitchTracker::setSensitivity(float sensitivity) noexcept
 {
     sensitivity_ = clamp01(sensitivity);
+}
+
+void ModernPitchEngine::MultiRatePitchTracker::setReacquisitionAnchor(
+    float frequencyHz) noexcept
+{
+    // PITCH_RESCUE_V2_PERSISTENT_ANCHOR
+    // This is musical note-body memory supplied by the supervisor, not current
+    // detector state. It must survive trackedPitchHz_ invalidation.
+    reacquisitionAnchorHz_ = std::isfinite(frequencyHz) && frequencyHz > 0.0f
+        ? std::clamp(frequencyHz, 20.0f, 4000.0f)
+        : 0.0f;
 }
 
 void ModernPitchEngine::MultiRatePitchTracker::push(
@@ -846,6 +858,8 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
 
     const float decodedFrequency = static_cast<float>(
         std::exp2(decoderBeam_[0].logFrequency));
+    const float rescueReferenceHz = trackedPitchHz_ > 0.0f
+        ? trackedPitchHz_ : reacquisitionAnchorHz_;
 
     int matchedHypothesis = -1;
     float matchedDistance = 100000.0f;
@@ -862,7 +876,7 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
     }
 
     if ((matchedHypothesis < 0 || matchedDistance > 65.0f)
-        && rescueMode_ && trackedPitchHz_ > 0.0f)
+        && rescueMode_ && rescueReferenceHz > 0.0f)
     {
         float bestRescueScore = -1000.0f;
         int bestRescueHypothesis = -1;
@@ -872,7 +886,7 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
             if (!candidate.valid || candidate.supportCount <= 0)
                 continue;
             const float distance = centsDistance(candidate.frequencyHz,
-                                                 trackedPitchHz_);
+                                                 rescueReferenceHz);
             if (distance > 700.0f || candidate.periodicity < 0.46f
                 || candidate.confidence < 0.40f)
             {
@@ -893,7 +907,7 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
             matchedHypothesis = bestRescueHypothesis;
             matchedDistance = centsDistance(
                 hypotheses[static_cast<std::size_t>(matchedHypothesis)].frequencyHz,
-                trackedPitchHz_);
+                rescueReferenceHz);
         }
     }
 
@@ -917,11 +931,11 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
         && centsDistance(trackedPitchHz_, decision.candidate.frequencyHz) < 95.0f;
     const bool sufficientInitialEvidence = decision.supportCount >= 2
         || decision.candidate.confidence >= 0.78f;
-    const float rescueDistance = trackedPitchHz_ > 0.0f
-        ? centsDistance(trackedPitchHz_, decision.candidate.frequencyHz)
+    const float rescueDistance = rescueReferenceHz > 0.0f
+        ? centsDistance(rescueReferenceHz, decision.candidate.frequencyHz)
         : 100000.0f;
     const bool rescueEvidence = rescueMode_
-        && trackedPitchHz_ > 0.0f
+        && rescueReferenceHz > 0.0f
         && rescueDistance <= 700.0f
         && decision.supportCount >= 1
         && decision.candidate.confidence >= 0.40f
@@ -2238,6 +2252,10 @@ void ModernPitchEngine::process(
                 PitchObservation observation;
                 auto& tracker = channelTrackers_[static_cast<std::size_t>(channel)];
                 auto& correction = channelCorrections_[static_cast<std::size_t>(channel)];
+                if (correction.noteBodyLatched && correction.transportPeriodHz > 0.0)
+                    tracker.setReacquisitionAnchor(static_cast<float>(correction.transportPeriodHz));
+                else
+                    tracker.clearReacquisitionAnchor();
                 const bool rescueSearch = correction.noteBodyLatched
                     && correction.pitchStaleSamples >= static_cast<int>(0.060 * sampleRate_);
                 tracker.setRange(rescueSearch ? std::min(safe.minimumPitchHz, 28.0f) : safe.minimumPitchHz,
@@ -2292,6 +2310,11 @@ void ModernPitchEngine::process(
             for (int channel = 0; channel < channels; ++channel)
                 analysis += data[static_cast<std::size_t>(channel)][sample];
             PitchObservation observation;
+            if (linkedCorrection_.noteBodyLatched && linkedCorrection_.transportPeriodHz > 0.0)
+                linkedTracker_.setReacquisitionAnchor(
+                    static_cast<float>(linkedCorrection_.transportPeriodHz));
+            else
+                linkedTracker_.clearReacquisitionAnchor();
             const bool rescueSearch = linkedCorrection_.noteBodyLatched
                 && linkedCorrection_.pitchStaleSamples >= static_cast<int>(0.060 * sampleRate_);
             linkedTracker_.setRange(rescueSearch ? std::min(safe.minimumPitchHz, 28.0f) : safe.minimumPitchHz,

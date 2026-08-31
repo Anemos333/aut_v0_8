@@ -110,6 +110,49 @@ int main()
                          rescuedSingleFamily.candidate.frequencyHz / 220.0f)) > 140.0,
                      "stale_f0_accepts_credible_single_family_rescue");
 
+
+    auto delayedRescueTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+    delayedRescueTracker->prepare(48000.0);
+    delayedRescueTracker->trackedPitchHz_ = 220.0f;
+    delayedRescueTracker->trackedConfidence_ = 0.88f;
+    delayedRescueTracker->trackedPeriodicity_ = 0.90f;
+    delayedRescueTracker->trackedConsensus_ = 0.75f;
+    delayedRescueTracker->trackedSupportCount_ = 2;
+    delayedRescueTracker->setReacquisitionAnchor(220.0f);
+    ModernPitchEngine::PitchObservation expiredObservation;
+    const int dropoutSamples = static_cast<int>(0.075 * 48000.0);
+    for (int sample = 0; sample < dropoutSamples; ++sample)
+        static_cast<void>(delayedRescueTracker->processSample(0.0f, expiredObservation));
+    success &= check(delayedRescueTracker->trackedPitchHz_ == 0.0f
+                     && std::abs(delayedRescueTracker->reacquisitionAnchorHz_ - 220.0f) < 0.01f,
+                     "current_f0_can_expire_without_erasing_note_body_anchor");
+
+    auto& delayedSlot = delayedRescueTracker->halfRateCandidate_;
+    delayedSlot.candidate.valid = true;
+    delayedSlot.candidate.frequencyHz = static_cast<float>(220.0 * std::exp2(200.0 / 1200.0));
+    delayedSlot.candidate.confidence = 0.74f;
+    delayedSlot.candidate.periodicity = 0.82f;
+    delayedSlot.candidate.pathIndex = 1;
+    delayedSlot.candidate.ageInHops = 0;
+    delayedSlot.ageInHops = 0;
+    delayedRescueTracker->decoderBeam_.fill({});
+    delayedRescueTracker->setRescueMode(false);
+    const auto delayedNormalDecision = delayedRescueTracker->decodeCandidate(false);
+    success &= check(!delayedNormalDecision.valid,
+                     "expired_tracker_anchor_does_not_weaken_normal_tracking");
+
+    delayedRescueTracker->decoderBeam_.fill({});
+    delayedRescueTracker->setRescueMode(true);
+    const auto delayedRescueDecision = delayedRescueTracker->decodeCandidate(false);
+    success &= check(delayedRescueDecision.valid
+                     && delayedRescueTracker->trackedPitchHz_ == 0.0f,
+                     "rescue_uses_persistent_anchor_after_sixty_ms_detector_hole");
+    delayedRescueTracker->clearReacquisitionAnchor();
+    delayedRescueTracker->decoderBeam_.fill({});
+    const auto noBodyAnchorDecision = delayedRescueTracker->decodeCandidate(false);
+    success &= check(!noBodyAnchorDecision.valid,
+                     "released_note_body_removes_rescue_authority");
+
     auto engine = std::make_unique<ModernPitchEngine>();
     engine->prepare(48000.0, 256, 1, ModernPitchEngine::LatencyMode::live);
     ModernPitchEngine::ScaleQuantizer quantizer;
