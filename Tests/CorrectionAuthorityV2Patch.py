@@ -6,6 +6,7 @@ cpp = cpp_path.read_text(encoding='utf-8')
 test = test_path.read_text(encoding='utf-8')
 
 SOURCE_MARKER = 'SOUND_EQUALS_CORRECTION_V2'
+DENSE_SAFE_MARKER = 'SOUND_EQUALS_CORRECTION_V2_DENSE_SAFE'
 TEST_MARKER = 'zero_consensus_stale_register_never_collapses_to_zero'
 
 
@@ -150,6 +151,42 @@ if SOURCE_MARKER not in cpp:
 
     cpp_path.write_text(cpp, encoding='utf-8')
 
+# The immediate-break radius and the within-note smoothing radius are different
+# concepts. Keep the original 0.48-step smoothing boundary so dense microtonal
+# moves can cross their degree boundary, while requiring a clearer 0.72-step
+# departure before low-confidence live audio forcibly resets note identity.
+cpp = cpp_path.read_text(encoding='utf-8')
+if DENSE_SAFE_MARKER not in cpp:
+    old = '''        const double currentIdentityRadius = 0.72 * scaleStep;
+        const bool insideCurrentMusicalIdentity = !state.targetValid
+            || observedDistanceFromCurrentTarget < currentIdentityRadius;
+
+        // SOUND_EQUALS_CORRECTION_V2: live pitch outside the current musical
+        // identity is a new authority immediately. Consensus/confidence may
+        // describe evidence quality, but cannot make the supervisor crawl from
+        // a stale centre while audible input is already somewhere else.
+        liveIdentityBreak = observation.audioPresent
+            && state.targetValid
+            && !insideCurrentMusicalIdentity
+            && distanceCents >= currentIdentityRadius;
+'''
+    new = '''        const double currentIdentityRadius = 0.48 * scaleStep;
+        const double liveIdentityBreakRadius = 0.72 * scaleStep;
+        const bool insideCurrentMusicalIdentity = !state.targetValid
+            || observedDistanceFromCurrentTarget < currentIdentityRadius;
+
+        // SOUND_EQUALS_CORRECTION_V2_DENSE_SAFE: live pitch outside a clear
+        // 0.72-step boundary owns identity immediately, while the original
+        // 0.48-step within-note boundary remains intact for dense microtonal
+        // tracking. Consensus/confidence never gates the forced live change.
+        liveIdentityBreak = observation.audioPresent
+            && state.targetValid
+            && observedDistanceFromCurrentTarget >= liveIdentityBreakRadius
+            && distanceCents >= liveIdentityBreakRadius;
+'''
+    cpp = replace_once(cpp, old, new, 'separate dense smoothing and live-break radii')
+    cpp_path.write_text(cpp, encoding='utf-8')
+
 
 if TEST_MARKER not in test:
     anchor = '''    success &= check(heldCorrectionState.trackingState
@@ -212,7 +249,9 @@ if 'double errorCents = wrapToNearestOctave(' in cpp:
     raise SystemExit('correction path still wraps absolute pitch error by octave')
 if SOURCE_MARKER not in cpp:
     raise SystemExit('sound=correction V2 source marker missing')
+if DENSE_SAFE_MARKER not in cpp:
+    raise SystemExit('sound=correction V2 dense-safe refinement missing')
 if TEST_MARKER not in test_path.read_text(encoding='utf-8'):
     raise SystemExit('sound=correction V2 regression missing')
 
-print('Sound=correction authority V2 applied: live identity immediate, register aligned, octave error never collapses to zero')
+print('Sound=correction authority V2 applied: live identity immediate, dense-safe smoothing, register aligned, octave error never collapses to zero')
