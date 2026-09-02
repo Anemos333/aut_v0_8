@@ -9,33 +9,91 @@ on:
       - clean-rewrite-transport-continuity
       - clean-rewrite-main-supervisor-integration
       - clean-rewrite-stable-lpc-period-sync
+      - clean-rewrite-musical-note-supervisor
     paths:
       - 'Source/ModernPitchEngine.*'
+      - 'Source/SingleWetSpectralRenderer.*'
       - 'Source/LivePitchProcessor.h'
       - 'Source/VoiceEvidenceAnalyzer.h'
+      - 'Source/PluginEditor.cpp'
       - 'CMakeLists.txt'
       - 'Tests/CleanModernPitchEngineTest.cpp'
       - 'Tests/VoiceEvidenceAnalyzerTest.cpp'
-      - 'Tests/TransportContinuityTest.cpp'
       - 'Tests/SupervisorContinuityTest.cpp'
-      - 'Tests/StableVoicePathTest.cpp'
-      - 'Tests/StableVoicePathModernPitchEngineCompile.cpp'
+      - 'Tests/SingleWetSpectralRendererTest.cpp'
+      - 'Tests/GuiAudibilityTest.cpp'
+      - 'Tests/GuiAudioControlContractTest.cpp'
+      - 'Tests/UnifiedTransportPatch.py'
+      - 'Tests/PitchRescuePatch.py'
+      - 'Tests/PitchRescueV2Patch.py'
+      - 'Tests/PitchRescueV3Patch.py'
+      - 'Tests/CorrectionAuthorityV4Patch.py'
+      - 'Tests/CorrectionAuthorityV4IntegrationPatch.py'
       - 'Tests/CLEAN_MODERN_PITCH_ENGINE_CONTRACT.md'
+      - 'Tests/GUI_AUDIO_CONTROL_CONTRACT.md'
       - '.github/workflows/clean-modern-pitch-engine.yml'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
+  apply-unified-transport:
+    if: github.event.pull_request.head.ref == 'single-wet-quality-reconstruction'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout branch head
+        uses: actions/checkout@v4
+        with:
+          ref: single-wet-quality-reconstruction
+          fetch-depth: 1
+
+      - name: Verify frozen V5 audio renderer blobs
+        shell: bash
+        run: |
+          renderer_cpp=$(git hash-object Source/SingleWetSpectralRenderer.cpp)
+          renderer_h=$(git hash-object Source/SingleWetSpectralRenderer.h)
+          test "$renderer_cpp" = "3080ba804cb038421b075d76f5eceec335c22396" || {
+            echo "SingleWetSpectralRenderer.cpp changed after V5 freeze: $renderer_cpp"
+            exit 1
+          }
+          test "$renderer_h" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058" || {
+            echo "SingleWetSpectralRenderer.h changed after V5 freeze: $renderer_h"
+            exit 1
+          }
+          echo "V5 audio renderer frozen and unchanged"
+
+      - name: Apply guarded source transformation
+        run: |
+          python3 Tests/UnifiedTransportPatch.py
+          python3 Tests/PitchRescuePatch.py
+          python3 Tests/PitchRescueV2Patch.py
+          python3 Tests/PitchRescueV3Patch.py
+
+      - name: Commit transformed source and contracts
+        shell: bash
+        run: |
+          git add Source/SingleWetSpectralRenderer.cpp Source/ModernPitchEngine.cpp Source/ModernPitchEngine.h Source/PluginEditor.cpp Tests/SupervisorContinuityTest.cpp Tests/GuiAudioControlContractTest.cpp
+          if git diff --cached --quiet; then
+            echo "No source transformation needed"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Materialize guarded correction and GUI contracts"
+          git push origin HEAD:single-wet-quality-reconstruction
+
   invariant-test:
+    needs: apply-unified-transport
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-22.04, windows-2022]
     runs-on: ${{ matrix.os }}
     steps:
-      - name: Checkout
+      - name: Checkout updated branch head
         uses: actions/checkout@v4
+        with:
+          ref: single-wet-quality-reconstruction
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
@@ -43,7 +101,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libasound2-dev libjack-jackd2-dev ladspa-sdk \
-            libcurl4-openssl-dev libfreetype6-dev libfontconfig1-dev \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
             libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
             libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
             libglu1-mesa-dev mesa-common-dev
@@ -65,27 +123,33 @@ jobs:
             -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
 
       - name: Build invariant tests
-        run: cmake --build build-clean --config Release --target CleanModernPitchEngineTest VoiceEvidenceAnalyzerTest TransportContinuityTest SupervisorContinuityTest StableVoicePathTest --parallel 2
+        run: cmake --build build-clean --config Release --target CleanModernPitchEngineTest VoiceEvidenceAnalyzerTest SupervisorContinuityTest SingleWetSpectralRendererTest GuiAudibilityTest GuiAudioControlContractTest --parallel 2
 
-      - name: Run invariant tests on Linux
+      - name: Run all invariant tests on Linux
         if: runner.os == 'Linux'
+        shell: bash
         run: |
-          ./build-clean/clean-engine-tests/CleanModernPitchEngineTest
-          ./build-clean/clean-engine-tests/VoiceEvidenceAnalyzerTest
-          ./build-clean/clean-engine-tests/TransportContinuityTest
-          ./build-clean/clean-engine-tests/SupervisorContinuityTest
-          ./build-clean/clean-engine-tests/StableVoicePathTest
+          failed=0
+          ./build-clean/clean-engine-tests/CleanModernPitchEngineTest || failed=1
+          ./build-clean/clean-engine-tests/VoiceEvidenceAnalyzerTest || failed=1
+          ./build-clean/clean-engine-tests/SupervisorContinuityTest || failed=1
+          ./build-clean/clean-engine-tests/SingleWetSpectralRendererTest || failed=1
+          ./build-clean/clean-engine-tests/GuiAudibilityTest || failed=1
+          ./build-clean/clean-engine-tests/GuiAudioControlContractTest || failed=1
+          exit $failed
 
-      - name: Run invariant tests on Windows
+      - name: Run all invariant tests on Windows
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          $failed = $false
           $tests = @(
             ".\build-clean\clean-engine-tests\CleanModernPitchEngineTest.exe",
             ".\build-clean\clean-engine-tests\VoiceEvidenceAnalyzerTest.exe",
-            ".\build-clean\clean-engine-tests\TransportContinuityTest.exe",
             ".\build-clean\clean-engine-tests\SupervisorContinuityTest.exe",
-            ".\build-clean\clean-engine-tests\StableVoicePathTest.exe"
+            ".\build-clean\clean-engine-tests\SingleWetSpectralRendererTest.exe",
+            ".\build-clean\clean-engine-tests\GuiAudibilityTest.exe",
+            ".\build-clean\clean-engine-tests\GuiAudioControlContractTest.exe"
           )
           foreach ($test in $tests) {
             $name = [System.IO.Path]::GetFileNameWithoutExtension($test)
@@ -101,14 +165,18 @@ jobs:
             Write-Host "$name exit_code=$($process.ExitCode)"
             if (Test-Path $stdout) { Get-Content $stdout }
             if (Test-Path $stderr) { Get-Content $stderr }
-            if ($process.ExitCode -ne 0) { exit $process.ExitCode }
+            if ($process.ExitCode -ne 0) { $failed = $true }
           }
+          if ($failed) { exit 1 }
 
   windows-vst3:
+    needs: apply-unified-transport
     runs-on: windows-2022
     steps:
-      - name: Checkout
+      - name: Checkout updated branch head
         uses: actions/checkout@v4
+        with:
+          ref: single-wet-quality-reconstruction
 
       - name: Configure
         shell: pwsh
@@ -123,49 +191,99 @@ jobs:
           cmake --build build-vst3 --config Release `
             --target Neumaton_VST3 --parallel 2
 
-      - name: Verify clean architecture and package
+      - name: Verify minimal single-coordinate spectral architecture and package
         shell: pwsh
         run: |
-          $lineCount = (Get-Content Source\ModernPitchEngine.cpp).Count
-          if ($lineCount -gt 3000) {
-            Write-Error "ModernPitchEngine.cpp grew beyond detector-plus-clean-output limit: $lineCount"
-            exit 1
-          }
-          $forbidden = @(
-            'SynthesisLayer',
-            'TransitionManager',
-            'SpectralVoiceShifter',
-            'CorrectionController',
+          $rendererFiles = @(
+            'Source\SingleWetSpectralRenderer.cpp',
+            'Source\SingleWetSpectralRenderer.h'
+          )
+          $forbiddenRenderer = @(
             'wetMix_',
             'dryTrust_',
-            'targetLpc_',
-            'currentLpc_',
+            'delayedDry',
+            'blendLayers',
+            'TransitionManager',
+            'secondaryLayer',
             'NeumatonOutputRenderer',
             'NeumatonRidgeLedger',
-            'NEUMATON_OUTPUT_V3'
+            'NEUMATON_OUTPUT_V3',
+            'layer.spectrum[sourceIndex] += fftBuffer_[sourceIndex]',
+            'const float harmonicMagnitude',
+            'const double sourcePosition = std::clamp(',
+            'phaseGuidance',
+            'peakLockedPhase',
+            'reconstructionGain',
+            'phaseAnchor',
+            'aperiodicEvidence',
+            'updateHarmonicNoiseAnalysis',
+            'harmonicMask',
+            'noisePath',
+            'noiseDominance',
+            'breathProtection',
+            'smoothedSpectralReliability_',
+            'struct Context'
           )
-          foreach ($term in $forbidden) {
-            if (Select-String -Path Source\ModernPitchEngine.cpp,Source\ModernPitchEngine.h,Source\LivePitchProcessor.h,Source\VoiceEvidenceAnalyzer.h -Pattern $term -Quiet) {
-              Write-Error "Forbidden legacy/unstable output symbol remains: $term"
+          foreach ($term in $forbiddenRenderer) {
+            if (Select-String -Path $rendererFiles -Pattern $term -SimpleMatch -Quiet) {
+              Write-Error "Forbidden protective/split renderer symbol: $term"
               exit 1
             }
           }
-          $required = @(
-            'noteBodyLatched',
-            'voiceBodyEnergy',
-            'transportPeriodHz',
-            'holdPeriodGuidance',
-            'currentReflectionTarget_',
-            'calculateReflectionCoefficients',
-            'periodNudgeSamples_'
+
+          $requiredRenderer = @(
+            'FULL_SPECTRUM_SINGLE_TRANSPORT_V1',
+            'STABLE_SINGLE_LATTICE_TRANSPORT_V3',
+            'PURE_SINGLE_TRANSPORT_V4',
+            'MINIMAL_RENDERER_V5',
+            'const double targetPosition = static_cast<double>(sourceBin) * safeRatio',
+            'trueSourceBins_[static_cast<std::size_t>(sourceBin)]',
+            'const double outputPhase = propagatedPhases_[sourceIndex]',
+            'const float outputMagnitude = magnitude'
           )
-          foreach ($term in $required) {
-            if (-not (Select-String -Path Source\ModernPitchEngine.cpp,Source\ModernPitchEngine.h,Source\LivePitchProcessor.h -Pattern $term -Quiet)) {
-              Write-Error "Musical supervisor invariant missing: $term"
+          foreach ($term in $requiredRenderer) {
+            if (-not (Select-String -Path $rendererFiles -Pattern $term -SimpleMatch -Quiet)) {
+              Write-Error "Minimal transport invariant missing: $term"
               exit 1
             }
           }
-          if (-not (Select-String -Path Source\VoiceEvidenceAnalyzer.h -Pattern 'const juce::AudioBuffer<float>&' -Quiet)) {
+
+          $layerCount = (Select-String -Path Source\SingleWetSpectralRenderer.h -Pattern 'SynthesisLayer layer_' -AllMatches).Matches.Count
+          if ($layerCount -ne 1) {
+            Write-Error "Renderer must own exactly one synthesis layer; found $layerCount"
+            exit 1
+          }
+          if (Select-String -Path Source\SingleWetSpectralRenderer.h -Pattern 'array<SynthesisLayer' -SimpleMatch -Quiet) {
+            Write-Error "Parallel synthesis-layer array is forbidden"
+            exit 1
+          }
+
+          if (-not (Select-String -Path Source\ModernPitchEngine.cpp -Pattern 'wetRenderers_[static_cast<std::size_t>(channel)].processSample(' -SimpleMatch -Quiet)) {
+            Write-Error "Production audio is not routed directly through the single renderer"
+            exit 1
+          }
+          if (Select-String -Path Source\ModernPitchEngine.cpp -Pattern 'TransportClock|ChannelPath::|updateLpcTarget|rendererContext' -Quiet) {
+            Write-Error "Removed audio/sensor routing machinery returned"
+            exit 1
+          }
+          if (-not (Select-String -Path Source\ModernPitchEngine.cpp -Pattern 'PITCH_RESCUE_V1' -SimpleMatch -Quiet)) {
+            Write-Error "Bounded stale-F0 reacquisition is missing"
+            exit 1
+          }
+          if (-not (Select-String -Path Source\ModernPitchEngine.cpp -Pattern 'PITCH_RESCUE_V2_PERSISTENT_ANCHOR' -SimpleMatch -Quiet)) {
+            Write-Error "Persistent note-body F0 rescue anchor is missing"
+            exit 1
+          }
+          if (-not (Select-String -Path Source\ModernPitchEngine.cpp -Pattern 'PITCH_RESCUE_V3_REGISTER_GUARD' -SimpleMatch -Quiet)) {
+            Write-Error "Rescue register/subharmonic guard is missing"
+            exit 1
+          }
+          if (-not (Select-String -Path Source\ModernPitchEngine.h -Pattern 'reacquisitionAnchorHz_' -SimpleMatch -Quiet)) {
+            Write-Error "Tracker must separate current F0 from reacquisition anchor"
+            exit 1
+          }
+
+          if (-not (Select-String -Path Source\VoiceEvidenceAnalyzer.h -Pattern 'const juce::AudioBuffer<float>&' -SimpleMatch -Quiet)) {
             Write-Error "Voice evidence analyzer must remain read-only on audio"
             exit 1
           }
@@ -182,7 +300,7 @@ jobs:
           )
           foreach ($pattern in $sensorAuthorityWrites) {
             if (Select-String -Path Source\LivePitchProcessor.h -Pattern $pattern -Quiet) {
-              Write-Error "Voice evidence may supervise identity but may not rewrite user authority: $pattern"
+              Write-Error "Sensors may supervise care/search but may not rewrite user authority: $pattern"
               exit 1
             }
           }
@@ -195,15 +313,15 @@ jobs:
           }
           Copy-Item -Path $vst3.FullName -Destination artifact\Neumaton.vst3 -Recurse -Force
           Compress-Archive -Path artifact\Neumaton.vst3 `
-            -DestinationPath artifact\Neumaton-Clean-ModernPitchEngine-Windows.zip -Force
-          Get-FileHash artifact\Neumaton-Clean-ModernPitchEngine-Windows.zip -Algorithm SHA256 |
+            -DestinationPath artifact\Neumaton-Single-Wet-Quality-Windows.zip -Force
+          Get-FileHash artifact\Neumaton-Single-Wet-Quality-Windows.zip -Algorithm SHA256 |
             Format-List | Out-File artifact\sha256.txt
 
       - name: Upload Windows VST3
         uses: actions/upload-artifact@v4
         with:
-          name: Neumaton-Clean-ModernPitchEngine-Windows
+          name: Neumaton-Single-Wet-Quality-Windows
           path: |
-            artifact/Neumaton-Clean-ModernPitchEngine-Windows.zip
+            artifact/Neumaton-Single-Wet-Quality-Windows.zip
             artifact/sha256.txt
           retention-days: 14

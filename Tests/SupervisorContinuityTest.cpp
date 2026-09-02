@@ -80,11 +80,433 @@ int main()
     success &= check(secondAccepted,
                      "repeated_initial_register_is_committed");
 
+
+    auto rescueTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+    rescueTracker->prepare(48000.0);
+    rescueTracker->trackedPitchHz_ = 220.0f;
+    rescueTracker->trackedConfidence_ = 0.88f;
+    rescueTracker->trackedPeriodicity_ = 0.90f;
+    rescueTracker->trackedConsensus_ = 0.75f;
+    rescueTracker->trackedSupportCount_ = 2;
+    auto& rescueSlot = rescueTracker->halfRateCandidate_;
+    rescueSlot.candidate.valid = true;
+    rescueSlot.candidate.frequencyHz = static_cast<float>(220.0 * std::exp2(200.0 / 1200.0));
+    rescueSlot.candidate.confidence = 0.74f;
+    rescueSlot.candidate.periodicity = 0.82f;
+    rescueSlot.candidate.pathIndex = 1;
+    rescueSlot.candidate.ageInHops = 0;
+    rescueSlot.ageInHops = 0;
+
+    rescueTracker->setRescueMode(false);
+    auto normalSingleFamily = rescueTracker->decodeCandidate(false);
+    success &= check(!normalSingleFamily.valid,
+                     "single_family_does_not_override_normal_tracking");
+
+    rescueTracker->decoderBeam_.fill({});
+    rescueTracker->setRescueMode(true);
+    auto rescuedSingleFamily = rescueTracker->decodeCandidate(false);
+    success &= check(rescuedSingleFamily.valid
+                     && std::abs(1200.0 * std::log2(
+                         rescuedSingleFamily.candidate.frequencyHz / 220.0f)) > 140.0,
+                     "stale_f0_accepts_credible_single_family_rescue");
+
+
+    auto delayedRescueTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+    delayedRescueTracker->prepare(48000.0);
+    delayedRescueTracker->trackedPitchHz_ = 220.0f;
+    delayedRescueTracker->trackedConfidence_ = 0.88f;
+    delayedRescueTracker->trackedPeriodicity_ = 0.90f;
+    delayedRescueTracker->trackedConsensus_ = 0.75f;
+    delayedRescueTracker->trackedSupportCount_ = 2;
+    delayedRescueTracker->setReacquisitionAnchor(220.0f);
+    ModernPitchEngine::PitchObservation expiredObservation;
+    const int dropoutSamples = static_cast<int>(0.075 * 48000.0);
+    for (int sample = 0; sample < dropoutSamples; ++sample)
+        static_cast<void>(delayedRescueTracker->processSample(0.0f, expiredObservation));
+    success &= check(delayedRescueTracker->trackedPitchHz_ == 0.0f
+                     && std::abs(delayedRescueTracker->reacquisitionAnchorHz_ - 220.0f) < 0.01f,
+                     "current_f0_can_expire_without_erasing_note_body_anchor");
+
+    auto& delayedSlot = delayedRescueTracker->halfRateCandidate_;
+    delayedSlot.candidate.valid = true;
+    delayedSlot.candidate.frequencyHz = static_cast<float>(220.0 * std::exp2(200.0 / 1200.0));
+    delayedSlot.candidate.confidence = 0.74f;
+    delayedSlot.candidate.periodicity = 0.82f;
+    delayedSlot.candidate.pathIndex = 1;
+    delayedSlot.candidate.ageInHops = 0;
+    delayedSlot.ageInHops = 0;
+    delayedRescueTracker->decoderBeam_.fill({});
+    delayedRescueTracker->setRescueMode(false);
+    const auto delayedNormalDecision = delayedRescueTracker->decodeCandidate(false);
+    success &= check(!delayedNormalDecision.valid,
+                     "expired_tracker_anchor_does_not_weaken_normal_tracking");
+
+    delayedRescueTracker->decoderBeam_.fill({});
+    delayedRescueTracker->setRescueMode(true);
+    const auto delayedRescueDecision = delayedRescueTracker->decodeCandidate(false);
+    success &= check(delayedRescueDecision.valid
+                     && delayedRescueTracker->trackedPitchHz_ == 0.0f,
+                     "rescue_uses_persistent_anchor_after_sixty_ms_detector_hole");
+    delayedRescueTracker->clearReacquisitionAnchor();
+    delayedRescueTracker->decoderBeam_.fill({});
+    const auto noBodyAnchorDecision = delayedRescueTracker->decodeCandidate(false);
+    success &= check(!noBodyAnchorDecision.valid,
+                     "released_note_body_removes_rescue_authority");
+
+
+    // A strong low-period alias must never be allowed to restart the register
+    // just because trackedPitchHz_ expired.  This was the real-audio failure:
+    // acquire became shorter, but a subharmonic could be promoted to F0.
+    auto subharmonicTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+    subharmonicTracker->prepare(48000.0);
+    subharmonicTracker->setReacquisitionAnchor(220.0f);
+    subharmonicTracker->setRescueMode(true);
+    ModernPitchEngine::MultiRatePitchTracker::DecoderDecision subharmonicDecision;
+    subharmonicDecision.valid = true;
+    subharmonicDecision.candidate.valid = true;
+    subharmonicDecision.candidate.frequencyHz = 110.0f;
+    subharmonicDecision.candidate.confidence = 0.99f;
+    subharmonicDecision.candidate.periodicity = 0.99f;
+    subharmonicDecision.consensus = 0.94f;
+    subharmonicDecision.supportCount = 4;
+    subharmonicDecision.directSupportCount = 4;
+    subharmonicDecision.freshSupportMask = 0x0f;
+    const bool subharmonicCommitted = subharmonicTracker->confirmOctaveTransition(
+        subharmonicDecision, false);
+    success &= check(!subharmonicCommitted && !subharmonicDecision.valid,
+                     "rescue_subharmonic_cannot_restart_register");
+
+    // Even high-confidence raw evidence outside the anchor window cannot use
+    // sufficientInitialEvidence to bypass rescue continuity.
+    auto bypassTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+    bypassTracker->prepare(48000.0);
+    bypassTracker->setReacquisitionAnchor(220.0f);
+    bypassTracker->setRescueMode(true);
+    auto& bypassSlot = bypassTracker->halfRateCandidate_;
+    bypassSlot.candidate.valid = true;
+    bypassSlot.candidate.frequencyHz = 130.0f;
+    bypassSlot.candidate.confidence = 0.99f;
+    bypassSlot.candidate.periodicity = 0.96f;
+    bypassSlot.candidate.pathIndex = 1;
+    bypassSlot.candidate.ageInHops = 0;
+    bypassSlot.ageInHops = 0;
+    const auto bypassDecision = bypassTracker->decodeCandidate(false);
+    success &= check(!bypassDecision.valid
+                     || ModernPitchEngine::MultiRatePitchTracker::centsDistance(
+                         bypassDecision.candidate.frequencyHz, 220.0f) <= 360.0f,
+                     "strong_subharmonic_cannot_bypass_rescue_anchor");
+
+
+    // A phonetic/raw onset is not a musical note transition.  A wide rescue
+    // challenger must therefore persist across several fresh observations
+    // before it can replace the latched register.  This models a voiced word
+    // onset such as /j/ in "Your": transient periodic structure may be strong,
+    // but one or two hops must never become audible pitch control.
+    auto phoneticTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+    phoneticTracker->prepare(48000.0);
+    phoneticTracker->setReacquisitionAnchor(220.0f);
+    phoneticTracker->setRescueMode(true);
+    auto makeWideChallenger = []
+    {
+        ModernPitchEngine::MultiRatePitchTracker::DecoderDecision d;
+        d.valid = true;
+        d.candidate.valid = true;
+        d.candidate.frequencyHz = 165.0f; // ~-498 cents: plausible alias / perfect-fourth challenger
+        d.candidate.confidence = 0.97f;
+        d.candidate.periodicity = 0.93f;
+        d.consensus = 0.86f;
+        d.supportCount = 4;
+        d.directSupportCount = 3;
+        d.freshSupportMask = 0x0f;
+        return d;
+    };
+    bool phoneticBurstCommitted = false;
+    for (int hop = 0; hop < 4; ++hop)
+    {
+        auto d = makeWideChallenger();
+        phoneticBurstCommitted = phoneticTracker->confirmOctaveTransition(d, true)
+            || phoneticBurstCommitted;
+    }
+    success &= check(!phoneticBurstCommitted,
+                     "raw_phonetic_onset_cannot_immediately_authorize_wide_rescue");
+
+    // A genuine large melodic move is still recoverable: strong direct
+    // evidence that persists beyond the transient window eventually owns the
+    // new register even without relying on raw onsetPending.
+    phoneticTracker->pendingOctaveCount_ = 0;
+    phoneticTracker->pendingOctaveFrequencyHz_ = 0.0f;
+    bool persistentWideCommitted = false;
+    for (int hop = 0; hop < 8; ++hop)
+    {
+        auto d = makeWideChallenger();
+        persistentWideCommitted = phoneticTracker->confirmOctaveTransition(d, false);
+    }
+    success &= check(persistentWideCommitted,
+                     "persistent_multi_evidence_wide_rescue_can_commit_real_note_change");
+
+    // Rap/rough-speech regression: even deliberately aperiodic non-zero audio
+    // must publish authoritative voice presence and must keep detector paths
+    // alive instead of collapsing to 0/4 before the supervisor can search F0.
+    auto rapTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+    rapTracker->prepare(48000.0);
+    rapTracker->setRange(45.0f, 900.0f);
+    rapTracker->setSensitivity(0.70f);
+    std::uint32_t rapNoise = 0x12345678u;
+    int rapPresenceHops = 0;
+    int rapMaxDetectorSupport = 0;
+    int rapMinDetectorSupport = 4;
+    int rapPitchlessPresentHops = 0;
+    float rapMinimumVoicing = 1.0f;
+    ModernPitchEngine::PitchObservation rapObservation;
+    for (int sample = 0; sample < 12000; ++sample)
+    {
+        rapNoise = 1664525u * rapNoise + 1013904223u;
+        const float noise = (static_cast<float>((rapNoise >> 8) & 0x00ffffffu)
+            / static_cast<float>(0x007fffffu) - 1.0f) * 0.085f;
+        const float syllabic = (sample % 1100) < 760 ? 1.0f : 0.22f;
+        if (rapTracker->processSample(noise * syllabic, rapObservation)
+            && sample > 1400 && rapObservation.audioPresent)
+        {
+            ++rapPresenceHops;
+            rapMaxDetectorSupport = std::max(rapMaxDetectorSupport,
+                                             rapObservation.detectorSupport);
+            rapMinDetectorSupport = std::min(rapMinDetectorSupport,
+                                             rapObservation.detectorSupport);
+            rapMinimumVoicing = std::min(rapMinimumVoicing,
+                                         rapObservation.voicing);
+            if (!rapObservation.valid || rapObservation.frequencyHz <= 0.0f)
+                ++rapPitchlessPresentHops;
+        }
+    }
+    success &= check(rapPresenceHops > 20 && rapMinimumVoicing > 0.99f,
+                     "nonzero_audio_cannot_be_unvoiced");
+    success &= check(rapMaxDetectorSupport > 0,
+                     "nonzero_audio_keeps_detector_paths_alive");
+    success &= check(rapPresenceHops > 20 && rapMinDetectorSupport > 0,
+                     "nonzero_audio_never_reports_zero_detector_paths");
+    success &= check(rapPresenceHops > 20 && rapPitchlessPresentHops == 0,
+                     "nonzero_audio_never_reports_pitchless_stable");
+
+    // Zero consensus is explicitly allowed to drive correction. A single weak
+    // path is still better than pitchless "stable": presence must publish an
+    // F0 and the supervisor must turn that F0 into a real target/correction.
+    auto zeroConsensusTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+    zeroConsensusTracker->prepare(48000.0);
+    zeroConsensusTracker->presenceMode_ = true;
+    auto& zeroConsensusSlot = zeroConsensusTracker->halfRateCandidate_;
+    zeroConsensusSlot.candidate.valid = true;
+    zeroConsensusSlot.candidate.frequencyHz = 452.0f;
+    zeroConsensusSlot.candidate.confidence = 0.01f;
+    zeroConsensusSlot.candidate.periodicity = 0.01f;
+    zeroConsensusSlot.candidate.pathIndex = 1;
+    zeroConsensusSlot.candidate.ageInHops = 0;
+    zeroConsensusSlot.ageInHops = 0;
+    zeroConsensusTracker->decoderBeam_.fill({});
+    const auto zeroConsensusDecision = zeroConsensusTracker->decodeCandidate(false);
+    success &= check(zeroConsensusDecision.valid
+                     && zeroConsensusDecision.candidate.frequencyHz > 0.0f
+                     && std::abs(zeroConsensusDecision.consensus) < 1.0e-7f,
+                     "zero_consensus_presence_fallback_yields_valid_f0");
+
+    auto firstPresenceLock = zeroConsensusDecision;
+    const bool firstPresenceAccepted = zeroConsensusTracker->confirmOctaveTransition(
+        firstPresenceLock, false);
+    success &= check(firstPresenceAccepted && firstPresenceLock.valid,
+                     "presence_first_lock_does_not_wait_for_consensus");
+
     auto engine = std::make_unique<ModernPitchEngine>();
     engine->prepare(48000.0, 256, 1, ModernPitchEngine::LatencyMode::live);
     ModernPitchEngine::ScaleQuantizer quantizer;
     quantizer.reset();
     ModernPitchEngine::Parameters parameters;
+    ModernPitchEngine::ScaleQuantizer zeroConsensusQuantizer;
+    zeroConsensusQuantizer.reset();
+    const double zeroConsensusUnison = 1.0;
+    zeroConsensusQuantizer.setScale(&zeroConsensusUnison, 1, 440.0);
+    ModernPitchEngine::CorrectionState zeroConsensusState;
+    ModernPitchEngine::PitchObservation zeroConsensusObservation;
+    zeroConsensusObservation.audioPresent = true;
+    zeroConsensusObservation.valid = true;
+    zeroConsensusObservation.frequencyHz = 452.0f;
+    zeroConsensusObservation.voicing = 1.0f;
+    zeroConsensusObservation.confidence = 0.01f;
+    zeroConsensusObservation.periodicity = 0.01f;
+    zeroConsensusObservation.consensus = 0.0f;
+    zeroConsensusObservation.detectorSupport = 1;
+    engine->updateCorrectionState(zeroConsensusState, zeroConsensusQuantizer,
+                                  zeroConsensusObservation, parameters);
+    success &= check(zeroConsensusState.targetValid
+                     && std::abs(zeroConsensusState.desiredCents) > 5.0,
+                     "zero_consensus_valid_f0_drives_real_correction");
+
+    ModernPitchEngine::PitchObservation meterConsensusObservation;
+    meterConsensusObservation.valid = true;
+    meterConsensusObservation.audioPresent = true;
+    meterConsensusObservation.frequencyHz = 452.0f;
+    meterConsensusObservation.confidence = 0.12f;
+    meterConsensusObservation.periodicity = 0.73f;
+    meterConsensusObservation.voicing = 1.0f;
+    meterConsensusObservation.consensus = 0.0f;
+    ModernPitchEngine::CorrectionState meterConsensusState;
+    meterConsensusState.targetValid = true;
+    meterConsensusState.targetLog2 = std::log2(440.0);
+    CreativeTempo::Metering meterTempo;
+    engine->publishMetering(meterConsensusObservation, meterConsensusState,
+                            -37.0, meterTempo);
+    const auto zeroConsensusMeter = engine->getMetering();
+    success &= check(std::abs(zeroConsensusMeter.consensus) < 1.0e-7f
+                     && zeroConsensusMeter.harmonicity > 0.70f,
+                     "meter_consensus_is_real_detector_consensus");
+    success &= check(std::abs(zeroConsensusMeter.correctionCents + 37.0f) < 0.01f,
+                     "zero_consensus_meter_can_report_active_correction");
+
+    // Even if the rich analyzer describes the current block as breath/noise,
+    // explicit input presence owns the voice state. Detector uncertainty is
+    // allowed to affect F0 search, never voiced/unvoiced authority.
+    ModernPitchEngine::ScaleQuantizer presenceQuantizer;
+    presenceQuantizer.reset();
+    ModernPitchEngine::Parameters presenceParameters;
+    setBreathEvidence(presenceParameters);
+    ModernPitchEngine::CorrectionState presenceState;
+    ModernPitchEngine::PitchObservation presentWithoutF0;
+    presentWithoutF0.audioPresent = true;
+    presentWithoutF0.voicing = 1.0f;
+    engine->updateCorrectionState(presenceState, presenceQuantizer,
+                                  presentWithoutF0, presenceParameters);
+    success &= check(presenceState.noteBodyLatched
+                     && !presenceState.targetValid
+                     && presenceState.trackingState == ModernPitchEngine::TrackingState::acquire,
+                     "presence_without_f0_cannot_claim_stable_without_target");
+
+    // SOUND_EQUALS_CORRECTION_V1 regression: a stereo vocal that is
+    // exactly anti-phase must still create a target and audible correction.
+    // The old linked L+R detector input cancelled this signal to zero forever.
+    ModernPitchEngine antiphaseEngine;
+    antiphaseEngine.prepare(48000.0, 256, 2, ModernPitchEngine::LatencyMode::live);
+    ModernPitchEngine::Parameters antiphaseParameters;
+    antiphaseParameters.amount = 1.0f;
+    antiphaseParameters.retuneTimeMs = 0.0f;
+    antiphaseParameters.humanize = 0.0f;
+    antiphaseParameters.preserveVibrato = 0.0f;
+    antiphaseParameters.minimumPitchHz = 70.0f;
+    antiphaseParameters.maximumPitchHz = 1000.0f;
+    antiphaseParameters.stereoMode = ModernPitchEngine::StereoMode::linkedMidSide;
+    const double authorityUnison = 1.0;
+    double antiphasePhase = 0.0;
+    constexpr double antiphaseFrequency = 452.0;
+    juce::AudioBuffer<float> antiphaseBlock(2, 256);
+    for (int blockIndex = 0; blockIndex < 220; ++blockIndex)
+    {
+        auto* left = antiphaseBlock.getWritePointer(0);
+        auto* right = antiphaseBlock.getWritePointer(1);
+        for (int sample = 0; sample < antiphaseBlock.getNumSamples(); ++sample)
+        {
+            antiphasePhase += 2.0 * 3.14159265358979323846
+                * antiphaseFrequency / 48000.0;
+            if (antiphasePhase >= 2.0 * 3.14159265358979323846)
+                antiphasePhase -= 2.0 * 3.14159265358979323846;
+            const float value = static_cast<float>(0.28 * std::sin(antiphasePhase));
+            left[sample] = value;
+            right[sample] = -value;
+        }
+        antiphaseEngine.process(antiphaseBlock, &authorityUnison, 1, 440.0,
+                                antiphaseParameters);
+    }
+    const auto antiphaseMeter = antiphaseEngine.getMetering();
+    success &= check(antiphaseMeter.detectedPitchHz > 430.0f
+                     && antiphaseMeter.detectedPitchHz < 470.0f
+                     && antiphaseMeter.targetPitchHz > 430.0f
+                     && std::abs(antiphaseMeter.correctionCents) > 5.0f,
+                     "sound_equals_correction_antiphase_stereo");
+
+    // A stale rescue anchor is never allowed to veto a new live F0. This is the
+    // sung-note failure mode that could otherwise hold an implausible register
+    // for seconds after pitch reacquisition.
+    auto liveRescueTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+    liveRescueTracker->prepare(48000.0);
+    liveRescueTracker->presenceMode_ = true;
+    liveRescueTracker->setRescueMode(true);
+    liveRescueTracker->setReacquisitionAnchor(220.0f);
+    ModernPitchEngine::MultiRatePitchTracker::DecoderDecision liveRescueDecision;
+    liveRescueDecision.valid = true;
+    liveRescueDecision.candidate.valid = true;
+    liveRescueDecision.candidate.frequencyHz = 440.0f;
+    liveRescueDecision.candidate.confidence = 0.18f;
+    liveRescueDecision.candidate.periodicity = 0.24f;
+    liveRescueDecision.consensus = 0.0f;
+    liveRescueDecision.supportCount = 1;
+    liveRescueDecision.directSupportCount = 1;
+    liveRescueDecision.freshSupportMask = 0x01;
+    const bool liveRescueAccepted = liveRescueTracker->confirmOctaveTransition(
+        liveRescueDecision, false);
+    success &= check(liveRescueAccepted && liveRescueDecision.valid
+                     && std::abs(liveRescueDecision.candidate.frequencyHz - 440.0f) < 0.1f,
+                     "live_presence_replaces_stale_rescue_register_immediately");
+
+    // Acquire is permitted to describe detector search, but it must never mute
+    // an already acquired correction. Presence plus a temporary F0 dropout holds
+    // the exact destination until the next live F0 arrives.
+    ModernPitchEngine::CorrectionState heldCorrectionState;
+    heldCorrectionState.targetValid = true;
+    heldCorrectionState.targetLog2 = std::log2(440.0);
+    heldCorrectionState.desiredCents = -42.0;
+    heldCorrectionState.currentCents = -42.0;
+    heldCorrectionState.noteBodyLatched = true;
+    heldCorrectionState.trackingState = ModernPitchEngine::TrackingState::stable;
+    ModernPitchEngine::PitchObservation presentDropout;
+    presentDropout.audioPresent = true;
+    presentDropout.voicing = 1.0f;
+    engine->updateCorrectionState(heldCorrectionState, presenceQuantizer,
+                                  presentDropout, presenceParameters);
+    success &= check(heldCorrectionState.trackingState
+                         == ModernPitchEngine::TrackingState::acquire
+                     && heldCorrectionState.targetValid
+                     && std::abs(heldCorrectionState.desiredCents + 42.0) < 1.0e-9,
+                     "acquire_search_never_mutes_existing_correction");
+
+    // SOUND_EQUALS_CORRECTION_V2 regression: reproduce the audible
+    // intermittent bypass. The supervisor starts one octave stale, then a live
+    // F0 arrives around 452 Hz with zero consensus and almost no confidence.
+    // The old octave wrap converted the stale -1200-ish-cent relation to 0.
+    ModernPitchEngine::ScaleQuantizer staleRegisterQuantizer;
+    staleRegisterQuantizer.reset();
+    const double staleRegisterUnison = 1.0;
+    staleRegisterQuantizer.setScale(&staleRegisterUnison, 1, 440.0);
+    ModernPitchEngine::Parameters staleRegisterParameters;
+    staleRegisterParameters.amount = 1.0f;
+    staleRegisterParameters.humanize = 0.0f;
+    staleRegisterParameters.preserveVibrato = 0.0f;
+    staleRegisterParameters.maximumCorrectionSemitones = 12.0f;
+    ModernPitchEngine::CorrectionState staleRegisterState;
+    staleRegisterState.pitchCentreValid = true;
+    staleRegisterState.pitchCentreLog2 = std::log2(220.0);
+    staleRegisterState.targetValid = true;
+    staleRegisterState.targetLog2 = std::log2(220.0);
+    staleRegisterState.transportPeriodHz = 220.0;
+    staleRegisterState.noteBodyLatched = true;
+    staleRegisterState.noteBodyConfidence = 1.0f;
+    staleRegisterState.trackingState = ModernPitchEngine::TrackingState::stable;
+    ModernPitchEngine::PitchObservation zeroConsensusRegisterJump;
+    zeroConsensusRegisterJump.valid = true;
+    zeroConsensusRegisterJump.audioPresent = true;
+    zeroConsensusRegisterJump.frequencyHz = 452.0f;
+    zeroConsensusRegisterJump.voicing = 1.0f;
+    zeroConsensusRegisterJump.confidence = 0.01f;
+    zeroConsensusRegisterJump.periodicity = 0.05f;
+    zeroConsensusRegisterJump.consensus = 0.0f;
+    zeroConsensusRegisterJump.detectorSupport = 1;
+    engine->updateCorrectionState(staleRegisterState,
+                                  staleRegisterQuantizer,
+                                  zeroConsensusRegisterJump,
+                                  staleRegisterParameters);
+    const double staleRegisterTargetHz = std::exp2(staleRegisterState.targetLog2);
+    success &= check(staleRegisterTargetHz > 430.0
+                     && staleRegisterTargetHz < 450.0
+                     && std::abs(staleRegisterState.desiredCents) > 5.0
+                     && std::abs((staleRegisterState.pitchCentreLog2
+                                  - std::log2(452.0)) * 1200.0) < 0.1,
+                     "zero_consensus_stale_register_never_collapses_to_zero");
+
     parameters.transientProtection = 1.0f;
     parameters.humanize = 0.65f;
     setBodyEvidence(parameters);
@@ -99,23 +521,71 @@ int main()
     dropoutState.transportPeriodHz = 220.0;
     ModernPitchEngine::PitchObservation invalid;
 
-    // More than 200 ms without F0 is still the same sung note when the body
-    // sensors remain positive. Correction authority and period identity hold.
+    // More than 70 ms without F0 is still the same sung note, but it is no
+    // longer allowed to report stable pitch. Body and correction hold while
+    // the detector returns to acquire/search.
     for (int i = 0; i < 180; ++i)
     {
         engine->updateCorrectionState(dropoutState, quantizer, invalid, parameters);
         for (int s = 0; s < ModernPitchEngine::MultiRatePitchTracker::hopSize(); ++s)
             static_cast<void>(engine->advanceCorrection(dropoutState));
     }
-    success &= check(dropoutState.trackingState == ModernPitchEngine::TrackingState::stable
+    success &= check(dropoutState.trackingState == ModernPitchEngine::TrackingState::acquire
                      && dropoutState.noteBodyLatched
+                     && dropoutState.pitchStaleSamples > 0
                      && std::abs(dropoutState.desiredCents - 100.0) < 1.0e-9,
-                     "long_voiced_note_survives_pitch_dropouts");
+                     "stale_pitch_reacquires_without_reducing_correction");
     success &= check(std::abs(dropoutState.transportPeriodHz - 220.0) < 1.0e-9,
                      "pitch_dropout_keeps_latched_transport_period");
 
-    // Acquire is a musical state, not an F0-validity state. Once a target has
-    // been acquired, sustained body evidence can settle it even through a hole.
+
+    // Reproduces the real failure mode: normal-level sung body survives while
+    // the primary F0 is missing, then a recovered F0 has moved musically. The
+    // correction must stop using the stale anchor and return to stable tracking.
+    ModernPitchEngine::ScaleQuantizer recoveryQuantizer;
+    recoveryQuantizer.reset();
+    const double recoveryUnison = 1.0;
+    recoveryQuantizer.setScale(&recoveryUnison, 1, 440.0);
+    ModernPitchEngine::CorrectionState recoveryState;
+    auto recoveryObservation = strongPitch(220.0f);
+    for (int hop = 0; hop < 16; ++hop)
+    {
+        engine->updateCorrectionState(recoveryState, recoveryQuantizer,
+                                      recoveryObservation, parameters);
+        for (int s = 0; s < ModernPitchEngine::MultiRatePitchTracker::hopSize(); ++s)
+            static_cast<void>(engine->advanceCorrection(recoveryState));
+    }
+    for (int hop = 0; hop < 130; ++hop)
+    {
+        engine->updateCorrectionState(recoveryState, recoveryQuantizer,
+                                      invalid, parameters);
+        for (int s = 0; s < ModernPitchEngine::MultiRatePitchTracker::hopSize(); ++s)
+            static_cast<void>(engine->advanceCorrection(recoveryState));
+    }
+    const double staleCentre = recoveryState.pitchCentreLog2;
+    const double staleDesired = recoveryState.desiredCents;
+    recoveryObservation = strongPitch(static_cast<float>(220.0
+        * std::exp2(200.0 / 1200.0)));
+    for (int hop = 0; hop < 24; ++hop)
+    {
+        engine->updateCorrectionState(recoveryState, recoveryQuantizer,
+                                      recoveryObservation, parameters);
+        for (int s = 0; s < ModernPitchEngine::MultiRatePitchTracker::hopSize(); ++s)
+            static_cast<void>(engine->advanceCorrection(recoveryState));
+    }
+    const double recoveredCentreMove = std::abs(
+        (recoveryState.pitchCentreLog2 - staleCentre) * 1200.0);
+    std::cerr << "recovered_pitch_centre_move_cents=" << recoveredCentreMove << '\n';
+    success &= check(recoveryState.pitchStaleSamples == 0
+                     && recoveryState.noteBodyLatched
+                     && recoveryState.trackingState != ModernPitchEngine::TrackingState::acquire,
+                     "rescued_f0_refreshes_anchor_and_exits_acquire");
+    success &= check(recoveredCentreMove > 80.0
+                     && std::abs(recoveryState.desiredCents - staleDesired) > 40.0,
+                     "rescued_f0_retargets_instead_of_freezing_old_correction");
+
+    // Acquire persists while pitch is stale; positive body evidence must not
+    // falsely promote a five-second detector hole back to stable.
     ModernPitchEngine::CorrectionState acquireState = dropoutState;
     acquireState.trackingState = ModernPitchEngine::TrackingState::acquire;
     acquireState.stateAgeSamples = 0;
@@ -126,8 +596,10 @@ int main()
         for (int s = 0; s < ModernPitchEngine::MultiRatePitchTracker::hopSize(); ++s)
             static_cast<void>(engine->advanceCorrection(acquireState));
     }
-    success &= check(acquireState.trackingState == ModernPitchEngine::TrackingState::stable,
-                     "latched_body_does_not_stick_in_acquire_during_f0_hole");
+    success &= check(acquireState.trackingState == ModernPitchEngine::TrackingState::acquire
+                     && acquireState.noteBodyLatched
+                     && std::abs(acquireState.desiredCents - 100.0) < 1.0e-9,
+                     "stale_f0_cannot_masquerade_as_stable_note");
 
     // Positive breath evidence releases the note even if the tracker happens to
     // produce a strong spurious F0 on the noise.
@@ -205,40 +677,6 @@ int main()
     success &= check(std::abs(boundedTransition.velocityCentsPerSecond) > 0.02,
                      "stable_state_does_not_require_zero_controller_velocity");
 
-    setBodyEvidence(parameters);
-    const auto syncObservation = strongPitch();
-    ModernPitchEngine::CorrectionState syncState;
-    syncState.targetValid = true;
-    syncState.noteBodyLatched = true;
-    syncState.noteBodyConfidence = 0.9f;
-    syncState.transportPeriodHz = 220.0;
-    syncState.trackingState = ModernPitchEngine::TrackingState::transition;
-    const float transitionSync = engine->transportSyncStrength(syncObservation, syncState, parameters);
-    syncState.trackingState = ModernPitchEngine::TrackingState::stable;
-    const float stableSync = engine->transportSyncStrength(syncObservation, syncState, parameters);
-    std::cerr << "transition_period_sync=" << transitionSync << '\n';
-    std::cerr << "stable_period_sync=" << stableSync << '\n';
-    success &= check(transitionSync < 0.0f && stableSync > 0.25f,
-                     "nonstable_note_holds_period_guidance_instead_of_ramping_it");
-
-    ModernPitchEngine::TransportClock guidanceClock;
-    guidanceClock.prepare(48000.0, 256);
-    const double ratio = std::exp2(180.0 / 1200.0);
-    const double period = 48000.0 / 220.0;
-    for (int i = 0; i < 6000; ++i)
-        static_cast<void>(guidanceClock.next(ratio, period, 1.0f));
-    const double heldNudge = guidanceClock.periodNudgeSamples_;
-    const float heldAmount = guidanceClock.periodSyncAmount_;
-    for (int i = 0; i < 2400; ++i)
-        static_cast<void>(guidanceClock.next(ratio, period * 0.75, -1.0f));
-    success &= check(std::abs(guidanceClock.periodNudgeSamples_ - heldNudge) < 1.0e-12
-                     && std::abs(guidanceClock.periodSyncAmount_ - heldAmount) < 1.0e-7f,
-                     "nonstable_state_cannot_move_period_guidance_memory");
-    const auto unityHeld = guidanceClock.next(1.0, period, -1.0f);
-    success &= check(std::abs(unityHeld.delayA - 256.0) < 1.0e-9
-                     && std::abs(unityHeld.delayB - 256.0) < 1.0e-9,
-                     "held_period_guidance_still_collapses_at_unity");
-
     // A long vibrato around one quantized note is stable musical content, not
     // an endless note transition.
     std::array<double, 12> chromatic {};
@@ -252,6 +690,9 @@ int main()
     setBodyEvidence(vibratoParameters);
     vibratoParameters.humanize = 0.75f;
     bool leftMusicalBody = false;
+    bool vibratoTargetCaptured = false;
+    bool vibratoChangedTargetIdentity = false;
+    double vibratoTargetReference = 0.0;
     for (int hop = 0; hop < 1800; ++hop)
     {
         const double vibratoCents = 34.0 * std::sin(2.0 * 3.14159265358979323846
@@ -268,11 +709,25 @@ int main()
         {
             leftMusicalBody = true;
         }
+        if (hop > 100 && vibratoState.targetValid)
+        {
+            if (!vibratoTargetCaptured)
+            {
+                vibratoTargetReference = vibratoState.targetLog2;
+                vibratoTargetCaptured = true;
+            }
+            else if (std::abs(vibratoState.targetLog2 - vibratoTargetReference) * 1200.0 > 0.5)
+            {
+                vibratoChangedTargetIdentity = true;
+            }
+        }
     }
     success &= check(!leftMusicalBody
                      && vibratoState.noteBodyLatched
                      && vibratoState.trackingState == ModernPitchEngine::TrackingState::stable,
                      "long_vibrato_is_classified_as_stable_note_body");
+    success &= check(vibratoTargetCaptured && !vibratoChangedTargetIdentity,
+                     "vibrato_does_not_become_a_note_identity_change");
 
     // Humanize must not create a 12-TET-sized note-body tolerance on dense
     // microtonal material. With zero lock hysteresis a sustained 15-cent move in
@@ -313,6 +768,231 @@ int main()
     success &= check(denseTargetMove > 20.0,
                      "humanize_respects_dense_microtonal_degree_spacing");
 
+    // MICROTONAL_HARD_LOCK_V3: even with the GUI hysteresis at its
+    // maximum, a 48-EDO target selector must not be allowed to hold the old
+    // degree by a musically significant portion of the 25-cent step.
+    ModernPitchEngine::Parameters hardDenseParameters = denseParameters;
+    hardDenseParameters.scaleLock = true;
+    hardDenseParameters.hardLockActive = true;
+    hardDenseParameters.lockHysteresis = 80.0f;
+    hardDenseParameters.lockStrictness = 1.0f;
+    hardDenseParameters.humanize = 1.0f;
+    hardDenseParameters.vibratoPreserve = 1.0f;
+    auto hardDenseObservation = strongPitch(440.0f);
+    const float denseEffectiveHysteresis = engine->adaptiveHysteresis(
+        hardDenseParameters, denseQuantizer, hardDenseObservation);
+    std::cerr << "dense_effective_hysteresis_cents="
+              << denseEffectiveHysteresis << '\n';
+    success &= check(denseEffectiveHysteresis <= 3.01f,
+                     "dense_scale_lock_hysteresis_is_degree_safe");
+
+    // At maximum Humanize + Vibrato Preserve, a 10-cent input deviation on
+    // 48-EDO must still request enough correction to leave <=3 cents residual
+    // under strict hard lock. This is the steady-state pitch contract; renderer
+    // and trajectory tests cover convergence separately.
+    ModernPitchEngine::ScaleQuantizer hardDenseResidualQuantizer;
+    hardDenseResidualQuantizer.reset();
+    hardDenseResidualQuantizer.setScale(
+        denseScale.data(), static_cast<int>(denseScale.size()), 440.0);
+    ModernPitchEngine::CorrectionState hardDenseState;
+    auto hardDenseOffset = strongPitch(static_cast<float>(
+        440.0 * std::exp2(10.0 / 1200.0)));
+    hardDenseOffset.audioPresent = true;
+    engine->updateCorrectionState(hardDenseState, hardDenseResidualQuantizer,
+                                  hardDenseOffset, hardDenseParameters);
+    const double hardDenseObservedCents = 1200.0 * std::log2(
+        static_cast<double>(hardDenseOffset.frequencyHz) / 440.0);
+    const double hardDenseResidualCents = std::abs(
+        hardDenseObservedCents + hardDenseState.desiredCents);
+    std::cerr << "dense_scale_lock_residual_budget_cents="
+              << hardDenseResidualCents << '\n';
+    success &= check(hardDenseResidualCents <= 3.05,
+                     "dense_scale_lock_residual_budget_is_degree_safe");
+
+    // The target-change path must remain inside Scale Lock's own fast range;
+    // the general 35-40 ms transition control may not stretch it again.
+    hardDenseParameters.retuneTimeMs = 500.0f;
+    hardDenseParameters.transitionTimeMs = 80.0f;
+    hardDenseParameters.tempo.mode = CreativeTempo::Mode::off;
+    const double denseScaleLockResponse = engine->responseTimeMs(
+        hardDenseParameters, true, 25.0);
+    std::cerr << "dense_scale_lock_response_ms="
+              << denseScaleLockResponse << '\n';
+    success &= check(denseScaleLockResponse <= 3.001,
+                     "scale_lock_target_change_stays_in_live_speed_budget");
+
+    // ABSOLUTE_SCALE_LOCK_V4: the rigid endpoint is a mathematical
+    // reference lock, not a tolerance band.  The selected degree may still be
+    // chosen with hysteresis, but once chosen the requested steady-state pitch
+    // must contain zero voluntary residual.
+    ModernPitchEngine::Parameters absoluteLockParameters;
+    setBodyEvidence(absoluteLockParameters);
+    absoluteLockParameters.scaleLock = true;
+    absoluteLockParameters.hardLockActive = true;
+    absoluteLockParameters.lockStrictness = 1.0f;
+    absoluteLockParameters.lockHysteresis = 80.0f;
+    absoluteLockParameters.amount = 1.0f;
+    absoluteLockParameters.retuneTimeMs = 0.0f;
+    absoluteLockParameters.humanize = 0.0f;
+    absoluteLockParameters.vibratoPreserve = 0.0f;
+    absoluteLockParameters.preserveVibrato = 0.0f;
+    absoluteLockParameters.maximumCorrectionSemitones = 24.0f;
+
+    const auto checkAbsoluteScaleLock = [&](int edo,
+                                            double sourceOffsetCents,
+                                            float consensus,
+                                            const char* name)
+    {
+        std::vector<double> ratios(static_cast<std::size_t>(edo));
+        for (int degree = 0; degree < edo; ++degree)
+            ratios[static_cast<std::size_t>(degree)] = std::exp2(
+                static_cast<double>(degree) / static_cast<double>(edo));
+
+        ModernPitchEngine::ScaleQuantizer exactQuantizer;
+        exactQuantizer.reset();
+        exactQuantizer.setScale(ratios.data(), edo, 440.0);
+        ModernPitchEngine::CorrectionState exactState;
+        auto exactObservation = strongPitch(static_cast<float>(
+            440.0 * std::exp2(sourceOffsetCents / 1200.0)));
+        exactObservation.audioPresent = true;
+        exactObservation.consensus = consensus;
+        if (consensus <= 0.0f)
+        {
+            exactObservation.confidence = 0.01f;
+            exactObservation.periodicity = 0.05f;
+        }
+
+        engine->updateCorrectionState(exactState, exactQuantizer,
+                                      exactObservation, absoluteLockParameters);
+        const double observedLog2 = std::log2(
+            static_cast<double>(exactObservation.frequencyHz));
+        const double requestedTargetError =
+            (exactState.targetLog2 - observedLog2) * 1200.0;
+        const double destinationResidual = std::abs(
+            (observedLog2 + exactState.desiredCents / 1200.0
+             - exactState.targetLog2) * 1200.0);
+        std::cerr << name << "_destination_residual_cents="
+                  << destinationResidual << '\n';
+
+        bool localSuccess = exactState.targetValid
+            && std::abs(exactState.desiredCents - requestedTargetError) < 1.0e-9
+            && destinationResidual < 1.0e-9;
+
+        // Verify the single correction trajectory also reaches the exact
+        // destination rather than merely requesting it.
+        for (int sample = 0; sample < 4800; ++sample)
+            static_cast<void>(engine->advanceCorrection(exactState));
+        const double convergedResidual = std::abs(
+            (observedLog2 + exactState.currentCents / 1200.0
+             - exactState.targetLog2) * 1200.0);
+        std::cerr << name << "_converged_residual_cents="
+                  << convergedResidual << '\n';
+        localSuccess = localSuccess && convergedResidual < 0.001;
+        return check(localSuccess, name);
+    };
+
+    success &= checkAbsoluteScaleLock(12, 37.0, 0.88f,
+                                      "absolute_scale_lock_zero_residual_12tet");
+    success &= checkAbsoluteScaleLock(31, 15.0, 0.88f,
+                                      "absolute_scale_lock_zero_residual_31edo");
+    success &= checkAbsoluteScaleLock(48, 10.0, 0.88f,
+                                      "absolute_scale_lock_zero_residual_48edo");
+    success &= checkAbsoluteScaleLock(96, 5.0, 0.88f,
+                                      "absolute_scale_lock_zero_residual_96edo");
+    success &= checkAbsoluteScaleLock(48, 10.0, 0.0f,
+                                      "absolute_scale_lock_zero_consensus_zero_residual");
+
+    // An asymmetric custom scale with a very narrow local interval receives
+    // the same exact-target contract; density changes target selection safety,
+    // never steady-state authority.
+    std::array<double, 6> asymmetricScale {
+        1.0,
+        std::exp2(17.0 / 1200.0),
+        std::exp2(143.0 / 1200.0),
+        std::exp2(311.0 / 1200.0),
+        std::exp2(702.0 / 1200.0),
+        std::exp2(947.0 / 1200.0)
+    };
+    ModernPitchEngine::ScaleQuantizer asymmetricQuantizer;
+    asymmetricQuantizer.reset();
+    asymmetricQuantizer.setScale(asymmetricScale.data(),
+                                 static_cast<int>(asymmetricScale.size()),
+                                 440.0);
+    ModernPitchEngine::CorrectionState asymmetricState;
+    auto asymmetricObservation = strongPitch(static_cast<float>(
+        440.0 * std::exp2(7.0 / 1200.0)));
+    asymmetricObservation.audioPresent = true;
+    engine->updateCorrectionState(asymmetricState, asymmetricQuantizer,
+                                  asymmetricObservation, absoluteLockParameters);
+    const double asymmetricObservedLog2 = std::log2(
+        static_cast<double>(asymmetricObservation.frequencyHz));
+    const double asymmetricResidual = std::abs(
+        (asymmetricObservedLog2 + asymmetricState.desiredCents / 1200.0
+         - asymmetricState.targetLog2) * 1200.0);
+    std::cerr << "absolute_custom_scale_residual_cents="
+              << asymmetricResidual << '\n';
+    success &= check(asymmetricState.targetValid && asymmetricResidual < 1.0e-9,
+                     "absolute_scale_lock_zero_residual_asymmetric_custom");
+
+    // LIVE_CORRECTION_COORDINATE_V5: continuity smoothing may lag the
+    // instantaneous vocal F0, but that lag must never become residual pitch in
+    // the fully rigid endpoint. Target identity still follows frequencyHz;
+    // correction depth follows correctionFrequencyHz.
+    ModernPitchEngine::ScaleQuantizer liveCoordinateQuantizer;
+    liveCoordinateQuantizer.reset();
+    const double liveCoordinateUnison = 1.0;
+    liveCoordinateQuantizer.setScale(&liveCoordinateUnison, 1, 440.0);
+    ModernPitchEngine::CorrectionState liveCoordinateState;
+    auto liveCoordinateObservation = strongPitch(445.0f);
+    liveCoordinateObservation.audioPresent = true;
+    liveCoordinateObservation.correctionFrequencyHz = 452.0f;
+    engine->updateCorrectionState(liveCoordinateState,
+                                  liveCoordinateQuantizer,
+                                  liveCoordinateObservation,
+                                  absoluteLockParameters);
+    const double liveCoordinateTargetHz = std::exp2(
+        liveCoordinateState.targetLog2);
+    const double expectedLiveCorrection = 1200.0 * std::log2(
+        liveCoordinateTargetHz
+        / static_cast<double>(liveCoordinateObservation.correctionFrequencyHz));
+    const double continuityCoordinateCorrection = 1200.0 * std::log2(
+        liveCoordinateTargetHz
+        / static_cast<double>(liveCoordinateObservation.frequencyHz));
+    const double liveCoordinateResidual = std::abs(
+        1200.0 * std::log2(
+            static_cast<double>(liveCoordinateObservation.correctionFrequencyHz)
+            * std::exp2(liveCoordinateState.desiredCents / 1200.0)
+            / liveCoordinateTargetHz));
+    std::cerr << "live_correction_coordinate_expected_cents="
+              << expectedLiveCorrection
+              << " desired_cents=" << liveCoordinateState.desiredCents
+              << " residual_cents=" << liveCoordinateResidual << '\n';
+    success &= check(liveCoordinateState.targetValid
+                     && std::abs(liveCoordinateState.desiredCents
+                                 - expectedLiveCorrection) < 1.0e-6
+                     && std::abs(liveCoordinateState.desiredCents
+                                 - continuityCoordinateCorrection) > 20.0
+                     && liveCoordinateResidual < 1.0e-6,
+                     "absolute_scale_lock_uses_live_correction_coordinate");
+
+    // Softer Scale Lock must remain bit-for-contract on the continuity F0. The
+    // new field is deliberately ignored unless every absolute-lock condition
+    // is active.
+    ModernPitchEngine::Parameters softCoordinateParameters = absoluteLockParameters;
+    softCoordinateParameters.humanize = 0.25f;
+    ModernPitchEngine::ScaleQuantizer softCoordinateQuantizer;
+    softCoordinateQuantizer.reset();
+    softCoordinateQuantizer.setScale(&liveCoordinateUnison, 1, 440.0);
+    ModernPitchEngine::CorrectionState softCoordinateState;
+    engine->updateCorrectionState(softCoordinateState,
+                                  softCoordinateQuantizer,
+                                  liveCoordinateObservation,
+                                  softCoordinateParameters);
+    const double softReferenceError = std::abs(
+        softCoordinateState.desiredCents - expectedLiveCorrection);
+    success &= check(softReferenceError > 1.0,
+                     "soft_scale_lock_ignores_live_correction_coordinate");
+
     // Native API semantics: one semitone means 100 cents, with no adapter hack.
     const double unison = 1.0;
     quantizer.setScale(&unison, 1, 440.0);
@@ -329,40 +1009,6 @@ int main()
                      "native_semitone_limit_is_100_cents");
     success &= check(std::abs(capState.desiredCents) > 95.0,
                      "native_semitone_limit_is_not_divided_by_twelve");
-
-    // PARCOR envelope memory should not be replaced by a transient/noisy frame.
-    setBodyEvidence(parameters);
-    juce::AudioBuffer<float> block(1, 1024);
-    for (int i = 0; i < block.getNumSamples(); ++i)
-    {
-        const double phase = 2.0 * 3.14159265358979323846 * 220.0
-                           * static_cast<double>(i) / 48000.0;
-        block.setSample(0, i, static_cast<float>(0.7 * std::sin(phase)
-                                               + 0.2 * std::sin(2.0 * phase)));
-    }
-    engine->linkedCorrection_.trackingState = ModernPitchEngine::TrackingState::stable;
-    auto stableObservation = strongPitch();
-    stableObservation.onsetStrength = 0.0f;
-    parameters.formantPreservation = 1.0f;
-    engine->updateLpcTarget(block, 1, block.getNumSamples(), parameters,
-                            stableObservation);
-    const auto stableReflection = engine->currentReflectionTarget_;
-
-    block.clear();
-    block.setSample(0, 0, 1.0f);
-    engine->linkedCorrection_.trackingState = ModernPitchEngine::TrackingState::attack;
-    auto transientObservation = stableObservation;
-    transientObservation.onsetStrength = 1.0f;
-    engine->updateLpcTarget(block, 1, block.getNumSamples(), parameters,
-                            transientObservation);
-    double reflectionDifference = 0.0;
-    for (std::size_t i = 0; i < stableReflection.size(); ++i)
-        reflectionDifference += std::abs(static_cast<double>(stableReflection[i]
-                                      - engine->currentReflectionTarget_[i]));
-    std::cerr << "transient_reflection_target_difference="
-              << reflectionDifference << '\n';
-    success &= check(reflectionDifference < 1.0e-9,
-                     "transient_freezes_last_trustworthy_parcor_envelope");
 
     return success ? 0 : 1;
 }

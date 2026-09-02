@@ -10,6 +10,8 @@ namespace
 constexpr double pi = 3.1415926535897932384626433832795;
 constexpr double twoPi = 2.0 * pi;
 constexpr float minimumDetectorRms = 0.0012f;
+constexpr float numericalPresenceSample = 1.0e-8f;
+constexpr float numericalPresenceRms = 1.0e-8f;
 
 [[nodiscard]] float sanitiseAudioSample(float value) noexcept
 {
@@ -148,11 +150,15 @@ void ModernPitchEngine::MultiRatePitchTracker::reset() noexcept
     decoderBeam_.fill({});
 
     trackedPitchHz_ = 0.0f;
+    reacquisitionAnchorHz_ = 0.0f;
     trackedConfidence_ = 0.0f;
     trackedPeriodicity_ = 0.0f;
     trackedConsensus_ = 0.0f;
     trackedSupportCount_ = 0;
     invalidHopCount_ = 0;
+    rescueMode_ = false;
+    presenceMode_ = false;
+    presenceSinceLastHop_ = false;
 
     octaveState_ = 0;
     pendingOctaveDelta_ = 0;
@@ -165,7 +171,7 @@ void ModernPitchEngine::MultiRatePitchTracker::reset() noexcept
 void ModernPitchEngine::MultiRatePitchTracker::setRange(float minimumPitchHz,
                                                          float maximumPitchHz) noexcept
 {
-    minimumPitchHz_ = std::clamp(minimumPitchHz, 35.0f, 500.0f);
+    minimumPitchHz_ = std::clamp(minimumPitchHz, 25.0f, 500.0f);
     maximumPitchHz_ = std::clamp(maximumPitchHz,
                                  minimumPitchHz_ + 20.0f,
                                  3000.0f);
@@ -174,6 +180,17 @@ void ModernPitchEngine::MultiRatePitchTracker::setRange(float minimumPitchHz,
 void ModernPitchEngine::MultiRatePitchTracker::setSensitivity(float sensitivity) noexcept
 {
     sensitivity_ = clamp01(sensitivity);
+}
+
+void ModernPitchEngine::MultiRatePitchTracker::setReacquisitionAnchor(
+    float frequencyHz) noexcept
+{
+    // PITCH_RESCUE_V2_PERSISTENT_ANCHOR
+    // This is musical note-body memory supplied by the supervisor, not current
+    // detector state. It must survive trackedPitchHz_ invalidation.
+    reacquisitionAnchorHz_ = std::isfinite(frequencyHz) && frequencyHz > 0.0f
+        ? std::clamp(frequencyHz, 20.0f, 4000.0f)
+        : 0.0f;
 }
 
 void ModernPitchEngine::MultiRatePitchTracker::push(
@@ -227,7 +244,12 @@ ModernPitchEngine::MultiRatePitchTracker::analyse(
 
     const float rms = static_cast<float>(std::sqrt(
         squaredSum / static_cast<double>(analysisLength)));
-    if (rms < minimumDetectorRms)
+    // RAP_VOICING_V1_AUDIO_PRESENCE: detector confidence may be poor, but a
+    // numerically non-silent input is never allowed to erase the voice.  In
+    // presence mode analyse the best available period instead of returning no
+    // path merely because YIN confidence is low.
+    const float rmsFloor = presenceMode_ ? numericalPresenceRms : minimumDetectorRms;
+    if (rms < rmsFloor)
         return result;
 
     const int tauMinimum = std::clamp(
@@ -294,7 +316,8 @@ ModernPitchEngine::MultiRatePitchTracker::analyse(
     }
 
     const float yinThreshold = 0.12f + 0.16f * sensitivity_;
-    const float fallbackThreshold = 0.26f + 0.20f * sensitivity_;
+    const float fallbackThreshold = 0.26f + 0.20f * sensitivity_
+        + (rescueMode_ ? 0.08f : 0.0f);
 
     int thresholdTau = -1;
     int globalTau = tauMinimum;
@@ -322,7 +345,7 @@ ModernPitchEngine::MultiRatePitchTracker::analyse(
         }
     }
 
-    if (thresholdTau < 0 && globalValue > fallbackThreshold)
+    if (!presenceMode_ && thresholdTau < 0 && globalValue > fallbackThreshold)
         return result;
 
     // Alternative periods are deliberately retained because a weak fundamental
@@ -391,7 +414,9 @@ ModernPitchEngine::MultiRatePitchTracker::analyse(
         }
     }
 
-    if (bestTau < 2 || bestScore < 0.45f)
+    const float minimumCandidateScore = presenceMode_
+        ? 0.0f : (rescueMode_ ? 0.34f : 0.45f);
+    if (bestTau < 2 || bestScore < minimumCandidateScore)
         return result;
 
     double refinedTau = static_cast<double>(bestTau);
@@ -594,7 +619,9 @@ int ModernPitchEngine::MultiRatePitchTracker::buildConsensusHypotheses(
             // Octave-transposed support is useful as harmonic evidence, but it
             // must be genuinely strong; otherwise it is ignored rather than
             // being allowed to manufacture a low subharmonic.
-            if ((!direct && baseScore < 0.60f) || weight < 0.10f)
+            const float minimumOctaveSupport = presenceMode_ ? 0.24f : 0.60f;
+            const float minimumWeight = presenceMode_ ? 0.02f : 0.10f;
+            if ((!direct && baseScore < minimumOctaveSupport) || weight < minimumWeight)
                 continue;
 
             weightedLogFrequency += static_cast<double>(weight)
@@ -640,7 +667,8 @@ int ModernPitchEngine::MultiRatePitchTracker::buildConsensusHypotheses(
                                  * (0.70f + 0.30f * hypothesis.consensus)
                                  + 0.045f * static_cast<float>(directSupportCount)
                                  - directPenalty;
-        hypothesis.valid = hypothesis.evidenceScore > 0.20f;
+        hypothesis.valid = hypothesis.evidenceScore
+            > (presenceMode_ ? 0.055f : 0.20f);
 
         if (!hypothesis.valid)
             continue;
@@ -830,36 +858,172 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
     if (candidateCount <= 0)
         return {};
 
+    // RAP_VOICING_V2_ZERO_CONSENSUS_CORRECTION: consensus is diagnostic
+    // evidence, never permission to correct. If audio is present and at least
+    // one detector path has a period estimate, publish the best register-safe
+    // F0 even when the consensus decoder cannot form an authoritative cluster.
+    const auto makePresenceFallback = [&]() noexcept
+    {
+        DecoderDecision fallback;
+        if (!presenceMode_ || candidateCount <= 0)
+            return fallback;
+
+        // SOUND_EQUALS_CORRECTION_V1: when audible input is present, a raw
+        // detector candidate is pitch authority. Never fold it toward a stale
+        // track/anchor merely to look continuous: that is exactly how a sung
+        // note can remain implausibly stuck for seconds after reacquisition.
+        const float referenceHz = 0.0f;
+        float bestScore = -1000.0f;
+
+        for (int index = 0; index < candidateCount; ++index)
+        {
+            const auto& raw = candidates[static_cast<std::size_t>(index)];
+            if (!raw.valid || raw.frequencyHz <= 0.0f)
+                continue;
+
+            float selectedFrequency = raw.frequencyHz;
+            float selectedDistance = referenceHz > 0.0f
+                ? centsDistance(selectedFrequency, referenceHz) : 0.0f;
+            int selectedOctaveShift = 0;
+
+            if (referenceHz > 0.0f)
+            {
+                for (int octaveShift = -2; octaveShift <= 2; ++octaveShift)
+                {
+                    const float shifted = std::ldexp(raw.frequencyHz, octaveShift);
+                    if (shifted < minimumPitchHz_ || shifted > maximumPitchHz_)
+                        continue;
+
+                    const float distance = centsDistance(shifted, referenceHz);
+                    if (distance < selectedDistance)
+                    {
+                        selectedDistance = distance;
+                        selectedFrequency = shifted;
+                        selectedOctaveShift = octaveShift;
+                    }
+                }
+
+                // The existing rescue register guard remains authoritative.
+                // Presence fallback can recover weak evidence, not invent a
+                // register outside the bounded musical search window.
+                if (rescueMode_ && selectedDistance > 700.0f)
+                    continue;
+            }
+
+            const float continuity = referenceHz > 0.0f
+                ? (1.0f - smoothStep(120.0f, 700.0f, selectedDistance))
+                : 0.0f;
+            const float score = candidateBaseScore(raw)
+                * (0.65f + 0.35f * pathReliability(raw.pathIndex, raw.frequencyHz))
+                + 0.45f * continuity;
+            if (score <= bestScore)
+                continue;
+
+            bestScore = score;
+            fallback.candidate = raw;
+            fallback.candidate.frequencyHz = selectedFrequency;
+            fallback.candidate.valid = true;
+            fallback.consensus = 0.0f;
+            fallback.supportCount = 1;
+            fallback.directSupportCount = selectedOctaveShift == 0 ? 1 : 0;
+            fallback.freshSupportMask = raw.ageInHops == 0 && raw.pathIndex >= 0
+                ? static_cast<std::uint8_t>(1u << raw.pathIndex) : 0;
+            fallback.decoderOctaveIndex = octaveState_;
+            fallback.valid = true;
+        }
+
+        return fallback;
+    };
+
     std::array<ConsensusHypothesis, maxConsensusHypotheses> hypotheses {};
     const int hypothesisCount = buildConsensusHypotheses(candidates,
                                                          candidateCount,
                                                          hypotheses);
     if (hypothesisCount <= 0)
-        return {};
+        return makePresenceFallback();
 
     updateDecoderBeam(hypotheses, hypothesisCount, onsetPending);
     if (!decoderBeam_[0].valid)
-        return {};
+        return makePresenceFallback();
 
     const float decodedFrequency = static_cast<float>(
         std::exp2(decoderBeam_[0].logFrequency));
+    const float rescueReferenceHz = trackedPitchHz_ > 0.0f
+        ? trackedPitchHz_ : reacquisitionAnchorHz_;
+    constexpr float sameNoteRescueCents = 360.0f;
+    constexpr float wideRescueCents = 700.0f;
 
     int matchedHypothesis = -1;
     float matchedDistance = 100000.0f;
-    for (int index = 0; index < hypothesisCount; ++index)
+
+    // PITCH_RESCUE_V3_REGISTER_GUARD: once a musical note body owns a
+    // persistent anchor, rescue is an anchor-constrained register search.  The
+    // decoder beam is still useful evidence, but it may not restart the pitch
+    // register from an unrelated subharmonic simply because trackedPitchHz_
+    // has expired.
+    if (rescueMode_ && !presenceMode_ && rescueReferenceHz > 0.0f)
     {
-        const float distance = centsDistance(
-            hypotheses[static_cast<std::size_t>(index)].frequencyHz,
-            decodedFrequency);
-        if (distance < matchedDistance)
+        float bestRescueScore = -1000.0f;
+        for (int index = 0; index < hypothesisCount; ++index)
         {
-            matchedDistance = distance;
-            matchedHypothesis = index;
+            const auto& candidate = hypotheses[static_cast<std::size_t>(index)];
+            if (!candidate.valid || candidate.supportCount <= 0)
+                continue;
+
+            const float distance = centsDistance(candidate.frequencyHz,
+                                                 rescueReferenceHz);
+            const bool sameNoteWindow = distance <= sameNoteRescueCents;
+            const bool wideTransitionChallenger = distance <= wideRescueCents
+                && candidate.supportCount >= 3
+                && candidate.directSupportCount >= 2
+                && candidate.confidence >= 0.92f
+                && candidate.periodicity >= 0.80f
+                && candidate.consensus >= 0.78f;
+            if ((!sameNoteWindow && !wideTransitionChallenger)
+                || candidate.periodicity < 0.46f
+                || candidate.confidence < 0.40f)
+            {
+                continue;
+            }
+
+            const float continuity = 1.0f - smoothStep(
+                120.0f, sameNoteRescueCents, distance);
+            const float rescueScore = candidate.evidenceScore
+                + 0.62f * continuity
+                + 0.14f * static_cast<float>(candidate.directSupportCount)
+                + (wideTransitionChallenger ? 0.02f : 0.0f);
+            if (rescueScore > bestRescueScore)
+            {
+                bestRescueScore = rescueScore;
+                matchedHypothesis = index;
+                matchedDistance = distance;
+            }
+        }
+
+        if (matchedHypothesis < 0)
+            return {};
+    }
+    else
+    {
+        for (int index = 0; index < hypothesisCount; ++index)
+        {
+            const float distance = centsDistance(
+                hypotheses[static_cast<std::size_t>(index)].frequencyHz,
+                decodedFrequency);
+            if (distance < matchedDistance)
+            {
+                matchedDistance = distance;
+                matchedHypothesis = index;
+            }
+        }
+
+        if (matchedHypothesis < 0 || matchedDistance > 65.0f)
+        {
+            if (presenceMode_)
+                return makePresenceFallback();
+            return {}; // the winning branch is only a decaying hold state
         }
     }
-
-    if (matchedHypothesis < 0 || matchedDistance > 65.0f)
-        return {}; // the winning branch is only a decaying hold state
 
     const auto& hypothesis = hypotheses[static_cast<std::size_t>(matchedHypothesis)];
     DecoderDecision decision;
@@ -878,7 +1042,35 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
         && centsDistance(trackedPitchHz_, decision.candidate.frequencyHz) < 95.0f;
     const bool sufficientInitialEvidence = decision.supportCount >= 2
         || decision.candidate.confidence >= 0.78f;
-    decision.valid = closeToTrack || sufficientInitialEvidence;
+    const bool presenceInitialEvidence = presenceMode_
+        && decision.supportCount >= 1
+        && decision.candidate.confidence >= 0.05f
+        && decision.candidate.periodicity >= 0.18f;
+    const float rescueDistance = rescueReferenceHz > 0.0f
+        ? centsDistance(rescueReferenceHz, decision.candidate.frequencyHz)
+        : 100000.0f;
+    const bool sameNoteRescue = rescueDistance <= sameNoteRescueCents;
+    const bool wideRescueChallenger = rescueDistance <= wideRescueCents
+        && decision.supportCount >= 3
+        && decision.directSupportCount >= 2
+        && decision.candidate.confidence >= 0.92f
+        && decision.candidate.periodicity >= 0.80f
+        && decision.consensus >= 0.78f;
+    const bool rescueEvidence = rescueMode_
+        && rescueReferenceHz > 0.0f
+        && (sameNoteRescue || wideRescueChallenger)
+        && decision.supportCount >= 1
+        && decision.candidate.confidence >= 0.40f
+        && decision.candidate.periodicity >= 0.46f;
+
+    // Strong evidence may acquire an initial register, but it may not bypass a
+    // latched note body's rescue anchor.  This closes the path that previously
+    // let a strong subharmonic become a new F0 during acquire.
+    decision.valid = presenceMode_
+        ? (decision.candidate.valid && decision.candidate.frequencyHz > 0.0f)
+        : (rescueMode_
+            ? rescueEvidence
+            : (closeToTrack || sufficientInitialEvidence || presenceInitialEvidence));
     return decision;
 }
 
@@ -894,10 +1086,118 @@ bool ModernPitchEngine::MultiRatePitchTracker::confirmOctaveTransition(
         return false;
     }
 
-    // Initial register acquisition is deliberately temporal. A single fresh
-    // harmonic family can be an octave alias at a vowel onset, so the first
-    // non-exceptional decision must repeat before it becomes audible control.
-    // This is detector commitment, not reduced correction authority.
+    // SOUND_EQUALS_CORRECTION_V1: audible input plus a finite F0 is enough
+    // to own pitch immediately. No consensus/confirmation gate is allowed to
+    // turn a real vocal signal into an effective bypass or hold a stale note.
+    if (presenceMode_)
+    {
+        if (!decision.candidate.valid
+            || !std::isfinite(decision.candidate.frequencyHz)
+            || decision.candidate.frequencyHz <= 0.0f)
+        {
+            decision.valid = false;
+            return false;
+        }
+
+        if (trackedPitchHz_ > 0.0f)
+        {
+            int octaveDelta = 0;
+            float residualCents = 0.0f;
+            if (isOctaveLikeTransition(trackedPitchHz_,
+                                       decision.candidate.frequencyHz,
+                                       octaveDelta,
+                                       residualCents))
+            {
+                octaveState_ = std::clamp(octaveState_ + octaveDelta, -4, 4);
+            }
+        }
+
+        committedOctaveFrequencyHz_ = decision.candidate.frequencyHz;
+        octaveCommitGuardHops_ = 0;
+        pendingOctaveDelta_ = 0;
+        pendingOctaveCount_ = 0;
+        pendingOctaveFrequencyHz_ = 0.0f;
+        decision.decoderOctaveIndex = octaveState_;
+        return true;
+    }
+
+    // If current F0 expired while a musical note body is still latched,
+    // reacquisition is NOT an initial register acquisition.  The persistent
+    // anchor owns the register and a subharmonic may not restart it.
+    if (trackedPitchHz_ <= 0.0f && rescueMode_ && reacquisitionAnchorHz_ > 0.0f)
+    {
+        constexpr float sameNoteRescueCents = 360.0f;
+        constexpr float wideRescueCents = 700.0f;
+        const float distance = centsDistance(reacquisitionAnchorHz_,
+                                             decision.candidate.frequencyHz);
+        const bool sameNoteWindow = distance <= sameNoteRescueCents;
+        const bool wideTransitionChallenger = distance <= wideRescueCents
+            && decision.supportCount >= 3
+            && decision.directSupportCount >= 2
+            && decision.candidate.confidence >= 0.92f
+            && decision.candidate.periodicity >= 0.80f
+            && decision.consensus >= 0.78f;
+        if (!sameNoteWindow && !wideTransitionChallenger)
+        {
+            decision.valid = false;
+            pendingOctaveDelta_ = 0;
+            pendingOctaveCount_ = 0;
+            pendingOctaveFrequencyHz_ = 0.0f;
+            return false;
+        }
+
+        const bool samePending = pendingOctaveFrequencyHz_ > 0.0f
+            && centsDistance(pendingOctaveFrequencyHz_,
+                             decision.candidate.frequencyHz) < 70.0f;
+        if (!samePending)
+        {
+            pendingOctaveDelta_ = 0;
+            pendingOctaveCount_ = 0;
+            pendingOctaveFrequencyHz_ = decision.candidate.frequencyHz;
+        }
+        if (decision.freshSupportMask != 0)
+            ++pendingOctaveCount_;
+
+        const bool strongSameRegister = distance <= 180.0f
+            && decision.directSupportCount >= 1
+            && decision.candidate.confidence >= 0.78f
+            && decision.candidate.periodicity >= 0.70f;
+        constexpr int wideTransitionObservations = 8;
+        const int requiredObservations = sameNoteWindow
+            ? (strongSameRegister ? 1 : 2)
+            : wideTransitionObservations;
+        if (pendingOctaveCount_ < requiredObservations)
+        {
+            decision.valid = false;
+            return false;
+        }
+
+        decision.decoderOctaveIndex = octaveState_;
+        committedOctaveFrequencyHz_ = decision.candidate.frequencyHz;
+        octaveCommitGuardHops_ = 6;
+        pendingOctaveDelta_ = 0;
+        pendingOctaveCount_ = 0;
+        pendingOctaveFrequencyHz_ = 0.0f;
+        return true;
+    }
+
+    // Presence owns correction authority. With actual input present, the first
+    // register-safe F0 becomes audible control immediately even at zero
+    // consensus. Subsequent octave/subharmonic changes still pass through the
+    // existing register guards, so this removes timidity without weakening
+    // continuity after lock.
+    if (trackedPitchHz_ <= 0.0f && presenceMode_)
+    {
+        committedOctaveFrequencyHz_ = decision.candidate.frequencyHz;
+        octaveCommitGuardHops_ = 6;
+        pendingOctaveDelta_ = 0;
+        pendingOctaveCount_ = 0;
+        pendingOctaveFrequencyHz_ = 0.0f;
+        return true;
+    }
+
+    // Initial register acquisition without explicit audio presence remains
+    // deliberately temporal for synthetic/offline detector-only use.
     if (trackedPitchHz_ <= 0.0f)
     {
         const bool sameInitial = pendingOctaveFrequencyHz_ > 0.0f
@@ -1021,6 +1321,8 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
 {
     observation = {};
     inputSample = sanitiseAudioSample(inputSample);
+    if (std::abs(inputSample) > numericalPresenceSample)
+        presenceSinceLastHop_ = true;
 
     const float dcBlocked = inputSample - previousInput_
                           + dcBlockCoefficient_ * previousDcOutput_;
@@ -1077,6 +1379,8 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
 
     hopCounter_ = 0;
     ++analysisHopCounter_;
+    presenceMode_ = presenceSinceLastHop_;
+    presenceSinceLastHop_ = false;
 
     ++fullRateCandidate_.ageInHops;
     ++halfRateCandidate_.ageInHops;
@@ -1156,6 +1460,8 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
         }
     }
 
+    std::array<PitchCandidate, detectorPathCount> rawCandidates {};
+    const int rawDetectorSupport = collectFreshCandidates(rawCandidates);
     DecoderDecision decision = decodeCandidate(onsetPending_);
     const int previousOctaveState = octaveState_;
     const bool decoderDecisionAccepted = confirmOctaveTransition(decision,
@@ -1198,17 +1504,29 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
         const float consensusGate = smoothStep(0.10f, 0.78f, trackedConsensus_);
 
         observation.frequencyHz = trackedPitchHz_;
+
+        // LIVE_CORRECTION_COORDINATE_V5: identity remains on the proven
+        // continuity-smoothed track, but a rigid lock must calculate its ratio
+        // from the latest accepted F0 rather than from that delayed identity
+        // coordinate. All non-rigid modes continue to use frequencyHz below.
+        observation.correctionFrequencyHz = presenceMode_
+            && std::isfinite(decision.candidate.frequencyHz)
+            && decision.candidate.frequencyHz > 0.0f
+            ? decision.candidate.frequencyHz
+            : trackedPitchHz_;
         observation.confidence = trackedConfidence_;
         observation.periodicity = trackedPeriodicity_;
         observation.consensus = trackedConsensus_;
-        observation.detectorSupport = trackedSupportCount_;
+        observation.detectorSupport = std::max(trackedSupportCount_, rawDetectorSupport);
         observation.octaveState = octaveState_;
         observation.pendingOctaveObservations = pendingOctaveCount_;
-        observation.voicing = clamp01(rmsGate
+        const float detectorVoicing = clamp01(rmsGate
             * (0.48f * confidenceGate
              + 0.30f * periodicityGate
              + 0.22f * consensusGate));
-        observation.valid = observation.voicing > 0.08f;
+        observation.audioPresent = presenceMode_;
+        observation.voicing = presenceMode_ ? 1.0f : detectorVoicing;
+        observation.valid = presenceMode_ || detectorVoicing > 0.08f;
     }
     else
     {
@@ -1231,13 +1549,15 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
         }
 
         observation.frequencyHz = trackedPitchHz_;
+        observation.correctionFrequencyHz = trackedPitchHz_;
         observation.confidence = trackedConfidence_;
         observation.periodicity = trackedPeriodicity_;
         observation.consensus = trackedConsensus_;
-        observation.detectorSupport = trackedSupportCount_;
+        observation.detectorSupport = rawDetectorSupport;
         observation.octaveState = octaveState_;
         observation.pendingOctaveObservations = pendingOctaveCount_;
-        observation.voicing = 0.0f;
+        observation.audioPresent = presenceMode_;
+        observation.voicing = presenceMode_ ? 1.0f : 0.0f;
         observation.valid = false;
     }
 
@@ -1457,336 +1777,7 @@ double ModernPitchEngine::ScaleQuantizer::chooseTargetLog2(
 }
 
 //==============================================================================
-// Full-signal transport
-
-void ModernPitchEngine::TransportClock::prepare(int reportedLatencySamples) noexcept
-{
-    prepare(48000.0, reportedLatencySamples);
-}
-
-void ModernPitchEngine::TransportClock::prepare(double sampleRate,
-                                                int reportedLatencySamples) noexcept
-{
-    sampleRate_ = std::max(8000.0, finiteOr(sampleRate, 48000.0));
-    minimumDelay_ = 8;
-    rangeSamples_ = std::max(16,
-        2 * (std::max(16, reportedLatencySamples) - minimumDelay_));
-    periodSyncSmoothing_ = std::clamp(static_cast<float>(
-        1.0 - std::exp(-1.0 / (0.0080 * sampleRate_))), 0.0005f, 0.04f);
-    reset();
-}
-
-void ModernPitchEngine::TransportClock::reset() noexcept
-{
-    phase_ = 0.5;
-    periodNudgeSamples_ = 0.0;
-    periodSyncAmount_ = 0.0f;
-}
-
-ModernPitchEngine::TransportPlan
-ModernPitchEngine::TransportClock::next(double ratio) noexcept
-{
-    return nextInternal(ratio, 0.0, 0.0f, false);
-}
-
-ModernPitchEngine::TransportPlan
-ModernPitchEngine::TransportClock::next(double ratio,
-                                        double sourcePeriodSamples,
-                                        float syncStrength) noexcept
-{
-    return nextInternal(ratio, sourcePeriodSamples, syncStrength, true);
-}
-
-ModernPitchEngine::TransportPlan
-ModernPitchEngine::TransportClock::nextInternal(double ratio,
-                                                double sourcePeriodSamples,
-                                                float syncStrength,
-                                                bool periodAware) noexcept
-{
-    TransportPlan plan;
-    const double safeRatio = std::clamp(
-        std::isfinite(ratio) ? ratio : 1.0, 0.25, 4.0);
-    const double signedDeviation = 1.0 - safeRatio;
-    const double deviation = std::abs(signedDeviation);
-    const double phaseB = phase_ < 0.5 ? phase_ + 0.5 : phase_ - 0.5;
-
-    const auto weight = [periodAware](double phase) noexcept
-    {
-        const float hann = static_cast<float>(0.5 - 0.5 * std::cos(twoPi * phase));
-        return periodAware ? std::pow(hann, 2.35f) : hann;
-    };
-
-    const double centreDelay = static_cast<double>(minimumDelay_)
-        + 0.5 * static_cast<double>(rangeSamples_);
-    const double sweptDelayA = static_cast<double>(minimumDelay_)
-        + phase_ * static_cast<double>(rangeSamples_);
-    const double sweptDelayB = static_cast<double>(minimumDelay_)
-        + phaseB * static_cast<double>(rangeSamples_);
-
-    const float sweepMix = smoothStep(0.00010f, 0.00200f,
-                                      static_cast<float>(deviation));
-    plan.delayA = centreDelay
-        + static_cast<double>(sweepMix) * (sweptDelayA - centreDelay);
-    plan.delayB = centreDelay
-        + static_cast<double>(sweepMix) * (sweptDelayB - centreDelay);
-    plan.gainA = weight(phase_);
-    plan.gainB = weight(phaseB);
-    const float sum = plan.gainA + plan.gainB;
-    if (sum > 1.0e-8f)
-    {
-        plan.gainA /= sum;
-        plan.gainB /= sum;
-    }
-
-    if (periodAware)
-    {
-        const bool holdPeriodGuidance = std::isfinite(syncStrength)
-            && syncStrength < 0.0f;
-        const double nominalSeparation = plan.delayB - plan.delayA;
-        const double nominalMagnitude = std::abs(nominalSeparation);
-        const float overlap = smoothStep(0.04f, 0.38f,
-                                         std::min(plan.gainA, plan.gainB));
-        const float sweepPresence = smoothStep(0.08f, 0.65f, sweepMix);
-        float requestedSync = clamp01(syncStrength) * overlap * sweepPresence;
-        double requestedNudge = 0.0;
-
-        if (std::isfinite(sourcePeriodSamples)
-            && sourcePeriodSamples >= 8.0
-            && sourcePeriodSamples <= 2048.0
-            && nominalMagnitude > 1.0)
-        {
-            const double multiple = std::round(nominalMagnitude / sourcePeriodSamples);
-            const double alignedMagnitude = multiple * sourcePeriodSamples;
-            const double maximumNudge = std::min({
-                24.0,
-                0.24 * sourcePeriodSamples,
-                0.18 * static_cast<double>(rangeSamples_)
-            });
-            requestedNudge = std::clamp(alignedMagnitude - nominalMagnitude,
-                                        -maximumNudge, maximumNudge);
-        }
-        else
-        {
-            requestedSync = 0.0f;
-        }
-
-        if (!holdPeriodGuidance)
-        {
-            periodNudgeSamples_ += static_cast<double>(periodSyncSmoothing_)
-                * (requestedNudge - periodNudgeSamples_);
-            periodSyncAmount_ += periodSyncSmoothing_
-                * (requestedSync - periodSyncAmount_);
-        }
-
-        // sweepPresence is applied at render time as well as acquisition time.
-        // Thus exact unity always collapses to the declared latency even when a
-        // non-stable state is deliberately holding the previous period model.
-        const double appliedPeriodAmount = static_cast<double>(periodSyncAmount_)
-            * static_cast<double>(sweepPresence);
-        const double sign = nominalSeparation >= 0.0 ? 1.0 : -1.0;
-        double adjustedMagnitude = std::max(
-            0.0,
-            nominalMagnitude + appliedPeriodAmount * periodNudgeSamples_);
-
-        const double minimum = static_cast<double>(minimumDelay_);
-        const double maximum = minimum + static_cast<double>(rangeSamples_);
-        const double gainA = static_cast<double>(plan.gainA);
-        const double gainB = static_cast<double>(plan.gainB);
-        const double weightedMean = gainA * plan.delayA + gainB * plan.delayB;
-        double maximumMagnitude = static_cast<double>(rangeSamples_);
-        constexpr double minimumGain = 1.0e-7;
-        if (sign > 0.0)
-        {
-            if (gainB > minimumGain)
-                maximumMagnitude = std::min(maximumMagnitude,
-                    (weightedMean - minimum) / gainB);
-            if (gainA > minimumGain)
-                maximumMagnitude = std::min(maximumMagnitude,
-                    (maximum - weightedMean) / gainA);
-        }
-        else
-        {
-            if (gainB > minimumGain)
-                maximumMagnitude = std::min(maximumMagnitude,
-                    (maximum - weightedMean) / gainB);
-            if (gainA > minimumGain)
-                maximumMagnitude = std::min(maximumMagnitude,
-                    (weightedMean - minimum) / gainA);
-        }
-        adjustedMagnitude = std::clamp(adjustedMagnitude, 0.0,
-                                       std::max(0.0, maximumMagnitude));
-        const double adjustedSeparation = sign * adjustedMagnitude;
-        plan.delayA = weightedMean - gainB * adjustedSeparation;
-        plan.delayB = weightedMean + gainA * adjustedSeparation;
-    }
-
-    const double phaseIncrement = std::clamp(
-        signedDeviation / static_cast<double>(rangeSamples_), -0.24, 0.24);
-    // Exact unity is a declared-latency identity point. Preserve phase, but
-    // make both read coordinates exactly equal to the centre rather than merely
-    // numerically close after gain-weighted reconstruction.
-    if (deviation < 1.0e-12)
-    {
-        plan.delayA = centreDelay;
-        plan.delayB = centreDelay;
-    }
-
-    phase_ += phaseIncrement;
-    phase_ -= std::floor(phase_);
-    return plan;
-}
-
-void ModernPitchEngine::ChannelPath::prepare(double sampleRate,
-                                             int reportedLatencySamples)
-{
-    static_cast<void>(reportedLatencySamples);
-    const double safeRate = std::max(8000.0, finiteOr(sampleRate, 48000.0));
-    reflectionSmoothing_ = std::clamp(static_cast<float>(
-        1.0 - std::exp(-1.0 / (0.008 * safeRate))), 0.0008f, 0.12f);
-    breathLowPassCoefficient_ = std::clamp(static_cast<float>(
-        1.0 - std::exp(-twoPi * 3200.0 / safeRate)), 0.001f, 0.95f);
-    reset();
-}
-
-void ModernPitchEngine::ChannelPath::reset() noexcept
-{
-    residualRing_.fill(0.0f);
-    bypassRing_.fill(0.0f);
-    inputHistory_.fill(0.0f);
-    outputHistory_.fill(0.0f);
-    currentReflection_.fill(0.0f);
-    targetReflection_.fill(0.0f);
-    sampleCounter_ = 0;
-    breathLowPass_ = 0.0f;
-    breathReduction_ = 0.0f;
-    targetBreathReduction_ = 0.0f;
-}
-
-std::array<float, ModernPitchEngine::maximumLpcOrder>
-ModernPitchEngine::ChannelPath::reflectionToLpc(
-    const std::array<float, maximumLpcOrder>& reflectionCoefficients) noexcept
-{
-    std::array<double, maximumLpcOrder + 1> coefficients {};
-    coefficients[0] = 1.0;
-    for (int order = 1; order <= maximumLpcOrder; ++order)
-    {
-        const double reflection = std::clamp(
-            static_cast<double>(reflectionCoefficients[static_cast<std::size_t>(order - 1)]),
-            -0.94, 0.94);
-        const auto previous = coefficients;
-        coefficients[static_cast<std::size_t>(order)] = reflection;
-        for (int i = 1; i < order; ++i)
-            coefficients[static_cast<std::size_t>(i)]
-                = previous[static_cast<std::size_t>(i)]
-                - reflection * previous[static_cast<std::size_t>(order - i)];
-    }
-    std::array<float, maximumLpcOrder> result {};
-    for (int i = 0; i < maximumLpcOrder; ++i)
-        result[static_cast<std::size_t>(i)] = static_cast<float>(
-            coefficients[static_cast<std::size_t>(i + 1)]);
-    return result;
-}
-
-void ModernPitchEngine::ChannelPath::setVoiceModel(
-    const std::array<float, maximumLpcOrder>& reflectionCoefficients,
-    float formantStrength,
-    float breathReduction) noexcept
-{
-    const float safeStrength = std::clamp(formantStrength, 0.0f, 0.995f);
-    for (int i = 0; i < maximumLpcOrder; ++i)
-    {
-        const float bandwidth = std::pow(0.995f, static_cast<float>(i + 1));
-        targetReflection_[static_cast<std::size_t>(i)] = std::clamp(
-            reflectionCoefficients[static_cast<std::size_t>(i)]
-                * safeStrength * bandwidth,
-            -0.94f, 0.94f);
-    }
-    targetBreathReduction_ = std::clamp(breathReduction, 0.0f, 0.75f);
-}
-
-float ModernPitchEngine::ChannelPath::sanitise(float value) noexcept
-{
-    if (!std::isfinite(value) || std::fpclassify(value) == FP_SUBNORMAL)
-        return 0.0f;
-    return std::clamp(value, -8.0f, 8.0f);
-}
-
-float ModernPitchEngine::ChannelPath::interpolateResidual(
-    double absolutePosition) const noexcept
-{
-    if (!std::isfinite(absolutePosition))
-        return 0.0f;
-    const auto lowerAbsolute = static_cast<std::int64_t>(std::floor(absolutePosition));
-    const double fraction = absolutePosition - static_cast<double>(lowerAbsolute);
-    const int lower = static_cast<int>(lowerAbsolute & (transportRingSize - 1));
-    const int upper = (lower + 1) & (transportRingSize - 1);
-    const float a = residualRing_[static_cast<std::size_t>(lower)];
-    const float b = residualRing_[static_cast<std::size_t>(upper)];
-    return a + static_cast<float>(fraction) * (b - a);
-}
-
-float ModernPitchEngine::ChannelPath::process(float input,
-                                              const TransportPlan& plan) noexcept
-{
-    const float safeInput = sanitise(input);
-    for (int i = 0; i < maximumLpcOrder; ++i)
-    {
-        currentReflection_[static_cast<std::size_t>(i)] += reflectionSmoothing_
-            * (targetReflection_[static_cast<std::size_t>(i)]
-               - currentReflection_[static_cast<std::size_t>(i)]);
-        currentReflection_[static_cast<std::size_t>(i)] = std::clamp(
-            currentReflection_[static_cast<std::size_t>(i)], -0.94f, 0.94f);
-    }
-    const auto currentLpc = reflectionToLpc(currentReflection_);
-    breathReduction_ += reflectionSmoothing_
-        * (targetBreathReduction_ - breathReduction_);
-
-    double prediction = 0.0;
-    for (int i = 0; i < maximumLpcOrder; ++i)
-        prediction += static_cast<double>(currentLpc[static_cast<std::size_t>(i)])
-                    * static_cast<double>(inputHistory_[static_cast<std::size_t>(i)]);
-    const float residual = sanitise(safeInput - static_cast<float>(prediction));
-    for (int i = maximumLpcOrder - 1; i > 0; --i)
-        inputHistory_[static_cast<std::size_t>(i)]
-            = inputHistory_[static_cast<std::size_t>(i - 1)];
-    inputHistory_[0] = safeInput;
-
-    const int write = static_cast<int>(sampleCounter_ & (transportRingSize - 1));
-    residualRing_[static_cast<std::size_t>(write)] = residual;
-    const float shiftedResidual = sanitise(
-        plan.gainA * interpolateResidual(static_cast<double>(sampleCounter_) - plan.delayA)
-      + plan.gainB * interpolateResidual(static_cast<double>(sampleCounter_) - plan.delayB));
-
-    double synthesisPrediction = 0.0;
-    for (int i = 0; i < maximumLpcOrder; ++i)
-        synthesisPrediction += static_cast<double>(currentLpc[static_cast<std::size_t>(i)])
-                             * static_cast<double>(outputHistory_[static_cast<std::size_t>(i)]);
-    float output = sanitise(shiftedResidual + static_cast<float>(synthesisPrediction));
-    breathLowPass_ += breathLowPassCoefficient_ * (output - breathLowPass_);
-    const float highBand = output - breathLowPass_;
-    output = sanitise(output - highBand * breathReduction_);
-    for (int i = maximumLpcOrder - 1; i > 0; --i)
-        outputHistory_[static_cast<std::size_t>(i)]
-            = outputHistory_[static_cast<std::size_t>(i - 1)];
-    outputHistory_[0] = output;
-    ++sampleCounter_;
-    return output;
-}
-
-float ModernPitchEngine::ChannelPath::processBypassed(float input,
-                                                      int latencySamples) noexcept
-{
-    const float safeInput = sanitise(input);
-    const int write = static_cast<int>(sampleCounter_ & (transportRingSize - 1));
-    bypassRing_[static_cast<std::size_t>(write)] = safeInput;
-    const auto readAbsolute = sampleCounter_
-        - static_cast<std::int64_t>(std::max(0, latencySamples));
-    const int read = static_cast<int>(readAbsolute & (transportRingSize - 1));
-    const float output = bypassRing_[static_cast<std::size_t>(read)];
-    ++sampleCounter_;
-    return sanitise(output);
-}
-
+// ModernPitchEngine control and processing
 //==============================================================================
 // ModernPitchEngine control and processing
 
@@ -1809,9 +1800,17 @@ double ModernPitchEngine::wrapToNearestOctave(double cents) noexcept
 
 int ModernPitchEngine::latencyForMode(LatencyMode mode) noexcept
 {
+    // SINGLE_WET_PURITY_V6
+    // The 128-sample spectral lattice is not a valid production transport for
+    // this renderer: the measured +100-cent target/source power ratio is only
+    // about 2.07 (roughly 3 dB), which is an audibly strong source-frequency
+    // component.  256 samples is the smallest currently proven single-wet
+    // lattice (>2000:1 on the same regression), so Experimental must report
+    // and use that honest latency until a genuinely low-latency transport can
+    // satisfy the same spectral-purity contract.
     switch (mode)
     {
-        case LatencyMode::ultraLive: return 128;
+        case LatencyMode::ultraLive: return 256;
         case LatencyMode::live:      return 256;
         case LatencyMode::quality:   return 512;
     }
@@ -1830,13 +1829,11 @@ void ModernPitchEngine::prepare(double sampleRate,
     latencySamples_ = latencyForMode(latencyMode_);
 
     linkedTracker_.prepare(sampleRate_);
-    linkedClock_.prepare(sampleRate_, latencySamples_);
     tempoController_.prepare(sampleRate_);
     for (int channel = 0; channel < maxSupportedChannels; ++channel)
     {
         channelTrackers_[static_cast<std::size_t>(channel)].prepare(sampleRate_);
-        channelClocks_[static_cast<std::size_t>(channel)].prepare(sampleRate_, latencySamples_);
-        channelPaths_[static_cast<std::size_t>(channel)].prepare(sampleRate_, latencySamples_);
+        wetRenderers_[static_cast<std::size_t>(channel)].prepare(sampleRate_, latencySamples_);
         channelTempoControllers_[static_cast<std::size_t>(channel)].prepare(sampleRate_);
     }
     reset();
@@ -1846,24 +1843,16 @@ void ModernPitchEngine::reset() noexcept
 {
     linkedTracker_.reset();
     linkedQuantizer_.reset();
-    linkedClock_.reset();
     tempoController_.reset();
     linkedCorrection_ = {};
     for (int channel = 0; channel < maxSupportedChannels; ++channel)
     {
         channelTrackers_[static_cast<std::size_t>(channel)].reset();
         channelQuantizers_[static_cast<std::size_t>(channel)].reset();
-        channelClocks_[static_cast<std::size_t>(channel)].reset();
-        channelPaths_[static_cast<std::size_t>(channel)].reset();
+        wetRenderers_[static_cast<std::size_t>(channel)].reset();
         channelTempoControllers_[static_cast<std::size_t>(channel)].reset();
         channelCorrections_[static_cast<std::size_t>(channel)] = {};
     }
-    lpcAnalysisRing_.fill(0.0f);
-    lpcAnalysisScratch_.fill(0.0f);
-    lpcAnalysisWritePosition_ = 0;
-    lpcAnalysisAvailableSamples_ = 0;
-    lpcAnalysisHopCounter_ = 0;
-    currentReflectionTarget_.fill(0.0f);
     latestObservation_ = {};
     latestChannelObservation_.fill(PitchObservation {});
     audibleCorrectionCents_ = 0.0;
@@ -1875,6 +1864,7 @@ void ModernPitchEngine::reset() noexcept
     meterConfidence_.store(0.0f, std::memory_order_relaxed);
     meterVoicing_.store(0.0f, std::memory_order_relaxed);
     meterPeriodicity_.store(0.0f, std::memory_order_relaxed);
+    meterConsensus_.store(0.0f, std::memory_order_relaxed);
     meterCorrectionCents_.store(0.0f, std::memory_order_relaxed);
     meterCorrectionVelocity_.store(0.0f, std::memory_order_relaxed);
     meterOnsetStrength_.store(0.0f, std::memory_order_relaxed);
@@ -1923,10 +1913,29 @@ float ModernPitchEngine::adaptiveHysteresis(
             * (1.0f - 0.32f * quantizer.asymmetry()),
         0.22f, 1.40f);
     const float confidenceFactor = 0.65f + 0.70f * clamp01(observation.confidence);
-    const float strictnessFactor = 1.0f - 0.28f * clamp01(parameters.lockStrictness);
-    return std::clamp(finiteOr(parameters.lockHysteresis, 24.0f)
-        * modeFactor * tempoFactor * densityFactor
-        * confidenceFactor * strictnessFactor, 0.0f, 80.0f);
+    const float lockStrictness = clamp01(parameters.lockStrictness);
+    const float strictnessFactor = 1.0f - 0.28f * lockStrictness;
+    const float requestedHysteresis = std::clamp(
+        finiteOr(parameters.lockHysteresis, 24.0f)
+            * modeFactor * tempoFactor * densityFactor
+            * confidenceFactor * strictnessFactor,
+        0.0f, 80.0f);
+
+    // MICROTONAL_HARD_LOCK_V3: hysteresis may stabilise target identity, but
+    // it may never become a significant fraction of a dense scale degree.
+    // Otherwise 24/31/48-EDO can legally hold the previous target by one or
+    // more notes.  Keep the GUI range, then cap the effective musical margin
+    // relative to the actual minimum step of the selected/custom scale.
+    const float minimumStep = std::max(0.1f, quantizer.minimumStepCents());
+    // ABSOLUTE_SCALE_LOCK_V4_INTEGRATION: preserve an audible Hysteresis
+    // control on sparse/wide scales without weakening the strict microtonal
+    // endpoint. At strictness=1 this is still exactly 0.12 of the minimum
+    // scale step (3 cents in 48-EDO); at lower strictness the user deliberately
+    // requests more target-hold behaviour, capped well below half a degree.
+    const float degreeSafeCap = std::clamp(
+        minimumStep * (0.30f - 0.18f * lockStrictness),
+        0.35f, 36.0f);
+    return std::min(requestedHysteresis, degreeSafeCap);
 }
 
 double ModernPitchEngine::responseTimeMs(
@@ -1942,14 +1951,28 @@ double ModernPitchEngine::responseTimeMs(
     if (parameters.scaleLock)
     {
         const double norm = std::pow(requested / 500.0, 1.35);
+        double modeMaximumMs = 3.0;
         switch (latencyMode_)
         {
-            case LatencyMode::quality:   response = 3.0 + 4.0 * norm; break;
-            case LatencyMode::live:      response = 1.5 + 3.5 * norm; break;
-            case LatencyMode::ultraLive: response = 0.35 + 2.65 * norm; break;
+            // MICROTONAL_HARD_LOCK_V3: Scale Lock owns its documented fast
+            // trajectory.  The normal transition controller must not stretch
+            // a dense-scale note change into tens of milliseconds.
+            case LatencyMode::quality:
+                response = 3.0 + 2.0 * norm;
+                modeMaximumMs = 5.0;
+                break;
+            case LatencyMode::live:
+                response = 1.5 + 1.5 * norm;
+                modeMaximumMs = 3.0;
+                break;
+            case LatencyMode::ultraLive:
+                response = 0.35 + 1.15 * norm;
+                modeMaximumMs = 1.5;
+                break;
         }
-        const double humanTiming = 0.8 * static_cast<double>(clamp01(parameters.humanize));
-        response = std::min(7.0, response + humanTiming);
+        const double humanTiming = 0.40
+            * static_cast<double>(clamp01(parameters.humanize));
+        response = std::min(modeMaximumMs, response + humanTiming);
     }
 
     if (targetChanged && std::abs(targetJumpCents) > 0.1)
@@ -1962,11 +1985,11 @@ double ModernPitchEngine::responseTimeMs(
             // Creative Tempo controls the same correction trajectory.
             response = std::max(response, transitionMs);
         }
-        else
+        else if (!parameters.scaleLock)
         {
             // Main used a pre-rolled second synthesis layer for note changes.
-            // Keep only its useful bounded transition timing: the current
-            // single trajectory moves continuously to the exact new target.
+            // Keep only its useful bounded transition timing outside Scale
+            // Lock. Scale Lock already has its own <=5/3/1.5 ms trajectory.
             const double jumpWeight = std::clamp(
                 std::abs(targetJumpCents) / 600.0, 0.0, 1.0);
             const double trajectoryMs = std::clamp(
@@ -1975,43 +1998,6 @@ double ModernPitchEngine::responseTimeMs(
         }
     }
     return std::clamp(response, 0.35, 500.0);
-}
-
-float ModernPitchEngine::transportSyncStrength(
-    const PitchObservation& observation,
-    const CorrectionState& state,
-    const Parameters& parameters) const noexcept
-{
-    // Period guidance is geometry supervision, not voicing authority. It is
-    // deliberately disabled during attack/acquire/transition/release so state
-    // changes cannot sound like a moving delay line. A stable note may keep
-    // using its latched period through a short F0 hole.
-    if (!state.noteBodyLatched || state.transportPeriodHz <= 0.0)
-        return 0.0f;
-
-    // Negative strength means hold the already-established geometry. State
-    // changes must not themselves ramp the read-head separation. The stored
-    // guidance is allowed to evolve again only after the note body is stable.
-    if (state.trackingState != TrackingState::stable)
-        return -1.0f;
-
-    const float trackerEvidence = observation.valid
-        ? clamp01(0.40f * observation.periodicity
-                + 0.32f * observation.confidence
-                + 0.18f * observation.consensus
-                + 0.10f * observation.voicing)
-        : state.noteBodyConfidence;
-    const float richEvidence = parameters.voiceEvidenceValid
-        ? clamp01(0.46f * parameters.voiceBodyEnergy
-                + 0.24f * parameters.voiceHarmonicity
-                + 0.20f * parameters.voiceSpectralReliability
-                + 0.10f * (1.0f - parameters.voiceBreathiness))
-        : trackerEvidence;
-    const float evidence = clamp01(0.55f * state.noteBodyConfidence
-                                  + 0.45f * std::max(trackerEvidence, richEvidence));
-    const float protection = 0.55f
-        + 0.45f * clamp01(parameters.transientProtection);
-    return clamp01(evidence * protection);
 }
 
 void ModernPitchEngine::updateCorrectionState(
@@ -2025,6 +2011,11 @@ void ModernPitchEngine::updateCorrectionState(
     const float humanize = clamp01(parameters.humanize);
     const bool richEvidence = parameters.voiceEvidenceValid;
     const bool validPitch = observation.valid && observation.frequencyHz > 0.0f;
+    if (validPitch)
+        state.pitchStaleSamples = 0;
+    else if (state.noteBodyLatched)
+        state.pitchStaleSamples = std::min(std::numeric_limits<int>::max() - hopSamples,
+                                           state.pitchStaleSamples + hopSamples);
 
     const float trackerBody = validPitch
         ? clamp01(0.34f * observation.voicing
@@ -2049,9 +2040,10 @@ void ModernPitchEngine::updateCorrectionState(
     const float holdBodyThreshold = 0.34f - 0.05f * humanize;
     const float bodyThreshold = state.noteBodyLatched
         ? holdBodyThreshold : enterBodyThreshold;
-    const bool bodyPresent = bodyScore >= bodyThreshold
-        && (!richEvidence || parameters.voiceBreathiness < 0.76f
-            || parameters.voiceHarmonicity > 0.48f);
+    const bool bodyPresent = observation.audioPresent
+        || (bodyScore >= bodyThreshold
+            && (!richEvidence || parameters.voiceBreathiness < 0.76f
+                || parameters.voiceHarmonicity > 0.48f));
 
     const float breathScore = richEvidence
         ? clamp01(0.58f * parameters.voiceBreathiness
@@ -2060,11 +2052,13 @@ void ModernPitchEngine::updateCorrectionState(
                 + 0.08f * (1.0f - parameters.voiceSpectralReliability))
         : 0.0f;
     const bool confirmedBreathFrame = richEvidence
+        && !observation.audioPresent
         && breathScore > 0.62f
         && parameters.voiceBreathiness > 0.56f
         && parameters.voiceBodyEnergy < 0.48f
         && parameters.voiceEventStrength < 0.82f;
     const bool confirmedAbsenceFrame = richEvidence
+        && !observation.audioPresent
         && parameters.voiceBodyEnergy < 0.20f
         && parameters.voiceHarmonicity < 0.22f
         && parameters.voiceSpectralReliability < 0.28f
@@ -2158,21 +2152,29 @@ void ModernPitchEngine::updateCorrectionState(
     {
         ++state.invalidObservations;
 
+        // SOUND_EQUALS_CORRECTION_V1: audio presence owns the voice, but
+        // Stable is forbidden until a real target exists. Acquire is now only
+        // detector-search telemetry: an already acquired target/correction is
+        // preserved exactly while F0 is temporarily missing.
+        if (observation.audioPresent)
+        {
+            state.noteBodyLatched = true;
+            state.noteBodyConfidence = 1.0f;
+            state.stableBodyObservations = std::max(4, state.stableBodyObservations);
+            state.breathEvidenceSamples = 0;
+            state.uncertainSamples = 0;
+            setState(TrackingState::acquire);
+            return;
+        }
+
         // Missing F0 is not missing voice. A latched note keeps the exact
         // destination while body evidence survives. Acquire/attack may also
         // settle to stable from body evidence alone after a prior valid lock.
         if (state.noteBodyLatched)
         {
-            const int minimumStableSamples = static_cast<int>(std::lround(
-                0.012 * sampleRate_));
-            if (bodyPresent && state.targetValid
-                && (state.trackingState == TrackingState::attack
-                    || state.trackingState == TrackingState::acquire)
-                && state.stableBodyObservations >= 4
-                && state.stateAgeSamples >= minimumStableSamples)
-            {
-                setState(TrackingState::stable);
-            }
+            const int reacquireSamples = static_cast<int>(std::lround(0.070 * sampleRate_));
+            if (state.pitchStaleSamples >= reacquireSamples)
+                setState(TrackingState::acquire);
             return;
         }
 
@@ -2245,6 +2247,13 @@ void ModernPitchEngine::updateCorrectionState(
     }
 
     const double observedLog2 = safeLog2(observation.frequencyHz);
+    const float correctionFrequencyHz =
+        std::isfinite(observation.correctionFrequencyHz)
+        && observation.correctionFrequencyHz > 0.0f
+        ? observation.correctionFrequencyHz
+        : observation.frequencyHz;
+    const double correctionObservedLog2 = safeLog2(correctionFrequencyHz);
+    bool liveIdentityBreak = false;
     if (!state.pitchCentreValid || musicalOnset)
     {
         state.pitchCentreLog2 = observedLog2;
@@ -2266,20 +2275,38 @@ void ModernPitchEngine::updateCorrectionState(
             ? std::abs(observedLog2 - state.targetLog2) * 1200.0
             : 0.0;
         const double currentIdentityRadius = 0.48 * scaleStep;
+        const double liveIdentityBreakRadius = 0.72 * scaleStep;
         const bool insideCurrentMusicalIdentity = !state.targetValid
             || observedDistanceFromCurrentTarget < currentIdentityRadius;
-        if (state.noteBodyLatched
-            && insideCurrentMusicalIdentity
-            && distanceCents <= withinNoteTolerance)
+
+        // SOUND_EQUALS_CORRECTION_V2_DENSE_SAFE: live pitch outside a clear
+        // 0.72-step boundary owns identity immediately, while the original
+        // 0.48-step within-note boundary remains intact for dense microtonal
+        // tracking. Consensus/confidence never gates the forced live change.
+        liveIdentityBreak = observation.audioPresent
+            && state.targetValid
+            && observedDistanceFromCurrentTarget >= liveIdentityBreakRadius
+            && distanceCents >= liveIdentityBreakRadius;
+        if (liveIdentityBreak)
         {
-            baseAlpha = 0.018 + 0.035 * static_cast<double>(1.0f - humanize);
+            state.pitchCentreLog2 = observedLog2;
+            state.stableObservations = 0;
         }
-        const double stableGate = 0.35
-            + 0.65 * static_cast<double>(clamp01(observation.confidence)
-                                      * clamp01(observation.periodicity));
-        state.pitchCentreLog2 += baseAlpha * stableGate
-            * (observedLog2 - state.pitchCentreLog2);
-        ++state.stableObservations;
+        else
+        {
+            if (state.noteBodyLatched
+                && insideCurrentMusicalIdentity
+                && distanceCents <= withinNoteTolerance)
+            {
+                baseAlpha = 0.018 + 0.035 * static_cast<double>(1.0f - humanize);
+            }
+            const double stableGate = 0.35
+                + 0.65 * static_cast<double>(clamp01(observation.confidence)
+                                          * clamp01(observation.periodicity));
+            state.pitchCentreLog2 += baseAlpha * stableGate
+                * (observedLog2 - state.pitchCentreLog2);
+            ++state.stableObservations;
+        }
     }
 
     const float hysteresis = adaptiveHysteresis(parameters, quantizer, observation);
@@ -2290,9 +2317,13 @@ void ModernPitchEngine::updateCorrectionState(
         parameters.lockStrictness,
         observation.confidence,
         parameters.scaleLock && parameters.hardLockActive,
-        musicalOnset,
+        musicalOnset || liveIdentityBreak,
         pending);
-    newTarget += std::round(state.pitchCentreLog2 - newTarget);
+
+    // SOUND_EQUALS_CORRECTION_V2: target register follows the current live F0,
+    // never a stale centre. This keeps an octave/register mistake from becoming
+    // a mathematically zero correction.
+    newTarget += std::round(observedLog2 - newTarget);
 
     const bool targetChanged = !state.targetValid
         || std::abs(newTarget - state.targetLog2) * 1200.0 > 0.1;
@@ -2325,7 +2356,7 @@ void ModernPitchEngine::updateCorrectionState(
         const double observedHz = static_cast<double>(observation.frequencyHz);
         if (!(state.transportPeriodHz > 0.0)
             || !std::isfinite(state.transportPeriodHz)
-            || musicalOnset || targetIdentityChanged)
+            || musicalOnset || liveIdentityBreak || targetIdentityChanged)
         {
             state.transportPeriodHz = observedHz;
         }
@@ -2360,18 +2391,75 @@ void ModernPitchEngine::updateCorrectionState(
         : clamp01(parameters.preserveVibrato);
     preserve *= stable * periodic * boundarySafety;
 
-    const double correctedLog2 = state.targetLog2
-        + static_cast<double>(preserve) * vibratoComponent;
-    double errorCents = wrapToNearestOctave(
-        (correctedLog2 - observedLog2) * 1200.0);
+    const bool absoluteScaleLock = parameters.scaleLock
+        && parameters.hardLockActive
+        && clamp01(parameters.lockStrictness) >= 0.99999f
+        && clamp01(parameters.amount) >= 0.99999f
+        && humanize <= 0.00001f
+        && clamp01(parameters.vibratoPreserve) <= 0.00001f;
 
-    const double humanWindow = parameters.scaleLock
-        ? 2.0 + 10.0 * static_cast<double>(humanize)
-        : 1.5 + 16.0 * static_cast<double>(humanize);
-    if (std::abs(errorCents) <= humanWindow)
-        errorCents = 0.0;
-    else
-        errorCents = std::copysign(std::abs(errorCents) - humanWindow, errorCents);
+    double correctedLog2 = state.targetLog2
+        + static_cast<double>(preserve) * vibratoComponent;
+    double humanWindow = 1.5 + 16.0 * static_cast<double>(humanize);
+
+    if (parameters.scaleLock)
+    {
+        // MICROTONAL_HARD_LOCK_V3: Humanize and preserved vibrato are allowed
+        // to live inside the selected target, but their COMBINED steady-state
+        // residual is bounded by the scale spacing.
+        const double minimumStep = std::max(0.1,
+            static_cast<double>(quantizer.minimumStepCents()));
+        const double lockStrictness = static_cast<double>(
+            clamp01(parameters.lockStrictness));
+        const double residualBudgetCents = std::clamp(
+            minimumStep * (0.18 - 0.06 * lockStrictness),
+            1.0, 6.0);
+        humanWindow = std::min(
+            0.40 + 1.60 * static_cast<double>(humanize),
+            0.30 * residualBudgetCents);
+
+        const double vibratoBudgetCents = std::max(
+            0.0, residualBudgetCents - humanWindow);
+        const double requestedVibratoCents =
+            static_cast<double>(preserve) * vibratoComponent * 1200.0;
+        const double preservedVibratoCents = std::clamp(
+            requestedVibratoCents,
+            -vibratoBudgetCents,
+            vibratoBudgetCents);
+        correctedLog2 = state.targetLog2 + preservedVibratoCents / 1200.0;
+
+        // ABSOLUTE_SCALE_LOCK_V4: the fully rigid endpoint contains no hidden
+        // musical softness. With Amount=100%, Humanize=0, Scale-Lock Vibrato=0
+        // and Hard Lock/Strictness at maximum, correction destination is the
+        // exact selected reference frequency. Hysteresis may decide WHICH scale
+        // degree owns identity, and Speed may decide HOW FAST we arrive, but
+        // neither is allowed to leave pitch offset around that chosen target.
+        if (absoluteScaleLock)
+        {
+            preserve = 0.0f;
+            correctedLog2 = state.targetLog2;
+            humanWindow = 0.0;
+        }
+    }
+
+    // SOUND_EQUALS_CORRECTION_V2: target and F0 are absolute pitches in the
+    // same live register. Never wrap their error by an octave.
+    //
+    // LIVE_CORRECTION_COORDINATE_V5: only the fully rigid endpoint uses the
+    // latest accepted live F0. Musical identity, hysteresis, Humanize and all
+    // softer modes intentionally remain on the previous continuity coordinate,
+    // so this change cannot alter their established sound or target behaviour.
+    const double correctionReferenceLog2 = absoluteScaleLock
+        ? correctionObservedLog2
+        : observedLog2;
+    double errorCents = (correctedLog2 - correctionReferenceLog2) * 1200.0;
+    if (!absoluteScaleLock)
+    {
+        if (std::abs(errorCents) <= humanWindow)
+            errorCents = 0.0;
+        else
+            errorCents = std::copysign(std::abs(errorCents) - humanWindow, errorCents);
+    }
 
     const double maximumCents = 100.0 * std::clamp(
         static_cast<double>(finiteOr(parameters.maximumCorrectionSemitones, 12.0f)),
@@ -2380,8 +2468,9 @@ void ModernPitchEngine::updateCorrectionState(
 
     // Sensors determine how carefully identity is interpreted, never how much
     // of the requested correction is applied.
-    state.desiredCents = errorCents
-        * static_cast<double>(clamp01(parameters.amount));
+    state.desiredCents = absoluteScaleLock
+        ? errorCents
+        : errorCents * static_cast<double>(clamp01(parameters.amount));
     state.responseMs = responseTimeMs(parameters, targetChanged, targetJump);
 
     if (!musicalOnset)
@@ -2464,151 +2553,12 @@ double ModernPitchEngine::advanceCorrection(CorrectionState& state) noexcept
             state.noteBodyLatched = false;
             state.noteBodyConfidence = 0.0f;
             state.transportPeriodHz = 0.0;
+            state.pitchStaleSamples = 0;
             state.pitchCentreValid = false;
             state.stableBodyObservations = 0;
         }
     }
     return state.currentCents;
-}
-
-std::array<float, ModernPitchEngine::maximumLpcOrder>
-ModernPitchEngine::calculateReflectionCoefficients(const float* mono,
-                                                   int samples) noexcept
-{
-    std::array<float, maximumLpcOrder> result {};
-    if (mono == nullptr || samples <= maximumLpcOrder + 2)
-        return result;
-
-    std::array<double, maximumLpcOrder + 1> autocorrelation {};
-    for (int lag = 0; lag <= maximumLpcOrder; ++lag)
-    {
-        double sum = 0.0;
-        for (int i = lag; i < samples; ++i)
-            sum += static_cast<double>(mono[i]) * mono[i - lag];
-        autocorrelation[static_cast<std::size_t>(lag)] = sum;
-    }
-    autocorrelation[0] *= 1.0008;
-    double error = autocorrelation[0];
-    if (!(error > 1.0e-10) || !std::isfinite(error))
-        return result;
-
-    std::array<double, maximumLpcOrder + 1> coefficients {};
-    coefficients[0] = 1.0;
-    for (int order = 1; order <= maximumLpcOrder; ++order)
-    {
-        double numerator = autocorrelation[static_cast<std::size_t>(order)];
-        for (int i = 1; i < order; ++i)
-            numerator -= coefficients[static_cast<std::size_t>(i)]
-                * autocorrelation[static_cast<std::size_t>(order - i)];
-        double reflection = numerator / std::max(1.0e-12, error);
-        reflection = std::clamp(reflection, -0.94, 0.94);
-        result[static_cast<std::size_t>(order - 1)]
-            = static_cast<float>(reflection);
-        const auto previous = coefficients;
-        coefficients[static_cast<std::size_t>(order)] = reflection;
-        for (int i = 1; i < order; ++i)
-            coefficients[static_cast<std::size_t>(i)]
-                = previous[static_cast<std::size_t>(i)]
-                - reflection * previous[static_cast<std::size_t>(order - i)];
-        error *= std::max(0.04, 1.0 - reflection * reflection);
-        if (!std::isfinite(error))
-            return {};
-    }
-    return result;
-}
-
-void ModernPitchEngine::pushLpcSample(
-    float monoInput,
-    int channels,
-    const Parameters& parameters,
-    const PitchObservation& observation) noexcept
-{
-    lpcAnalysisRing_[static_cast<std::size_t>(lpcAnalysisWritePosition_)]
-        = sanitiseAudioSample(monoInput);
-    lpcAnalysisWritePosition_ = (lpcAnalysisWritePosition_ + 1)
-        & lpcAnalysisRingMask;
-    lpcAnalysisAvailableSamples_ = std::min(
-        lpcAnalysisAvailableSamples_ + 1, lpcAnalysisRingSize);
-    ++lpcAnalysisHopCounter_;
-    if (lpcAnalysisAvailableSamples_ < lpcAnalysisWindowSize
-        || lpcAnalysisHopCounter_ < lpcAnalysisHop)
-        return;
-    lpcAnalysisHopCounter_ = 0;
-
-    const int start = (lpcAnalysisWritePosition_ - lpcAnalysisWindowSize
-                       + lpcAnalysisRingSize) & lpcAnalysisRingMask;
-    double mean = 0.0;
-    for (int i = 0; i < lpcAnalysisWindowSize; ++i)
-    {
-        const float value = lpcAnalysisRing_[static_cast<std::size_t>(
-            (start + i) & lpcAnalysisRingMask)];
-        lpcAnalysisScratch_[static_cast<std::size_t>(i)] = value;
-        mean += static_cast<double>(value);
-    }
-    mean /= static_cast<double>(lpcAnalysisWindowSize);
-    for (int i = 0; i < lpcAnalysisWindowSize; ++i)
-    {
-        const double phase = static_cast<double>(i)
-            / static_cast<double>(lpcAnalysisWindowSize - 1);
-        const double window = 0.54 - 0.46 * std::cos(twoPi * phase);
-        lpcAnalysisScratch_[static_cast<std::size_t>(i)] = static_cast<float>(
-            (static_cast<double>(lpcAnalysisScratch_[static_cast<std::size_t>(i)])
-             - mean) * window);
-    }
-
-    const float periodicity = clamp01(observation.periodicity);
-    const float protection = clamp01(parameters.transientProtection);
-    const float onset = clamp01(observation.onsetStrength);
-    const float freezeThreshold = 0.72f - 0.28f * protection;
-    const bool richEvidence = parameters.voiceEvidenceValid;
-    const float analysedBody = richEvidence ? clamp01(parameters.voiceBodyEnergy)
-                                            : periodicity;
-    const float analysedHarmonicity = richEvidence
-        ? clamp01(parameters.voiceHarmonicity) : periodicity;
-    const bool trustworthyEnvelope =
-        ((observation.valid && periodicity > 0.30f)
-         || (richEvidence && analysedBody > 0.48f
-             && analysedHarmonicity > 0.30f))
-        && onset < freezeThreshold
-        && (!richEvidence || parameters.voiceBreathiness < 0.78f);
-    if (trustworthyEnvelope)
-        currentReflectionTarget_ = calculateReflectionCoefficients(
-            lpcAnalysisScratch_.data(), lpcAnalysisWindowSize);
-
-    // The sensors decide whether a new PARCOR model is trustworthy; they
-    // do not turn the user's formant control down. Holding the last stable
-    // envelope is the cautious behaviour.
-    const float formantStrength = clamp01(parameters.formantPreservation);
-    const float breathEvidence = richEvidence
-        ? clamp01(parameters.voiceBreathiness)
-        : (1.0f - periodicity)
-            * (1.0f - 0.85f * smoothStep(0.20f, 0.75f, onset));
-    const float breathReduction = 0.65f * clamp01(parameters.breathReduction)
-        * breathEvidence;
-    for (int channel = 0; channel < channels; ++channel)
-        channelPaths_[static_cast<std::size_t>(channel)].setVoiceModel(
-            currentReflectionTarget_, formantStrength, breathReduction);
-}
-
-void ModernPitchEngine::updateLpcTarget(
-    const juce::AudioBuffer<float>& buffer,
-    int channels,
-    int samples,
-    const Parameters& parameters,
-    const PitchObservation& observation) noexcept
-{
-    const int count = std::min(samples, buffer.getNumSamples());
-    const int safeChannels = std::min(channels, buffer.getNumChannels());
-    if (count <= 0 || safeChannels <= 0)
-        return;
-    for (int sample = 0; sample < count; ++sample)
-    {
-        double sum = 0.0;
-        for (int channel = 0; channel < safeChannels; ++channel)
-            sum += buffer.getSample(channel, sample);
-        pushLpcSample(static_cast<float>(sum / static_cast<double>(safeChannels)),
-                      safeChannels, parameters, observation);
-    }
 }
 
 void ModernPitchEngine::process(
@@ -2698,23 +2648,52 @@ void ModernPitchEngine::process(
     }
 
     const bool dualMono = safe.stereoMode == StereoMode::dualMono && channels > 1;
+
+    // SOUND_EQUALS_CORRECTION_V1: linked pitch analysis must not average L+R.
+    // Anti-phase or side-heavy vocals can cancel in that sum and make a clearly
+    // audible signal look pitchless. Choose one coherent, highest-energy input
+    // channel for this block; this changes analysis authority only, never audio.
+    int linkedAnalysisChannel = 0;
+    if (!dualMono && channels > 1)
+    {
+        double bestEnergy = -1.0;
+        for (int channel = 0; channel < channels; ++channel)
+        {
+            double energy = 0.0;
+            const float* channelData = data[static_cast<std::size_t>(channel)];
+            for (int sample = 0; sample < samples; ++sample)
+            {
+                const double value = static_cast<double>(channelData[sample]);
+                energy += value * value;
+            }
+            if (energy > bestEnergy)
+            {
+                bestEnergy = energy;
+                linkedAnalysisChannel = channel;
+            }
+        }
+    }
+
     for (int sample = 0; sample < samples; ++sample)
     {
-        double envelopeAnalysis = 0.0;
-        for (int channel = 0; channel < channels; ++channel)
-            envelopeAnalysis += data[static_cast<std::size_t>(channel)][sample];
-        const PitchObservation& envelopeObservation = dualMono
-            ? latestChannelObservation_[0] : latestObservation_;
-        pushLpcSample(
-            static_cast<float>(envelopeAnalysis / static_cast<double>(channels)),
-            channels, safe, envelopeObservation);
-
         if (dualMono)
         {
             for (int channel = 0; channel < channels; ++channel)
             {
                 PitchObservation observation;
                 auto& tracker = channelTrackers_[static_cast<std::size_t>(channel)];
+                auto& correction = channelCorrections_[static_cast<std::size_t>(channel)];
+                if (correction.noteBodyLatched && correction.transportPeriodHz > 0.0)
+                    tracker.setReacquisitionAnchor(static_cast<float>(correction.transportPeriodHz));
+                else
+                    tracker.clearReacquisitionAnchor();
+                const bool rescueSearch = correction.noteBodyLatched
+                    && correction.pitchStaleSamples >= static_cast<int>(0.060 * sampleRate_);
+                tracker.setRange(rescueSearch ? std::min(safe.minimumPitchHz, 28.0f) : safe.minimumPitchHz,
+                                 safe.maximumPitchHz);
+                tracker.setSensitivity(rescueSearch ? std::max(safe.detectorSensitivity, 0.98f)
+                                                    : safe.detectorSensitivity);
+                tracker.setRescueMode(rescueSearch); // PITCH_RESCUE_V1
                 if (tracker.processSample(data[static_cast<std::size_t>(channel)][sample],
                                           observation))
                 {
@@ -2725,7 +2704,6 @@ void ModernPitchEngine::process(
                         observation, safe);
                 }
 
-                auto& correction = channelCorrections_[static_cast<std::size_t>(channel)];
                 const double controllerCents = advanceCorrection(correction);
                 const auto decision = channelTempoControllers_[static_cast<std::size_t>(channel)]
                     .processSample(controllerCents,
@@ -2745,19 +2723,10 @@ void ModernPitchEngine::process(
                     correction.velocityCentsPerSecond = 0.0;
                 }
                 const double audible = decision.controllerCents;
-                const double ratio = std::clamp(std::exp2(audible / 1200.0), 0.25, 4.0);
-                const auto& syncObservation
-                    = latestChannelObservation_[static_cast<std::size_t>(channel)];
-                const double sourcePeriodSamples = correction.transportPeriodHz > 0.0
-                    ? sampleRate_ / correction.transportPeriodHz
-                    : 0.0;
-                const float syncStrength = transportSyncStrength(
-                    syncObservation, correction, safe);
-                const auto plan = channelClocks_[static_cast<std::size_t>(channel)].next(
-                    ratio, sourcePeriodSamples, syncStrength);
-                data[static_cast<std::size_t>(channel)][sample]
-                    = channelPaths_[static_cast<std::size_t>(channel)].process(
-                        data[static_cast<std::size_t>(channel)][sample], plan);
+                data[static_cast<std::size_t>(channel)][sample] =
+                    wetRenderers_[static_cast<std::size_t>(channel)].processSample(
+                        data[static_cast<std::size_t>(channel)][sample], audible,
+                        safe.formantPreservation);
                 if (channel == 0)
                 {
                     latestObservation_ = latestChannelObservation_[0];
@@ -2768,12 +2737,21 @@ void ModernPitchEngine::process(
         }
         else
         {
-            double analysis = 0.0;
-            for (int channel = 0; channel < channels; ++channel)
-                analysis += data[static_cast<std::size_t>(channel)][sample];
+            const float analysis = data[static_cast<std::size_t>(linkedAnalysisChannel)][sample];
             PitchObservation observation;
-            if (linkedTracker_.processSample(
-                static_cast<float>(analysis / static_cast<double>(channels)), observation))
+            if (linkedCorrection_.noteBodyLatched && linkedCorrection_.transportPeriodHz > 0.0)
+                linkedTracker_.setReacquisitionAnchor(
+                    static_cast<float>(linkedCorrection_.transportPeriodHz));
+            else
+                linkedTracker_.clearReacquisitionAnchor();
+            const bool rescueSearch = linkedCorrection_.noteBodyLatched
+                && linkedCorrection_.pitchStaleSamples >= static_cast<int>(0.060 * sampleRate_);
+            linkedTracker_.setRange(rescueSearch ? std::min(safe.minimumPitchHz, 28.0f) : safe.minimumPitchHz,
+                                    safe.maximumPitchHz);
+            linkedTracker_.setSensitivity(rescueSearch ? std::max(safe.detectorSensitivity, 0.98f)
+                                                       : safe.detectorSensitivity);
+            linkedTracker_.setRescueMode(rescueSearch); // PITCH_RESCUE_V1
+            if (linkedTracker_.processSample(analysis, observation))
             {
                 latestObservation_ = observation;
                 updateCorrectionState(linkedCorrection_, linkedQuantizer_, observation, safe);
@@ -2795,19 +2773,11 @@ void ModernPitchEngine::process(
                 linkedCorrection_.velocityCentsPerSecond = 0.0;
             }
             audibleCorrectionCents_ = decision.controllerCents;
-            const double ratio = std::clamp(
-                std::exp2(audibleCorrectionCents_ / 1200.0), 0.25, 4.0);
-            const double sourcePeriodSamples = linkedCorrection_.transportPeriodHz > 0.0
-                ? sampleRate_ / linkedCorrection_.transportPeriodHz
-                : 0.0;
-            const float syncStrength = transportSyncStrength(
-                latestObservation_, linkedCorrection_, safe);
-            const auto plan = linkedClock_.next(
-                ratio, sourcePeriodSamples, syncStrength);
             for (int channel = 0; channel < channels; ++channel)
-                data[static_cast<std::size_t>(channel)][sample]
-                    = channelPaths_[static_cast<std::size_t>(channel)].process(
-                        data[static_cast<std::size_t>(channel)][sample], plan);
+                data[static_cast<std::size_t>(channel)][sample] =
+                    wetRenderers_[static_cast<std::size_t>(channel)].processSample(
+                        data[static_cast<std::size_t>(channel)][sample], audibleCorrectionCents_,
+                        safe.formantPreservation);
         }
 
         if (linkedCorrection_.noteBodyLatched
@@ -2863,9 +2833,9 @@ void ModernPitchEngine::processBypassed(juce::AudioBuffer<float>& buffer)
     for (int channel = 0; channel < channels; ++channel)
     {
         float* data = buffer.getWritePointer(channel);
-        auto& path = channelPaths_[static_cast<std::size_t>(channel)];
+        auto& renderer = wetRenderers_[static_cast<std::size_t>(channel)];
         for (int sample = 0; sample < samples; ++sample)
-            data[sample] = path.processBypassed(data[sample], latencySamples_);
+            data[sample] = renderer.processBypassedSample(data[sample]);
     }
 }
 
@@ -2883,6 +2853,7 @@ void ModernPitchEngine::publishMetering(
     meterConfidence_.store(observation.confidence, std::memory_order_relaxed);
     meterVoicing_.store(observation.voicing, std::memory_order_relaxed);
     meterPeriodicity_.store(observation.periodicity, std::memory_order_relaxed);
+    meterConsensus_.store(observation.consensus, std::memory_order_relaxed);
     meterCorrectionCents_.store(static_cast<float>(audibleCents),
                                 std::memory_order_relaxed);
     meterCorrectionVelocity_.store(static_cast<float>(state.velocityCentsPerSecond),
@@ -2926,7 +2897,7 @@ ModernPitchEngine::Metering ModernPitchEngine::getMetering() const noexcept
                                            + 0.45f * result.harmonicity);
         result.maskStability = result.harmonicity;
         result.sustainedNoteSeconds = meterSustainedSeconds_.load(std::memory_order_relaxed);
-        result.consensus = result.harmonicity;
+        result.consensus = meterConsensus_.load(std::memory_order_relaxed);
         result.correctionCents = meterCorrectionCents_.load(std::memory_order_relaxed);
         result.wetMix = 1.0f;
         result.outputSourceCorrespondence = 100.0f * result.spectralReliability;
