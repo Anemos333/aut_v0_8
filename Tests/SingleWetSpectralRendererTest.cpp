@@ -35,6 +35,50 @@ double tonePower(const std::vector<float>& signal,
     return real * real + imaginary * imaginary;
 }
 
+// Authority is a frequency-ratio contract, not merely an energy-placement
+// contract.  Search the dominant coherent sinusoid around the commanded target
+// at sub-bin resolution so a several-cent transport error cannot hide behind
+// a broad FFT peak.
+double estimateToneFrequency(const std::vector<float>& signal,
+                             double expectedHz,
+                             int startSample)
+{
+    double bestFrequency = expectedHz;
+    double bestPower = -1.0;
+    for (double frequency = expectedHz - 3.0;
+         frequency <= expectedHz + 3.0001;
+         frequency += 0.05)
+    {
+        const double power = tonePower(signal, frequency, startSample);
+        if (power > bestPower)
+        {
+            bestPower = power;
+            bestFrequency = frequency;
+        }
+    }
+
+    double left = bestFrequency - 0.08;
+    double right = bestFrequency + 0.08;
+    for (int iteration = 0; iteration < 24; ++iteration)
+    {
+        const double third = (right - left) / 3.0;
+        const double a = left + third;
+        const double b = right - third;
+        if (tonePower(signal, a, startSample) < tonePower(signal, b, startSample))
+            left = a;
+        else
+            right = b;
+    }
+    return 0.5 * (left + right);
+}
+
+double centsError(double measuredHz, double expectedHz)
+{
+    if (!(measuredHz > 0.0) || !(expectedHz > 0.0))
+        return 1.0e9;
+    return 1200.0 * std::log2(measuredHz / expectedHz);
+}
+
 std::vector<float> renderTone(int frameSize,
                               double correctionCents,
                               double inputFrequencyHz = 220.0)
@@ -42,7 +86,7 @@ std::vector<float> renderTone(int frameSize,
     SingleWetSpectralRenderer renderer;
     renderer.prepare(sampleRate, frameSize);
 
-    std::vector<float> output(48000);
+    std::vector<float> output(72000);
     for (int sample = 0; sample < static_cast<int>(output.size()); ++sample)
     {
         const float input = 0.22f * static_cast<float>(std::sin(
@@ -98,6 +142,46 @@ int main()
         success &= check(targetPower > 1000.0 * sourcePower,
                          frameSize == 512 ? "quality_has_no_audible_source_copy"
                                           : "live_and_experimental_have_no_audible_source_copy");
+    }
+
+    // EXACT_RENDER_RATIO_V1: prove that the frozen renderer realizes the
+    // commanded ratio itself. If this passes while a vocal render is several
+    // cents off, the remaining error is upstream (F0/control), not hidden
+    // attenuation or reinterpretation inside the spectral transport.
+    struct RatioCase
+    {
+        double inputHz;
+        double correctionCents;
+        const char* name;
+    };
+    const std::array<RatioCase, 4> ratioCases {{
+        { 173.70,  37.25, "low_fractional_up" },
+        { 220.00, -83.40, "mid_fractional_down" },
+        { 311.13, 137.60, "upper_fractional_up" },
+        { 452.00, -46.53, "vocal_region_down" }
+    }};
+    for (const int frameSize : frameSizes)
+    {
+        for (const auto& testCase : ratioCases)
+        {
+            const auto output = renderTone(frameSize,
+                                           testCase.correctionCents,
+                                           testCase.inputHz);
+            const double expectedHz = testCase.inputHz
+                * std::exp2(testCase.correctionCents / 1200.0);
+            const double measuredHz = estimateToneFrequency(output,
+                                                             expectedHz,
+                                                             24000);
+            const double error = centsError(measuredHz, expectedHz);
+            std::cerr << "exact_render_frame_" << frameSize << '_'
+                      << testCase.name << "_expected_hz=" << expectedHz
+                      << " measured_hz=" << measuredHz
+                      << " error_cents=" << error << '\n';
+            success &= check(std::abs(error) < 0.35,
+                             frameSize == 512
+                                ? "quality_realizes_commanded_pitch_ratio"
+                                : "live_realizes_commanded_pitch_ratio");
+        }
     }
 
     const auto unity = renderTone(512, 0.0);
