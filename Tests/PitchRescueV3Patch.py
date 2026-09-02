@@ -22,7 +22,8 @@ if 'wideTransitionObservations = 8' not in cpp:
     raise SystemExit('PitchRescueV4 persistent challenger guard missing')
 
 # Audio-presence authority is analysis/supervisor only; the frozen renderer is
-# never opened by this chain.
+# never opened by this chain. V5 separates continuity F0 from the exact-lock
+# correction coordinate without changing the renderer or any softer mode.
 runpy.run_path('Tests/RapVoicingV1Patch.py', run_name='__main__')
 runpy.run_path('Tests/RapVoicingV2TestPatch.py', run_name='__main__')
 runpy.run_path('Tests/RapVoicingV2CorrectionPatch.py', run_name='__main__')
@@ -34,5 +35,6 @@ runpy.run_path('Tests/CorrectionAuthorityV3Patch.py', run_name='__main__')
 runpy.run_path('Tests/CorrectionAuthorityV3TestFixPatch.py', run_name='__main__')
 runpy.run_path('Tests/CorrectionAuthorityV4Patch.py', run_name='__main__')
 runpy.run_path('Tests/CorrectionAuthorityV4IntegrationPatch.py', run_name='__main__')
+runpy.run_path('Tests/CorrectionAuthorityV5Patch.py', run_name='__main__')
 runpy.run_path('Tests/SingleWetPurityV6Patch.py', run_name='__main__')
-print('Pitch rescue V3/V4 verified; sound=correction V1/V2, microtonal hard-lock V3 and absolute exact-target V4, coherent hysteresis/Speed GUI integration, isolated dense-lock regressions, rap presence, zero-path, zero-consensus correction, real consensus metering and production spectral-purity guards applied')
+print('Pitch rescue V3/V4 verified; sound=correction V1/V2, microtonal hard-lock V3, absolute exact-target V4 and live-correction-coordinate V5, coherent hysteresis/Speed GUI integration, isolated dense-lock regressions, rap presence, zero-path, zero-consensus correction, real consensus metering and production spectral-purity guards applied')
