@@ -182,7 +182,14 @@ public:
 private:
     struct PitchObservation
     {
+        // frequencyHz is the continuity/identity coordinate. It may be
+        // smoothed by the tracker so target ownership remains stable.
         float frequencyHz = 0.0f;
+
+        // LIVE_CORRECTION_COORDINATE_V5: latest accepted live F0 in the same
+        // register, used only by the fully rigid Scale Lock endpoint. This
+        // prevents continuity smoothing from becoming audible pitch residual.
+        float correctionFrequencyHz = 0.0f;
         float confidence = 0.0f;
         float periodicity = 0.0f;
         float voicing = 0.0f;

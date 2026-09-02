@@ -934,6 +934,65 @@ int main()
     success &= check(asymmetricState.targetValid && asymmetricResidual < 1.0e-9,
                      "absolute_scale_lock_zero_residual_asymmetric_custom");
 
+    // LIVE_CORRECTION_COORDINATE_V5: continuity smoothing may lag the
+    // instantaneous vocal F0, but that lag must never become residual pitch in
+    // the fully rigid endpoint. Target identity still follows frequencyHz;
+    // correction depth follows correctionFrequencyHz.
+    ModernPitchEngine::ScaleQuantizer liveCoordinateQuantizer;
+    liveCoordinateQuantizer.reset();
+    const double liveCoordinateUnison = 1.0;
+    liveCoordinateQuantizer.setScale(&liveCoordinateUnison, 1, 440.0);
+    ModernPitchEngine::CorrectionState liveCoordinateState;
+    auto liveCoordinateObservation = strongPitch(445.0f);
+    liveCoordinateObservation.audioPresent = true;
+    liveCoordinateObservation.correctionFrequencyHz = 452.0f;
+    engine->updateCorrectionState(liveCoordinateState,
+                                  liveCoordinateQuantizer,
+                                  liveCoordinateObservation,
+                                  absoluteLockParameters);
+    const double liveCoordinateTargetHz = std::exp2(
+        liveCoordinateState.targetLog2);
+    const double expectedLiveCorrection = 1200.0 * std::log2(
+        liveCoordinateTargetHz
+        / static_cast<double>(liveCoordinateObservation.correctionFrequencyHz));
+    const double continuityCoordinateCorrection = 1200.0 * std::log2(
+        liveCoordinateTargetHz
+        / static_cast<double>(liveCoordinateObservation.frequencyHz));
+    const double liveCoordinateResidual = std::abs(
+        1200.0 * std::log2(
+            static_cast<double>(liveCoordinateObservation.correctionFrequencyHz)
+            * std::exp2(liveCoordinateState.desiredCents / 1200.0)
+            / liveCoordinateTargetHz));
+    std::cerr << "live_correction_coordinate_expected_cents="
+              << expectedLiveCorrection
+              << " desired_cents=" << liveCoordinateState.desiredCents
+              << " residual_cents=" << liveCoordinateResidual << '\n';
+    success &= check(liveCoordinateState.targetValid
+                     && std::abs(liveCoordinateState.desiredCents
+                                 - expectedLiveCorrection) < 1.0e-6
+                     && std::abs(liveCoordinateState.desiredCents
+                                 - continuityCoordinateCorrection) > 20.0
+                     && liveCoordinateResidual < 1.0e-6,
+                     "absolute_scale_lock_uses_live_correction_coordinate");
+
+    // Softer Scale Lock must remain bit-for-contract on the continuity F0. The
+    // new field is deliberately ignored unless every absolute-lock condition
+    // is active.
+    ModernPitchEngine::Parameters softCoordinateParameters = absoluteLockParameters;
+    softCoordinateParameters.humanize = 0.25f;
+    ModernPitchEngine::ScaleQuantizer softCoordinateQuantizer;
+    softCoordinateQuantizer.reset();
+    softCoordinateQuantizer.setScale(&liveCoordinateUnison, 1, 440.0);
+    ModernPitchEngine::CorrectionState softCoordinateState;
+    engine->updateCorrectionState(softCoordinateState,
+                                  softCoordinateQuantizer,
+                                  liveCoordinateObservation,
+                                  softCoordinateParameters);
+    const double softReferenceError = std::abs(
+        softCoordinateState.desiredCents - expectedLiveCorrection);
+    success &= check(softReferenceError > 1.0,
+                     "soft_scale_lock_ignores_live_correction_coordinate");
+
     // Native API semantics: one semitone means 100 cents, with no adapter hack.
     const double unison = 1.0;
     quantizer.setScale(&unison, 1, 440.0);

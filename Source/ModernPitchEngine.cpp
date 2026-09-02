@@ -1504,6 +1504,16 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
         const float consensusGate = smoothStep(0.10f, 0.78f, trackedConsensus_);
 
         observation.frequencyHz = trackedPitchHz_;
+
+        // LIVE_CORRECTION_COORDINATE_V5: identity remains on the proven
+        // continuity-smoothed track, but a rigid lock must calculate its ratio
+        // from the latest accepted F0 rather than from that delayed identity
+        // coordinate. All non-rigid modes continue to use frequencyHz below.
+        observation.correctionFrequencyHz = presenceMode_
+            && std::isfinite(decision.candidate.frequencyHz)
+            && decision.candidate.frequencyHz > 0.0f
+            ? decision.candidate.frequencyHz
+            : trackedPitchHz_;
         observation.confidence = trackedConfidence_;
         observation.periodicity = trackedPeriodicity_;
         observation.consensus = trackedConsensus_;
@@ -1539,6 +1549,7 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
         }
 
         observation.frequencyHz = trackedPitchHz_;
+        observation.correctionFrequencyHz = trackedPitchHz_;
         observation.confidence = trackedConfidence_;
         observation.periodicity = trackedPeriodicity_;
         observation.consensus = trackedConsensus_;
@@ -2236,6 +2247,12 @@ void ModernPitchEngine::updateCorrectionState(
     }
 
     const double observedLog2 = safeLog2(observation.frequencyHz);
+    const float correctionFrequencyHz =
+        std::isfinite(observation.correctionFrequencyHz)
+        && observation.correctionFrequencyHz > 0.0f
+        ? observation.correctionFrequencyHz
+        : observation.frequencyHz;
+    const double correctionObservedLog2 = safeLog2(correctionFrequencyHz);
     bool liveIdentityBreak = false;
     if (!state.pitchCentreValid || musicalOnset)
     {
@@ -2425,10 +2442,17 @@ void ModernPitchEngine::updateCorrectionState(
         }
     }
 
-    // SOUND_EQUALS_CORRECTION_V2: targetLog2 and observedLog2 are absolute
-    // pitches in the same live register. Never wrap their error by an octave:
-    // +/-1200 cents must not collapse to zero and create an audible bypass.
-    double errorCents = (correctedLog2 - observedLog2) * 1200.0;
+    // SOUND_EQUALS_CORRECTION_V2: target and F0 are absolute pitches in the
+    // same live register. Never wrap their error by an octave.
+    //
+    // LIVE_CORRECTION_COORDINATE_V5: only the fully rigid endpoint uses the
+    // latest accepted live F0. Musical identity, hysteresis, Humanize and all
+    // softer modes intentionally remain on the previous continuity coordinate,
+    // so this change cannot alter their established sound or target behaviour.
+    const double correctionReferenceLog2 = absoluteScaleLock
+        ? correctionObservedLog2
+        : observedLog2;
+    double errorCents = (correctedLog2 - correctionReferenceLog2) * 1200.0;
     if (!absoluteScaleLock)
     {
         if (std::abs(errorCents) <= humanWindow)
