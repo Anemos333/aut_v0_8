@@ -1,4 +1,5 @@
 # Trigger materialization after workflow creation.
+# Trigger read-only validation after the architecture contract update.
 from pathlib import Path
 
 header_path = Path('Source/SingleWetSpectralRenderer.h')
