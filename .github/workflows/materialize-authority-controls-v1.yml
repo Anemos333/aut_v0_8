@@ -1,0 +1,46 @@
+name: Materialize Authority Controls V1
+
+on:
+  push:
+    branches:
+      - authority-controls-explicit-v1
+    paths:
+      - 'Tests/AuthorityControlsExplicitV1Patch.py'
+      - '.github/workflows/materialize-authority-controls-v1.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout staging branch
+        uses: actions/checkout@v4
+        with:
+          ref: authority-controls-explicit-v1
+          fetch-depth: 1
+
+      - name: Verify frozen renderer before control-only patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "3080ba804cb038421b075d76f5eceec335c22396"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+
+      - name: Materialize explicit authority controls
+        run: python3 Tests/AuthorityControlsExplicitV1Patch.py
+
+      - name: Commit materialized supervisor changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add Source/ModernPitchEngine.cpp Source/ModernPitchEngine.h Source/LivePitchProcessor.h Tests/SupervisorContinuityTest.cpp
+          if git diff --cached --quiet; then
+            echo "Authority controls already materialized"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Materialize explicit authority controls V1"
+          git push origin HEAD:authority-controls-explicit-v1
