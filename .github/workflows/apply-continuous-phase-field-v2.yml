@@ -24,14 +24,15 @@ jobs:
           git diff --check
           grep -q 'CONTINUOUS_PHASE_FIELD_V2' Source/SingleWetSpectralRenderer.cpp
           ! grep -q 'const bool usePeakPhase' Source/SingleWetSpectralRenderer.cpp
-      - name: Materialize source
+          grep -q 'renderer_phase_field_is_continuous_not_binary' Tests/GuiAudioControlContractTest.cpp
+      - name: Materialize source and contract
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add Source/SingleWetSpectralRenderer.cpp
+          git add Source/SingleWetSpectralRenderer.cpp Tests/GuiAudioControlContractTest.cpp
           if git diff --cached --quiet; then
-            echo 'No source change required'
+            echo 'No materialization change required'
           else
-            git commit -m 'Materialize continuous phase field V2'
+            git commit -m 'Materialize continuous phase field V2 contract'
             git push
           fi
