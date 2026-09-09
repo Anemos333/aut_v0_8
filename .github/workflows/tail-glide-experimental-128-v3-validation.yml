@@ -1,0 +1,150 @@
+name: Tail Glide Experimental 128 V3 Validation
+
+on:
+  push:
+    branches: [quality-tail-glide-experimental-128-v3]
+    paths:
+      - 'Source/ModernPitchEngine.cpp'
+      - 'Source/ModernPitchEngine.h'
+      - 'Source/SingleWetSpectralRenderer.cpp'
+      - 'Source/SingleWetSpectralRenderer.h'
+      - 'Source/LivePitchProcessor.h'
+      - 'Tests/SingleWetSpectralRendererTest.cpp'
+      - 'Tests/CleanModernPitchEngineTest.cpp'
+      - 'Tests/SupervisorContinuityTest.cpp'
+      - 'Tests/GuiAudibilityTest.cpp'
+      - 'Tests/GuiAudioControlContractTest.cpp'
+      - 'CMakeLists.txt'
+      - '.github/workflows/tail-glide-experimental-128-v3-validation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tail-glide-experimental-128-v3-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-contract:
+    name: Single-wet source contract
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify topology and scoped changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'EXPERIMENTAL_128_V3' Source/ModernPitchEngine.cpp
+          grep -q 'case LatencyMode::ultraLive: return 128' Source/ModernPitchEngine.cpp
+          grep -q 'TAIL_MELODIC_MICRO_GLIDE_V1' Source/ModernPitchEngine.cpp
+          grep -q 'SHORT_LATTICE_COHERENT_PHASE_V3' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'if (frameSize_ <= 256 && !nearestPeak_.empty())' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'targetPosition = static_cast<double>(sourceBin) \* safeRatio' Source/SingleWetSpectralRenderer.cpp
+          test "$(grep -c 'SynthesisLayer layer_' Source/SingleWetSpectralRenderer.h)" -eq 1
+          ! grep -Eq 'wetMix_|delayedDry|secondaryLayer|TransitionManager|array<SynthesisLayer|dryTrust_|noisePath|harmonicMask' Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
+          grep -q 'weak_tail_target_change_uses_single_wet_micro_glide' Tests/SupervisorContinuityTest.cpp
+          grep -q 'tail_micro_glide_does_not_weaken_authority_destination' Tests/SupervisorContinuityTest.cpp
+          grep -q 'very_weak_tail_keeps_owned_degree_without_dry_bypass' Tests/SupervisorContinuityTest.cpp
+          grep -q 'frameSizes { 512, 256, 128 }' Tests/SingleWetSpectralRendererTest.cpp
+
+  invariant-tests:
+    name: Invariants (${{ matrix.os }})
+    needs: source-contract
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev
+      - name: Configure Linux
+        if: runner.os == 'Linux'
+        run: cmake -S . -B build-v3 -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+      - name: Configure Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cmake -S . -B build-v3 `
+            -G "Visual Studio 17 2022" `
+            -A x64 `
+            -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+      - name: Build invariant tests
+        run: >-
+          cmake --build build-v3 --config Release
+          --target CleanModernPitchEngineTest VoiceEvidenceAnalyzerTest
+          SupervisorContinuityTest SingleWetSpectralRendererTest
+          GuiAudibilityTest GuiAudioControlContractTest --parallel 2
+      - name: Run invariants Linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./build-v3/clean-engine-tests/CleanModernPitchEngineTest
+          ./build-v3/clean-engine-tests/VoiceEvidenceAnalyzerTest
+          ./build-v3/clean-engine-tests/SupervisorContinuityTest
+          ./build-v3/clean-engine-tests/SingleWetSpectralRendererTest
+          ./build-v3/clean-engine-tests/GuiAudibilityTest
+          ./build-v3/clean-engine-tests/GuiAudioControlContractTest
+      - name: Run invariants Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tests = @(
+            '.\build-v3\clean-engine-tests\CleanModernPitchEngineTest.exe',
+            '.\build-v3\clean-engine-tests\VoiceEvidenceAnalyzerTest.exe',
+            '.\build-v3\clean-engine-tests\SupervisorContinuityTest.exe',
+            '.\build-v3\clean-engine-tests\SingleWetSpectralRendererTest.exe',
+            '.\build-v3\clean-engine-tests\GuiAudibilityTest.exe',
+            '.\build-v3\clean-engine-tests\GuiAudioControlContractTest.exe'
+          )
+          foreach ($test in $tests) {
+            & $test
+            if ($LASTEXITCODE -ne 0) { throw "$test failed with $LASTEXITCODE" }
+          }
+
+  windows-vst3:
+    name: Windows VST3 candidate
+    needs: source-contract
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S . -B build-vst3 `
+            -G "Visual Studio 17 2022" `
+            -A x64
+      - name: Build VST3
+        shell: pwsh
+        run: cmake --build build-vst3 --config Release --target Neumaton_VST3 --parallel 2
+      - name: Package and checksum
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path artifact | Out-Null
+          $vst3 = Get-ChildItem build-vst3 -Recurse -Directory -Filter 'Neumaton.vst3' | Select-Object -First 1
+          if (-not $vst3) { throw 'Neumaton.vst3 not found' }
+          Copy-Item $vst3.FullName artifact\Neumaton.vst3 -Recurse -Force
+          Compress-Archive artifact\Neumaton.vst3 artifact\Neumaton-Tail-Glide-Experimental-128-V3-Windows.zip -Force
+          (Get-FileHash artifact\Neumaton-Tail-Glide-Experimental-128-V3-Windows.zip -Algorithm SHA256).Hash.ToLower() | Out-File -Encoding ascii artifact\sha256.txt
+      - name: Upload Windows candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: Neumaton-Tail-Glide-Experimental-128-V3-Windows
+          path: |
+            artifact/Neumaton-Tail-Glide-Experimental-128-V3-Windows.zip
+            artifact/sha256.txt
+          retention-days: 14
+          if-no-files-found: error
