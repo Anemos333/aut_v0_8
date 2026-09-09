@@ -119,6 +119,7 @@ int main()
                          && has(renderer, "PURE_SINGLE_TRANSPORT_V4")
                          && has(renderer, "MINIMAL_RENDERER_V5")
                          && has(renderer, "TIMBRE_PHASE_LOCK_V1")
+                         && has(renderer, "CONTINUOUS_PHASE_FIELD_V2")
                          && has(renderer,
                                 "const double targetPosition = static_cast<double>(sourceBin) * safeRatio")
                          && has(renderer,
@@ -126,14 +127,21 @@ int main()
                          && has(renderer,
                                 "* trueSourceBins_[static_cast<std::size_t>(sourceBin)]")
                          && has(renderer,
-                                "const double outputPhase = usePeakPhase")
+                                "const float correctionPhaseNeed = smoothStep(6.0f, 42.0f")
                          && has(renderer,
-                                "propagatedPhases_[static_cast<std::size_t>(peak)] + relativeAnalysisPhase")
+                                "const double outputPhase = ownPhase")
                          && has(renderer,
-                                ": propagatedPhases_[sourceIndex]")
+                                "+ static_cast<double>(lockStrength) * phaseDelta")
+                         && !has(renderer, "const bool usePeakPhase")
                          && has(renderer,
                                 "const float outputMagnitude = magnitude"),
                      "renderer_uses_one_minimal_audio_transport");
+
+    success &= check(has(renderer, "CONTINUOUS_PHASE_FIELD_V2")
+                         && !has(renderer, "const bool usePeakPhase")
+                         && has(renderer, "const double phaseDelta = wrapPhase(lockedPhase - ownPhase)")
+                         && has(renderer, "spatialLock * correctionPhaseNeed"),
+                     "renderer_phase_field_is_continuous_not_binary");
 
     const std::vector<std::string> forbiddenRendererTerms {
         "layer.spectrum[sourceIndex] += fftBuffer_[sourceIndex]",
