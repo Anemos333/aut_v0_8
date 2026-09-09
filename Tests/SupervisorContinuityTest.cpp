@@ -1035,6 +1035,79 @@ int main()
     success &= check(std::abs(immediateController - explicitAuthorityState.desiredCents) < 1.0e-9
                      && std::abs(explicitAuthorityState.velocityCentsPerSecond) < 1.0e-12,
                      "response_zero_reaches_destination_in_one_sample");
+
+
+    // TAIL_MELODIC_MICRO_GLIDE_V1 regression: a strong body keeps literal
+    // Response=0 above. A weak-but-still-musical Scale-Lock tail may move to the
+    // next real degree, but it must do so on the same wet trajectory and still
+    // converge exactly to the unattenuated destination.
+    const std::array<double, 2> tailScale {
+        1.0, std::exp2(1.0 / 12.0)
+    };
+    ModernPitchEngine::ScaleQuantizer tailQuantizer;
+    tailQuantizer.reset();
+    tailQuantizer.setScale(tailScale.data(), static_cast<int>(tailScale.size()), 440.0);
+    ModernPitchEngine::Parameters tailParameters = explicitAuthorityParameters;
+    setBodyEvidence(tailParameters);
+    tailParameters.voiceEventStrength = 0.0f;
+    ModernPitchEngine::CorrectionState tailState;
+    auto tailBody = strongPitch(444.0f);
+    tailBody.audioPresent = true;
+    tailBody.correctionFrequencyHz = 444.0f;
+    engine->updateCorrectionState(tailState, tailQuantizer,
+                                  tailBody, tailParameters);
+    static_cast<void>(engine->advanceCorrection(tailState));
+    const double bodyTarget = tailState.targetLog2;
+
+    tailParameters.voiceEvidenceValid = true;
+    tailParameters.voiceBodyEnergy = 0.30f;
+    tailParameters.voiceHarmonicity = 0.35f;
+    tailParameters.voiceSpectralReliability = 0.38f;
+    tailParameters.voiceBreathiness = 0.42f;
+    tailParameters.voiceEventStrength = 0.05f;
+    auto melodicTail = strongPitch(465.0f);
+    melodicTail.audioPresent = true;
+    melodicTail.correctionFrequencyHz = 465.0f;
+    melodicTail.voicing = 0.52f;
+    melodicTail.periodicity = 0.48f;
+    melodicTail.confidence = 0.50f;
+    melodicTail.consensus = 0.34f;
+    engine->updateCorrectionState(tailState, tailQuantizer,
+                                  melodicTail, tailParameters);
+    const double tailTargetHz = std::exp2(tailState.targetLog2);
+    const double tailExpectedCents = 1200.0 * std::log2(
+        tailTargetHz / static_cast<double>(melodicTail.correctionFrequencyHz));
+    success &= check(std::abs(tailState.targetLog2 - bodyTarget) * 1200.0 > 30.0
+                     && tailState.responseMs >= 5.5
+                     && tailState.responseMs <= 13.1,
+                     "weak_tail_target_change_uses_single_wet_micro_glide");
+    success &= check(std::abs(tailState.desiredCents - tailExpectedCents) < 1.0e-6,
+                     "tail_micro_glide_does_not_weaken_authority_destination");
+    for (int sample = 0; sample < 8000; ++sample)
+        static_cast<void>(engine->advanceCorrection(tailState));
+    success &= check(std::abs(tailState.currentCents - tailState.desiredCents) < 0.001,
+                     "tail_micro_glide_converges_to_exact_destination");
+
+    // Once the tail is breath-like and extremely weak, a lone pitch accident
+    // may not create another tiny note. The owned degree remains corrected;
+    // this is target identity hold, not a bypass or reduction of correction.
+    const double ownedTailTarget = tailState.targetLog2;
+    tailParameters.voiceBodyEnergy = 0.08f;
+    tailParameters.voiceHarmonicity = 0.10f;
+    tailParameters.voiceSpectralReliability = 0.16f;
+    tailParameters.voiceBreathiness = 0.78f;
+    auto weakTailAccident = strongPitch(440.5f);
+    weakTailAccident.audioPresent = true;
+    weakTailAccident.correctionFrequencyHz = 440.5f;
+    weakTailAccident.voicing = 0.20f;
+    weakTailAccident.periodicity = 0.18f;
+    weakTailAccident.confidence = 0.20f;
+    weakTailAccident.consensus = 0.08f;
+    engine->updateCorrectionState(tailState, tailQuantizer,
+                                  weakTailAccident, tailParameters);
+    success &= check(std::abs(tailState.targetLog2 - ownedTailTarget) < 1.0e-12
+                     && std::abs(tailState.desiredCents) > 5.0,
+                     "very_weak_tail_keeps_owned_degree_without_dry_bypass");
     success &= check(engine->adaptiveHysteresis(explicitAuthorityParameters,
                                                  explicitAuthorityQuantizer,
                                                  explicitAuthorityObservation) == 0.0f,

@@ -1831,17 +1831,15 @@ bool ModernPitchEngine::zeroPrudenceAuthority(const Parameters& parameters) noex
 
 int ModernPitchEngine::latencyForMode(LatencyMode mode) noexcept
 {
-    // SINGLE_WET_PURITY_V6
-    // The 128-sample spectral lattice is not a valid production transport for
-    // this renderer: the measured +100-cent target/source power ratio is only
-    // about 2.07 (roughly 3 dB), which is an audibly strong source-frequency
-    // component.  256 samples is the smallest currently proven single-wet
-    // lattice (>2000:1 on the same regression), so Experimental must report
-    // and use that honest latency until a genuinely low-latency transport can
-    // satisfy the same spectral-purity contract.
+    // EXPERIMENTAL_128_V3
+    // CONTINUOUS_PHASE_FIELD_V2 removed the old 128-sample source-copy
+    // failure: the current renderer measures >2000:1 target/source power
+    // on the one-semitone regression while retaining sub-cent ratio error.
+    // Experimental can therefore use and report the honest 128-sample
+    // lattice again; Live remains 256 and Quality remains frozen at 512.
     switch (mode)
     {
-        case LatencyMode::ultraLive: return 256;
+        case LatencyMode::ultraLive: return 128; // EXPERIMENTAL_128_V3
         case LatencyMode::live:      return 256;
         case LatencyMode::quality:   return 512;
     }
@@ -2372,6 +2370,31 @@ void ModernPitchEngine::updateCorrectionState(
         ? correctionObservedLog2 : observedLog2;
     newTarget += std::round(targetRegisterReference - newTarget);
 
+    // TAIL_MELODIC_MICRO_GLIDE_V1
+    // The last voiced fragments of a note can still contain enough periodicity
+    // to make a dense quantizer publish several tiny target identities. That is
+    // musically different from a new note. Keep exact correction authority, but
+    // condition identity only in an evidence-backed Scale-Lock tail: a very weak
+    // breath-like fragment keeps the already owned degree; a moderate fragment
+    // may change degree and will receive a tiny single-path micro-glide below.
+    const double preliminaryTailJump = state.targetValid
+        ? (newTarget - state.targetLog2) * 1200.0 : 0.0;
+    const double preliminaryIdentityThreshold = std::clamp(
+        0.18 * static_cast<double>(quantizer.minimumStepCents()), 0.5, 30.0);
+    const bool scaleLockTail = parameters.scaleLock
+        && state.targetValid
+        && state.noteBodyLatched
+        && !musicalOnset
+        && richEvidence
+        && parameters.voiceEventStrength < 0.35f
+        && bodyScore < 0.52f;
+    const bool tailTooWeakForNewDegree = scaleLockTail
+        && bodyScore < 0.28f
+        && parameters.voiceBreathiness > 0.42f
+        && std::abs(preliminaryTailJump) >= preliminaryIdentityThreshold;
+    if (tailTooWeakForNewDegree)
+        newTarget = state.targetLog2;
+
     const bool targetChanged = !state.targetValid
         || std::abs(newTarget - state.targetLog2) * 1200.0 > 0.1;
     const double targetJump = state.targetValid
@@ -2517,6 +2540,19 @@ void ModernPitchEngine::updateCorrectionState(
         ? errorCents
         : errorCents * static_cast<double>(clamp01(parameters.amount));
     state.responseMs = responseTimeMs(parameters, targetChanged, targetJump);
+
+    // TAIL_MELODIC_MICRO_GLIDE_V1: Response=0 remains literal on a real note
+    // body. Only an evidence-backed weak tail that actually changes degree gets
+    // 5.5..13 ms of continuous movement. desiredCents remains the exact same
+    // destination and the renderer remains 100% wet throughout the glide.
+    if (scaleLockTail && targetIdentityChanged)
+    {
+        const double weakness = std::clamp(
+            (0.52 - static_cast<double>(bodyScore)) / 0.24,
+            0.0, 1.0);
+        const double tailGlideMs = 5.5 + 7.5 * weakness;
+        state.responseMs = std::max(state.responseMs, tailGlideMs);
+    }
 
     if (!musicalOnset)
     {

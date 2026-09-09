@@ -466,8 +466,36 @@ void SingleWetSpectralRenderer::synthesiseLayer(
         {
             double& synthesisPhase =
                 layer.synthesisPhases[static_cast<std::size_t>(sourceBin)];
+
+            // SHORT_LATTICE_COHERENT_PHASE_V3
+            // On 128/256-sample lattices, neighbouring leakage bins belonging
+            // to one partial have noisy independent instantaneous-frequency
+            // estimates. Let only their phase velocity converge continuously
+            // toward the nearest peak's velocity. This is still one phase
+            // field and one spectral transport: no residual/noise path, no dry
+            // contribution, no detector gate, and no change to targetPosition
+            // or safeRatio. Quality (512+) executes the previous equation.
+            double transportSourceBin =
+                trueSourceBins_[static_cast<std::size_t>(sourceBin)];
+            if (frameSize_ <= 256 && !nearestPeak_.empty())
+            {
+                const int velocityPeak = nearestPeak_[static_cast<std::size_t>(sourceBin)];
+                if (velocityPeak >= 0 && velocityPeak <= positiveBins)
+                {
+                    const float distance = static_cast<float>(
+                        std::abs(velocityPeak - sourceBin));
+                    const float coherenceCore = frameSize_ <= 128 ? 0.50f : 0.75f;
+                    const float coherenceFade = frameSize_ <= 128 ? 2.50f : 2.75f;
+                    const float coherence = 1.0f
+                        - smoothStep(coherenceCore, coherenceFade, distance);
+                    const double peakVelocityBin =
+                        trueSourceBins_[static_cast<std::size_t>(velocityPeak)];
+                    transportSourceBin += static_cast<double>(coherence)
+                        * (peakVelocityBin - transportSourceBin);
+                }
+            }
             synthesisPhase += expectedPhaseScale
-                * trueSourceBins_[static_cast<std::size_t>(sourceBin)]
+                * transportSourceBin
                 * safeRatio;
 
             // Keep phases bounded. This improves numerical stability and makes
