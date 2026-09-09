@@ -507,24 +507,43 @@ void SingleWetSpectralRenderer::synthesiseLayer(
         if (targetPosition > static_cast<double>(positiveBins) + 1.0)
             continue;
 
-        // TIMBRE_PHASE_LOCK_V1: local identity phase locking reduces
-        // phase-vocoder metallicity without changing magnitude transport, target
-        // position, correction ratio, FFT count or the single wet path. Only
-        // leakage bins immediately adjacent to a strong local spectral peak are
-        // locked; diffuse/noise bins keep their independently propagated phase.
+        // CONTINUOUS_PHASE_FIELD_V2
+        // The first phase-lock pass used a binary decision: bins close to a
+        // peak followed the peak, every other bin followed its own propagated
+        // phase. That is still one audio path, but the moving binary boundary
+        // can behave like two phase populations when correction is gentle or
+        // changing. Use one continuous phase equation instead.
+        //
+        // At large corrections the core region is exactly the V1 identity
+        // phase lock that preserves the good rigid timbre. Near zero correction
+        // the phase field continuously returns to the bin's own propagation,
+        // so soft settings do not manufacture chorus/comb motion. Correction
+        // magnitude, targetPosition and the commanded pitch ratio are untouched.
         const int peak = nearestPeak_.empty()
             ? sourceBin
             : nearestPeak_[sourceIndex];
-        const int lockRadiusBins = frameSize_ >= 512 ? 2 : 1;
-        const bool usePeakPhase = peak >= 0 && peak <= positiveBins
-            && std::abs(peak - sourceBin) <= lockRadiusBins;
-        const double relativeAnalysisPhase = usePeakPhase
-            ? wrapPhase(static_cast<double>(analysisPhases_[sourceIndex])
-                - static_cast<double>(analysisPhases_[static_cast<std::size_t>(peak)]))
-            : 0.0;
-        const double outputPhase = usePeakPhase
-            ? propagatedPhases_[static_cast<std::size_t>(peak)] + relativeAnalysisPhase
-            : propagatedPhases_[sourceIndex];
+        const bool peakValid = peak >= 0 && peak <= positiveBins;
+        const float peakDistance = peakValid
+            ? static_cast<float>(std::abs(peak - sourceBin))
+            : std::numeric_limits<float>::infinity();
+        const float coreRadiusBins = frameSize_ >= 512 ? 2.0f : 1.0f;
+        const float fadeRadiusBins = frameSize_ >= 512 ? 3.0f : 2.0f;
+        const float spatialLock = peakValid
+            ? 1.0f - smoothStep(coreRadiusBins, fadeRadiusBins, peakDistance)
+            : 0.0f;
+        const float correctionPhaseNeed = smoothStep(6.0f, 42.0f,
+            static_cast<float>(std::abs(safeCents)));
+        const float lockStrength = clamp01(spatialLock * correctionPhaseNeed);
+
+        const double ownPhase = propagatedPhases_[sourceIndex];
+        const double lockedPhase = peakValid
+            ? propagatedPhases_[static_cast<std::size_t>(peak)]
+                + wrapPhase(static_cast<double>(analysisPhases_[sourceIndex])
+                    - static_cast<double>(analysisPhases_[static_cast<std::size_t>(peak)]))
+            : ownPhase;
+        const double phaseDelta = wrapPhase(lockedPhase - ownPhase);
+        const double outputPhase = ownPhase
+            + static_cast<double>(lockStrength) * phaseDelta;
 
         const float sourceEnvelope = std::max(
             1.0e-8f,
