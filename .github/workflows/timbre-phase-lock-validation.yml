@@ -1,14 +1,15 @@
-name: Timbre Phase Lock Validation
+name: Timbre Continuous Phase Field V2 Validation
 
 on:
   push:
     branches:
-      - timbre-metallicity-v1
+      - timbre-continuous-phase-field-v2
     paths:
       - 'Source/SingleWetSpectralRenderer.cpp'
       - 'Source/SingleWetSpectralRenderer.h'
-      - 'Tests/TimbrePhaseLockV1Patch.py'
+      - 'Tests/ContinuousPhaseFieldV2Patch.py'
       - 'Tests/SingleWetSpectralRendererTest.cpp'
+      - 'Tests/GuiAudioControlContractTest.cpp'
       - 'Source/ModernPitchEngine.cpp'
       - 'Source/ModernPitchEngine.h'
       - 'Source/LivePitchProcessor.h'
@@ -20,7 +21,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: timbre-phase-lock-${{ github.ref }}
+  group: timbre-phase-field-v2-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -44,14 +45,14 @@ jobs:
             Tests/SupervisorContinuityTest.cpp
           echo "Authority control layer unchanged"
 
-      - name: Verify phase-lock materialization is deterministic
+      - name: Verify continuous phase field materialization is deterministic
         shell: bash
         run: |
           set -euo pipefail
-          grep -q 'TIMBRE_PHASE_LOCK_V1' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'CONTINUOUS_PHASE_FIELD_V2' Source/SingleWetSpectralRenderer.cpp
           grep -q 'calculatePeakRegions' Source/SingleWetSpectralRenderer.h
-          python3 Tests/TimbrePhaseLockV1Patch.py
-          git diff --exit-code -- Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
+          python3 Tests/ContinuousPhaseFieldV2Patch.py
+          git diff --exit-code -- Source/SingleWetSpectralRenderer.cpp Tests/GuiAudioControlContractTest.cpp
 
       - name: Verify single wet topology remains physical
         shell: bash
@@ -60,9 +61,11 @@ jobs:
           test "$(grep -c 'SynthesisLayer layer_' Source/SingleWetSpectralRenderer.h)" -eq 1
           ! grep -Eq 'wetMix_|delayedDry|secondaryLayer|TransitionManager|array<SynthesisLayer|dryTrust_' \
             Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
+          ! grep -q 'const bool usePeakPhase' Source/SingleWetSpectralRenderer.cpp
           grep -q 'targetPosition = static_cast<double>(sourceBin) \* safeRatio' \
             Source/SingleWetSpectralRenderer.cpp
-          echo "One renderer, one ratio, no dry path"
+          grep -q 'spatialLock \* correctionPhaseNeed' Source/SingleWetSpectralRenderer.cpp
+          echo "One renderer, one ratio, continuous phase field, no dry path"
 
   invariant-tests:
     name: Invariants (${{ matrix.os }})
@@ -167,16 +170,16 @@ jobs:
           $vst3 = Get-ChildItem build-vst3 -Recurse -Directory -Filter 'Neumaton.vst3' | Select-Object -First 1
           if (-not $vst3) { throw 'Neumaton.vst3 not found' }
           Copy-Item $vst3.FullName artifact\Neumaton.vst3 -Recurse -Force
-          Compress-Archive artifact\Neumaton.vst3 artifact\Neumaton-Timbre-Phase-Lock-V1-Windows.zip -Force
-          (Get-FileHash artifact\Neumaton-Timbre-Phase-Lock-V1-Windows.zip -Algorithm SHA256).Hash.ToLower() |
+          Compress-Archive artifact\Neumaton.vst3 artifact\Neumaton-Continuous-Phase-Field-V2-Windows.zip -Force
+          (Get-FileHash artifact\Neumaton-Continuous-Phase-Field-V2-Windows.zip -Algorithm SHA256).Hash.ToLower() |
             Out-File -Encoding ascii artifact\sha256.txt
 
       - name: Upload Windows candidate
         uses: actions/upload-artifact@v4
         with:
-          name: Neumaton-Timbre-Phase-Lock-V1-Windows
+          name: Neumaton-Continuous-Phase-Field-V2-Windows
           path: |
-            artifact/Neumaton-Timbre-Phase-Lock-V1-Windows.zip
+            artifact/Neumaton-Continuous-Phase-Field-V2-Windows.zip
             artifact/sha256.txt
           if-no-files-found: error
           retention-days: 14
