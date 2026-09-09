@@ -1,0 +1,182 @@
+name: Timbre Phase Lock Validation
+
+on:
+  push:
+    branches:
+      - timbre-metallicity-v1
+    paths:
+      - 'Source/SingleWetSpectralRenderer.cpp'
+      - 'Source/SingleWetSpectralRenderer.h'
+      - 'Tests/TimbrePhaseLockV1Patch.py'
+      - 'Tests/SingleWetSpectralRendererTest.cpp'
+      - 'Source/ModernPitchEngine.cpp'
+      - 'Source/ModernPitchEngine.h'
+      - 'Source/LivePitchProcessor.h'
+      - 'CMakeLists.txt'
+      - '.github/workflows/timbre-phase-lock-validation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: timbre-phase-lock-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-contract:
+    name: Timbre source contract
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify Authority control layer is byte-identical
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code 7b09dcbdb954ca598cbff9353e5e454b7774ae09...HEAD -- \
+            Source/ModernPitchEngine.cpp \
+            Source/ModernPitchEngine.h \
+            Source/LivePitchProcessor.h \
+            Tests/SupervisorContinuityTest.cpp
+          echo "Authority control layer unchanged"
+
+      - name: Verify phase-lock materialization is deterministic
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'TIMBRE_PHASE_LOCK_V1' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'calculatePeakRegions' Source/SingleWetSpectralRenderer.h
+          python3 Tests/TimbrePhaseLockV1Patch.py
+          git diff --exit-code -- Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
+
+      - name: Verify single wet topology remains physical
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(grep -c 'SynthesisLayer layer_' Source/SingleWetSpectralRenderer.h)" -eq 1
+          ! grep -Eq 'wetMix_|delayedDry|secondaryLayer|TransitionManager|array<SynthesisLayer|dryTrust_' \
+            Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
+          grep -q 'targetPosition = static_cast<double>(sourceBin) \* safeRatio' \
+            Source/SingleWetSpectralRenderer.cpp
+          echo "One renderer, one ratio, no dry path"
+
+  invariant-tests:
+    name: Invariants (${{ matrix.os }})
+    needs: source-contract
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev
+
+      - name: Configure Linux
+        if: runner.os == 'Linux'
+        run: |
+          cmake -S . -B build-timbre \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Configure Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cmake -S . -B build-timbre `
+            -G "Visual Studio 17 2022" `
+            -A x64 `
+            -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Build invariant tests
+        run: >-
+          cmake --build build-timbre --config Release
+          --target CleanModernPitchEngineTest VoiceEvidenceAnalyzerTest
+          SupervisorContinuityTest SingleWetSpectralRendererTest
+          GuiAudibilityTest GuiAudioControlContractTest --parallel 2
+
+      - name: Run invariant tests on Linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./build-timbre/clean-engine-tests/CleanModernPitchEngineTest
+          ./build-timbre/clean-engine-tests/VoiceEvidenceAnalyzerTest
+          ./build-timbre/clean-engine-tests/SupervisorContinuityTest
+          ./build-timbre/clean-engine-tests/SingleWetSpectralRendererTest
+          ./build-timbre/clean-engine-tests/GuiAudibilityTest
+          ./build-timbre/clean-engine-tests/GuiAudioControlContractTest
+
+      - name: Run invariant tests on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tests = @(
+            '.\build-timbre\clean-engine-tests\CleanModernPitchEngineTest.exe',
+            '.\build-timbre\clean-engine-tests\VoiceEvidenceAnalyzerTest.exe',
+            '.\build-timbre\clean-engine-tests\SupervisorContinuityTest.exe',
+            '.\build-timbre\clean-engine-tests\SingleWetSpectralRendererTest.exe',
+            '.\build-timbre\clean-engine-tests\GuiAudibilityTest.exe',
+            '.\build-timbre\clean-engine-tests\GuiAudioControlContractTest.exe'
+          )
+          foreach ($test in $tests) {
+            & $test
+            if ($LASTEXITCODE -ne 0) { throw "$test failed with $LASTEXITCODE" }
+          }
+
+  windows-vst3:
+    name: Windows VST3 candidate
+    needs: source-contract
+    runs-on: windows-2022
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S . -B build-vst3 `
+            -G "Visual Studio 17 2022" `
+            -A x64
+
+      - name: Build VST3
+        shell: pwsh
+        run: cmake --build build-vst3 --config Release --target Neumaton_VST3 --parallel 2
+
+      - name: Package and checksum
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path artifact | Out-Null
+          $vst3 = Get-ChildItem build-vst3 -Recurse -Directory -Filter 'Neumaton.vst3' | Select-Object -First 1
+          if (-not $vst3) { throw 'Neumaton.vst3 not found' }
+          Copy-Item $vst3.FullName artifact\Neumaton.vst3 -Recurse -Force
+          Compress-Archive artifact\Neumaton.vst3 artifact\Neumaton-Timbre-Phase-Lock-V1-Windows.zip -Force
+          (Get-FileHash artifact\Neumaton-Timbre-Phase-Lock-V1-Windows.zip -Algorithm SHA256).Hash.ToLower() |
+            Out-File -Encoding ascii artifact\sha256.txt
+
+      - name: Upload Windows candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: Neumaton-Timbre-Phase-Lock-V1-Windows
+          path: |
+            artifact/Neumaton-Timbre-Phase-Lock-V1-Windows.zip
+            artifact/sha256.txt
+          if-no-files-found: error
+          retention-days: 14
