@@ -44,3 +44,11 @@ This branch is a release-candidate source branch only while every invariant belo
 - **Humanize describes within-note motion.** Its tolerance is capped to a fraction of the measured minimum scale step, so a dense custom/microtonal scale cannot inherit a chromatic-size same-note window.
 - **Period guidance follows the note, not every F0 frame.** The transport period is latched to musical identity and then follows within-note motion on a long time constant. During attack/acquire/transition/release, the existing period-guidance memory is frozen instead of being ramped by the state change; exact unity must still collapse both read heads to declared latency.
 - **Evidence is causal at the host-block boundary.** The current host block may update analysis for the next block, but evidence from future samples inside that same block cannot classify its first sample.
+
+
+## Single wet Quality reconstruction experiment
+- Production audio is the historical spectral shifter wet reconstruction before any delayed-dry, wet gate, level matching, Dry Trust, or cancellation logic.
+- One synthesis layer only: note changes are expressed by the continuous correction trajectory, never a second synthesis layer/crossfade.
+- Harmonic body and aperiodic residual are committed into one complex spectrum and one IFFT/OLA signal.
+- Voice evidence may alter harmonic/noise classification and search urgency, but cannot scale Amount or correction cents.
+- A latched note body with stale F0 enters acquire/search after 70 ms while preserving the last exact correction until a fresh pitch anchor is found or positive breath/absence releases the note.

@@ -1,0 +1,180 @@
+name: Authority Controls Validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - authority-controls-explicit-v1
+    paths:
+      - 'Source/ModernPitchEngine.cpp'
+      - 'Source/ModernPitchEngine.h'
+      - 'Source/LivePitchProcessor.h'
+      - 'Source/SingleWetSpectralRenderer.cpp'
+      - 'Source/SingleWetSpectralRenderer.h'
+      - 'Tests/SupervisorContinuityTest.cpp'
+      - 'Tests/AuthorityControlsExplicitV1Patch.py'
+      - 'CMakeLists.txt'
+      - '.github/workflows/authority-controls-validation.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: authority-controls-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-contract:
+    name: Explicit authority source contract
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Verify renderer is still frozen V5
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "3080ba804cb038421b075d76f5eceec335c22396"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+          echo "Frozen renderer unchanged"
+
+      - name: Verify explicit authority materialization
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'AUTHORITY_CONTROLS_EXPLICIT_V1' Source/ModernPitchEngine.cpp
+          grep -q 'AUTHORITY_CONTROLS_EXPLICIT_V1' Source/ModernPitchEngine.h
+          grep -q 'AUTHORITY_CONTROLS_EXPLICIT_V1' Source/LivePitchProcessor.h
+          grep -q 'AUTHORITY_CONTROLS_EXPLICIT_V1' Tests/SupervisorContinuityTest.cpp
+          python3 Tests/AuthorityControlsExplicitV1Patch.py
+          git diff --exit-code -- Source Tests
+
+      - name: Verify no dry or parallel transition path returned
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'wetRenderers_\[static_cast<std::size_t>(channel)\].processSample' Source/ModernPitchEngine.cpp
+          test "$(grep -c 'SynthesisLayer layer_' Source/SingleWetSpectralRenderer.h)" -eq 1
+          ! grep -Eq 'wetMix_|dryTrust_|delayedDry|secondaryLayer|TransitionManager|array<SynthesisLayer' Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
+          ! grep -Eq 'liveBoost|experimentalBoost' Source/LivePitchProcessor.h
+          echo "Single wet architecture and visible Hold authority preserved"
+
+  invariant-tests:
+    name: Invariants (${{ matrix.os }})
+    needs: source-contract
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev
+
+      - name: Configure Linux
+        if: runner.os == 'Linux'
+        run: |
+          cmake -S . -B build-authority \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Configure Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cmake -S . -B build-authority `
+            -G "Visual Studio 17 2022" `
+            -A x64 `
+            -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Build invariant tests
+        run: >-
+          cmake --build build-authority --config Release
+          --target CleanModernPitchEngineTest VoiceEvidenceAnalyzerTest
+          SupervisorContinuityTest SingleWetSpectralRendererTest
+          GuiAudibilityTest GuiAudioControlContractTest --parallel 2
+
+      - name: Run invariant tests on Linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./build-authority/clean-engine-tests/CleanModernPitchEngineTest
+          ./build-authority/clean-engine-tests/VoiceEvidenceAnalyzerTest
+          ./build-authority/clean-engine-tests/SupervisorContinuityTest
+          ./build-authority/clean-engine-tests/SingleWetSpectralRendererTest
+          ./build-authority/clean-engine-tests/GuiAudibilityTest
+          ./build-authority/clean-engine-tests/GuiAudioControlContractTest
+
+      - name: Run invariant tests on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tests = @(
+            '.\build-authority\clean-engine-tests\CleanModernPitchEngineTest.exe',
+            '.\build-authority\clean-engine-tests\VoiceEvidenceAnalyzerTest.exe',
+            '.\build-authority\clean-engine-tests\SupervisorContinuityTest.exe',
+            '.\build-authority\clean-engine-tests\SingleWetSpectralRendererTest.exe',
+            '.\build-authority\clean-engine-tests\GuiAudibilityTest.exe',
+            '.\build-authority\clean-engine-tests\GuiAudioControlContractTest.exe'
+          )
+          foreach ($test in $tests) {
+            & $test
+            if ($LASTEXITCODE -ne 0) { throw "$test failed with $LASTEXITCODE" }
+          }
+
+  windows-vst3:
+    name: Windows VST3 candidate
+    needs: source-contract
+    runs-on: windows-2022
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S . -B build-vst3 `
+            -G "Visual Studio 17 2022" `
+            -A x64
+
+      - name: Build VST3
+        shell: pwsh
+        run: cmake --build build-vst3 --config Release --target Neumaton_VST3 --parallel 2
+
+      - name: Package and checksum
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path artifact | Out-Null
+          $vst3 = Get-ChildItem build-vst3 -Recurse -Directory -Filter 'Neumaton.vst3' | Select-Object -First 1
+          if (-not $vst3) { throw 'Neumaton.vst3 not found' }
+          Copy-Item $vst3.FullName artifact\Neumaton.vst3 -Recurse -Force
+          Compress-Archive artifact\Neumaton.vst3 artifact\Neumaton-Authority-Controls-V1-Windows.zip -Force
+          (Get-FileHash artifact\Neumaton-Authority-Controls-V1-Windows.zip -Algorithm SHA256).Hash.ToLower() |
+            Out-File -Encoding ascii artifact\sha256.txt
+
+      - name: Upload Windows candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: Neumaton-Authority-Controls-V1-Windows
+          path: |
+            artifact/Neumaton-Authority-Controls-V1-Windows.zip
+            artifact/sha256.txt
+          if-no-files-found: error
+          retention-days: 14

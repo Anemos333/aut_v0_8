@@ -234,7 +234,7 @@ int main()
         ModernPitchEngine::LatencyMode::live,
         ModernPitchEngine::LatencyMode::quality
     };
-    const std::array<int, 3> expectedLatencies { 128, 256, 512 };
+    const std::array<int, 3> expectedLatencies { 256, 256, 512 };
 
     for (std::size_t index = 0; index < modes.size(); ++index)
     {

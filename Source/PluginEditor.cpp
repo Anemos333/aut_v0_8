@@ -237,9 +237,9 @@ buildPresetMenu();
             {
                 const double norm = std::pow(
                     juce::jlimit(0.0, 1.0, val / 500.0), 1.35);
-                const double mappedVal = mode == 1 ? 3.0 + 4.0 * norm
-                    : mode == 2 ? 1.5 + 3.5 * norm
-                                : 0.35 + 2.65 * norm;
+                const double mappedVal = mode == 1 ? 3.0 + 2.0 * norm
+                    : mode == 2 ? 1.5 + 1.5 * norm
+                                : 0.35 + 1.15 * norm;
                 return juce::String(mappedVal, 2) + " ms";
             }
         }
