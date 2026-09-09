@@ -1,3 +1,4 @@
+# Validation trigger: source and contract are already materialized.
 from pathlib import Path
 
 renderer_path = Path('Source/SingleWetSpectralRenderer.cpp')
