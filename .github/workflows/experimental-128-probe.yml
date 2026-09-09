@@ -1,0 +1,37 @@
+name: Experimental 128 Probe
+
+on:
+  push:
+    branches: [experimental-128-probe-v2]
+    paths:
+      - '.github/workflows/experimental-128-probe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe-windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enable 128-sample renderer probe
+        shell: pwsh
+        run: |
+          $p = 'Tests/SingleWetSpectralRendererTest.cpp'
+          $s = Get-Content $p -Raw
+          $s = $s.Replace('const std::array<int, 2> frameSizes { 512, 256 };', 'const std::array<int, 3> frameSizes { 512, 256, 128 };')
+          if ($s -notmatch 'frameSizes \{ 512, 256, 128 \}') { throw 'probe patch failed' }
+          Set-Content -Path $p -Value $s -NoNewline
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S . -B build-probe `
+            -G "Visual Studio 17 2022" `
+            -A x64 `
+            -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+      - name: Build renderer test
+        run: cmake --build build-probe --config Release --target SingleWetSpectralRendererTest --parallel 2
+      - name: Run 128 probe
+        shell: pwsh
+        run: .\build-probe\clean-engine-tests\SingleWetSpectralRendererTest.exe
