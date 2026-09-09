@@ -118,6 +118,7 @@ int main()
                          && has(renderer, "STABLE_SINGLE_LATTICE_TRANSPORT_V3")
                          && has(renderer, "PURE_SINGLE_TRANSPORT_V4")
                          && has(renderer, "MINIMAL_RENDERER_V5")
+                         && has(renderer, "TIMBRE_PHASE_LOCK_V1")
                          && has(renderer,
                                 "const double targetPosition = static_cast<double>(sourceBin) * safeRatio")
                          && has(renderer,
@@ -125,7 +126,11 @@ int main()
                          && has(renderer,
                                 "* trueSourceBins_[static_cast<std::size_t>(sourceBin)]")
                          && has(renderer,
-                                "const double outputPhase = propagatedPhases_[sourceIndex]")
+                                "const double outputPhase = usePeakPhase")
+                         && has(renderer,
+                                "propagatedPhases_[static_cast<std::size_t>(peak)] + relativeAnalysisPhase")
+                         && has(renderer,
+                                ": propagatedPhases_[sourceIndex]")
                          && has(renderer,
                                 "const float outputMagnitude = magnitude"),
                      "renderer_uses_one_minimal_audio_transport");
