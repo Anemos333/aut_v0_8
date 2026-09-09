@@ -145,7 +145,23 @@ check("C:\\Users\\" not in source_text,
 
 
 # ---------------------------------------------------------------------------
-# 5. Release architecture contract. The accepted renderer remains exactly one
+# 5. Packaging contract: the release target is VST3-only. Other formats may
+#    not silently re-enter the product definition during release hardening.
+cmake = text("CMakeLists.txt")
+check(re.search(r"\bFORMATS\s+VST3\s*(?:\n|\r\n)", cmake) is not None,
+      "cmake_declares_vst3_only")
+check("FORMATS VST3 AU" not in cmake,
+      "au_format_absent")
+check('PRODUCT_NAME "Neumaton"' in cmake,
+      "product_name_stable")
+check("PLUGIN_MANUFACTURER_CODE Mtal" in cmake,
+      "manufacturer_code_stable")
+check("PLUGIN_CODE Matv" in cmake,
+      "plugin_code_stable")
+
+
+# ---------------------------------------------------------------------------
+# 6. Release architecture contract. The accepted renderer remains exactly one
 #    wet path; release hardening is not allowed to reintroduce old routing.
 engine = text("Source/ModernPitchEngine.cpp")
 renderer_h = text("Source/SingleWetSpectralRenderer.h")
