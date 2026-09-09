@@ -1,0 +1,268 @@
+name: Neumaton Release Readiness
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - single-wet-quality-reconstruction
+      - release-readiness-hardening
+  pull_request:
+    branches:
+      - single-wet-quality-reconstruction
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-readiness-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-contract:
+    name: Source and state contract
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Verify accepted release baseline
+        run: python3 Tests/release_readiness_contract.py
+
+      - name: Verify historical transforms are already materialized
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 Tests/UnifiedTransportPatch.py
+          python3 Tests/PitchRescuePatch.py
+          python3 Tests/PitchRescueV2Patch.py
+          python3 Tests/PitchRescueV3Patch.py
+          if ! git diff --exit-code -- Source Tests; then
+            echo "ERROR: historical patch scripts still change the release source."
+            echo "The release workflow is read-only and will never auto-commit DSP changes."
+            exit 1
+          fi
+          echo "Historical transforms are fully materialized."
+
+      - name: Verify release package policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'juce_add_plugin(Neumaton' CMakeLists.txt
+          grep -q 'PRODUCT_NAME "Neumaton"' CMakeLists.txt
+          grep -q 'PLUGIN_CODE Matv' CMakeLists.txt
+          grep -q 'PLUGIN_MANUFACTURER_CODE Mtal' CMakeLists.txt
+          echo "Release metadata contract present."
+
+  invariant-tests:
+    name: Invariants (${{ matrix.os }})
+    needs: source-contract
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev
+
+      - name: Configure Linux
+        if: runner.os == 'Linux'
+        run: |
+          cmake -S . -B build-release-tests \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Configure Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cmake -S . -B build-release-tests `
+            -G "Visual Studio 17 2022" `
+            -A x64 `
+            -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Build invariant tests
+        run: >-
+          cmake --build build-release-tests --config Release
+          --target CleanModernPitchEngineTest VoiceEvidenceAnalyzerTest
+          SupervisorContinuityTest SingleWetSpectralRendererTest
+          GuiAudibilityTest GuiAudioControlContractTest --parallel 2
+
+      - name: Run invariant tests on Linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./build-release-tests/clean-engine-tests/CleanModernPitchEngineTest
+          ./build-release-tests/clean-engine-tests/VoiceEvidenceAnalyzerTest
+          ./build-release-tests/clean-engine-tests/SupervisorContinuityTest
+          ./build-release-tests/clean-engine-tests/SingleWetSpectralRendererTest
+          ./build-release-tests/clean-engine-tests/GuiAudibilityTest
+          ./build-release-tests/clean-engine-tests/GuiAudioControlContractTest
+
+      - name: Run invariant tests on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tests = @(
+            '.\build-release-tests\clean-engine-tests\CleanModernPitchEngineTest.exe',
+            '.\build-release-tests\clean-engine-tests\VoiceEvidenceAnalyzerTest.exe',
+            '.\build-release-tests\clean-engine-tests\SupervisorContinuityTest.exe',
+            '.\build-release-tests\clean-engine-tests\SingleWetSpectralRendererTest.exe',
+            '.\build-release-tests\clean-engine-tests\GuiAudibilityTest.exe',
+            '.\build-release-tests\clean-engine-tests\GuiAudioControlContractTest.exe'
+          )
+          foreach ($test in $tests) {
+            & $test
+            if ($LASTEXITCODE -ne 0) { throw "$test failed with $LASTEXITCODE" }
+          }
+
+  build-windows-vst3:
+    name: Windows VST3
+    needs: source-contract
+    runs-on: windows-2022
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S . -B build-release `
+            -G "Visual Studio 17 2022" `
+            -A x64
+
+      - name: Build VST3 only
+        shell: pwsh
+        run: cmake --build build-release --config Release --target Neumaton_VST3 --parallel 2
+
+      - name: Package and checksum
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path artifact | Out-Null
+          $vst3 = Get-ChildItem build-release -Recurse -Directory -Filter 'Neumaton.vst3' | Select-Object -First 1
+          if (-not $vst3) { throw 'Neumaton.vst3 not found' }
+          Copy-Item $vst3.FullName artifact\Neumaton.vst3 -Recurse -Force
+          Compress-Archive artifact\Neumaton.vst3 artifact\Neumaton-Windows-VST3.zip -Force
+          (Get-FileHash artifact\Neumaton-Windows-VST3.zip -Algorithm SHA256).Hash.ToLower() |
+            Out-File -Encoding ascii artifact\Neumaton-Windows-VST3.sha256
+          if (Get-ChildItem artifact -Recurse -Include '*.component','*.aaxplugin') {
+            throw 'Non-VST3 plugin format found in release artifact'
+          }
+
+      - name: Upload Windows release candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: Neumaton-Windows-VST3
+          path: |
+            artifact/Neumaton-Windows-VST3.zip
+            artifact/Neumaton-Windows-VST3.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  build-linux-vst3:
+    name: Linux VST3
+    needs: source-contract
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build pkg-config zip \
+            libasound2-dev libjack-jackd2-dev libfreetype6-dev libfontconfig1-dev \
+            libx11-dev libxext-dev libxinerama-dev libxrandr-dev libxcursor-dev \
+            libxcomposite-dev libxdamage-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev
+
+      - name: Configure
+        run: cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build VST3 only
+        run: cmake --build build-release --target Neumaton_VST3 --parallel 2
+
+      - name: Package and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifact
+          vst3="$(find build-release -type d -name 'Neumaton.vst3' | head -n 1)"
+          test -n "$vst3"
+          cp -R "$vst3" artifact/Neumaton.vst3
+          (cd artifact && zip -qr Neumaton-Linux-VST3.zip Neumaton.vst3)
+          sha256sum artifact/Neumaton-Linux-VST3.zip | awk '{print $1}' > artifact/Neumaton-Linux-VST3.sha256
+          ! find artifact -name '*.component' -o -name '*.aaxplugin' | grep -q .
+
+      - name: Upload Linux release candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: Neumaton-Linux-VST3
+          path: |
+            artifact/Neumaton-Linux-VST3.zip
+            artifact/Neumaton-Linux-VST3.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  build-macos-vst3:
+    name: macOS universal VST3
+    needs: source-contract
+    runs-on: macos-14
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@v4
+
+      - name: Configure universal build
+        run: |
+          cmake -S . -B build-release -G Xcode \
+            -DCMAKE_OSX_ARCHITECTURES='arm64;x86_64' \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+
+      - name: Build VST3 only
+        run: cmake --build build-release --config Release --target Neumaton_VST3 --parallel 2
+
+      - name: Verify, ad-hoc sign and package
+        shell: bash
+        run: |
+          set -euo pipefail
+          vst3="$(find build-release -type d -name 'Neumaton.vst3' | head -n 1)"
+          test -n "$vst3"
+          binary="$(find "$vst3/Contents/MacOS" -type f | head -n 1)"
+          test -n "$binary"
+          lipo -info "$binary" | tee architectures.txt
+          lipo -info "$binary" | grep -q 'x86_64'
+          lipo -info "$binary" | grep -q 'arm64'
+          codesign --force --deep --sign - "$vst3"
+          codesign --verify --deep --strict --verbose=2 "$vst3"
+          mkdir -p artifact
+          ditto -c -k --sequesterRsrc --keepParent "$vst3" artifact/Neumaton-macOS-VST3.zip
+          shasum -a 256 artifact/Neumaton-macOS-VST3.zip | awk '{print $1}' > artifact/Neumaton-macOS-VST3.sha256
+          ! find artifact -name '*.component' -o -name '*.aaxplugin' | grep -q .
+
+      - name: Upload macOS release candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: Neumaton-macOS-VST3
+          path: |
+            artifact/Neumaton-macOS-VST3.zip
+            artifact/Neumaton-macOS-VST3.sha256
+            architectures.txt
+          if-no-files-found: error
+          retention-days: 14

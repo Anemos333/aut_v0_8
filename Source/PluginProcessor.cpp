@@ -60,54 +60,17 @@ namespace
         return std::copysign (compressed, x);
     }
 
-    [[nodiscard]] float musicalRetuneFloorMs (int mode) noexcept
-    {
-        // 1 = Quality, 2 = Live, 3 = Experimental.  These are musical slew-rate
-        // floors, not latency changes: the frame size and reported latency stay
-        // untouched.  They only prevent the controller from asking the phase
-        // vocoder to render sub-millisecond pitch jumps on sustained tone.
-        switch (mode)
-        {
-            case 1:  return 9.0f;  // Quality: safest sustained-vocal floor.
-            case 2:  return 6.0f;  // Live: still fast, but not zipper-fast.
-            case 3:  return 4.5f;  // Experimental/Ultra: aggressive floor.
-            default: return 0.0f;
-        }
-    }
-
     [[nodiscard]] float constrainRetuneSpeedMs (float speedMs,
-                                                int mode,
-                                                bool scaleLock) noexcept
+                                           int /*mode*/,
+                                           bool /*scaleLock*/) noexcept
     {
-        speedMs = std::isfinite (speedMs)
-            ? juce::jlimit (0.0f, 500.0f, speedMs)
-            : 50.0f;
-
-        // Preserve the existing aggressive UI law for hard Scale Lock and
-        // Experimental, then apply a musical lower bound so the default can no
-        // longer collapse to ~0.7 ms.
-       if (scaleLock || mode == 3)
-        {
-            const float norm = juce::jlimit (0.0f, 1.0f, speedMs / 500.0f);
-            const float curved = std::pow (norm, 1.35f);
-        
-            const float minMs = musicalRetuneFloorMs (mode);
-            const float maxMs =
-                mode == 1 ? 45.0f :
-                mode == 2 ? 24.0f :
-                            14.0f;
-        
-            speedMs = minMs + curved * (maxMs - minMs);
-        }
-else if (mode > 0)
-{
-    speedMs = std::max (speedMs, musicalRetuneFloorMs (mode));
-}
-        if (mode > 0)
-            speedMs = std::max (speedMs, musicalRetuneFloorMs (mode));
-
+        // The clean engine owns the mode-aware trajectory mapping. Preserve
+        // the complete 0..500 ms GUI range without floors or compression.
+        if (! std::isfinite (speedMs))
+            speedMs = 50.0f;
         return juce::jlimit (0.0f, 500.0f, speedMs);
     }
+
 }
 
 //==============================================================================

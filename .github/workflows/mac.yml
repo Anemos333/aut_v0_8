@@ -40,40 +40,47 @@ jobs:
 
       - name: Verifica architetture del plugin
         run: |
-          BIN=$(find build -path "*VST3/*.vst3/Contents/MacOS/*" | head -n 1)
+          BIN=$(find build -path "*VST3/*.vst3/Contents/MacOS/*" -type f | head -n 1)
+          test -n "$BIN"
 
           echo "Plugin binary:"
           echo "$BIN"
 
           file "$BIN"
           lipo -info "$BIN"
+
       - name: Applica firma Ad-Hoc (Codisign locale)
         run: |
-             # Trova il file binario principale
-              BIN=$(find build -path "*VST3/*.vst3/Contents/MacOS/*" | head -n 1)
-              echo "Il binario si trova in: $BIN"
-              
-              # Risale alla cartella .vst3 principale partendo dal binario trovato
-              VST3_DIR=$(echo "$BIN" | sed 's/\/Contents\/MacOS\/.*//')
-              echo "La cartella VST3 da firmare è: $VST3_DIR"
-              
-              # Applica la firma usando le virgolette per gestire gli spazi nel nome
-              codesign --force --deep --sign - "$VST3_DIR"
-                echo "Firmando localmente il binario: $BIN"
-            
+          BIN=$(find build -path "*VST3/*.vst3/Contents/MacOS/*" -type f | head -n 1)
+          test -n "$BIN"
+          echo "Il binario si trova in: $BIN"
+
+          VST3_DIR=$(echo "$BIN" | sed 's/\/Contents\/MacOS\/.*//')
+          test -d "$VST3_DIR"
+          echo "La cartella VST3 da firmare è: $VST3_DIR"
+
+          codesign --force --deep --sign - "$VST3_DIR"
+          codesign --verify --deep --strict --verbose=2 "$VST3_DIR"
+
       - name: Crea archivio ZIP
         run: |
-          cd build/MicrotonalAutotune_artefacts/Release/VST3
-          zip -ry ../../../../MicrotonalAutotune_Mac_VST3.zip ./*
+          BIN=$(find build -path "*VST3/*.vst3/Contents/MacOS/*" -type f | head -n 1)
+          test -n "$BIN"
+          VST3_DIR=$(echo "$BIN" | sed 's/\/Contents\/MacOS\/.*//')
+          test -d "$VST3_DIR"
+          ditto -c -k --sequesterRsrc --keepParent "$VST3_DIR" MicrotonalAutotune_Mac_VST3.zip
+          test -s MicrotonalAutotune_Mac_VST3.zip
 
       - name: Carica artefatto
         uses: actions/upload-artifact@v4
         with:
           name: MicrotonalAutotune-macOS-VST3
           path: MicrotonalAutotune_Mac_VST3.zip
-          
+          if-no-files-found: error
+
       - name: Upload AU Artifact
         uses: actions/upload-artifact@v4
         with:
           name: MicrotonalAutotune-Mac-AU
           path: build/**/*component
+          if-no-files-found: warn
