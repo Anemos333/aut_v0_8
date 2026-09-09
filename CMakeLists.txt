@@ -38,7 +38,7 @@ juce_add_plugin(Neumaton
     PLUGIN_MANUFACTURER_CODE Mtal
     PRODUCT_STATUS COMMERCIAL
     PLUGIN_CODE Matv
-    FORMATS VST3 AU
+    FORMATS VST3
     PRODUCT_NAME "Neumaton"
 )
 
