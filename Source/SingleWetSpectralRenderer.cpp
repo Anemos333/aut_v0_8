@@ -114,6 +114,9 @@ void SingleWetSpectralRenderer::prepare(double sampleRate,
     rawSpectralEnvelope_.assign(static_cast<std::size_t>(positiveBinCount), 1.0f);
     spectralEnvelope_.assign(static_cast<std::size_t>(positiveBinCount), 1.0f);
     prefixSum_.assign(static_cast<std::size_t>(positiveBinCount + 1), 0.0);
+    nearestPeak_.assign(static_cast<std::size_t>(positiveBinCount), 0);
+    peakBins_.clear();
+    peakBins_.reserve(static_cast<std::size_t>(positiveBinCount));
 
     layer_.spectrum.assign(static_cast<std::size_t>(frameSize_), Complex {});
     layer_.synthesisPhases.assign(static_cast<std::size_t>(positiveBinCount), 0.0);
@@ -154,6 +157,8 @@ void SingleWetSpectralRenderer::reset() noexcept
     std::fill(rawSpectralEnvelope_.begin(), rawSpectralEnvelope_.end(), 1.0f);
     std::fill(spectralEnvelope_.begin(), spectralEnvelope_.end(), 1.0f);
     std::fill(prefixSum_.begin(), prefixSum_.end(), 0.0);
+    std::fill(nearestPeak_.begin(), nearestPeak_.end(), 0);
+    peakBins_.clear();
     std::fill(layer_.spectrum.begin(), layer_.spectrum.end(), Complex {});
     std::fill(layer_.synthesisPhases.begin(), layer_.synthesisPhases.end(), 0.0);
     clearLayerOutput(layer_);
@@ -357,6 +362,59 @@ void SingleWetSpectralRenderer::calculateEnvelope(
     }
 }
 
+void SingleWetSpectralRenderer::calculatePeakRegions(
+    int positiveBins) noexcept
+{
+    peakBins_.clear();
+    if (positiveBins <= 1 || magnitudes_.empty() || nearestPeak_.empty())
+        return;
+
+    float maximumMagnitude = 0.0f;
+    int maximumBin = 1;
+    for (int bin = 1; bin < positiveBins; ++bin)
+    {
+        const float magnitude = magnitudes_[static_cast<std::size_t>(bin)];
+        if (magnitude > maximumMagnitude)
+        {
+            maximumMagnitude = magnitude;
+            maximumBin = bin;
+        }
+    }
+
+    // TIMBRE_PHASE_LOCK_V1: only genuine local spectral peaks may become phase
+    // anchors. The threshold deliberately ignores diffuse low-level air/noise;
+    // those bins retain their own propagated phase below.
+    const float threshold = maximumMagnitude * 0.018f;
+    for (int bin = 1; bin < positiveBins; ++bin)
+    {
+        const float centre = magnitudes_[static_cast<std::size_t>(bin)];
+        if (centre >= threshold
+            && centre >= magnitudes_[static_cast<std::size_t>(bin - 1)]
+            && centre > magnitudes_[static_cast<std::size_t>(bin + 1)])
+        {
+            peakBins_.push_back(bin);
+        }
+    }
+
+    if (peakBins_.empty())
+        peakBins_.push_back(maximumBin);
+
+    int peakIndex = 0;
+    for (int bin = 0; bin <= positiveBins; ++bin)
+    {
+        while (peakIndex + 1 < static_cast<int>(peakBins_.size()))
+        {
+            const int currentPeak = peakBins_[static_cast<std::size_t>(peakIndex)];
+            const int nextPeak = peakBins_[static_cast<std::size_t>(peakIndex + 1)];
+            if (bin <= (currentPeak + nextPeak) / 2)
+                break;
+            ++peakIndex;
+        }
+        nearestPeak_[static_cast<std::size_t>(bin)] =
+            peakBins_[static_cast<std::size_t>(peakIndex)];
+    }
+}
+
 float SingleWetSpectralRenderer::interpolateEnvelope(
     double binPosition) const noexcept
 {
@@ -449,7 +507,24 @@ void SingleWetSpectralRenderer::synthesiseLayer(
         if (targetPosition > static_cast<double>(positiveBins) + 1.0)
             continue;
 
-        const double outputPhase = propagatedPhases_[sourceIndex];
+        // TIMBRE_PHASE_LOCK_V1: local identity phase locking reduces
+        // phase-vocoder metallicity without changing magnitude transport, target
+        // position, correction ratio, FFT count or the single wet path. Only
+        // leakage bins immediately adjacent to a strong local spectral peak are
+        // locked; diffuse/noise bins keep their independently propagated phase.
+        const int peak = nearestPeak_.empty()
+            ? sourceBin
+            : nearestPeak_[sourceIndex];
+        const int lockRadiusBins = frameSize_ >= 512 ? 2 : 1;
+        const bool usePeakPhase = peak >= 0 && peak <= positiveBins
+            && std::abs(peak - sourceBin) <= lockRadiusBins;
+        const double relativeAnalysisPhase = usePeakPhase
+            ? wrapPhase(static_cast<double>(analysisPhases_[sourceIndex])
+                - static_cast<double>(analysisPhases_[static_cast<std::size_t>(peak)]))
+            : 0.0;
+        const double outputPhase = usePeakPhase
+            ? propagatedPhases_[static_cast<std::size_t>(peak)] + relativeAnalysisPhase
+            : propagatedPhases_[sourceIndex];
 
         const float sourceEnvelope = std::max(
             1.0e-8f,
@@ -556,6 +631,7 @@ void SingleWetSpectralRenderer::processFrame(
         envelopeFrameCounter_ = 0;
         calculateEnvelope(positiveBins);
     }
+    calculatePeakRegions(positiveBins);
 
     const bool resetAnalysis = phaseResetPending_ || !analysisPhaseInitialised_;
     phaseResetPending_ = false;

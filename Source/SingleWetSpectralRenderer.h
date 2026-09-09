@@ -51,6 +51,7 @@ private:
     [[nodiscard]] float readInputSample(std::int64_t absoluteSample) const noexcept;
     [[nodiscard]] float interpolateEnvelope(double binPosition) const noexcept;
     void calculateEnvelope(int positiveBins) noexcept;
+    void calculatePeakRegions(int positiveBins) noexcept;
 
     double sampleRate_ = 48000.0;
     int frameSize_ = 0;
@@ -78,6 +79,8 @@ private:
     std::vector<float> rawSpectralEnvelope_;
     std::vector<float> spectralEnvelope_;
     std::vector<double> prefixSum_;
+    std::vector<int> nearestPeak_;
+    std::vector<int> peakBins_;
 
     SynthesisLayer layer_;
     std::int64_t inputSampleCounter_ = 0;
