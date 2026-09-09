@@ -1,0 +1,46 @@
+name: Materialize Timbre Phase Lock V1
+
+on:
+  push:
+    branches:
+      - timbre-metallicity-v1
+    paths:
+      - 'Tests/TimbrePhaseLockV1Patch.py'
+      - '.github/workflows/materialize-timbre-phase-lock-v1.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout staging branch
+        uses: actions/checkout@v4
+        with:
+          ref: timbre-metallicity-v1
+          fetch-depth: 1
+
+      - name: Verify accepted Authority renderer baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "3080ba804cb038421b075d76f5eceec335c22396"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+
+      - name: Materialize local phase coherence
+        run: python3 Tests/TimbrePhaseLockV1Patch.py
+
+      - name: Commit renderer-only timbre change
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
+          if git diff --cached --quiet; then
+            echo "Timbre phase lock already materialized"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Materialize local phase coherence V1"
+          git push origin HEAD:timbre-metallicity-v1
