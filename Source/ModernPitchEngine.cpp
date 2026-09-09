@@ -159,6 +159,7 @@ void ModernPitchEngine::MultiRatePitchTracker::reset() noexcept
     rescueMode_ = false;
     presenceMode_ = false;
     presenceSinceLastHop_ = false;
+    immediateAuthority_ = false; // AUTHORITY_CONTROLS_EXPLICIT_V1
 
     octaveState_ = 0;
     pendingOctaveDelta_ = 0;
@@ -754,43 +755,49 @@ void ModernPitchEngine::MultiRatePitchTracker::updateDecoderBeam(
         int bestOctaveIndex = octaveState_;
         bool foundPrevious = false;
 
-        for (const auto& previous : decoderBeam_)
+        // AUTHORITY_CONTROLS_EXPLICIT_V1: detector fusion remains active, but
+        // the zero-prudence endpoint removes temporal/history preference. Current
+        // evidence is measured; it is not required to defeat a stale beam first.
+        if (!immediateAuthority_)
         {
-            if (!previous.valid)
-                continue;
-
-            foundPrevious = true;
-            const float deltaCents = static_cast<float>(1200.0
-                * (proposal.logFrequency - previous.logFrequency));
-            const float absoluteCents = std::abs(deltaCents);
-            const float continuityBonus = 0.30f * std::exp(-absoluteCents / 85.0f);
-            const float transitionPenalty = onsetPending
-                ? 0.10f * std::min(1.0f, absoluteCents / 1800.0f)
-                : 0.19f * std::min(2.0f, absoluteCents / 650.0f);
-
-            int octaveDelta = 0;
-            float residualCents = 0.0f;
-            const bool octaveLike = isOctaveLikeTransition(
-                static_cast<float>(std::exp2(previous.logFrequency)),
-                hypothesis.frequencyHz,
-                octaveDelta,
-                residualCents);
-            const float octavePenalty = octaveLike
-                ? 0.24f * static_cast<float>(std::abs(octaveDelta))
-                    * (1.0f - 0.70f * hypothesis.consensus)
-                : 0.0f;
-
-            const float historyWeight = onsetPending ? 0.24f : 0.72f;
-            const float transitionScore = historyWeight * previous.score
-                                        + proposal.score
-                                        + continuityBonus
-                                        - transitionPenalty
-                                        - octavePenalty;
-            if (transitionScore > bestTransitionScore)
+            for (const auto& previous : decoderBeam_)
             {
-                bestTransitionScore = transitionScore;
-                bestOctaveIndex = previous.octaveIndex
-                    + (octaveLike ? octaveDelta : 0);
+                if (!previous.valid)
+                    continue;
+
+                foundPrevious = true;
+                const float deltaCents = static_cast<float>(1200.0
+                    * (proposal.logFrequency - previous.logFrequency));
+                const float absoluteCents = std::abs(deltaCents);
+                const float continuityBonus = 0.30f * std::exp(-absoluteCents / 85.0f);
+                const float transitionPenalty = onsetPending
+                    ? 0.10f * std::min(1.0f, absoluteCents / 1800.0f)
+                    : 0.19f * std::min(2.0f, absoluteCents / 650.0f);
+
+                int octaveDelta = 0;
+                float residualCents = 0.0f;
+                const bool octaveLike = isOctaveLikeTransition(
+                    static_cast<float>(std::exp2(previous.logFrequency)),
+                    hypothesis.frequencyHz,
+                    octaveDelta,
+                    residualCents);
+                const float octavePenalty = octaveLike
+                    ? 0.24f * static_cast<float>(std::abs(octaveDelta))
+                        * (1.0f - 0.70f * hypothesis.consensus)
+                    : 0.0f;
+
+                const float historyWeight = onsetPending ? 0.24f : 0.72f;
+                const float transitionScore = historyWeight * previous.score
+                                            + proposal.score
+                                            + continuityBonus
+                                            - transitionPenalty
+                                            - octavePenalty;
+                if (transitionScore > bestTransitionScore)
+                {
+                    bestTransitionScore = transitionScore;
+                    bestOctaveIndex = previous.octaveIndex
+                        + (octaveLike ? octaveDelta : 0);
+                }
             }
         }
 
@@ -800,19 +807,23 @@ void ModernPitchEngine::MultiRatePitchTracker::updateDecoderBeam(
         proposals[static_cast<std::size_t>(proposalCount++)] = proposal;
     }
 
-    // A short hold branch prevents a single weak hop from forcing a jump.  It
-    // decays quickly, so genuine new notes still win after fresh evidence.
-    for (const auto& previous : decoderBeam_)
+    // A short hold branch prevents a single weak hop from forcing a jump in
+    // normal operation. AUTHORITY_CONTROLS_EXPLICIT_V1 removes that hidden hold
+    // when all six visible prudence controls request the rigid endpoint.
+    if (!immediateAuthority_)
     {
-        if (!previous.valid || proposalCount >= static_cast<int>(proposals.size()))
-            continue;
+        for (const auto& previous : decoderBeam_)
+        {
+            if (!previous.valid || proposalCount >= static_cast<int>(proposals.size()))
+                continue;
 
-        DecoderState held = previous;
-        held.score = previous.score * (onsetPending ? 0.22f : 0.76f)
-                   - (onsetPending ? 0.10f : 0.055f);
-        ++held.ageInHops;
-        if (held.ageInHops <= 4)
-            proposals[static_cast<std::size_t>(proposalCount++)] = held;
+            DecoderState held = previous;
+            held.score = previous.score * (onsetPending ? 0.22f : 0.76f)
+                       - (onsetPending ? 0.10f : 0.055f);
+            ++held.ageInHops;
+            if (held.ageInHops <= 4)
+                proposals[static_cast<std::size_t>(proposalCount++)] = held;
+        }
     }
 
     std::sort(proposals.begin(),
@@ -1798,6 +1809,26 @@ double ModernPitchEngine::wrapToNearestOctave(double cents) noexcept
     return cents - 1200.0 * std::nearbyint(cents / 1200.0);
 }
 
+// AUTHORITY_CONTROLS_EXPLICIT_V1: only visible user controls define musical
+// softness. Internal confidence, mode and strictness may improve measurement or
+// identity safety, but they are not permission to weaken the requested lock.
+bool ModernPitchEngine::exactScaleLockAuthority(const Parameters& parameters) noexcept
+{
+    return parameters.scaleLock
+        && clamp01(parameters.amount) >= 0.99999f
+        && clamp01(parameters.humanize) <= 0.00001f
+        && clamp01(parameters.vibratoPreserve) <= 0.00001f;
+}
+
+bool ModernPitchEngine::zeroPrudenceAuthority(const Parameters& parameters) noexcept
+{
+    return exactScaleLockAuthority(parameters)
+        && std::clamp(static_cast<double>(finiteOr(parameters.retuneTimeMs, 50.0f)),
+                      0.0, 500.0) <= 0.00001
+        && std::clamp(static_cast<double>(finiteOr(parameters.lockHysteresis, 24.0f)),
+                      0.0, 80.0) <= 0.00001;
+}
+
 int ModernPitchEngine::latencyForMode(LatencyMode mode) noexcept
 {
     // SINGLE_WET_PURITY_V6
@@ -1890,6 +1921,9 @@ float ModernPitchEngine::adaptiveHysteresis(
     const ScaleQuantizer& quantizer,
     const PitchObservation& observation) const noexcept
 {
+    if (zeroPrudenceAuthority(parameters))
+        return 0.0f; // AUTHORITY_CONTROLS_EXPLICIT_V1: Hold=0 means exactly no target hold.
+
     if (!parameters.scaleLock)
     {
         return static_cast<float>(std::clamp(
@@ -1946,6 +1980,8 @@ double ModernPitchEngine::responseTimeMs(
     const double requested = std::clamp(
         static_cast<double>(finiteOr(parameters.retuneTimeMs, 50.0f)),
         0.0, 500.0);
+    if (zeroPrudenceAuthority(parameters))
+        return 0.0; // AUTHORITY_CONTROLS_EXPLICIT_V1: Response=0 is literal.
     double response = std::max(0.35, requested);
 
     if (parameters.scaleLock)
@@ -2009,6 +2045,8 @@ void ModernPitchEngine::updateCorrectionState(
     const int hopSamples = MultiRatePitchTracker::hopSize();
     const double hopSeconds = static_cast<double>(hopSamples) / sampleRate_;
     const float humanize = clamp01(parameters.humanize);
+    const bool exactAuthority = exactScaleLockAuthority(parameters);
+    const bool zeroPrudence = zeroPrudenceAuthority(parameters); // AUTHORITY_CONTROLS_EXPLICIT_V1
     const bool richEvidence = parameters.voiceEvidenceValid;
     const bool validPitch = observation.valid && observation.frequencyHz > 0.0f;
     if (validPitch)
@@ -2311,19 +2349,28 @@ void ModernPitchEngine::updateCorrectionState(
 
     const float hysteresis = adaptiveHysteresis(parameters, quantizer, observation);
     int pending = 0;
+    const double targetSelectionLog2 = zeroPrudence
+        ? correctionObservedLog2 : state.pitchCentreLog2;
+    const float targetStrictness = zeroPrudence
+        ? 0.0f : parameters.lockStrictness;
+    const float targetConfidence = zeroPrudence
+        ? 1.0f : observation.confidence;
     double newTarget = quantizer.chooseTargetLog2(
-        state.pitchCentreLog2,
+        targetSelectionLog2,
         hysteresis,
-        parameters.lockStrictness,
-        observation.confidence,
+        targetStrictness,
+        targetConfidence,
         parameters.scaleLock && parameters.hardLockActive,
         musicalOnset || liveIdentityBreak,
         pending);
 
     // SOUND_EQUALS_CORRECTION_V2: target register follows the current live F0,
-    // never a stale centre. This keeps an octave/register mistake from becoming
-    // a mathematically zero correction.
-    newTarget += std::round(observedLog2 - newTarget);
+    // never a stale centre. AUTHORITY_CONTROLS_EXPLICIT_V1 extends that rule to
+    // the zero-prudence target selector itself: the live correction coordinate
+    // chooses the degree and its register instead of a continuity-delayed centre.
+    const double targetRegisterReference = zeroPrudence
+        ? correctionObservedLog2 : observedLog2;
+    newTarget += std::round(targetRegisterReference - newTarget);
 
     const bool targetChanged = !state.targetValid
         || std::abs(newTarget - state.targetLog2) * 1200.0 > 0.1;
@@ -2391,12 +2438,10 @@ void ModernPitchEngine::updateCorrectionState(
         : clamp01(parameters.preserveVibrato);
     preserve *= stable * periodic * boundarySafety;
 
-    const bool absoluteScaleLock = parameters.scaleLock
-        && parameters.hardLockActive
-        && clamp01(parameters.lockStrictness) >= 0.99999f
-        && clamp01(parameters.amount) >= 0.99999f
-        && humanize <= 0.00001f
-        && clamp01(parameters.vibratoPreserve) <= 0.00001f;
+    // AUTHORITY_CONTROLS_EXPLICIT_V1: exact centering is controlled only by
+    // visible Amount / Scale Lock / Humanize / Vibrato. Hold chooses WHICH degree
+    // and Response chooses HOW FAST; neither may create steady-state residual.
+    const bool absoluteScaleLock = exactAuthority;
 
     double correctedLog2 = state.targetLog2
         + static_cast<double>(preserve) * vibratoComponent;
@@ -2510,6 +2555,16 @@ double ModernPitchEngine::advanceCorrection(CorrectionState& state) noexcept
     if (state.stateAgeSamples < std::numeric_limits<int>::max())
         ++state.stateAgeSamples;
 
+    // AUTHORITY_CONTROLS_EXPLICIT_V1: a literal zero Response contains no hidden
+    // 0.35 ms controller floor. The same single wet renderer receives the new
+    // ratio immediately; there is no dry transition or secondary synthesis path.
+    if (state.responseMs <= 0.00001)
+    {
+        state.currentCents = state.desiredCents;
+        state.velocityCentsPerSecond = 0.0;
+        return state.currentCents;
+    }
+
     // Transition describes a note boundary, never convergence of a second-order
     // controller. A singing note must not remain in transition for seconds just
     // because vibrato keeps the destination moving.
@@ -2603,6 +2658,7 @@ void ModernPitchEngine::process(
     safe.maximumPitchHz = std::clamp(finiteOr(safe.maximumPitchHz, 1600.0f),
                                      safe.minimumPitchHz + 20.0f, 3000.0f);
     safe.latencyMode = static_cast<int>(latencyMode_);
+    const bool immediateAuthority = zeroPrudenceAuthority(safe); // AUTHORITY_CONTROLS_EXPLICIT_V1
 
     const int channels = std::min({buffer.getNumChannels(), channelCount_, maxSupportedChannels});
     const int samples = buffer.getNumSamples();
@@ -2623,12 +2679,15 @@ void ModernPitchEngine::process(
 
     linkedTracker_.setRange(safe.minimumPitchHz, safe.maximumPitchHz);
     linkedTracker_.setSensitivity(safe.detectorSensitivity);
+    linkedTracker_.setImmediateAuthority(immediateAuthority);
     for (int channel = 0; channel < channels; ++channel)
     {
         channelTrackers_[static_cast<std::size_t>(channel)].setRange(
             safe.minimumPitchHz, safe.maximumPitchHz);
         channelTrackers_[static_cast<std::size_t>(channel)].setSensitivity(
             safe.detectorSensitivity);
+        channelTrackers_[static_cast<std::size_t>(channel)].setImmediateAuthority(
+            immediateAuthority);
     }
 
     tempoController_.beginBlock(hostTempoPosition, safe.tempo, samples);

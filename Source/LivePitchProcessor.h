@@ -132,17 +132,10 @@ public:
         const float h = parameters_.lockHysteresis / 80.0f;
         const float hysteresisStrictness = h * h * (3.0f - 2.0f * h); // smoothstep
 
-        const int modeIndex = activeModeIndex_.load(std::memory_order_acquire);
-        const float liveBoost = modeIndex == static_cast<int>(LatencyMode::live)
-            ? 0.03f : 0.0f;
-        const float experimentalBoost = modeIndex == static_cast<int>(LatencyMode::ultraLive)
-            ? 0.12f : 0.0f;
-
-        parameters_.lockStrictness = scaleLock
-            ? std::clamp(hysteresisStrictness + liveBoost + experimentalBoost,
-                         0.0f, 1.0f)
-            : 0.0f;
-
+        // AUTHORITY_CONTROLS_EXPLICIT_V1: Hold owns target-hold prudence.
+        // No latency mode may add hidden strictness when the visible Hold control
+        // is at zero. This does not alter the renderer or correction depth.
+        parameters_.lockStrictness = scaleLock ? hysteresisStrictness : 0.0f;
         parameters_.hardLockActive = scaleLock;
     }
 

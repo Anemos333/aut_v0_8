@@ -993,6 +993,97 @@ int main()
     success &= check(softReferenceError > 1.0,
                      "soft_scale_lock_ignores_live_correction_coordinate");
 
+    // AUTHORITY_CONTROLS_EXPLICIT_V1: the six visible controls define the
+    // zero-prudence endpoint. Hidden hardLockActive/lockStrictness values are not
+    // allowed to withhold exact centering or add a response floor.
+    ModernPitchEngine::Parameters explicitAuthorityParameters;
+    setBodyEvidence(explicitAuthorityParameters);
+    explicitAuthorityParameters.scaleLock = true;
+    explicitAuthorityParameters.hardLockActive = false;
+    explicitAuthorityParameters.lockStrictness = 0.0f;
+    explicitAuthorityParameters.lockHysteresis = 0.0f;
+    explicitAuthorityParameters.amount = 1.0f;
+    explicitAuthorityParameters.retuneTimeMs = 0.0f;
+    explicitAuthorityParameters.humanize = 0.0f;
+    explicitAuthorityParameters.vibratoPreserve = 0.0f;
+    explicitAuthorityParameters.preserveVibrato = 0.0f;
+    explicitAuthorityParameters.maximumCorrectionSemitones = 24.0f;
+
+    ModernPitchEngine::ScaleQuantizer explicitAuthorityQuantizer;
+    explicitAuthorityQuantizer.reset();
+    explicitAuthorityQuantizer.setScale(&liveCoordinateUnison, 1, 440.0);
+    ModernPitchEngine::CorrectionState explicitAuthorityState;
+    auto explicitAuthorityObservation = strongPitch(445.0f);
+    explicitAuthorityObservation.audioPresent = true;
+    explicitAuthorityObservation.correctionFrequencyHz = 452.0f;
+    explicitAuthorityObservation.confidence = 0.01f;
+    explicitAuthorityObservation.periodicity = 0.05f;
+    explicitAuthorityObservation.consensus = 0.0f;
+    engine->updateCorrectionState(explicitAuthorityState,
+                                  explicitAuthorityQuantizer,
+                                  explicitAuthorityObservation,
+                                  explicitAuthorityParameters);
+    const double explicitTargetHz = std::exp2(explicitAuthorityState.targetLog2);
+    const double explicitExpectedCents = 1200.0 * std::log2(
+        explicitTargetHz / static_cast<double>(explicitAuthorityObservation.correctionFrequencyHz));
+    success &= check(std::abs(explicitAuthorityState.desiredCents
+                              - explicitExpectedCents) < 1.0e-6,
+                     "visible_controls_own_exact_lock_without_hidden_flags");
+    success &= check(std::abs(explicitAuthorityState.responseMs) < 1.0e-12,
+                     "response_zero_has_no_hidden_mode_floor");
+    const double immediateController = engine->advanceCorrection(explicitAuthorityState);
+    success &= check(std::abs(immediateController - explicitAuthorityState.desiredCents) < 1.0e-9
+                     && std::abs(explicitAuthorityState.velocityCentsPerSecond) < 1.0e-12,
+                     "response_zero_reaches_destination_in_one_sample");
+    success &= check(engine->adaptiveHysteresis(explicitAuthorityParameters,
+                                                 explicitAuthorityQuantizer,
+                                                 explicitAuthorityObservation) == 0.0f,
+                     "hold_zero_means_exactly_zero_hysteresis");
+
+    // Even if stale temporal history has an artificially huge score, immediate
+    // authority keeps current detector fusion and removes only the history/hold
+    // preference. The current hypothesis must own the decoder immediately.
+    auto immediateTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+    immediateTracker->prepare(48000.0);
+    immediateTracker->setImmediateAuthority(true);
+    immediateTracker->decoderBeam_[0].valid = true;
+    immediateTracker->decoderBeam_[0].logFrequency = std::log2(440.0);
+    immediateTracker->decoderBeam_[0].score = 100.0f;
+    std::array<ModernPitchEngine::MultiRatePitchTracker::ConsensusHypothesis,
+               ModernPitchEngine::MultiRatePitchTracker::maxConsensusHypotheses>
+        currentHypotheses {};
+    currentHypotheses[0].valid = true;
+    currentHypotheses[0].frequencyHz = 466.1638f;
+    currentHypotheses[0].confidence = 0.75f;
+    currentHypotheses[0].periodicity = 0.75f;
+    currentHypotheses[0].consensus = 0.25f;
+    currentHypotheses[0].evidenceScore = 0.45f;
+    currentHypotheses[0].supportCount = 1;
+    currentHypotheses[0].directSupportCount = 1;
+    immediateTracker->updateDecoderBeam(currentHypotheses, 1, false);
+    const double immediateDecodedHz = std::exp2(immediateTracker->decoderBeam_[0].logFrequency);
+    success &= check(std::abs(immediateDecodedHz - 466.1638) < 0.1
+                     && immediateTracker->decoderBeam_[0].ageInHops == 0,
+                     "zero_prudence_decoder_has_no_temporal_hold");
+
+    // A consonant/transient may temporarily remove a usable F0, but while audio
+    // is present the already-selected correction remains on the same wet path.
+    // There is no permission to return to dry/unshifted audio between voiced hops.
+    ModernPitchEngine::PitchObservation explicitDropout;
+    explicitDropout.audioPresent = true;
+    explicitDropout.voicing = 1.0f;
+    const double heldExplicitCents = explicitAuthorityState.desiredCents;
+    engine->updateCorrectionState(explicitAuthorityState,
+                                  explicitAuthorityQuantizer,
+                                  explicitDropout,
+                                  explicitAuthorityParameters);
+    const double dropoutController = engine->advanceCorrection(explicitAuthorityState);
+    success &= check(explicitAuthorityState.trackingState
+                         == ModernPitchEngine::TrackingState::acquire
+                     && std::abs(explicitAuthorityState.desiredCents - heldExplicitCents) < 1.0e-9
+                     && std::abs(dropoutController - heldExplicitCents) < 1.0e-9,
+                     "transient_f0_hole_keeps_authoritative_wet_correction");
+
     // Native API semantics: one semitone means 100 cents, with no adapter hack.
     const double unison = 1.0;
     quantizer.setScale(&unison, 1, 440.0);

@@ -229,6 +229,7 @@ private:
         void setRange(float minimumPitchHz, float maximumPitchHz) noexcept;
         void setSensitivity(float sensitivity) noexcept;
         void setRescueMode(bool enabled) noexcept { rescueMode_ = enabled; }
+        void setImmediateAuthority(bool enabled) noexcept { immediateAuthority_ = enabled; } // AUTHORITY_CONTROLS_EXPLICIT_V1
         void setReacquisitionAnchor(float frequencyHz) noexcept;
         void clearReacquisitionAnchor() noexcept { reacquisitionAnchorHz_ = 0.0f; }
         bool processSample(float inputSample, PitchObservation& observation) noexcept;
@@ -338,6 +339,7 @@ private:
         bool rescueMode_ = false;
         bool presenceMode_ = false;
         bool presenceSinceLastHop_ = false;
+        bool immediateAuthority_ = false; // AUTHORITY_CONTROLS_EXPLICIT_V1
 
         std::array<float, ringSize> fullRateRing_ {};
         std::array<float, ringSize> halfRateRing_ {};
@@ -454,6 +456,8 @@ private:
     [[nodiscard]] static float clamp01(float value) noexcept;
     [[nodiscard]] static double safeLog2(double value) noexcept;
     [[nodiscard]] static double wrapToNearestOctave(double cents) noexcept;
+    [[nodiscard]] static bool exactScaleLockAuthority(const Parameters& parameters) noexcept; // AUTHORITY_CONTROLS_EXPLICIT_V1
+    [[nodiscard]] static bool zeroPrudenceAuthority(const Parameters& parameters) noexcept;
     [[nodiscard]] static int latencyForMode(LatencyMode mode) noexcept;
     [[nodiscard]] float adaptiveHysteresis(const Parameters& parameters,
                                            const ScaleQuantizer& quantizer,
