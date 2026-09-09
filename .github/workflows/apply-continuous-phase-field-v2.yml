@@ -5,6 +5,7 @@ on:
     branches: [timbre-continuous-phase-field-v2]
     paths:
       - 'Tests/ContinuousPhaseFieldV2Patch.py'
+      - '.github/workflows/apply-continuous-phase-field-v2.yml'
 
 permissions:
   contents: write
