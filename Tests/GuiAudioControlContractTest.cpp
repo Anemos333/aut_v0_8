@@ -124,8 +124,9 @@ int main()
                                 "const double targetPosition = static_cast<double>(sourceBin) * safeRatio")
                          && has(renderer,
                                 "synthesisPhase += expectedPhaseScale")
-                         && has(renderer,
-                                "* trueSourceBins_[static_cast<std::size_t>(sourceBin)]")
+                         && has(renderer, "SHORT_LATTICE_COHERENT_PHASE_V3")
+                         && has(renderer, "* transportSourceBin")
+                         && has(renderer, "frameSize_ <= 256")
                          && has(renderer,
                                 "const float correctionPhaseNeed = smoothStep(6.0f, 42.0f")
                          && has(renderer,
