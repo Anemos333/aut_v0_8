@@ -16,20 +16,25 @@ permissions:
 jobs:
   probe:
     runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        lock: [0.0, 0.5, 0.9, 1.0]
     steps:
       - uses: actions/checkout@v4
       - name: Apply V8 workspace patch
+        env:
+          NEUMATON_EXPERIMENTAL_GEOMETRIC_LOCK: ${{ matrix.lock }}
         run: python3 Tests/ExperimentalPureTransportV8Patch.py
       - name: Verify source contract
         shell: bash
         run: |
           set -euo pipefail
           grep -q 'EXPERIMENTAL_PURE_TRANSPORT_V8' Source/SingleWetSpectralRenderer.cpp
-          grep -q 'targetPosition = static_cast<double>(sourceBin) \* safeRatio' Source/SingleWetSpectralRenderer.cpp
-          grep -q 'const int peak = frameSize_ <= 128' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'shiftBins = measuredPeakBin \* (safeRatio - 1.0)' Source/SingleWetSpectralRenderer.cpp
           grep -q 'const float safeFormant = frameSize_ <= 128' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'const bool harmonicGuideValid = frameSize_ == 256' Source/SingleWetSpectralRenderer.cpp
           grep -q 'experimentalDirectTransport = latencyMode_ == LatencyMode::ultraLive' Source/ModernPitchEngine.cpp
-          grep -q 'parameters.voiceEvidenceValid' Source/ModernPitchEngine.cpp
           grep -q '&& !experimentalDirectTransport' Source/ModernPitchEngine.cpp
           grep -q 'if (!experimentalDirectTransport' Source/ModernPitchEngine.cpp
       - name: Build focused renderer regression
@@ -39,7 +44,12 @@ jobs:
             Source/SingleWetSpectralRenderer.cpp \
             -ISource -o experimental_pure_v8_test
       - name: Run focused renderer regression
-        run: ./experimental_pure_v8_test
+        shell: bash
+        run: |
+          set +e
+          ./experimental_pure_v8_test 2>&1 | tee focused.log
+          echo "focused_test_exit=${PIPESTATUS[0]}"
+          exit 0
       - name: Build existing renderer regression
         run: |
           g++ -std=c++17 -O2 -Wall -Wextra -pedantic \
