@@ -1,0 +1,62 @@
+name: Probe Experimental Minimal Transport V8
+
+on:
+  push:
+    branches:
+      - quality-tail-glide-experimental-128-v3
+    paths:
+      - Tests/ExperimentalMinimalTransportV8Patch.py
+      - .github/workflows/probe-experimental-minimal-v8.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        lock: [0.0, 0.5, 0.9, 1.0]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply minimal V8 workspace patch
+        env:
+          NEUMATON_EXPERIMENTAL_PHASE_LOCK: ${{ matrix.lock }}
+        run: python3 Tests/ExperimentalMinimalTransportV8Patch.py
+      - name: Verify semantic removal
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'EXPERIMENTAL_MINIMAL_TRANSPORT_V8' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'const bool harmonicGuideValid = frameSize_ == 256' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'const float safeFormant = frameSize_ <= 128' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'experimentalMinimalTransport = latencyMode_ == LatencyMode::ultraLive' Source/ModernPitchEngine.cpp
+          grep -q '&& !experimentalMinimalTransport' Source/ModernPitchEngine.cpp
+      - name: Build focused contract
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -pedantic \
+            Tests/ExperimentalPureTransportV8Test.cpp \
+            Source/SingleWetSpectralRenderer.cpp \
+            -ISource -o focused
+      - name: Run focused contract
+        shell: bash
+        run: |
+          set +e
+          ./focused 2>&1 | tee focused.log
+          echo "focused_exit=${PIPESTATUS[0]}"
+          exit 0
+      - name: Build production renderer regression
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -pedantic \
+            Tests/SingleWetSpectralRendererTest.cpp \
+            Source/SingleWetSpectralRenderer.cpp \
+            -ISource -o renderer
+      - name: Run production renderer regression
+        shell: bash
+        run: |
+          set +e
+          ./renderer 2>&1 | tee renderer.log
+          echo "renderer_exit=${PIPESTATUS[0]}"
+          exit 0
