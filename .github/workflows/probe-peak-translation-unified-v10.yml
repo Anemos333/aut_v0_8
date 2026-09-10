@@ -1,0 +1,43 @@
+name: Probe Peak Translation Unified V10
+
+on:
+  push:
+    branches:
+      - one-voice-unified-spectrum-v10
+    paths:
+      - Tests/PeakTranslationUnifiedV10Probe.py
+      - Tests/UnifiedSpectrumV10Probe.cpp
+      - .github/workflows/probe-peak-translation-unified-v10.yml
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Apply peak-translation probe
+        run: python3 Tests/PeakTranslationUnifiedV10Probe.py
+
+      - name: Verify source law
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'ONE_VOICE_PEAK_TRANSLATION_V10' Source/SingleWetSpectralRenderer.cpp
+          ! grep -q 'harmonicGuideValid' Source/SingleWetSpectralRenderer.cpp
+          ! grep -q 'sourceHarmonicForMagnitude' Source/SingleWetSpectralRenderer.cpp
+          ! grep -q 'sameExperimentalHarmonicFamily' Source/SingleWetSpectralRenderer.cpp
+          ! grep -q 'maximumMagnitude \* 0.018f' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'lookupFormantGain' Source/SingleWetSpectralRenderer.cpp
+          echo 'PEAK_TRANSLATION_SOURCE_CONTRACT=PASS'
+
+      - name: Build focused renderer probe
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -pedantic \
+            Tests/UnifiedSpectrumV10Probe.cpp Source/SingleWetSpectralRenderer.cpp \
+            -o /tmp/peak-translation-v10
+
+      - name: Run focused renderer probe
+        run: /tmp/peak-translation-v10
