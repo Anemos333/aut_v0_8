@@ -6,6 +6,7 @@ on:
       - quality-tail-glide-experimental-128-v3
     paths:
       - Tests/MonotonicTargetAuthorityV9Patch.py
+      - Tests/MonotonicTargetAuthorityV9Compatibility.py
       - .github/workflows/probe-monotonic-target-authority-v9.yml
   workflow_dispatch:
 
@@ -19,13 +20,16 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Apply V9 authority cleanup
-        run: python3 Tests/MonotonicTargetAuthorityV9Patch.py
+        run: |
+          python3 Tests/MonotonicTargetAuthorityV9Patch.py
+          python3 Tests/MonotonicTargetAuthorityV9Compatibility.py
 
       - name: Verify no hidden return or wait authority
         shell: bash
         run: |
           set -euo pipefail
           grep -q 'MONOTONIC_TARGET_AUTHORITY_V9' Source/ModernPitchEngine.cpp
+          grep -q 'void setImmediateAuthority(bool enabled) noexcept { (void) enabled; }' Source/ModernPitchEngine.h
           ! grep -q 'state.desiredCents = 0.0' Source/ModernPitchEngine.cpp
           ! grep -q 'std::max(5.5' Source/ModernPitchEngine.cpp
           ! grep -q 'historyWeight' Source/ModernPitchEngine.cpp
