@@ -1,0 +1,40 @@
+name: Probe Unified Spectrum Minimal Sweep
+
+on:
+  push:
+    branches:
+      - one-voice-unified-spectrum-v10
+    paths:
+      - Tests/UnifiedSpectrumMinimalSweep.py
+      - Tests/UnifiedSpectrumV10Probe.cpp
+      - .github/workflows/probe-unified-spectrum-minimal-sweep.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sweep:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        experimental_lock: ["0.0", "0.35", "0.70", "1.0"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply minimal one-voice patch
+        env:
+          EXPERIMENTAL_LOCK: ${{ matrix.experimental_lock }}
+        run: python3 Tests/UnifiedSpectrumMinimalSweep.py
+      - name: Build probe
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -pedantic \
+            Tests/UnifiedSpectrumV10Probe.cpp Source/SingleWetSpectralRenderer.cpp \
+            -o /tmp/v10-minimal
+      - name: Run probe for comparison
+        shell: bash
+        run: |
+          set +e
+          /tmp/v10-minimal 2>&1 | tee result.log
+          echo "probe_exit=${PIPESTATUS[0]}"
+          exit 0
