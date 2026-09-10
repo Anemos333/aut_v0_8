@@ -1,0 +1,90 @@
+name: Diagnose Experimental V5 Harmonics
+
+on:
+  push:
+    branches: [quality-tail-glide-experimental-128-v3]
+    paths:
+      - '.github/workflows/diagnose-experimental-v5-harmonics.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore V5 short-lattice phase in workspace only
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('Source/SingleWetSpectralRenderer.cpp')
+          s=p.read_text()
+          old='''            // EXPERIMENTAL_INDEPENDENT_PARTIAL_PHASE_V6
+            // A 128-sample bin spans 375 Hz at 48 kHz. Neighbouring bins are
+            // therefore not safely classifiable as leakage from one partial:
+            // forcing them toward nearestPeak velocity can merge distinct vocal
+            // harmonics into one reconstructed phase family. Experimental keeps
+            // every measured instantaneous-frequency coordinate independent and
+            // shifts it directly. Live/256 retains the proven leakage-coherence
+            // stabiliser; Quality/512 was already independent and is untouched.
+            double transportSourceBin =
+                trueSourceBins_[static_cast<std::size_t>(sourceBin)];
+            if (frameSize_ == 256 && !nearestPeak_.empty())
+            {
+                const int velocityPeak = nearestPeak_[static_cast<std::size_t>(sourceBin)];
+                if (velocityPeak >= 0 && velocityPeak <= positiveBins)
+                {
+                    const float distance = static_cast<float>(
+                        std::abs(velocityPeak - sourceBin));
+                    constexpr float coherenceCore = 0.75f;
+                    constexpr float coherenceFade = 2.75f;
+                    const float coherence = 1.0f
+                        - smoothStep(coherenceCore, coherenceFade, distance);
+                    const double peakVelocityBin =
+                        trueSourceBins_[static_cast<std::size_t>(velocityPeak)];
+                    transportSourceBin += static_cast<double>(coherence)
+                        * (peakVelocityBin - transportSourceBin);
+                }
+            }
+'''
+          new='''            // SHORT_LATTICE_COHERENT_PHASE_V3_DIAGNOSTIC_V5
+            double transportSourceBin =
+                trueSourceBins_[static_cast<std::size_t>(sourceBin)];
+            if (frameSize_ <= 256 && !nearestPeak_.empty())
+            {
+                const int velocityPeak = nearestPeak_[static_cast<std::size_t>(sourceBin)];
+                if (velocityPeak >= 0 && velocityPeak <= positiveBins)
+                {
+                    const float distance = static_cast<float>(
+                        std::abs(velocityPeak - sourceBin));
+                    const float coherenceCore = frameSize_ <= 128 ? 0.50f : 0.75f;
+                    const float coherenceFade = frameSize_ <= 128 ? 2.50f : 2.75f;
+                    const float coherence = 1.0f
+                        - smoothStep(coherenceCore, coherenceFade, distance);
+                    const double peakVelocityBin =
+                        trueSourceBins_[static_cast<std::size_t>(velocityPeak)];
+                    transportSourceBin += static_cast<double>(coherence)
+                        * (peakVelocityBin - transportSourceBin);
+                }
+            }
+'''
+          if old not in s: raise SystemExit('V6 phase block not found')
+          p.write_text(s.replace(old,new,1))
+          PY
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libjack-jackd2-dev ladspa-sdk libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev
+      - name: Configure
+        run: cmake -S . -B build-diag -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+      - name: Build renderer test
+        run: cmake --build build-diag --config Release --target SingleWetSpectralRendererTest --parallel 2
+      - name: Run renderer diagnostic
+        shell: bash
+        run: |
+          set +e
+          ./build-diag/clean-engine-tests/SingleWetSpectralRendererTest 2>&1 | tee harmonic-v5.log
+          exit 0
