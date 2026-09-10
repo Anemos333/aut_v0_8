@@ -1,0 +1,82 @@
+name: Probe Monotonic Target Authority V9
+
+on:
+  push:
+    branches:
+      - quality-tail-glide-experimental-128-v3
+    paths:
+      - Tests/MonotonicTargetAuthorityV9Patch.py
+      - .github/workflows/probe-monotonic-target-authority-v9.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Apply V9 authority cleanup
+        run: python3 Tests/MonotonicTargetAuthorityV9Patch.py
+
+      - name: Verify no hidden return or wait authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'MONOTONIC_TARGET_AUTHORITY_V9' Source/ModernPitchEngine.cpp
+          ! grep -q 'state.desiredCents = 0.0' Source/ModernPitchEngine.cpp
+          ! grep -q 'std::max(5.5' Source/ModernPitchEngine.cpp
+          ! grep -q 'historyWeight' Source/ModernPitchEngine.cpp
+          ! grep -q 'held.score' Source/ModernPitchEngine.cpp
+          ! grep -q 'pendingCount_ >=' Source/ModernPitchEngine.cpp
+          ! grep -q 'std::abs(errorCents) <=' Source/ModernPitchEngine.cpp
+          ! grep -q 'zeroPrudenceAuthority' Source/ModernPitchEngine.cpp Source/ModernPitchEngine.h
+          ! grep -q 'immediateAuthority_' Source/ModernPitchEngine.cpp Source/ModernPitchEngine.h
+          ! grep -q ': correction.transportPeriodHz' Source/ModernPitchEngine.cpp
+          ! grep -q ': linkedCorrection_.transportPeriodHz' Source/ModernPitchEngine.cpp
+          grep -q 'return state.currentCents;' Source/ModernPitchEngine.cpp
+          grep -q 'state.responseMs = responseTimeMs(parameters, targetChanged, targetJump);' Source/ModernPitchEngine.cpp
+          echo 'V9 source authority contract PASS'
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev
+
+      - name: Configure focused tests
+        run: |
+          cmake -S . -B build-v9 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Build controller and renderer tests
+        run: >-
+          cmake --build build-v9 --config Release
+          --target CleanModernPitchEngineTest SupervisorContinuityTest
+          SingleWetSpectralRendererTest --parallel 2
+
+      - name: Run clean engine regression for diagnosis
+        shell: bash
+        run: |
+          set +e
+          ./build-v9/clean-engine-tests/CleanModernPitchEngineTest 2>&1 | tee clean.log
+          echo "clean_exit=${PIPESTATUS[0]}"
+          exit 0
+
+      - name: Run supervisor regression for diagnosis
+        shell: bash
+        run: |
+          set +e
+          ./build-v9/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee supervisor.log
+          echo "supervisor_exit=${PIPESTATUS[0]}"
+          exit 0
+
+      - name: Run renderer regression
+        run: ./build-v9/clean-engine-tests/SingleWetSpectralRendererTest
