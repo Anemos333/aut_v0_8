@@ -1,0 +1,46 @@
+name: Apply Experimental One Voice V7.1
+
+on:
+  push:
+    branches:
+      - quality-tail-glide-experimental-128-v3
+    paths:
+      - Tests/ExperimentalOneVoiceV71Patch.py
+      - .github/workflows/apply-experimental-one-voice-v71.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply guarded one-voice patch
+        run: python3 Tests/ExperimentalOneVoiceV71Patch.py
+      - name: Verify Experimental and Live scopes
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'EXPERIMENTAL_ONE_VOICE_TRANSLATION_V7_1' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'const bool harmonicGuideValid = frameSize_ == 256' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'baseCoherence \* 0.85f' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'frameSize_ <= 128 ? 0.90f : 1.0f' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'harmonicShiftBins = harmonicSourceBin \* (safeRatio - 1.0)' Source/SingleWetSpectralRenderer.cpp
+          test "$(grep -c 'SynthesisLayer layer_' Source/SingleWetSpectralRenderer.h)" -eq 1
+      - name: Materialize production source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Source/SingleWetSpectralRenderer.cpp
+          if git diff --cached --quiet; then
+            echo 'Experimental V7.1 already materialized'
+            exit 0
+          fi
+          git commit -m 'Materialize Experimental one-voice translation V7.1'
+          git push origin HEAD:quality-tail-glide-experimental-128-v3
