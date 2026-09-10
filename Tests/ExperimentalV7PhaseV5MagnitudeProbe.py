@@ -3,31 +3,44 @@ from pathlib import Path
 p = Path('Source/SingleWetSpectralRenderer.cpp')
 s = p.read_text()
 
-# Experimental/128 cannot safely assign each coarse coefficient to a unique
-# harmonic. Live/256 keeps V7 harmonic-coordinate transport; Experimental uses
-# the same measured-peak displacement for both phase velocity and magnitude.
-old_phase_guide = 'const bool harmonicGuideValid = frameSize_ <= 256'
-new_phase_guide = 'const bool harmonicGuideValid = frameSize_ == 256'
-if s.count(old_phase_guide) != 1:
-    raise SystemExit(f'phase guide condition count={s.count(old_phase_guide)}')
-s = s.replace(old_phase_guide, new_phase_guide, 1)
-
 old_transport = '''            double transportTargetBin = measuredSourceBin * safeRatio;
             if (harmonicGuideValid && sourceHarmonic > 0)
             {
 '''
 new_transport = '''            double transportTargetBin = measuredSourceBin * safeRatio;
-            if (frameSize_ <= 128 && !nearestPeak_.empty())
+            // EXPERIMENTAL_PEAK_OWNED_HARMONIC_TRANSPORT_PROBE
+            // At 128, harmonic identity belongs to the measured peak/lobe, not
+            // to every coarse FFT coefficient. One lobe receives one additive
+            // F0-referenced displacement while its measured local phase shape
+            // is retained. Live/256 keeps the existing per-coordinate V7 law.
+            if (frameSize_ <= 128
+                && harmonicGuideValid
+                && !nearestPeak_.empty()
+                && fundamentalBin > 1.0e-6)
             {
-                const int translationPeak =
+                const int velocityPeak =
                     nearestPeak_[static_cast<std::size_t>(sourceBin)];
-                if (translationPeak >= 0 && translationPeak <= positiveBins)
+                if (velocityPeak >= 0 && velocityPeak <= positiveBins)
                 {
                     const double peakMeasuredBin =
-                        trueSourceBins_[static_cast<std::size_t>(translationPeak)];
-                    const double peakShiftBins =
-                        peakMeasuredBin * (safeRatio - 1.0);
-                    transportTargetBin = measuredSourceBin + peakShiftBins;
+                        trueSourceBins_[static_cast<std::size_t>(velocityPeak)];
+                    const int peakHarmonic = std::max(1, static_cast<int>(std::lround(
+                        std::max(fundamentalBin, peakMeasuredBin) / fundamentalBin)));
+                    const double harmonicPeakBin =
+                        static_cast<double>(peakHarmonic) * fundamentalBin;
+                    const double harmonicShiftBins =
+                        harmonicPeakBin * (safeRatio - 1.0);
+                    const float distance = static_cast<float>(
+                        std::abs(velocityPeak - sourceBin));
+                    constexpr float coherenceCore = 0.50f;
+                    constexpr float coherenceFade = 2.50f;
+                    const float coherence = 1.0f
+                        - smoothStep(coherenceCore, coherenceFade, distance);
+                    const double coherentMeasuredSourceBin = measuredSourceBin
+                        + static_cast<double>(coherence)
+                        * (peakMeasuredBin - measuredSourceBin);
+                    transportTargetBin = coherentMeasuredSourceBin
+                        + harmonicShiftBins;
                 }
             }
             else if (harmonicGuideValid && sourceHarmonic > 0)
@@ -70,16 +83,26 @@ old = '''        double targetPosition = static_cast<double>(sourceBin) * safeRa
 
 new = '''        double targetPosition = static_cast<double>(sourceBin) * safeRatio;
         int sourceHarmonicForMagnitude = 0;
-        // EXPERIMENTAL_PEAK_COORDINATE_TRANSLATION_PROBE
-        // At 128, phase and magnitude obey one identical additive displacement:
-        // delta = measuredPeak * (ratio - 1). The analysed lobe is translated,
-        // never snapped to an F0 harmonic grid and never mixed with source audio.
-        if (frameSize_ <= 128 && peakValid)
+        if (frameSize_ <= 128
+            && peakValid
+            && std::isfinite(sourceFundamentalHz)
+            && sourceFundamentalHz >= 25.0
+            && sourceFundamentalHz <= 3000.0)
         {
-            const double truePeakBin =
-                trueSourceBins_[static_cast<std::size_t>(peak)];
-            const double peakShiftBins = truePeakBin * safeRatio - truePeakBin;
-            targetPosition = static_cast<double>(sourceBin) + peakShiftBins;
+            const double fundamentalBin = sourceFundamentalHz
+                * static_cast<double>(frameSize_) / sampleRate_;
+            if (fundamentalBin > 1.0e-6)
+            {
+                const double peakMeasuredBin =
+                    trueSourceBins_[static_cast<std::size_t>(peak)];
+                sourceHarmonicForMagnitude = std::max(1, static_cast<int>(std::lround(
+                    std::max(fundamentalBin, peakMeasuredBin) / fundamentalBin)));
+                const double harmonicPeakBin =
+                    static_cast<double>(sourceHarmonicForMagnitude) * fundamentalBin;
+                const double harmonicShiftBins =
+                    harmonicPeakBin * (safeRatio - 1.0);
+                targetPosition = static_cast<double>(sourceBin) + harmonicShiftBins;
+            }
         }
         else if (frameSize_ <= 256
             && std::isfinite(sourceFundamentalHz)
@@ -101,6 +124,13 @@ new = '''        double targetPosition = static_cast<double>(sourceBin) * safeRa
                 targetPosition = static_cast<double>(sourceBin) + harmonicShiftBins;
             }
         }
+        else if (frameSize_ <= 128 && peakValid)
+        {
+            const double truePeakBin =
+                trueSourceBins_[static_cast<std::size_t>(peak)];
+            const double peakShiftBins = truePeakBin * safeRatio - truePeakBin;
+            targetPosition = static_cast<double>(sourceBin) + peakShiftBins;
+        }
 '''
 
 if s.count(old) != 1:
@@ -108,4 +138,4 @@ if s.count(old) != 1:
 s = s.replace(old, new, 1)
 
 p.write_text(s)
-print('EXPERIMENTAL_PEAK_COORDINATE_TRANSLATION_PROBE=PASS')
+print('EXPERIMENTAL_PEAK_OWNED_HARMONIC_TRANSPORT_PROBE=PASS')
