@@ -44,11 +44,15 @@ replacements = [
  'if (size != fftSize_ || fftBitReversal_.size() != data.size())', 'fft guard'),
 ('const double binWidthHz = sampleRate_ / static_cast<double>(frameSize_);',
  'const double binWidthHz = sampleRate_ / static_cast<double>(fftSize_);', 'envelope bin width'),
-('const double expectedPhaseScale = twoPi * static_cast<double>(hopSize_)\n                                    / static_cast<double>(frameSize_);',
- 'const double expectedPhaseScale = twoPi * static_cast<double>(hopSize_)\n                                    / static_cast<double>(fftSize_);', 'synthesis phase scale'),
 ]
 for old, new, label in replacements:
     s = once(s, old, new, label)
+
+phase_old = '''const double expectedPhaseScale = twoPi * static_cast<double>(hopSize_)\n                                    / static_cast<double>(frameSize_);'''
+phase_new = '''const double expectedPhaseScale = twoPi * static_cast<double>(hopSize_)\n                                    / static_cast<double>(fftSize_);'''
+if s.count(phase_old) != 2:
+    raise SystemExit(f'phase scales: expected exactly two occurrences, got {s.count(phase_old)}')
+s = s.replace(phase_old, phase_new)
 
 # There are two harmonic-guide bin conversions inside synthesiseLayer.
 old_fund = 'sourceFundamentalHz * static_cast<double>(frameSize_) / sampleRate_'
@@ -66,11 +70,9 @@ s = once(s,
 
 s = once(s, 'const int positiveBins = frameSize_ / 2;',
          'const int positiveBins = fftSize_ / 2;', 'positive bins process')
-
-# processFrame has its own phase-coordinate conversion.
 s = once(s,
-'''    const double expectedPhaseScale = twoPi * static_cast<double>(hopSize_)\n                                    / static_cast<double>(frameSize_);\n    const double binFromPhaseScale = static_cast<double>(frameSize_)\n                                   / (twoPi * static_cast<double>(hopSize_));\n''',
-'''    const double expectedPhaseScale = twoPi * static_cast<double>(hopSize_)\n                                    / static_cast<double>(fftSize_);\n    const double binFromPhaseScale = static_cast<double>(fftSize_)\n                                   / (twoPi * static_cast<double>(hopSize_));\n''', 'analysis phase scale')
+'''    const double binFromPhaseScale = static_cast<double>(frameSize_)\n                                   / (twoPi * static_cast<double>(hopSize_));\n''',
+'''    const double binFromPhaseScale = static_cast<double>(fftSize_)\n                                   / (twoPi * static_cast<double>(hopSize_));\n''', 'analysis bin phase scale')
 
 hpp.write_text(h)
 cpp.write_text(s)
