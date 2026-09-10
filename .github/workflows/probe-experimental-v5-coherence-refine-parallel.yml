@@ -25,7 +25,7 @@ jobs:
         lock: [0.75, 0.80, 0.85, 0.90, 0.95]
     steps:
       - uses: actions/checkout@v4
-      - name: Evaluate point
+      - name: Evaluate refinement point
         env:
           NEUMATON_COHERENCE_SCALE: ${{ matrix.coherence }}
           NEUMATON_LOCK_SCALE: ${{ matrix.lock }}
@@ -64,7 +64,7 @@ jobs:
           pattern: metric-*
           path: metrics
           merge-multiple: false
-      - name: Aggregate
+      - name: Aggregate refinement metrics
         run: |
           printf 'coherence,lock,source_ratio,mae_ct,rms_ct,max_ct,h1,h2,h3,h4,h5,h6,h7,h8\n' > summary.csv
           find metrics -name metric.csv -print0 | xargs -0 cat >> summary.csv
