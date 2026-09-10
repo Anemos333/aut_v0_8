@@ -482,7 +482,7 @@ void SingleWetSpectralRenderer::synthesiseLayer(
             // lattice phase law; Live/256 and Quality/512 remain unchanged.
             const double measuredSourceBin =
                 trueSourceBins_[static_cast<std::size_t>(sourceBin)];
-            const bool harmonicGuideValid = frameSize_ <= 256
+            const bool harmonicGuideValid = frameSize_ == 256
                 && std::isfinite(sourceFundamentalHz)
                 && sourceFundamentalHz >= 25.0
                 && sourceFundamentalHz <= 3000.0;
@@ -543,8 +543,14 @@ void SingleWetSpectralRenderer::synthesiseLayer(
                         std::abs(velocityPeak - sourceBin));
                     const float coherenceCore = frameSize_ <= 128 ? 0.50f : 0.75f;
                     const float coherenceFade = frameSize_ <= 128 ? 2.50f : 2.75f;
-                    const float coherence = 1.0f
+                    const float baseCoherence = 1.0f
                         - smoothStep(coherenceCore, coherenceFade, distance);
+                    // V7.1: at 128, retain 85% of measured-peak velocity
+                    // coherence. This was the minimum-error one-voice point in
+                    // the guarded H1-H8 sweep; it changes no timing or ratio.
+                    const float coherence = frameSize_ <= 128
+                        ? clamp01(baseCoherence * 0.85f)
+                        : baseCoherence;
                     const double peakVelocityBin =
                         trueSourceBins_[static_cast<std::size_t>(velocityPeak)];
                     const double coherentSourceBin = measuredSourceBin
@@ -600,7 +606,24 @@ void SingleWetSpectralRenderer::synthesiseLayer(
 
         double targetPosition = static_cast<double>(sourceBin) * safeRatio;
         int sourceHarmonicForMagnitude = 0;
-        if (frameSize_ <= 256
+
+        // EXPERIMENTAL_ONE_VOICE_TRANSLATION_V7_1
+        // A 128-sample frame at 48 kHz is a 375 Hz lattice. Low vocal partials
+        // therefore overlap inside a nominal FFT-bin width, so snapping each bin
+        // to h*F0 is not a measurement and was the source of the hollow/metallic
+        // V7 regression. Experimental instead preserves each analysed peak lobe
+        // and translates it by the measured instantaneous peak displacement.
+        // This is still one spectrum, one IFFT, one wet path and the exact same
+        // safeRatio. Nothing is copied from dry/source audio. Live/256 retains
+        // the V7 harmonic-coordinate law, where the lattice supports it.
+        if (frameSize_ <= 128 && peakValid)
+        {
+            const double truePeakBin =
+                trueSourceBins_[static_cast<std::size_t>(peak)];
+            const double peakShiftBins = truePeakBin * safeRatio - truePeakBin;
+            targetPosition = static_cast<double>(sourceBin) + peakShiftBins;
+        }
+        else if (frameSize_ <= 256
             && std::isfinite(sourceFundamentalHz)
             && sourceFundamentalHz >= 25.0
             && sourceFundamentalHz <= 3000.0
@@ -619,13 +642,6 @@ void SingleWetSpectralRenderer::synthesiseLayer(
                     harmonicSourceBin * (safeRatio - 1.0);
                 targetPosition = static_cast<double>(sourceBin) + harmonicShiftBins;
             }
-        }
-        else if (frameSize_ <= 128 && peakValid)
-        {
-            const double truePeakBin =
-                trueSourceBins_[static_cast<std::size_t>(peak)];
-            const double peakShiftBins = truePeakBin * safeRatio - truePeakBin;
-            targetPosition = static_cast<double>(sourceBin) + peakShiftBins;
         }
         if (targetPosition < -1.0
             || targetPosition > static_cast<double>(positiveBins) + 1.0)
@@ -671,7 +687,8 @@ void SingleWetSpectralRenderer::synthesiseLayer(
             : 0.0f;
         const float correctionPhaseNeed = smoothStep(6.0f, 42.0f,
             static_cast<float>(std::abs(safeCents)));
-        const float lockStrength = clamp01(spatialLock * correctionPhaseNeed);
+        const float lockStrength = clamp01(spatialLock * correctionPhaseNeed
+            * (frameSize_ <= 128 ? 0.90f : 1.0f));
 
         const double ownPhase = propagatedPhases_[sourceIndex];
         const double lockedPhase = peakValid
