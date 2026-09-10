@@ -1,0 +1,36 @@
+name: Probe Experimental Oversampled Lattice
+
+on:
+  push:
+    branches:
+      - quality-tail-glide-experimental-128-v3
+    paths:
+      - Tests/ExperimentalOversampledLatticeProbe.py
+      - .github/workflows/probe-experimental-oversampled-lattice.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        factor: [2, 4]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply workspace-only spectral lattice
+        env:
+          NEUMATON_EXPERIMENTAL_FFT_FACTOR: ${{ matrix.factor }}
+        run: python3 Tests/ExperimentalOversampledLatticeProbe.py
+      - name: Build renderer regression directly
+        run: >-
+          g++ -std=c++17 -O2 -Wall -Wextra -pedantic
+          Tests/SingleWetSpectralRendererTest.cpp
+          Source/SingleWetSpectralRenderer.cpp
+          -ISource
+          -o experimental_lattice_test
+      - name: Run renderer regression
+        run: ./experimental_lattice_test
