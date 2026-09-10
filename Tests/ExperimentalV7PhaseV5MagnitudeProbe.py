@@ -3,6 +3,22 @@ from pathlib import Path
 p = Path('Source/SingleWetSpectralRenderer.cpp')
 s = p.read_text()
 
+# Experimental/128: disable harmonic-coordinate phase ownership. The 128-bin
+# lattice cannot prove a unique harmonic identity for every coefficient. This
+# restores the V6 independent instantaneous-frequency phase law only at 128;
+# Live/256 keeps V7 harmonic-coordinate phase transport.
+old_phase_guide = 'const bool harmonicGuideValid = frameSize_ <= 256'
+new_phase_guide = 'const bool harmonicGuideValid = frameSize_ == 256'
+if s.count(old_phase_guide) != 1:
+    raise SystemExit(f'phase guide condition count={s.count(old_phase_guide)}')
+s = s.replace(old_phase_guide, new_phase_guide, 1)
+
+old_fallback = 'else if (frameSize_ <= 256 && !nearestPeak_.empty())'
+new_fallback = 'else if (frameSize_ == 256 && !nearestPeak_.empty())'
+if s.count(old_fallback) != 1:
+    raise SystemExit(f'phase fallback condition count={s.count(old_fallback)}')
+s = s.replace(old_fallback, new_fallback, 1)
+
 old = '''        double targetPosition = static_cast<double>(sourceBin) * safeRatio;
         int sourceHarmonicForMagnitude = 0;
         if (frameSize_ <= 256
@@ -36,10 +52,10 @@ old = '''        double targetPosition = static_cast<double>(sourceBin) * safeRa
 
 new = '''        double targetPosition = static_cast<double>(sourceBin) * safeRatio;
         int sourceHarmonicForMagnitude = 0;
-        // EXPERIMENTAL_V7_PHASE_V5_MAGNITUDE_PROBE
-        // The 128-sample lattice cannot assign every coefficient to a unique
-        // harmonic. Keep the V5 lobe translation for magnitude while allowing
-        // the F0-referenced V7 law to guide phase velocity. Live/256 keeps V7.
+        // EXPERIMENTAL_V6_PHASE_V5_MAGNITUDE_PROBE
+        // At 128 samples, preserve the analysed lobe and translate it by its
+        // measured peak displacement. No harmonic reconstruction is introduced.
+        // Live/256 retains V7 harmonic-coordinate magnitude transport.
         if (frameSize_ <= 128 && peakValid)
         {
             const double truePeakBin =
@@ -71,5 +87,7 @@ new = '''        double targetPosition = static_cast<double>(sourceBin) * safeRa
 
 if s.count(old) != 1:
     raise SystemExit(f'expected one V7 magnitude block, got {s.count(old)}')
-p.write_text(s.replace(old, new, 1))
-print('EXPERIMENTAL_V7_PHASE_V5_MAGNITUDE_PROBE=PASS')
+s = s.replace(old, new, 1)
+
+p.write_text(s)
+print('EXPERIMENTAL_V6_PHASE_V5_MAGNITUDE_PROBE=PASS')
