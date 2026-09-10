@@ -1,0 +1,30 @@
+name: Probe Experimental V7 Phase V5 Magnitude
+
+on:
+  push:
+    branches:
+      - quality-tail-glide-experimental-128-v3
+    paths:
+      - Tests/ExperimentalV7PhaseV5MagnitudeProbe.py
+      - .github/workflows/probe-experimental-v7-phase-v5-magnitude.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply workspace-only hybrid
+        run: python3 Tests/ExperimentalV7PhaseV5MagnitudeProbe.py
+      - name: Build renderer regression directly
+        run: >-
+          g++ -std=c++17 -O2 -Wall -Wextra -pedantic
+          Tests/SingleWetSpectralRendererTest.cpp
+          Source/SingleWetSpectralRenderer.cpp
+          -ISource
+          -o experimental_hybrid_test
+      - name: Run renderer regression
+        run: ./experimental_hybrid_test
