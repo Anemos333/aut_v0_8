@@ -3,7 +3,10 @@ from pathlib import Path
 
 RENDERER = Path('Source/SingleWetSpectralRenderer.cpp')
 ENGINE = Path('Source/ModernPitchEngine.cpp')
-LOCK = float(os.environ.get('NEUMATON_EXPERIMENTAL_PHASE_LOCK', '0.90'))
+COHERENCE = float(os.environ.get('NEUMATON_EXPERIMENTAL_LOBE_COHERENCE', '0.85'))
+LOCK = float(os.environ.get('NEUMATON_EXPERIMENTAL_PHASE_LOCK', '0.0'))
+if not (0.0 <= COHERENCE <= 1.0):
+    raise SystemExit('NEUMATON_EXPERIMENTAL_LOBE_COHERENCE must be in [0,1]')
 if not (0.0 <= LOCK <= 1.0):
     raise SystemExit('NEUMATON_EXPERIMENTAL_PHASE_LOCK must be in [0,1]')
 
@@ -16,8 +19,6 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
 
 renderer = RENDERER.read_text(encoding='utf-8')
 
-# Preserve the proven V7.1 short-frame geometric lobe transport. Remove only
-# semantic/timbral reconstruction from Experimental.
 formant_old = '    const float safeFormant = clamp01(formantPreservation);\n'
 formant_new = '''    // EXPERIMENTAL_MINIMAL_TRANSPORT_V8: at 128 the renderer does not
     // attempt spectral-envelope/formant reconstruction. It transports the
@@ -29,19 +30,31 @@ formant_new = '''    // EXPERIMENTAL_MINIMAL_TRANSPORT_V8: at 128 the renderer d
 renderer = replace_once(renderer, formant_old, formant_new,
                         'Experimental formant removal')
 
+coherence_old = '''                    const float coherence = frameSize_ <= 128
+                        ? clamp01(baseCoherence * 0.85f)
+                        : baseCoherence;
+'''
+coherence_new = f'''                    // EXPERIMENTAL_MINIMAL_TRANSPORT_V8: local peak
+                    // coherence is geometric support only, never semantic ownership.
+                    const float coherence = frameSize_ <= 128
+                        ? clamp01(baseCoherence * {COHERENCE:.6f}f)
+                        : baseCoherence;
+'''
+renderer = replace_once(renderer, coherence_old, coherence_new,
+                        'Experimental lobe-coherence sweep')
+
 lock_old = '''        const float lockStrength = clamp01(spatialLock * correctionPhaseNeed
             * (frameSize_ <= 128 ? 0.90f : 1.0f));
 '''
-lock_new = f'''        // EXPERIMENTAL_MINIMAL_TRANSPORT_V8: this is only local lobe
-        // geometry. It has no F0/harmonic/breath/transient semantics.
+lock_new = f'''        // EXPERIMENTAL_MINIMAL_TRANSPORT_V8: final identity phase lock
+        // is disabled at the selected zero-prudence endpoint. Any nonzero value
+        // here is probe-only and has no F0/harmonic/breath/transient semantics.
         const float lockStrength = clamp01(spatialLock * correctionPhaseNeed
             * (frameSize_ <= 128 ? {LOCK:.6f}f : 1.0f));
 '''
 renderer = replace_once(renderer, lock_old, lock_new,
                         'Experimental phase-lock sweep')
 
-# Guard the already-established rule: Experimental cannot use source F0 in its
-# renderer. This is intentionally a validation, not a replacement.
 if renderer.count('const bool harmonicGuideValid = frameSize_ == 256') != 1:
     raise SystemExit('Experimental F0 authority guard failed')
 
@@ -100,4 +113,4 @@ engine = replace_once(engine, invalid_old, invalid_new,
                       'Experimental invalid-F0 unity release removal')
 
 ENGINE.write_text(engine, encoding='utf-8')
-print(f'EXPERIMENTAL_MINIMAL_TRANSPORT_V8_PATCH=PASS lock={LOCK:.3f}')
+print(f'EXPERIMENTAL_MINIMAL_TRANSPORT_V8_PATCH=PASS coherence={COHERENCE:.3f} lock={LOCK:.3f}')
