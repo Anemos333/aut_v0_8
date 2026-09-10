@@ -3,21 +3,39 @@ from pathlib import Path
 p = Path('Source/SingleWetSpectralRenderer.cpp')
 s = p.read_text()
 
-# Experimental/128: disable harmonic-coordinate phase ownership. The 128-bin
-# lattice cannot prove a unique harmonic identity for every coefficient. This
-# restores the V6 independent instantaneous-frequency phase law only at 128;
-# Live/256 keeps V7 harmonic-coordinate phase transport.
+# Experimental/128 cannot safely assign each coarse coefficient to a unique
+# harmonic. Live/256 keeps V7 harmonic-coordinate transport; Experimental uses
+# the same measured-peak displacement for both phase velocity and magnitude.
 old_phase_guide = 'const bool harmonicGuideValid = frameSize_ <= 256'
 new_phase_guide = 'const bool harmonicGuideValid = frameSize_ == 256'
 if s.count(old_phase_guide) != 1:
     raise SystemExit(f'phase guide condition count={s.count(old_phase_guide)}')
 s = s.replace(old_phase_guide, new_phase_guide, 1)
 
-old_fallback = 'else if (frameSize_ <= 256 && !nearestPeak_.empty())'
-new_fallback = 'else if (frameSize_ == 256 && !nearestPeak_.empty())'
-if s.count(old_fallback) != 1:
-    raise SystemExit(f'phase fallback condition count={s.count(old_fallback)}')
-s = s.replace(old_fallback, new_fallback, 1)
+old_transport = '''            double transportTargetBin = measuredSourceBin * safeRatio;
+            if (harmonicGuideValid && sourceHarmonic > 0)
+            {
+'''
+new_transport = '''            double transportTargetBin = measuredSourceBin * safeRatio;
+            if (frameSize_ <= 128 && !nearestPeak_.empty())
+            {
+                const int translationPeak =
+                    nearestPeak_[static_cast<std::size_t>(sourceBin)];
+                if (translationPeak >= 0 && translationPeak <= positiveBins)
+                {
+                    const double peakMeasuredBin =
+                        trueSourceBins_[static_cast<std::size_t>(translationPeak)];
+                    const double peakShiftBins =
+                        peakMeasuredBin * (safeRatio - 1.0);
+                    transportTargetBin = measuredSourceBin + peakShiftBins;
+                }
+            }
+            else if (harmonicGuideValid && sourceHarmonic > 0)
+            {
+'''
+if s.count(old_transport) != 1:
+    raise SystemExit(f'phase transport insertion count={s.count(old_transport)}')
+s = s.replace(old_transport, new_transport, 1)
 
 old = '''        double targetPosition = static_cast<double>(sourceBin) * safeRatio;
         int sourceHarmonicForMagnitude = 0;
@@ -52,10 +70,10 @@ old = '''        double targetPosition = static_cast<double>(sourceBin) * safeRa
 
 new = '''        double targetPosition = static_cast<double>(sourceBin) * safeRatio;
         int sourceHarmonicForMagnitude = 0;
-        // EXPERIMENTAL_V6_PHASE_V5_MAGNITUDE_PROBE
-        // At 128 samples, preserve the analysed lobe and translate it by its
-        // measured peak displacement. No harmonic reconstruction is introduced.
-        // Live/256 retains V7 harmonic-coordinate magnitude transport.
+        // EXPERIMENTAL_PEAK_COORDINATE_TRANSLATION_PROBE
+        // At 128, phase and magnitude obey one identical additive displacement:
+        // delta = measuredPeak * (ratio - 1). The analysed lobe is translated,
+        // never snapped to an F0 harmonic grid and never mixed with source audio.
         if (frameSize_ <= 128 && peakValid)
         {
             const double truePeakBin =
@@ -90,4 +108,4 @@ if s.count(old) != 1:
 s = s.replace(old, new, 1)
 
 p.write_text(s)
-print('EXPERIMENTAL_V6_PHASE_V5_MAGNITUDE_PROBE=PASS')
+print('EXPERIMENTAL_PEAK_COORDINATE_TRANSLATION_PROBE=PASS')
