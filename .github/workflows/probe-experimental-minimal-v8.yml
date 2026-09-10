@@ -18,12 +18,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        lock: [0.0, 0.5, 0.9, 1.0]
+        coherence: [0.0, 0.25, 0.50, 0.70, 0.85, 1.0]
     steps:
       - uses: actions/checkout@v4
       - name: Apply minimal V8 workspace patch
         env:
-          NEUMATON_EXPERIMENTAL_PHASE_LOCK: ${{ matrix.lock }}
+          NEUMATON_EXPERIMENTAL_LOBE_COHERENCE: ${{ matrix.coherence }}
+          NEUMATON_EXPERIMENTAL_PHASE_LOCK: 0.0
         run: python3 Tests/ExperimentalMinimalTransportV8Patch.py
       - name: Verify semantic removal
         shell: bash
@@ -34,6 +35,7 @@ jobs:
           grep -q 'const float safeFormant = frameSize_ <= 128' Source/SingleWetSpectralRenderer.cpp
           grep -q 'experimentalMinimalTransport = latencyMode_ == LatencyMode::ultraLive' Source/ModernPitchEngine.cpp
           grep -q '&& !experimentalMinimalTransport' Source/ModernPitchEngine.cpp
+          grep -q 'frameSize_ <= 128 ? 0.000000f : 1.0f' Source/SingleWetSpectralRenderer.cpp
       - name: Build focused contract
         run: |
           g++ -std=c++17 -O2 -Wall -Wextra -pedantic \
