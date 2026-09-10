@@ -1,0 +1,34 @@
+name: Probe Experimental Content-Agnostic PV
+
+on:
+  push:
+    branches:
+      - one-voice-unified-spectrum-v10
+    paths:
+      - Tests/ExperimentalPurePVProbe.py
+      - Tests/UnifiedSpectrumV10Probe.cpp
+      - .github/workflows/probe-experimental-content-agnostic-pv.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply content-agnostic Experimental patch
+        run: python3 Tests/ExperimentalPurePVProbe.py
+      - name: Build focused probe
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -pedantic \
+            Tests/UnifiedSpectrumV10Probe.cpp Source/SingleWetSpectralRenderer.cpp \
+            -o /tmp/experimental-pv
+      - name: Run focused probe
+        shell: bash
+        run: |
+          set +e
+          /tmp/experimental-pv 2>&1 | tee result.log
+          echo "probe_exit=${PIPESTATUS[0]}"
+          exit 0
