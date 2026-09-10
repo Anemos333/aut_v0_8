@@ -26,7 +26,6 @@ phase_replacement = '''            double& synthesisPhase =
             // transient class or breath structure. Experimental therefore makes
             // no reconstruction decision at all: every measured instantaneous
             // frequency follows the exact same multiplicative correction ratio.
-            // The same coordinate drives phase velocity and spectral placement.
             if (frameSize_ <= 128)
             {
                 const double measuredSourceBin =
@@ -67,9 +66,12 @@ magnitude_old = '''        if (frameSize_ <= 128 && peakValid)
 '''
 magnitude_new = '''        if (frameSize_ <= 128)
         {
-            // EXPERIMENTAL_PURE_TRANSPORT_V8: position and phase use the same
-            // measured coordinate. No lobe owner, harmonic number or source F0.
-            targetPosition = trueSourceBins_[sourceIndex] * safeRatio;
+            // EXPERIMENTAL_PURE_TRANSPORT_V8: the complete short-frame spectrum
+            // is moved geometrically by one ratio. No peak owner, harmonic number
+            // or source F0 is allowed to decide which energy moves. Instantaneous
+            // frequency is used only for phase velocity above; magnitude follows
+            // the deterministic source lattice times the exact same ratio.
+            targetPosition = static_cast<double>(sourceBin) * safeRatio;
         }
         else if (frameSize_ <= 256
 '''
