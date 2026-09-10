@@ -7,6 +7,7 @@ on:
     paths:
       - Tests/MonotonicTargetAuthorityV9Patch.py
       - Tests/MonotonicTargetAuthorityV9Compatibility.py
+      - Tests/MonotonicTargetAuthorityV9RescueRemoval.py
       - .github/workflows/probe-monotonic-target-authority-v9.yml
   workflow_dispatch:
 
@@ -22,6 +23,7 @@ jobs:
       - name: Apply V9 authority cleanup
         run: |
           python3 Tests/MonotonicTargetAuthorityV9Patch.py
+          python3 Tests/MonotonicTargetAuthorityV9RescueRemoval.py
           python3 Tests/MonotonicTargetAuthorityV9Compatibility.py
 
       - name: Verify no hidden return or wait authority
@@ -40,6 +42,10 @@ jobs:
           ! grep -q 'immediateAuthority_' Source/ModernPitchEngine.cpp Source/ModernPitchEngine.h
           ! grep -q ': correction.transportPeriodHz' Source/ModernPitchEngine.cpp
           ! grep -q ': linkedCorrection_.transportPeriodHz' Source/ModernPitchEngine.cpp
+          ! grep -q 'rescueSearch' Source/ModernPitchEngine.cpp
+          ! grep -q 'PITCH_RESCUE_V3_REGISTER_GUARD' Source/ModernPitchEngine.cpp
+          ! grep -q '0.060 \* sampleRate_' Source/ModernPitchEngine.cpp
+          ! grep -q 'std::max(safe.detectorSensitivity, 0.98f)' Source/ModernPitchEngine.cpp
           grep -q 'return state.currentCents;' Source/ModernPitchEngine.cpp
           grep -q 'state.responseMs = responseTimeMs(parameters, targetChanged, targetJump);' Source/ModernPitchEngine.cpp
           echo 'V9 source authority contract PASS'
