@@ -1,0 +1,46 @@
+name: Apply Experimental True Partial Transport V5
+
+on:
+  push:
+    branches: [quality-tail-glide-experimental-128-v3]
+    paths:
+      - 'Tests/ExperimentalTruePartialTransportV5Patch.py'
+      - '.github/workflows/apply-experimental-true-partial-v5.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: quality-tail-glide-experimental-128-v3
+          fetch-depth: 1
+      - name: Apply guarded patch
+        run: python3 Tests/ExperimentalTruePartialTransportV5Patch.py
+      - name: Verify scope and semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'EXPERIMENTAL_TRUE_PARTIAL_TRANSPORT_V5' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'if (frameSize_ <= 128 && peakValid)' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'peakShiftBins = truePeakBin \* safeRatio - truePeakBin' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'experimental_128_shifts_harmonic_family_not_original_grid' Tests/SingleWetSpectralRendererTest.cpp
+          grep -q 'experimental_128_translates_true_partial_regions' Tests/GuiAudioControlContractTest.cpp
+          git diff --exit-code -- Source/ModernPitchEngine.cpp Source/ModernPitchEngine.h Source/PluginProcessor.cpp Source/PluginEditor.cpp
+      - name: Materialize renderer and tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Source/SingleWetSpectralRenderer.cpp Tests/SingleWetSpectralRendererTest.cpp Tests/GuiAudioControlContractTest.cpp
+          if git diff --cached --quiet; then
+            echo 'No materialized changes'
+            exit 0
+          fi
+          git commit -m 'Shift true partial regions in Experimental 128 V5'
+          git push origin HEAD:quality-tail-glide-experimental-128-v3
