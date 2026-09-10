@@ -1,0 +1,51 @@
+name: Apply Experimental Minimal Transport V8
+
+on:
+  push:
+    branches:
+      - quality-tail-glide-experimental-128-v3
+    paths:
+      - .github/workflows/apply-experimental-minimal-v8.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply selected zero-prudence Experimental endpoint
+        env:
+          NEUMATON_EXPERIMENTAL_LOBE_COHERENCE: 0.85
+          NEUMATON_EXPERIMENTAL_PHASE_LOCK: 0.0
+        run: python3 Tests/ExperimentalMinimalTransportV8Patch.py
+      - name: Verify exact scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'EXPERIMENTAL_MINIMAL_TRANSPORT_V8' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'const bool harmonicGuideValid = frameSize_ == 256' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'baseCoherence \* 0.850000f' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'frameSize_ <= 128 ? 0.000000f : 1.0f' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'const float safeFormant = frameSize_ <= 128' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'experimentalMinimalTransport = latencyMode_ == LatencyMode::ultraLive' Source/ModernPitchEngine.cpp
+          grep -q '&& !experimentalMinimalTransport' Source/ModernPitchEngine.cpp
+          grep -q 'if (!experimentalMinimalTransport' Source/ModernPitchEngine.cpp
+          test "$(grep -c 'SynthesisLayer layer_' Source/SingleWetSpectralRenderer.h)" -eq 1
+      - name: Commit production source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Source/SingleWetSpectralRenderer.cpp Source/ModernPitchEngine.cpp
+          if git diff --cached --quiet; then
+            echo 'Experimental Minimal Transport V8 already materialized'
+            exit 0
+          fi
+          git commit -m 'Materialize Experimental minimal transport V8'
+          git push origin HEAD:quality-tail-glide-experimental-128-v3
