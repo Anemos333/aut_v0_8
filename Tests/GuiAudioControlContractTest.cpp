@@ -148,6 +148,14 @@ int main()
                          && has(renderer, "spatialLock * correctionPhaseNeed"),
                      "renderer_phase_field_is_continuous_not_binary");
 
+    success &= check(has(renderer, "EXPERIMENTAL_TRUE_PARTIAL_TRANSPORT_V5")
+                         && has(renderer, "if (frameSize_ <= 128 && peakValid)")
+                         && has(renderer, "const double truePeakBin")
+                         && has(renderer, "const double peakShiftBins = truePeakBin * safeRatio - truePeakBin")
+                         && has(renderer, "targetPosition = static_cast<double>(sourceBin) + peakShiftBins")
+                         && has(renderer, "double targetPosition = static_cast<double>(sourceBin) * safeRatio"),
+                     "experimental_128_translates_true_partial_regions");
+
     const std::vector<std::string> forbiddenRendererTerms {
         "layer.spectrum[sourceIndex] += fftBuffer_[sourceIndex]",
         "const float harmonicMagnitude",

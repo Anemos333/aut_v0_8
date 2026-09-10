@@ -97,6 +97,30 @@ std::vector<float> renderTone(int frameSize,
     return output;
 }
 
+std::vector<float> renderHarmonicStack128(double correctionCents)
+{
+    SingleWetSpectralRenderer renderer;
+    renderer.prepare(sampleRate, 128);
+
+    constexpr double fundamental = 173.70;
+    std::vector<float> output(72000);
+    for (int sample = 0; sample < static_cast<int>(output.size()); ++sample)
+    {
+        double input = 0.0;
+        for (int harmonic = 1; harmonic <= 8; ++harmonic)
+        {
+            const double amplitude = 0.12 / static_cast<double>(harmonic);
+            input += amplitude * std::sin(
+                2.0 * pi * fundamental * static_cast<double>(harmonic)
+                * static_cast<double>(sample) / sampleRate
+                + 0.17 * static_cast<double>(harmonic));
+        }
+        output[static_cast<std::size_t>(sample)] = renderer.processSample(
+            static_cast<float>(input), correctionCents, 0.0f);
+    }
+    return output;
+}
+
 std::vector<float> renderInharmonicOctaveShift()
 {
     SingleWetSpectralRenderer renderer;
@@ -186,6 +210,39 @@ int main()
                                 : "experimental_128_realizes_commanded_pitch_ratio");
         }
     }
+
+    // EXPERIMENTAL_TRUE_PARTIAL_TRANSPORT_V5: a vocal-like harmonic
+    // stack must move as one harmonic family at 128 samples. This complements
+    // the single-sine ratio tests by catching a return to nominal-bin spectral
+    // reconstruction that can sound hollow even when one isolated sine is exact.
+    constexpr double harmonicFundamental = 173.70;
+    constexpr double harmonicShiftCents = 137.60;
+    const double harmonicRatio = std::exp2(harmonicShiftCents / 1200.0);
+    const auto harmonic128 = renderHarmonicStack128(harmonicShiftCents);
+    double shiftedHarmonicPower = 0.0;
+    double originalHarmonicPower = 0.0;
+    bool harmonicPitchExact = true;
+    for (int harmonic = 1; harmonic <= 8; ++harmonic)
+    {
+        const double sourceHz = harmonicFundamental * static_cast<double>(harmonic);
+        const double expectedHz = sourceHz * harmonicRatio;
+        shiftedHarmonicPower += tonePower(harmonic128, expectedHz, 24000);
+        originalHarmonicPower += tonePower(harmonic128, sourceHz, 24000);
+        if (expectedHz < 3000.0)
+        {
+            const double measuredHz = estimateToneFrequency(harmonic128, expectedHz, 24000);
+            harmonicPitchExact = harmonicPitchExact
+                && std::abs(centsError(measuredHz, expectedHz)) < 0.60;
+        }
+    }
+    const double harmonicFamilyRatio = shiftedHarmonicPower
+        / std::max(1.0e-20, originalHarmonicPower);
+    std::cerr << "experimental_128_shifted_harmonic_family_ratio="
+              << harmonicFamilyRatio << '\n';
+    success &= check(harmonicFamilyRatio > 20.0,
+                     "experimental_128_shifts_harmonic_family_not_original_grid");
+    success &= check(harmonicPitchExact,
+                     "experimental_128_harmonic_family_keeps_exact_ratio");
 
     const auto unity = renderTone(512, 0.0);
     const double unitySourcePower = tonePower(unity, 220.0, 12000);

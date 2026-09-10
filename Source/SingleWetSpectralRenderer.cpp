@@ -524,15 +524,33 @@ void SingleWetSpectralRenderer::synthesiseLayer(
         // attenuate spectral pieces or pull reconstruction toward dry analysis.
         // Every bin follows the one propagated transport phase.
 
-        // STABLE_SINGLE_LATTICE_TRANSPORT_V3
-        // Magnitudes keep one stable FFT geometry. trueSourceBins_ is an
-        // instantaneous-frequency / phase-velocity estimate and belongs in the
-        // synthesis phase integrator above; using it again as magnitude geometry
-        // makes neighbouring leakage bins jump independently and fragments the
-        // reconstructed voice. Every bin is transported once from the common
-        // analysis lattice through the exact same correction ratio.
-        const double targetPosition = static_cast<double>(sourceBin) * safeRatio;
-        if (targetPosition > static_cast<double>(positiveBins) + 1.0)
+        // EXPERIMENTAL_TRUE_PARTIAL_TRANSPORT_V5
+        // Quality/Live keep the proven common-lattice magnitude transport.
+        // At 128 samples, however, one FFT bin is 375 Hz at 48 kHz: scaling the
+        // nominal sourceBin geometry while phase follows trueSourceBins_ makes
+        // energy and phase describe different partial locations. That mismatch
+        // is heard as hollow/comb/wind motion on real vocals.
+        //
+        // Experimental therefore translates each analysed peak region by the
+        // actual instantaneous-frequency displacement of its owning peak. The
+        // spectral lobe is preserved and shifted as one object; it is not rebuilt
+        // from a nominal integer-bin harmonic grid. This is still one FFT, one
+        // spectrum, one IFFT and one wet path. safeRatio is unchanged.
+        const int peak = nearestPeak_.empty()
+            ? sourceBin
+            : nearestPeak_[sourceIndex];
+        const bool peakValid = peak >= 0 && peak <= positiveBins;
+
+        double targetPosition = static_cast<double>(sourceBin) * safeRatio;
+        if (frameSize_ <= 128 && peakValid)
+        {
+            const double truePeakBin =
+                trueSourceBins_[static_cast<std::size_t>(peak)];
+            const double peakShiftBins = truePeakBin * safeRatio - truePeakBin;
+            targetPosition = static_cast<double>(sourceBin) + peakShiftBins;
+        }
+        if (targetPosition < -1.0
+            || targetPosition > static_cast<double>(positiveBins) + 1.0)
             continue;
 
         // CONTINUOUS_PHASE_FIELD_V2
@@ -547,10 +565,6 @@ void SingleWetSpectralRenderer::synthesiseLayer(
         // the phase field continuously returns to the bin's own propagation,
         // so soft settings do not manufacture chorus/comb motion. Correction
         // magnitude, targetPosition and the commanded pitch ratio are untouched.
-        const int peak = nearestPeak_.empty()
-            ? sourceBin
-            : nearestPeak_[sourceIndex];
-        const bool peakValid = peak >= 0 && peak <= positiveBins;
         const float peakDistance = peakValid
             ? static_cast<float>(std::abs(peak - sourceBin))
             : std::numeric_limits<float>::infinity();
