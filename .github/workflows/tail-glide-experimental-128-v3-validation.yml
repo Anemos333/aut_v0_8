@@ -145,7 +145,7 @@ jobs:
           $vst3 = Get-ChildItem build-vst3 -Recurse -Directory -Filter 'Neumaton.vst3' | Select-Object -First 1
           if (-not $vst3) { throw 'Neumaton.vst3 not found' }
           Copy-Item $vst3.FullName artifact\Neumaton.vst3 -Recurse -Force
-          Compress-Archive artifact\Neumaton-Voiced-Lock-Glide-Curves-V4-Windows.zip -Force
+          Compress-Archive artifact\Neumaton.vst3 artifact\Neumaton-Voiced-Lock-Glide-Curves-V4-Windows.zip -Force
           (Get-FileHash artifact\Neumaton-Voiced-Lock-Glide-Curves-V4-Windows.zip -Algorithm SHA256).Hash.ToLower() | Out-File -Encoding ascii artifact\sha256.txt
       - name: Upload Windows candidate
         uses: actions/upload-artifact@v4
