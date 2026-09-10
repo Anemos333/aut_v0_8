@@ -1,0 +1,42 @@
+name: Probe Experimental V5 Coherence Sweep
+
+on:
+  push:
+    branches:
+      - quality-tail-glide-experimental-128-v3
+    paths:
+      - Tests/ExperimentalV5CoherenceSweep.py
+      - .github/workflows/probe-experimental-v5-coherence-sweep.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        coherence: [0.70, 0.85, 1.00]
+        lock: [0.70, 0.85, 1.00]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply workspace-only V5 sweep point
+        env:
+          NEUMATON_COHERENCE_SCALE: ${{ matrix.coherence }}
+          NEUMATON_LOCK_SCALE: ${{ matrix.lock }}
+        run: python3 Tests/ExperimentalV5CoherenceSweep.py
+      - name: Build renderer regression directly
+        run: >-
+          g++ -std=c++17 -O2 -Wall -Wextra -pedantic
+          Tests/SingleWetSpectralRendererTest.cpp
+          Source/SingleWetSpectralRenderer.cpp
+          -ISource
+          -o experimental_v5_sweep_test
+      - name: Run renderer regression
+        shell: bash
+        run: |
+          set +e
+          ./experimental_v5_sweep_test 2>&1 | tee result.log
+          exit 0
