@@ -54,11 +54,14 @@ if s.count(phase_old) != 2:
     raise SystemExit(f'phase scales: expected exactly two occurrences, got {s.count(phase_old)}')
 s = s.replace(phase_old, phase_new)
 
-# There are two harmonic-guide bin conversions inside synthesiseLayer.
-old_fund = 'sourceFundamentalHz * static_cast<double>(frameSize_) / sampleRate_'
-if s.count(old_fund) != 2:
-    raise SystemExit(f'harmonic bin scale: expected 2 occurrences, got {s.count(old_fund)}')
-s = s.replace(old_fund, 'sourceFundamentalHz * static_cast<double>(fftSize_) / sampleRate_')
+s = once(s,
+'''sourceFundamentalHz * static_cast<double>(frameSize_) / sampleRate_''',
+'''sourceFundamentalHz * static_cast<double>(fftSize_) / sampleRate_''',
+'harmonic phase bin scale')
+s = once(s,
+'''sourceFundamentalHz\n                * static_cast<double>(frameSize_) / sampleRate_''',
+'''sourceFundamentalHz\n                * static_cast<double>(fftSize_) / sampleRate_''',
+'harmonic magnitude bin scale')
 
 s = once(s,
 '''        layer.spectrum[static_cast<std::size_t>(frameSize_ - bin)] =\n''',
