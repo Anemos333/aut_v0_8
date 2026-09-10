@@ -34,7 +34,7 @@ jobs:
           ! grep -q '3.0 + 2.0 \* norm' Source/ModernPitchEngine.cpp
           ! grep -q 'tailTooWeakForNewDegree' Source/ModernPitchEngine.cpp
           ! grep -q 'maximumTransitionSamples' Source/ModernPitchEngine.cpp
-          git diff -- Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h | grep -q '^$'
+          test -z "$(git diff -- Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h)"
       - name: Materialize source and tests
         shell: bash
         run: |
