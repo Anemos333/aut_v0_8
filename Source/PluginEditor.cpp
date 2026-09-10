@@ -213,9 +213,9 @@ buildPresetMenu();
 
     modeSelector.setJustificationType (juce::Justification::centredLeft);
     modeSelector.addItem ("High Latency", 1);
-    modeSelector.addItem ("Quality",      2);
+    modeSelector.addItem ("Studio",      2);
     modeSelector.addItem ("Live",         3);
-    modeSelector.addItem ("Experimental", 4);
+    modeSelector.addItem ("Low Latency", 4);
     modeSelector.setSelectedId (processorRef.processingMode.load() + 1, juce::dontSendNotification);
     modeSelector.onChange = [this]() { onModeSelected(); };
     addAndMakeVisible (modeSelector);
