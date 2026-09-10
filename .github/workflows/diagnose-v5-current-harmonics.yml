@@ -1,0 +1,48 @@
+name: Diagnose V5 Current Harmonics
+
+on:
+  push:
+    branches: [quality-tail-glide-experimental-128-v3]
+    paths:
+      - '.github/workflows/diagnose-v5-current-harmonics.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Restore pre-V7 renderer in workspace only
+        shell: bash
+        run: |
+          set -euo pipefail
+          git show e9de75b84d8a182b78092b90a5ec4b86911df28d:Source/SingleWetSpectralRenderer.cpp > Source/SingleWetSpectralRenderer.cpp
+          git show e9de75b84d8a182b78092b90a5ec4b86911df28d:Source/SingleWetSpectralRenderer.h > Source/SingleWetSpectralRenderer.h
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('Tests/SingleWetSpectralRendererTest.cpp')
+          s=p.read_text()
+          old='''        output[static_cast<std::size_t>(sample)] = renderer.processSample(\n            static_cast<float>(input), correctionCents, 0.0f, fundamental);\n'''
+          new='''        output[static_cast<std::size_t>(sample)] = renderer.processSample(\n            static_cast<float>(input), correctionCents, 0.0f);\n'''
+          if old not in s: raise SystemExit('current harmonic helper call not found')
+          p.write_text(s.replace(old,new,1))
+          PY
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libjack-jackd2-dev ladspa-sdk libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev
+      - name: Configure and build
+        run: |
+          cmake -S . -B build-diag -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+          cmake --build build-diag --config Release --target SingleWetSpectralRendererTest --parallel 2
+      - name: Run diagnostic
+        shell: bash
+        run: |
+          set +e
+          ./build-diag/clean-engine-tests/SingleWetSpectralRendererTest 2>&1 | tee v5-current-harmonics.log
+          exit 0
