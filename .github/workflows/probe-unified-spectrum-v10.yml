@@ -1,0 +1,61 @@
+name: Probe Unified Spectrum V10
+
+on:
+  push:
+    branches:
+      - one-voice-unified-spectrum-v10
+    paths:
+      - Tests/UnifiedSpectrumV10Patch.py
+      - Tests/UnifiedSpectrumV10Probe.cpp
+      - .github/workflows/probe-unified-spectrum-v10.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build baseline probe
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -pedantic \
+            Tests/UnifiedSpectrumV10Probe.cpp Source/SingleWetSpectralRenderer.cpp \
+            -o /tmp/v10-baseline
+
+      - name: Run baseline for comparison
+        shell: bash
+        run: |
+          set +e
+          /tmp/v10-baseline 2>&1 | tee baseline.log
+          echo "baseline_exit=${PIPESTATUS[0]}"
+          exit 0
+
+      - name: Apply unified-spectrum patch
+        run: python3 Tests/UnifiedSpectrumV10Patch.py
+
+      - name: Verify one phase/spectrum law
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'ONE_VOICE_UNIFIED_SPECTRUM_V10' Source/SingleWetSpectralRenderer.cpp
+          ! grep -q 'maximumMagnitude \* 0.018f' Source/SingleWetSpectralRenderer.cpp
+          ! grep -q 'harmonicGuideValid' Source/SingleWetSpectralRenderer.cpp
+          ! grep -q 'sourceHarmonicForMagnitude' Source/SingleWetSpectralRenderer.cpp
+          ! grep -q 'sameExperimentalHarmonicFamily' Source/SingleWetSpectralRenderer.cpp
+          ! grep -q 'spatialLock' Source/SingleWetSpectralRenderer.cpp
+          ! grep -q 'lockStrength' Source/SingleWetSpectralRenderer.cpp
+          grep -q '(void) sourceFundamentalHz;' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'regionShiftBins' Source/SingleWetSpectralRenderer.cpp
+          echo 'UNIFIED_SPECTRUM_SOURCE_CONTRACT=PASS'
+
+      - name: Build patched probe
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -pedantic \
+            Tests/UnifiedSpectrumV10Probe.cpp Source/SingleWetSpectralRenderer.cpp \
+            -o /tmp/v10-patched
+
+      - name: Run patched one-voice probe
+        run: /tmp/v10-patched
