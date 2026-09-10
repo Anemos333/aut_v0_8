@@ -231,8 +231,11 @@ int main()
         if (expectedHz < 3000.0)
         {
             const double measuredHz = estimateToneFrequency(harmonic128, expectedHz, 24000);
+            const double harmonicError = centsError(measuredHz, expectedHz);
+            std::cerr << "experimental_128_harmonic_" << harmonic
+                      << "_error_cents=" << harmonicError << '\n';
             harmonicPitchExact = harmonicPitchExact
-                && std::abs(centsError(measuredHz, expectedHz)) < 0.60;
+                && std::abs(harmonicError) < 0.60;
         }
     }
     const double harmonicFamilyRatio = shiftedHarmonicPower

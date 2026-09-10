@@ -156,6 +156,11 @@ int main()
                          && has(renderer, "double targetPosition = static_cast<double>(sourceBin) * safeRatio"),
                      "experimental_128_translates_true_partial_regions");
 
+    success &= check(has(renderer, "EXPERIMENTAL_INDEPENDENT_PARTIAL_PHASE_V6")
+                         && has(renderer, "if (frameSize_ == 256 && !nearestPeak_.empty())")
+                         && !has(renderer, "if (frameSize_ <= 256 && !nearestPeak_.empty())"),
+                     "experimental_128_keeps_independent_partial_phase_velocity");
+
     const std::vector<std::string> forbiddenRendererTerms {
         "layer.spectrum[sourceIndex] += fftBuffer_[sourceIndex]",
         "const float harmonicMagnitude",

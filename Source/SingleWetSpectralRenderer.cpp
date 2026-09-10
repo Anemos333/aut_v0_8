@@ -467,25 +467,25 @@ void SingleWetSpectralRenderer::synthesiseLayer(
             double& synthesisPhase =
                 layer.synthesisPhases[static_cast<std::size_t>(sourceBin)];
 
-            // SHORT_LATTICE_COHERENT_PHASE_V3
-            // On 128/256-sample lattices, neighbouring leakage bins belonging
-            // to one partial have noisy independent instantaneous-frequency
-            // estimates. Let only their phase velocity converge continuously
-            // toward the nearest peak's velocity. This is still one phase
-            // field and one spectral transport: no residual/noise path, no dry
-            // contribution, no detector gate, and no change to targetPosition
-            // or safeRatio. Quality (512+) executes the previous equation.
+            // EXPERIMENTAL_INDEPENDENT_PARTIAL_PHASE_V6
+            // A 128-sample bin spans 375 Hz at 48 kHz. Neighbouring bins are
+            // therefore not safely classifiable as leakage from one partial:
+            // forcing them toward nearestPeak velocity can merge distinct vocal
+            // harmonics into one reconstructed phase family. Experimental keeps
+            // every measured instantaneous-frequency coordinate independent and
+            // shifts it directly. Live/256 retains the proven leakage-coherence
+            // stabiliser; Quality/512 was already independent and is untouched.
             double transportSourceBin =
                 trueSourceBins_[static_cast<std::size_t>(sourceBin)];
-            if (frameSize_ <= 256 && !nearestPeak_.empty())
+            if (frameSize_ == 256 && !nearestPeak_.empty())
             {
                 const int velocityPeak = nearestPeak_[static_cast<std::size_t>(sourceBin)];
                 if (velocityPeak >= 0 && velocityPeak <= positiveBins)
                 {
                     const float distance = static_cast<float>(
                         std::abs(velocityPeak - sourceBin));
-                    const float coherenceCore = frameSize_ <= 128 ? 0.50f : 0.75f;
-                    const float coherenceFade = frameSize_ <= 128 ? 2.50f : 2.75f;
+                    constexpr float coherenceCore = 0.75f;
+                    constexpr float coherenceFade = 2.75f;
                     const float coherence = 1.0f
                         - smoothStep(coherenceCore, coherenceFade, distance);
                     const double peakVelocityBin =
