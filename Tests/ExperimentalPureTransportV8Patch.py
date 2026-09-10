@@ -1,7 +1,11 @@
+import os
 from pathlib import Path
 
 RENDERER = Path('Source/SingleWetSpectralRenderer.cpp')
 ENGINE = Path('Source/ModernPitchEngine.cpp')
+LOCK = float(os.environ.get('NEUMATON_EXPERIMENTAL_GEOMETRIC_LOCK', '0.90'))
+if not (0.0 <= LOCK <= 1.0):
+    raise SystemExit('NEUMATON_EXPERIMENTAL_GEOMETRIC_LOCK must be in [0,1]')
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> str:
@@ -22,15 +26,25 @@ phase_replacement = '''            double& synthesisPhase =
                 layer.synthesisPhases[static_cast<std::size_t>(sourceBin)];
 
             // EXPERIMENTAL_PURE_TRANSPORT_V8
-            // 128 samples cannot reliably infer harmonic ownership, voiced state,
-            // transient class or breath structure. Experimental therefore makes
-            // no reconstruction decision at all: every measured instantaneous
-            // frequency follows the exact same multiplicative correction ratio.
+            // Experimental never infers a harmonic number or semantic voice
+            // class. A local peak is only geometric support for the short FFT
+            // lobe. The whole lobe receives one additive displacement derived
+            // from the exact correction ratio; the bin keeps its measured local
+            // instantaneous-frequency offset around that peak.
             if (frameSize_ <= 128)
             {
                 const double measuredSourceBin =
                     trueSourceBins_[static_cast<std::size_t>(sourceBin)];
-                const double transportTargetBin = measuredSourceBin * safeRatio;
+                const int geometryPeak = nearestPeak_.empty()
+                    ? sourceBin
+                    : nearestPeak_[static_cast<std::size_t>(sourceBin)];
+                const bool geometryPeakValid =
+                    geometryPeak >= 0 && geometryPeak <= positiveBins;
+                const double measuredPeakBin = geometryPeakValid
+                    ? trueSourceBins_[static_cast<std::size_t>(geometryPeak)]
+                    : measuredSourceBin;
+                const double shiftBins = measuredPeakBin * (safeRatio - 1.0);
+                const double transportTargetBin = measuredSourceBin + shiftBins;
                 synthesisPhase += expectedPhaseScale * transportTargetBin;
                 synthesisPhase -= twoPi * std::nearbyint(synthesisPhase / twoPi);
                 propagatedPhases_[static_cast<std::size_t>(sourceBin)] = synthesisPhase;
@@ -40,49 +54,16 @@ phase_replacement = '''            double& synthesisPhase =
             // LIVE_EXPERIMENTAL_HARMONIC_COORDINATE_TRANSPORT_V7
 '''
 renderer = replace_once(renderer, phase_anchor, phase_replacement,
-                        'Experimental direct phase transport')
+                        'Experimental geometric phase transport')
 
-peak_anchor = '''        const int peak = nearestPeak_.empty()
-            ? sourceBin
-            : nearestPeak_[sourceIndex];
-'''
-peak_replacement = '''        // Experimental has no peak ownership. Peak regions remain available
-        // only to the longer Live/Quality renderers.
-        const int peak = frameSize_ <= 128
-            ? -1
-            : (nearestPeak_.empty() ? sourceBin : nearestPeak_[sourceIndex]);
-'''
-renderer = replace_once(renderer, peak_anchor, peak_replacement,
-                        'Experimental peak ownership removal')
-
-magnitude_old = '''        if (frameSize_ <= 128 && peakValid)
-        {
-            const double truePeakBin =
-                trueSourceBins_[static_cast<std::size_t>(peak)];
-            const double peakShiftBins = truePeakBin * safeRatio - truePeakBin;
-            targetPosition = static_cast<double>(sourceBin) + peakShiftBins;
-        }
-        else if (frameSize_ <= 256
-'''
-magnitude_new = '''        if (frameSize_ <= 128)
-        {
-            // EXPERIMENTAL_PURE_TRANSPORT_V8: the complete short-frame spectrum
-            // is moved geometrically by one ratio. No peak owner, harmonic number
-            // or source F0 is allowed to decide which energy moves. Instantaneous
-            // frequency is used only for phase velocity above; magnitude follows
-            // the deterministic source lattice times the exact same ratio.
-            targetPosition = static_cast<double>(sourceBin) * safeRatio;
-        }
-        else if (frameSize_ <= 256
-'''
-renderer = replace_once(renderer, magnitude_old, magnitude_new,
-                        'Experimental direct magnitude transport')
-
+# Keep the existing V7.1 128-sample magnitude lobe translation: unlike the
+# rejected per-bin experiments it actually moves the complete short-frame lobe.
+# Remove only semantic/timbral reconstruction around that geometric transport.
 formant_old = '''    const float safeFormant = clamp01(formantPreservation);
 '''
 formant_new = '''    // EXPERIMENTAL_PURE_TRANSPORT_V8: formant preservation is spectral
-    // reconstruction. Experimental is deliberately a pure shifter, so the
-    // explicit formant reconstruction remains a Live/Quality facility only.
+    // reconstruction. Experimental is deliberately a pure geometric shifter;
+    // formant reconstruction remains a Live/Quality facility only.
     const float safeFormant = frameSize_ <= 128
         ? 0.0f
         : clamp01(formantPreservation);
@@ -90,26 +71,17 @@ formant_new = '''    // EXPERIMENTAL_PURE_TRANSPORT_V8: formant preservation is 
 renderer = replace_once(renderer, formant_old, formant_new,
                         'Experimental formant reconstruction removal')
 
-peaks_old = '''    calculatePeakRegions(positiveBins);
-
-    const bool resetAnalysis = phaseResetPending_ || !analysisPhaseInitialised_;
+lock_old = '''        const float lockStrength = clamp01(spatialLock * correctionPhaseNeed
+            * (frameSize_ <= 128 ? 0.90f : 1.0f));
 '''
-peaks_new = '''    if (frameSize_ <= 128)
-    {
-        // EXPERIMENTAL_PURE_TRANSPORT_V8: there is intentionally no peak
-        // segmentation/ownership to make an under-resolved reconstruction.
-        peakBins_.clear();
-        std::fill(nearestPeak_.begin(), nearestPeak_.end(), -1);
-    }
-    else
-    {
-        calculatePeakRegions(positiveBins);
-    }
-
-    const bool resetAnalysis = phaseResetPending_ || !analysisPhaseInitialised_;
+lock_value = f'{LOCK:.6f}f'
+lock_new = f'''        // EXPERIMENTAL_PURE_TRANSPORT_V8: this is geometric lobe phase
+        // coherence only. It has no F0, harmonic, breath or transient authority.
+        const float lockStrength = clamp01(spatialLock * correctionPhaseNeed
+            * (frameSize_ <= 128 ? {lock_value} : 1.0f));
 '''
-renderer = replace_once(renderer, peaks_old, peaks_new,
-                        'Experimental peak analysis removal')
+renderer = replace_once(renderer, lock_old, lock_new,
+                        'Experimental geometric phase coherence')
 
 RENDERER.write_text(renderer, encoding='utf-8')
 
@@ -171,4 +143,4 @@ engine = replace_once(engine, invalid_old, invalid_new,
                       'Experimental invalid-F0 unity release removal')
 
 ENGINE.write_text(engine, encoding='utf-8')
-print('EXPERIMENTAL_PURE_TRANSPORT_V8_PATCH=PASS')
+print(f'EXPERIMENTAL_PURE_TRANSPORT_V8_PATCH=PASS lock={LOCK:.3f}')
