@@ -1,5 +1,5 @@
-# Contract synchronized after short-lattice V3 materialization.
-name: Tail Glide Experimental 128 V3 Validation
+# Contract synchronized after voiced-lock/glide-curve V4 materialization.
+name: Voiced Lock Glide Curves V4 Validation
 
 on:
   push:
@@ -7,6 +7,8 @@ on:
     paths:
       - 'Source/ModernPitchEngine.cpp'
       - 'Source/ModernPitchEngine.h'
+      - 'Source/PluginProcessor.cpp'
+      - 'Source/PluginEditor.cpp'
       - 'Source/SingleWetSpectralRenderer.cpp'
       - 'Source/SingleWetSpectralRenderer.h'
       - 'Source/LivePitchProcessor.h'
@@ -38,15 +40,20 @@ jobs:
           set -euo pipefail
           grep -q 'EXPERIMENTAL_128_V3' Source/ModernPitchEngine.cpp
           grep -q 'case LatencyMode::ultraLive: return 128' Source/ModernPitchEngine.cpp
-          grep -q 'TAIL_MELODIC_MICRO_GLIDE_V1' Source/ModernPitchEngine.cpp
+          grep -q 'GLIDE_STATE_MODEL_V2' Source/ModernPitchEngine.cpp
+          grep -q 'LOG_RESPONSE_TAPER_V1' Source/PluginProcessor.cpp
+          grep -q 'EXPONENTIAL_AMOUNT_V1' Source/PluginProcessor.cpp
           grep -q 'SHORT_LATTICE_COHERENT_PHASE_V3' Source/SingleWetSpectralRenderer.cpp
           grep -q 'if (frameSize_ <= 256 && !nearestPeak_.empty())' Source/SingleWetSpectralRenderer.cpp
           grep -q 'targetPosition = static_cast<double>(sourceBin) \* safeRatio' Source/SingleWetSpectralRenderer.cpp
           test "$(grep -c 'SynthesisLayer layer_' Source/SingleWetSpectralRenderer.h)" -eq 1
           ! grep -Eq 'wetMix_|delayedDry|secondaryLayer|TransitionManager|array<SynthesisLayer|dryTrust_|noisePath|harmonicMask' Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
-          grep -q 'weak_tail_target_change_uses_single_wet_micro_glide' Tests/SupervisorContinuityTest.cpp
+          ! grep -q 'tailTooWeakForNewDegree' Source/ModernPitchEngine.cpp
+          ! grep -q 'maximumTransitionSamples' Source/ModernPitchEngine.cpp
+          grep -q 'target_change_becomes_single_wet_musical_glide' Tests/SupervisorContinuityTest.cpp
           grep -q 'tail_micro_glide_does_not_weaken_authority_destination' Tests/SupervisorContinuityTest.cpp
-          grep -q 'very_weak_tail_keeps_owned_degree_without_dry_bypass' Tests/SupervisorContinuityTest.cpp
+          grep -q 'very_weak_target_change_glides_without_prudence_veto' Tests/SupervisorContinuityTest.cpp
+          grep -q 'response_owns_scale_lock_glide_without_mode_prudence' Tests/SupervisorContinuityTest.cpp
           grep -q 'frameSizes { 512, 256, 128 }' Tests/SingleWetSpectralRendererTest.cpp
 
   invariant-tests:
@@ -138,14 +145,14 @@ jobs:
           $vst3 = Get-ChildItem build-vst3 -Recurse -Directory -Filter 'Neumaton.vst3' | Select-Object -First 1
           if (-not $vst3) { throw 'Neumaton.vst3 not found' }
           Copy-Item $vst3.FullName artifact\Neumaton.vst3 -Recurse -Force
-          Compress-Archive artifact\Neumaton.vst3 artifact\Neumaton-Tail-Glide-Experimental-128-V3-Windows.zip -Force
-          (Get-FileHash artifact\Neumaton-Tail-Glide-Experimental-128-V3-Windows.zip -Algorithm SHA256).Hash.ToLower() | Out-File -Encoding ascii artifact\sha256.txt
+          Compress-Archive artifact\Neumaton-Voiced-Lock-Glide-Curves-V4-Windows.zip -Force
+          (Get-FileHash artifact\Neumaton-Voiced-Lock-Glide-Curves-V4-Windows.zip -Algorithm SHA256).Hash.ToLower() | Out-File -Encoding ascii artifact\sha256.txt
       - name: Upload Windows candidate
         uses: actions/upload-artifact@v4
         with:
-          name: Neumaton-Tail-Glide-Experimental-128-V3-Windows
+          name: Neumaton-Voiced-Lock-Glide-Curves-V4-Windows
           path: |
-            artifact/Neumaton-Tail-Glide-Experimental-128-V3-Windows.zip
+            artifact/Neumaton-Voiced-Lock-Glide-Curves-V4-Windows.zip
             artifact/sha256.txt
           retention-days: 14
           if-no-files-found: error
