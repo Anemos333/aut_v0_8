@@ -2745,10 +2745,17 @@ void ModernPitchEngine::process(
                     correction.velocityCentsPerSecond = 0.0;
                 }
                 const double audible = decision.controllerCents;
+                const auto& renderObservation =
+                    latestChannelObservation_[static_cast<std::size_t>(channel)];
+                const double renderFundamentalHz =
+                    std::isfinite(renderObservation.correctionFrequencyHz)
+                    && renderObservation.correctionFrequencyHz > 0.0f
+                    ? static_cast<double>(renderObservation.correctionFrequencyHz)
+                    : correction.transportPeriodHz;
                 data[static_cast<std::size_t>(channel)][sample] =
                     wetRenderers_[static_cast<std::size_t>(channel)].processSample(
                         data[static_cast<std::size_t>(channel)][sample], audible,
-                        safe.formantPreservation);
+                        safe.formantPreservation, renderFundamentalHz);
                 if (channel == 0)
                 {
                     latestObservation_ = latestChannelObservation_[0];
@@ -2795,11 +2802,16 @@ void ModernPitchEngine::process(
                 linkedCorrection_.velocityCentsPerSecond = 0.0;
             }
             audibleCorrectionCents_ = decision.controllerCents;
+            const double renderFundamentalHz =
+                std::isfinite(latestObservation_.correctionFrequencyHz)
+                && latestObservation_.correctionFrequencyHz > 0.0f
+                ? static_cast<double>(latestObservation_.correctionFrequencyHz)
+                : linkedCorrection_.transportPeriodHz;
             for (int channel = 0; channel < channels; ++channel)
                 data[static_cast<std::size_t>(channel)][sample] =
                     wetRenderers_[static_cast<std::size_t>(channel)].processSample(
                         data[static_cast<std::size_t>(channel)][sample], audibleCorrectionCents_,
-                        safe.formantPreservation);
+                        safe.formantPreservation, renderFundamentalHz);
         }
 
         if (linkedCorrection_.noteBodyLatched

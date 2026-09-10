@@ -156,10 +156,14 @@ int main()
                          && has(renderer, "double targetPosition = static_cast<double>(sourceBin) * safeRatio"),
                      "experimental_128_translates_true_partial_regions");
 
-    success &= check(has(renderer, "EXPERIMENTAL_INDEPENDENT_PARTIAL_PHASE_V6")
-                         && has(renderer, "if (frameSize_ == 256 && !nearestPeak_.empty())")
-                         && !has(renderer, "if (frameSize_ <= 256 && !nearestPeak_.empty())"),
-                     "experimental_128_keeps_independent_partial_phase_velocity");
+    success &= check(has(renderer, "LIVE_EXPERIMENTAL_HARMONIC_COORDINATE_TRANSPORT_V7")
+                         && has(renderer, "const bool harmonicGuideValid = frameSize_ <= 256")
+                         && has(renderer, "transportTargetBin = coherentMeasuredSourceBin + harmonicShiftBins")
+                         && has(renderer, "harmonicSourceBin * (safeRatio - 1.0)")
+                         && has(rendererHeader, "double sourceFundamentalHz = 0.0")
+                         && !has(rendererHeader, "confidence")
+                         && !has(rendererHeader, "voicing"),
+                     "live_and_experimental_use_geometry_only_harmonic_coordinate_transport");
 
     const std::vector<std::string> forbiddenRendererTerms {
         "layer.spectrum[sourceIndex] += fftBuffer_[sourceIndex]",

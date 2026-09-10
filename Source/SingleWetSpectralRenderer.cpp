@@ -439,6 +439,7 @@ void SingleWetSpectralRenderer::synthesiseLayer(
     std::int64_t frameEndSample,
     double correctionCents,
     float formantPreservation,
+    double sourceFundamentalHz,
     bool resetPhases,
     int positiveBins) noexcept
 {
@@ -467,36 +468,92 @@ void SingleWetSpectralRenderer::synthesiseLayer(
             double& synthesisPhase =
                 layer.synthesisPhases[static_cast<std::size_t>(sourceBin)];
 
-            // EXPERIMENTAL_INDEPENDENT_PARTIAL_PHASE_V6
-            // A 128-sample bin spans 375 Hz at 48 kHz. Neighbouring bins are
-            // therefore not safely classifiable as leakage from one partial:
-            // forcing them toward nearestPeak velocity can merge distinct vocal
-            // harmonics into one reconstructed phase family. Experimental keeps
-            // every measured instantaneous-frequency coordinate independent and
-            // shifts it directly. Live/256 retains the proven leakage-coherence
-            // stabiliser; Quality/512 was already independent and is untouched.
-            double transportSourceBin =
+            // LIVE_EXPERIMENTAL_HARMONIC_COORDINATE_TRANSPORT_V7
+            // At 128 samples the FFT lattice is too coarse to use integer-bin
+            // geometry as the physical identity of a vocal partial. The upstream
+            // F0 is therefore accepted only as a frequency-coordinate guide. It
+            // never changes safeRatio, Amount, target ownership or audio routing.
+            //
+            // Crucially, this is TRANSLATION rather than harmonic reconstruction:
+            // keep the measured instantaneous source frequency and add the shift
+            // belonging to its nearest harmonic, delta = h*F0*(ratio-1). Natural
+            // detuning around h*F0 therefore survives the move. When no usable F0
+            // exists, Experimental falls back to the previous single-path short
+            // lattice phase law; Live/256 and Quality/512 remain unchanged.
+            const double measuredSourceBin =
                 trueSourceBins_[static_cast<std::size_t>(sourceBin)];
-            if (frameSize_ == 256 && !nearestPeak_.empty())
+            const bool harmonicGuideValid = frameSize_ <= 256
+                && std::isfinite(sourceFundamentalHz)
+                && sourceFundamentalHz >= 25.0
+                && sourceFundamentalHz <= 3000.0;
+            const double fundamentalBin = harmonicGuideValid
+                ? sourceFundamentalHz * static_cast<double>(frameSize_) / sampleRate_
+                : 0.0;
+            int sourceHarmonic = 0;
+            double harmonicShiftBins = 0.0;
+            if (harmonicGuideValid && sourceBin > 0 && fundamentalBin > 1.0e-6)
+            {
+                const double harmonicCoordinate = std::max(
+                    fundamentalBin, measuredSourceBin);
+                sourceHarmonic = std::max(1, static_cast<int>(std::lround(
+                    harmonicCoordinate / fundamentalBin)));
+                const double harmonicSourceBin =
+                    static_cast<double>(sourceHarmonic) * fundamentalBin;
+                harmonicShiftBins = harmonicSourceBin * (safeRatio - 1.0);
+            }
+
+            double transportTargetBin = measuredSourceBin * safeRatio;
+            if (harmonicGuideValid && sourceHarmonic > 0)
+            {
+                // measuredSourceBin is intentionally retained: only the required
+                // translation is harmonic-referenced, so the observed partial is
+                // shifted rather than snapped/reconstructed onto the harmonic grid.
+                double coherentMeasuredSourceBin = measuredSourceBin;
+                if (!nearestPeak_.empty())
+                {
+                    const int velocityPeak =
+                        nearestPeak_[static_cast<std::size_t>(sourceBin)];
+                    if (velocityPeak >= 0 && velocityPeak <= positiveBins)
+                    {
+                        const double peakMeasuredBin =
+                            trueSourceBins_[static_cast<std::size_t>(velocityPeak)];
+                        const int peakHarmonic = std::max(1, static_cast<int>(std::lround(
+                            std::max(fundamentalBin, peakMeasuredBin) / fundamentalBin)));
+                        if (peakHarmonic == sourceHarmonic)
+                        {
+                            const float distance = static_cast<float>(
+                                std::abs(velocityPeak - sourceBin));
+                            const float coherenceCore = frameSize_ <= 128 ? 0.50f : 0.75f;
+                            const float coherenceFade = frameSize_ <= 128 ? 2.50f : 2.75f;
+                            const float coherence = 1.0f
+                                - smoothStep(coherenceCore, coherenceFade, distance);
+                            coherentMeasuredSourceBin += static_cast<double>(coherence)
+                                * (peakMeasuredBin - coherentMeasuredSourceBin);
+                        }
+                    }
+                }
+                transportTargetBin = coherentMeasuredSourceBin + harmonicShiftBins;
+            }
+            else if (frameSize_ <= 256 && !nearestPeak_.empty())
             {
                 const int velocityPeak = nearestPeak_[static_cast<std::size_t>(sourceBin)];
                 if (velocityPeak >= 0 && velocityPeak <= positiveBins)
                 {
                     const float distance = static_cast<float>(
                         std::abs(velocityPeak - sourceBin));
-                    constexpr float coherenceCore = 0.75f;
-                    constexpr float coherenceFade = 2.75f;
+                    const float coherenceCore = frameSize_ <= 128 ? 0.50f : 0.75f;
+                    const float coherenceFade = frameSize_ <= 128 ? 2.50f : 2.75f;
                     const float coherence = 1.0f
                         - smoothStep(coherenceCore, coherenceFade, distance);
                     const double peakVelocityBin =
                         trueSourceBins_[static_cast<std::size_t>(velocityPeak)];
-                    transportSourceBin += static_cast<double>(coherence)
-                        * (peakVelocityBin - transportSourceBin);
+                    const double coherentSourceBin = measuredSourceBin
+                        + static_cast<double>(coherence)
+                        * (peakVelocityBin - measuredSourceBin);
+                    transportTargetBin = coherentSourceBin * safeRatio;
                 }
             }
-            synthesisPhase += expectedPhaseScale
-                * transportSourceBin
-                * safeRatio;
+            synthesisPhase += expectedPhaseScale * transportTargetBin;
 
             // Keep phases bounded. This improves numerical stability and makes
             // the lookup-table oscillator independent of song duration.
@@ -542,7 +599,28 @@ void SingleWetSpectralRenderer::synthesiseLayer(
         const bool peakValid = peak >= 0 && peak <= positiveBins;
 
         double targetPosition = static_cast<double>(sourceBin) * safeRatio;
-        if (frameSize_ <= 128 && peakValid)
+        int sourceHarmonicForMagnitude = 0;
+        if (frameSize_ <= 256
+            && std::isfinite(sourceFundamentalHz)
+            && sourceFundamentalHz >= 25.0
+            && sourceFundamentalHz <= 3000.0
+            && sourceBin > 0)
+        {
+            const double fundamentalBin = sourceFundamentalHz
+                * static_cast<double>(frameSize_) / sampleRate_;
+            if (fundamentalBin > 1.0e-6)
+            {
+                const double measuredSourceBin = trueSourceBins_[sourceIndex];
+                sourceHarmonicForMagnitude = std::max(1, static_cast<int>(std::lround(
+                    std::max(fundamentalBin, measuredSourceBin) / fundamentalBin)));
+                const double harmonicSourceBin =
+                    static_cast<double>(sourceHarmonicForMagnitude) * fundamentalBin;
+                const double harmonicShiftBins =
+                    harmonicSourceBin * (safeRatio - 1.0);
+                targetPosition = static_cast<double>(sourceBin) + harmonicShiftBins;
+            }
+        }
+        else if (frameSize_ <= 128 && peakValid)
         {
             const double truePeakBin =
                 trueSourceBins_[static_cast<std::size_t>(peak)];
@@ -568,9 +646,27 @@ void SingleWetSpectralRenderer::synthesiseLayer(
         const float peakDistance = peakValid
             ? static_cast<float>(std::abs(peak - sourceBin))
             : std::numeric_limits<float>::infinity();
+        bool sameExperimentalHarmonicFamily = true;
+        if (frameSize_ <= 256
+            && sourceHarmonicForMagnitude > 0
+            && peakValid
+            && std::isfinite(sourceFundamentalHz)
+            && sourceFundamentalHz > 0.0)
+        {
+            const double fundamentalBin = sourceFundamentalHz
+                * static_cast<double>(frameSize_) / sampleRate_;
+            const double peakMeasuredBin =
+                trueSourceBins_[static_cast<std::size_t>(peak)];
+            const int peakHarmonic = fundamentalBin > 1.0e-6
+                ? std::max(1, static_cast<int>(std::lround(
+                    std::max(fundamentalBin, peakMeasuredBin) / fundamentalBin)))
+                : sourceHarmonicForMagnitude;
+            sameExperimentalHarmonicFamily =
+                peakHarmonic == sourceHarmonicForMagnitude;
+        }
         const float coreRadiusBins = frameSize_ >= 512 ? 2.0f : 1.0f;
         const float fadeRadiusBins = frameSize_ >= 512 ? 3.0f : 2.0f;
-        const float spatialLock = peakValid
+        const float spatialLock = peakValid && sameExperimentalHarmonicFamily
             ? 1.0f - smoothStep(coreRadiusBins, fadeRadiusBins, peakDistance)
             : 0.0f;
         const float correctionPhaseNeed = smoothStep(6.0f, 42.0f,
@@ -666,7 +762,8 @@ void SingleWetSpectralRenderer::synthesiseLayer(
 void SingleWetSpectralRenderer::processFrame(
     std::int64_t frameEndSample,
     double correctionCents,
-    float formantPreservation) noexcept
+    float formantPreservation,
+    double sourceFundamentalHz) noexcept
 {
     const std::int64_t frameStartSample = frameEndSample - frameSize_ + 1;
     for (int index = 0; index < frameSize_; ++index)
@@ -720,7 +817,8 @@ void SingleWetSpectralRenderer::processFrame(
     }
 
     synthesiseLayer(layer_, frameEndSample, correctionCents,
-                    formantPreservation, resetAnalysis, positiveBins);
+                    formantPreservation, sourceFundamentalHz,
+                    resetAnalysis, positiveBins);
     for (int bin = 0; bin <= positiveBins; ++bin)
     {
         previousMagnitudes_[static_cast<std::size_t>(bin)] =
@@ -745,7 +843,8 @@ float SingleWetSpectralRenderer::consumeLayerOutput(
 float SingleWetSpectralRenderer::processSample(
     float inputSample,
     double correctionCents,
-    float formantPreservation) noexcept
+    float formantPreservation,
+    double sourceFundamentalHz) noexcept
 {
     inputSample = sanitiseAudioSample(inputSample);
     if (frameSize_ <= 0 || inputRing_.empty())
@@ -758,7 +857,8 @@ float SingleWetSpectralRenderer::processSample(
     smoothedFormantPreservation_ += coefficient
         * (target - smoothedFormantPreservation_);
     if (((currentSample + 1) % hopSize_) == 0)
-        processFrame(currentSample, correctionCents, smoothedFormantPreservation_);
+        processFrame(currentSample, correctionCents, smoothedFormantPreservation_,
+                     sourceFundamentalHz);
     const float shifted = consumeLayerOutput(layer_, currentSample);
     ++inputSampleCounter_;
     return sanitiseAudioSample(shifted);

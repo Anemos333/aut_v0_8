@@ -97,10 +97,10 @@ std::vector<float> renderTone(int frameSize,
     return output;
 }
 
-std::vector<float> renderHarmonicStack128(double correctionCents)
+std::vector<float> renderHarmonicStack(int frameSize, double correctionCents)
 {
     SingleWetSpectralRenderer renderer;
-    renderer.prepare(sampleRate, 128);
+    renderer.prepare(sampleRate, frameSize);
 
     constexpr double fundamental = 173.70;
     std::vector<float> output(72000);
@@ -116,7 +116,7 @@ std::vector<float> renderHarmonicStack128(double correctionCents)
                 + 0.17 * static_cast<double>(harmonic));
         }
         output[static_cast<std::size_t>(sample)] = renderer.processSample(
-            static_cast<float>(input), correctionCents, 0.0f);
+            static_cast<float>(input), correctionCents, 0.0f, fundamental);
     }
     return output;
 }
@@ -218,34 +218,48 @@ int main()
     constexpr double harmonicFundamental = 173.70;
     constexpr double harmonicShiftCents = 137.60;
     const double harmonicRatio = std::exp2(harmonicShiftCents / 1200.0);
-    const auto harmonic128 = renderHarmonicStack128(harmonicShiftCents);
-    double shiftedHarmonicPower = 0.0;
-    double originalHarmonicPower = 0.0;
-    bool harmonicPitchExact = true;
-    for (int harmonic = 1; harmonic <= 8; ++harmonic)
+    for (const int harmonicFrameSize : std::array<int, 2> { 256, 128 })
     {
-        const double sourceHz = harmonicFundamental * static_cast<double>(harmonic);
-        const double expectedHz = sourceHz * harmonicRatio;
-        shiftedHarmonicPower += tonePower(harmonic128, expectedHz, 24000);
-        originalHarmonicPower += tonePower(harmonic128, sourceHz, 24000);
-        if (expectedHz < 3000.0)
+        const auto harmonicOutput = renderHarmonicStack(
+            harmonicFrameSize, harmonicShiftCents);
+        double shiftedHarmonicPower = 0.0;
+        double originalHarmonicPower = 0.0;
+        bool harmonicPitchExact = true;
+        for (int harmonic = 1; harmonic <= 8; ++harmonic)
         {
-            const double measuredHz = estimateToneFrequency(harmonic128, expectedHz, 24000);
-            const double harmonicError = centsError(measuredHz, expectedHz);
-            std::cerr << "experimental_128_harmonic_" << harmonic
-                      << "_error_cents=" << harmonicError << '\n';
-            harmonicPitchExact = harmonicPitchExact
-                && std::abs(harmonicError) < 0.60;
+            const double sourceHz = harmonicFundamental * static_cast<double>(harmonic);
+            const double expectedHz = sourceHz * harmonicRatio;
+            shiftedHarmonicPower += tonePower(harmonicOutput, expectedHz, 24000);
+            originalHarmonicPower += tonePower(harmonicOutput, sourceHz, 24000);
+            if (expectedHz < 3000.0)
+            {
+                const double measuredHz = estimateToneFrequency(
+                    harmonicOutput, expectedHz, 24000);
+                const double harmonicError = centsError(measuredHz, expectedHz);
+                std::cerr << (harmonicFrameSize == 256 ? "live_256_harmonic_"
+                                                        : "experimental_128_harmonic_")
+                          << harmonic << "_error_cents=" << harmonicError << '\n';
+                harmonicPitchExact = harmonicPitchExact
+                    && std::abs(harmonicError) < 0.60;
+            }
         }
+        const double harmonicFamilyRatio = shiftedHarmonicPower
+            / std::max(1.0e-20, originalHarmonicPower);
+        std::cerr << (harmonicFrameSize == 256
+                         ? "live_256_shifted_harmonic_family_ratio="
+                         : "experimental_128_shifted_harmonic_family_ratio=")
+                  << harmonicFamilyRatio << '\n';
+        success &= check(
+            harmonicFamilyRatio > 20.0,
+            harmonicFrameSize == 256
+                ? "live_256_shifts_harmonic_family_not_original_grid"
+                : "experimental_128_shifts_harmonic_family_not_original_grid");
+        success &= check(
+            harmonicPitchExact,
+            harmonicFrameSize == 256
+                ? "live_256_harmonic_family_keeps_exact_ratio"
+                : "experimental_128_harmonic_family_keeps_exact_ratio");
     }
-    const double harmonicFamilyRatio = shiftedHarmonicPower
-        / std::max(1.0e-20, originalHarmonicPower);
-    std::cerr << "experimental_128_shifted_harmonic_family_ratio="
-              << harmonicFamilyRatio << '\n';
-    success &= check(harmonicFamilyRatio > 20.0,
-                     "experimental_128_shifts_harmonic_family_not_original_grid");
-    success &= check(harmonicPitchExact,
-                     "experimental_128_harmonic_family_keeps_exact_ratio");
 
     const auto unity = renderTone(512, 0.0);
     const double unitySourcePower = tonePower(unity, 220.0, 12000);

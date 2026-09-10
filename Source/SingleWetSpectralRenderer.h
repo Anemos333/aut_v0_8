@@ -12,7 +12,8 @@ public:
 
     [[nodiscard]] float processSample(float inputSample,
                                       double correctionCents,
-                                      float formantPreservation) noexcept;
+                                      float formantPreservation,
+                                      double sourceFundamentalHz = 0.0) noexcept;
     [[nodiscard]] float processBypassedSample(float inputSample) noexcept;
     [[nodiscard]] int getLatencySamples() const noexcept { return frameSize_; }
 
@@ -32,11 +33,13 @@ private:
 
     void processFrame(std::int64_t frameEndSample,
                       double correctionCents,
-                      float formantPreservation) noexcept;
+                      float formantPreservation,
+                      double sourceFundamentalHz) noexcept;
     void synthesiseLayer(SynthesisLayer& layer,
                          std::int64_t frameEndSample,
                          double correctionCents,
                          float formantPreservation,
+                         double sourceFundamentalHz,
                          bool resetPhases,
                          int positiveBins) noexcept;
     void clearLayerOutput(SynthesisLayer& layer) noexcept;
