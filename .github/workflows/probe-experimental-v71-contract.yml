@@ -1,0 +1,30 @@
+name: Probe Experimental V7.1 One Voice Contract
+
+on:
+  push:
+    branches:
+      - quality-tail-glide-experimental-128-v3
+    paths:
+      - Tests/ExperimentalV71ContractPatch.py
+      - .github/workflows/probe-experimental-v71-contract.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply workspace-only V7.1 contract
+        run: python3 Tests/ExperimentalV71ContractPatch.py
+      - name: Build renderer contract
+        run: >-
+          g++ -std=c++17 -O2 -Wall -Wextra -pedantic
+          Tests/SingleWetSpectralRendererTest.cpp
+          Source/SingleWetSpectralRenderer.cpp
+          -ISource
+          -o experimental_v71_contract_test
+      - name: Run renderer contract
+        run: ./experimental_v71_contract_test
