@@ -28,30 +28,6 @@ jobs:
         run: |
           set -euo pipefail
           python3 Tests/LiveExperimentalHarmonicCoordinateTransportV7Patch.py
-      - name: Update validation contract to V7
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('.github/workflows/tail-glide-experimental-128-v3-validation.yml')
-          s = p.read_text()
-          required = {
-            'name: Experimental Independent Partial Phase V6 Validation': 'name: Live Experimental Harmonic Coordinate V7 Validation',
-            "grep -q 'EXPERIMENTAL_TRUE_PARTIAL_TRANSPORT_V5' Source/SingleWetSpectralRenderer.cpp": "grep -q 'LIVE_EXPERIMENTAL_HARMONIC_COORDINATE_TRANSPORT_V7' Source/SingleWetSpectralRenderer.cpp",
-            "grep -q 'if (frameSize_ <= 128 && peakValid)' Source/SingleWetSpectralRenderer.cpp": "grep -q 'const bool harmonicGuideValid = frameSize_ <= 256' Source/SingleWetSpectralRenderer.cpp",
-            "grep -q 'peakShiftBins = truePeakBin \\* safeRatio - truePeakBin' Source/SingleWetSpectralRenderer.cpp": "grep -q 'transportTargetBin = coherentMeasuredSourceBin + harmonicShiftBins' Source/SingleWetSpectralRenderer.cpp",
-            "grep -q 'experimental_128_shifts_harmonic_family_not_original_grid' Tests/SingleWetSpectralRendererTest.cpp": "grep -q 'experimental_128_shifts_harmonic_family_not_original_grid' Tests/SingleWetSpectralRendererTest.cpp\n          grep -q 'live_256_shifts_harmonic_family_not_original_grid' Tests/SingleWetSpectralRendererTest.cpp",
-            "grep -q 'experimental_128_harmonic_family_keeps_exact_ratio' Tests/SingleWetSpectralRendererTest.cpp": "grep -q 'experimental_128_harmonic_family_keeps_exact_ratio' Tests/SingleWetSpectralRendererTest.cpp\n          grep -q 'live_256_harmonic_family_keeps_exact_ratio' Tests/SingleWetSpectralRendererTest.cpp",
-            'Neumaton-Experimental-Independent-Partial-V6-Windows.zip': 'Neumaton-Harmonic-Coordinate-V7-Windows.zip',
-            'Neumaton-Experimental-Independent-Partial-V6-Windows': 'Neumaton-Harmonic-Coordinate-V7-Windows',
-          }
-          for old, new in required.items():
-              if old not in s:
-                  raise SystemExit(f'validation contract missing: {old}')
-              s = s.replace(old, new, 1)
-          p.write_text(s)
-          PY
       - name: Verify V7 scope
         shell: bash
         run: |
@@ -71,7 +47,7 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h Source/ModernPitchEngine.cpp Tests/SingleWetSpectralRendererTest.cpp Tests/GuiAudioControlContractTest.cpp .github/workflows/tail-glide-experimental-128-v3-validation.yml
+          git add Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h Source/ModernPitchEngine.cpp Tests/SingleWetSpectralRendererTest.cpp Tests/GuiAudioControlContractTest.cpp
           if git diff --cached --quiet; then
             echo 'V7 already materialized'
             exit 0
