@@ -1,0 +1,51 @@
+name: Apply Locked Voiced Glide Curves V4
+
+on:
+  push:
+    branches: [quality-tail-glide-experimental-128-v3]
+    paths:
+      - 'Tests/LockedVoicedGlideCurvesV4Patch.py'
+      - '.github/workflows/apply-locked-voiced-glide-curves-v4.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: quality-tail-glide-experimental-128-v3
+          fetch-depth: 1
+      - name: Apply guarded patch
+        run: python3 Tests/LockedVoicedGlideCurvesV4Patch.py
+      - name: Verify scoped semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'GLIDE_STATE_MODEL_V2' Source/ModernPitchEngine.cpp
+          grep -q 'LOG_RESPONSE_TAPER_V1' Source/PluginProcessor.cpp
+          grep -q 'EXPONENTIAL_AMOUNT_V1' Source/PluginProcessor.cpp
+          grep -q 'setSkewForCentre (25.0f)' Source/PluginProcessor.cpp
+          grep -q 'target_change_becomes_single_wet_musical_glide' Tests/SupervisorContinuityTest.cpp
+          grep -q 'very_weak_target_change_glides_without_prudence_veto' Tests/SupervisorContinuityTest.cpp
+          ! grep -q '3.0 + 2.0 \* norm' Source/ModernPitchEngine.cpp
+          ! grep -q 'tailTooWeakForNewDegree' Source/ModernPitchEngine.cpp
+          ! grep -q 'maximumTransitionSamples' Source/ModernPitchEngine.cpp
+          git diff -- Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h | grep -q '^$'
+      - name: Materialize source and tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Source/ModernPitchEngine.cpp Source/PluginProcessor.cpp Source/PluginEditor.cpp \
+                  Tests/SupervisorContinuityTest.cpp Tests/GuiAudioControlContractTest.cpp
+          if git diff --cached --quiet; then
+            echo 'No materialized changes'
+            exit 0
+          fi
+          git commit -m 'Materialize voiced lock and musical glide curves V4'
+          git push origin HEAD:quality-tail-glide-experimental-128-v3
