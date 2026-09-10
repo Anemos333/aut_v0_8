@@ -25,7 +25,7 @@ jobs:
         run: |
           set -euo pipefail
           grep -q 'EXPERIMENTAL_PURE_TRANSPORT_V8' Source/SingleWetSpectralRenderer.cpp
-          grep -q 'targetPosition = trueSourceBins_\[sourceIndex\] \* safeRatio' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'targetPosition = static_cast<double>(sourceBin) \* safeRatio' Source/SingleWetSpectralRenderer.cpp
           grep -q 'const int peak = frameSize_ <= 128' Source/SingleWetSpectralRenderer.cpp
           grep -q 'const float safeFormant = frameSize_ <= 128' Source/SingleWetSpectralRenderer.cpp
           grep -q 'experimentalDirectTransport = latencyMode_ == LatencyMode::ultraLive' Source/ModernPitchEngine.cpp
