@@ -58,10 +58,11 @@ s = once(s,
 '''sourceFundamentalHz * static_cast<double>(frameSize_) / sampleRate_''',
 '''sourceFundamentalHz * static_cast<double>(fftSize_) / sampleRate_''',
 'harmonic phase bin scale')
-s = once(s,
-'''sourceFundamentalHz\n                * static_cast<double>(frameSize_) / sampleRate_''',
-'''sourceFundamentalHz\n                * static_cast<double>(fftSize_) / sampleRate_''',
-'harmonic magnitude bin scale')
+multi_fund_old = '''sourceFundamentalHz\n                * static_cast<double>(frameSize_) / sampleRate_'''
+multi_fund_new = '''sourceFundamentalHz\n                * static_cast<double>(fftSize_) / sampleRate_'''
+if s.count(multi_fund_old) != 2:
+    raise SystemExit(f'harmonic multiline bin scale: expected exactly two occurrences, got {s.count(multi_fund_old)}')
+s = s.replace(multi_fund_old, multi_fund_new)
 
 s = once(s,
 '''        layer.spectrum[static_cast<std::size_t>(frameSize_ - bin)] =\n''',
