@@ -1,5 +1,5 @@
-# Contract synchronized after voiced-lock/glide-curve V4 materialization.
-name: Voiced Lock Glide Curves V4 Validation
+# Contract synchronized after Experimental true-partial transport V5.
+name: Experimental True Partial Transport V5 Validation
 
 on:
   push:
@@ -44,8 +44,11 @@ jobs:
           grep -q 'LOG_RESPONSE_TAPER_V1' Source/PluginProcessor.cpp
           grep -q 'EXPONENTIAL_AMOUNT_V1' Source/PluginProcessor.cpp
           grep -q 'SHORT_LATTICE_COHERENT_PHASE_V3' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'EXPERIMENTAL_TRUE_PARTIAL_TRANSPORT_V5' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'if (frameSize_ <= 128 && peakValid)' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'peakShiftBins = truePeakBin \* safeRatio - truePeakBin' Source/SingleWetSpectralRenderer.cpp
           grep -q 'if (frameSize_ <= 256 && !nearestPeak_.empty())' Source/SingleWetSpectralRenderer.cpp
-          grep -q 'targetPosition = static_cast<double>(sourceBin) \* safeRatio' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'double targetPosition = static_cast<double>(sourceBin) \* safeRatio' Source/SingleWetSpectralRenderer.cpp
           test "$(grep -c 'SynthesisLayer layer_' Source/SingleWetSpectralRenderer.h)" -eq 1
           ! grep -Eq 'wetMix_|delayedDry|secondaryLayer|TransitionManager|array<SynthesisLayer|dryTrust_|noisePath|harmonicMask' Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
           ! grep -q 'tailTooWeakForNewDegree' Source/ModernPitchEngine.cpp
@@ -55,6 +58,8 @@ jobs:
           grep -q 'very_weak_target_change_glides_without_prudence_veto' Tests/SupervisorContinuityTest.cpp
           grep -q 'response_owns_scale_lock_glide_without_mode_prudence' Tests/SupervisorContinuityTest.cpp
           grep -q 'frameSizes { 512, 256, 128 }' Tests/SingleWetSpectralRendererTest.cpp
+          grep -q 'experimental_128_shifts_harmonic_family_not_original_grid' Tests/SingleWetSpectralRendererTest.cpp
+          grep -q 'experimental_128_harmonic_family_keeps_exact_ratio' Tests/SingleWetSpectralRendererTest.cpp
 
   invariant-tests:
     name: Invariants (${{ matrix.os }})
@@ -145,14 +150,14 @@ jobs:
           $vst3 = Get-ChildItem build-vst3 -Recurse -Directory -Filter 'Neumaton.vst3' | Select-Object -First 1
           if (-not $vst3) { throw 'Neumaton.vst3 not found' }
           Copy-Item $vst3.FullName artifact\Neumaton.vst3 -Recurse -Force
-          Compress-Archive artifact\Neumaton.vst3 artifact\Neumaton-Voiced-Lock-Glide-Curves-V4-Windows.zip -Force
-          (Get-FileHash artifact\Neumaton-Voiced-Lock-Glide-Curves-V4-Windows.zip -Algorithm SHA256).Hash.ToLower() | Out-File -Encoding ascii artifact\sha256.txt
+          Compress-Archive artifact\Neumaton.vst3 -DestinationPath artifact\Neumaton-Experimental-True-Partial-V5-Windows.zip -Force
+          (Get-FileHash artifact\Neumaton-Experimental-True-Partial-V5-Windows.zip -Algorithm SHA256).Hash.ToLower() | Out-File -Encoding ascii artifact\sha256.txt
       - name: Upload Windows candidate
         uses: actions/upload-artifact@v4
         with:
-          name: Neumaton-Voiced-Lock-Glide-Curves-V4-Windows
+          name: Neumaton-Experimental-True-Partial-V5-Windows
           path: |
-            artifact/Neumaton-Voiced-Lock-Glide-Curves-V4-Windows.zip
+            artifact/Neumaton-Experimental-True-Partial-V5-Windows.zip
             artifact/sha256.txt
           retention-days: 14
           if-no-files-found: error
