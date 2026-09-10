@@ -1,5 +1,5 @@
-# Contract synchronized after Experimental independent partial phase V6.
-name: Experimental Independent Partial Phase V6 Validation
+# Contract synchronized after Live + Experimental harmonic-coordinate V7.
+name: Live Experimental Harmonic Coordinate V7 Validation
 
 on:
   push:
@@ -8,6 +8,7 @@ on:
       - 'Source/ModernPitchEngine.cpp'
       - 'Source/ModernPitchEngine.h'
       - 'Source/PluginProcessor.cpp'
+      - 'Source/PluginProcessor.h'
       - 'Source/PluginEditor.cpp'
       - 'Source/SingleWetSpectralRenderer.cpp'
       - 'Source/SingleWetSpectralRenderer.h'
@@ -43,15 +44,15 @@ jobs:
           grep -q 'GLIDE_STATE_MODEL_V2' Source/ModernPitchEngine.cpp
           grep -q 'LOG_RESPONSE_TAPER_V1' Source/PluginProcessor.cpp
           grep -q 'EXPONENTIAL_AMOUNT_V1' Source/PluginProcessor.cpp
-          grep -q 'EXPERIMENTAL_TRUE_PARTIAL_TRANSPORT_V5' Source/SingleWetSpectralRenderer.cpp
-          grep -q 'EXPERIMENTAL_INDEPENDENT_PARTIAL_PHASE_V6' Source/SingleWetSpectralRenderer.cpp
-          grep -q 'if (frameSize_ == 256 && !nearestPeak_.empty())' Source/SingleWetSpectralRenderer.cpp
-          ! grep -q 'if (frameSize_ <= 256 && !nearestPeak_.empty())' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'LIVE_EXPERIMENTAL_HARMONIC_COORDINATE_TRANSPORT_V7' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'const bool harmonicGuideValid = frameSize_ <= 256' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'transportTargetBin = coherentMeasuredSourceBin + harmonicShiftBins' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'harmonicSourceBin \* (safeRatio - 1.0)' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'double sourceFundamentalHz = 0.0' Source/SingleWetSpectralRenderer.h
           grep -q 'if (frameSize_ <= 128 && peakValid)' Source/SingleWetSpectralRenderer.cpp
-          grep -q 'peakShiftBins = truePeakBin \* safeRatio - truePeakBin' Source/SingleWetSpectralRenderer.cpp
-          grep -q 'double targetPosition = static_cast<double>(sourceBin) \* safeRatio' Source/SingleWetSpectralRenderer.cpp
+          ! grep -q 'harmonicGuideValid = frameSize_ <= 512' Source/SingleWetSpectralRenderer.cpp
           test "$(grep -c 'SynthesisLayer layer_' Source/SingleWetSpectralRenderer.h)" -eq 1
-          ! grep -Eq 'wetMix_|delayedDry|secondaryLayer|TransitionManager|array<SynthesisLayer|dryTrust_|noisePath|harmonicMask' Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
+          ! grep -Eq 'wetMix_|delayedDry|secondaryLayer|TransitionManager|array<SynthesisLayer|dryTrust_|harmonicMask' Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
           ! grep -q 'tailTooWeakForNewDegree' Source/ModernPitchEngine.cpp
           ! grep -q 'maximumTransitionSamples' Source/ModernPitchEngine.cpp
           grep -q 'target_change_becomes_single_wet_musical_glide' Tests/SupervisorContinuityTest.cpp
@@ -61,6 +62,8 @@ jobs:
           grep -q 'frameSizes { 512, 256, 128 }' Tests/SingleWetSpectralRendererTest.cpp
           grep -q 'experimental_128_shifts_harmonic_family_not_original_grid' Tests/SingleWetSpectralRendererTest.cpp
           grep -q 'experimental_128_harmonic_family_keeps_exact_ratio' Tests/SingleWetSpectralRendererTest.cpp
+          grep -q 'live_256_shifts_harmonic_family_not_original_grid' Tests/SingleWetSpectralRendererTest.cpp
+          grep -q 'live_256_harmonic_family_keeps_exact_ratio' Tests/SingleWetSpectralRendererTest.cpp
 
   invariant-tests:
     name: Invariants (${{ matrix.os }})
@@ -151,14 +154,14 @@ jobs:
           $vst3 = Get-ChildItem build-vst3 -Recurse -Directory -Filter 'Neumaton.vst3' | Select-Object -First 1
           if (-not $vst3) { throw 'Neumaton.vst3 not found' }
           Copy-Item $vst3.FullName artifact\Neumaton.vst3 -Recurse -Force
-          Compress-Archive artifact\Neumaton.vst3 -DestinationPath artifact\Neumaton-Experimental-Independent-Partial-V6-Windows.zip -Force
-          (Get-FileHash artifact\Neumaton-Experimental-Independent-Partial-V6-Windows.zip -Algorithm SHA256).Hash.ToLower() | Out-File -Encoding ascii artifact\sha256.txt
+          Compress-Archive artifact\Neumaton.vst3 -DestinationPath artifact\Neumaton-Harmonic-Coordinate-V7-Windows.zip -Force
+          (Get-FileHash artifact\Neumaton-Harmonic-Coordinate-V7-Windows.zip -Algorithm SHA256).Hash.ToLower() | Out-File -Encoding ascii artifact\sha256.txt
       - name: Upload Windows candidate
         uses: actions/upload-artifact@v4
         with:
-          name: Neumaton-Experimental-Independent-Partial-V6-Windows
+          name: Neumaton-Harmonic-Coordinate-V7-Windows
           path: |
-            artifact/Neumaton-Experimental-Independent-Partial-V6-Windows.zip
+            artifact/Neumaton-Harmonic-Coordinate-V7-Windows.zip
             artifact/sha256.txt
           retention-days: 14
           if-no-files-found: error
