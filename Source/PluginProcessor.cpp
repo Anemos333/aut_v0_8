@@ -71,6 +71,30 @@ namespace
         return juce::jlimit (0.0f, 500.0f, speedMs);
     }
 
+    [[nodiscard]] juce::NormalisableRange<float> makeLogarithmicResponseRange()
+    {
+        // LOG_RESPONSE_TAPER_V1: the parameter remains honest milliseconds,
+        // while half knob travel lands at 25 ms instead of 250 ms. This gives
+        // useful resolution where vocal glides live without changing endpoints
+        // or hiding a mode-dependent response remap in DSP.
+        juce::NormalisableRange<float> range (0.0f, 500.0f, 1.0f);
+        range.setSkewForCentre (25.0f);
+        return range;
+    }
+
+    [[nodiscard]] float mapAmountPercentToDepth (float amountPct) noexcept
+    {
+        // EXPONENTIAL_AMOUNT_V1: 0 and 100 remain exact endpoints. Between them
+        // the audible correction depth follows a true exponential taper rather
+        // than a linear multiplier. Amount is still correction depth, never
+        // dry/wet and never detector confidence.
+        const double normalised = static_cast<double> (juce::jlimit (
+            0.0f, 100.0f, std::isfinite (amountPct) ? amountPct : 0.0f)) / 100.0;
+        constexpr double shape = 2.0;
+        const double denominator = std::expm1 (shape);
+        return static_cast<float> (std::expm1 (shape * normalised) / denominator);
+    }
+
 }
 
 //==============================================================================
@@ -91,7 +115,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout MicrotonalAutotuneAudioProce
 
     params.push_back (std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID { "speed", 1 }, "Velocita (ms)",
-        juce::NormalisableRange<float> (0.0f, 500.0f, 1.0f), 50.0f));
+        makeLogarithmicResponseRange(), 50.0f));
 
     params.push_back (std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID { "amount", 1 }, "Amount",
@@ -775,7 +799,7 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
     amountPct = std::isfinite (amountPct) ? juce::jlimit (0.0f, 100.0f, amountPct) : 0.0f;
     humanizePct = std::isfinite (humanizePct) ? juce::jlimit (0.0f, 100.0f, humanizePct) : 20.0f;
 
-    const float amount = amountPct / 100.0f;
+    const float amount = mapAmountPercentToDepth (amountPct);
     const float humanizeVal = humanizePct / 100.0f;
     const float outGain = juce::Decibels::decibelsToGain(outVolumeDb);
 

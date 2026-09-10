@@ -1975,63 +1975,25 @@ double ModernPitchEngine::responseTimeMs(
     bool targetChanged,
     double targetJumpCents) const noexcept
 {
-    const double requested = std::clamp(
+    // GLIDE_STATE_MODEL_V2: Response is now the user's musical trajectory time,
+    // not a prudence budget. No latency mode, confidence, Humanize or Scale Lock
+    // state is allowed to compress it to a hidden 0.35..5 ms range.
+    double response = std::clamp(
         static_cast<double>(finiteOr(parameters.retuneTimeMs, 50.0f)),
         0.0, 500.0);
-    if (zeroPrudenceAuthority(parameters))
-        return 0.0; // AUTHORITY_CONTROLS_EXPLICIT_V1: Response=0 is literal.
-    double response = std::max(0.35, requested);
 
-    if (parameters.scaleLock)
-    {
-        const double norm = std::pow(requested / 500.0, 1.35);
-        double modeMaximumMs = 3.0;
-        switch (latencyMode_)
-        {
-            // MICROTONAL_HARD_LOCK_V3: Scale Lock owns its documented fast
-            // trajectory.  The normal transition controller must not stretch
-            // a dense-scale note change into tens of milliseconds.
-            case LatencyMode::quality:
-                response = 3.0 + 2.0 * norm;
-                modeMaximumMs = 5.0;
-                break;
-            case LatencyMode::live:
-                response = 1.5 + 1.5 * norm;
-                modeMaximumMs = 3.0;
-                break;
-            case LatencyMode::ultraLive:
-                response = 0.35 + 1.15 * norm;
-                modeMaximumMs = 1.5;
-                break;
-        }
-        const double humanTiming = 0.40
-            * static_cast<double>(clamp01(parameters.humanize));
-        response = std::min(modeMaximumMs, response + humanTiming);
-    }
-
-    if (targetChanged && std::abs(targetJumpCents) > 0.1)
+    // Creative Tempo is an explicit user-requested scheduler and therefore may
+    // deliberately lengthen a target transition. With Tempo Off, Response owns
+    // the glide time exactly.
+    if (targetChanged && std::abs(targetJumpCents) > 0.1
+        && parameters.tempo.mode != CreativeTempo::Mode::off)
     {
         const double transitionMs = std::clamp(
             static_cast<double>(finiteOr(parameters.transitionTimeMs, 35.0f)),
-            0.0, 2000.0);
-        if (parameters.tempo.mode != CreativeTempo::Mode::off)
-        {
-            // Creative Tempo controls the same correction trajectory.
-            response = std::max(response, transitionMs);
-        }
-        else if (!parameters.scaleLock)
-        {
-            // Main used a pre-rolled second synthesis layer for note changes.
-            // Keep only its useful bounded transition timing outside Scale
-            // Lock. Scale Lock already has its own <=5/3/1.5 ms trajectory.
-            const double jumpWeight = std::clamp(
-                std::abs(targetJumpCents) / 600.0, 0.0, 1.0);
-            const double trajectoryMs = std::clamp(
-                transitionMs * (0.22 + 0.38 * jumpWeight), 0.35, 32.0);
-            response = std::max(response, trajectoryMs);
-        }
+            0.0, 500.0);
+        response = std::max(response, transitionMs);
     }
-    return std::clamp(response, 0.35, 500.0);
+    return std::clamp(response, 0.0, 500.0);
 }
 
 void ModernPitchEngine::updateCorrectionState(
@@ -2172,10 +2134,10 @@ void ModernPitchEngine::updateCorrectionState(
         setState(TrackingState::release);
         state.desiredCents = 0.0;
         state.stableBodyObservations = 0;
-        const double protection = static_cast<double>(
-            clamp01(parameters.transientProtection));
-        state.responseMs = std::clamp(32.0 - 20.0 * protection,
-                                      8.0, 32.0);
+        // Unvoiced material is a musical tail, not permission to drop
+        // authority abruptly. The same wet trajectory glides toward unity.
+        state.responseMs = std::max(5.5,
+            responseTimeMs(parameters, true, state.lastTargetJumpCents));
         if (confirmedAbsence
             || state.breathEvidenceSamples > static_cast<int>(0.12 * sampleRate_))
         {
@@ -2218,9 +2180,8 @@ void ModernPitchEngine::updateCorrectionState(
         {
             setState(TrackingState::release);
             state.desiredCents = 0.0;
-            state.responseMs = std::clamp(32.0 - 20.0
-                * static_cast<double>(clamp01(parameters.transientProtection)),
-                8.0, 32.0);
+            state.responseMs = std::max(5.5,
+                responseTimeMs(parameters, true, state.lastTargetJumpCents));
         }
         else
         {
@@ -2278,7 +2239,12 @@ void ModernPitchEngine::updateCorrectionState(
     else if (state.trackingState == TrackingState::unvoiced
              || state.trackingState == TrackingState::release)
     {
-        setState(TrackingState::acquire);
+        setState(TrackingState::attack);
+        state.stableObservations = 0;
+    }
+    else if (state.trackingState == TrackingState::acquire)
+    {
+        setState(TrackingState::transition);
         state.stableObservations = 0;
     }
 
@@ -2370,31 +2336,9 @@ void ModernPitchEngine::updateCorrectionState(
         ? correctionObservedLog2 : observedLog2;
     newTarget += std::round(targetRegisterReference - newTarget);
 
-    // TAIL_MELODIC_MICRO_GLIDE_V1
-    // The last voiced fragments of a note can still contain enough periodicity
-    // to make a dense quantizer publish several tiny target identities. That is
-    // musically different from a new note. Keep exact correction authority, but
-    // condition identity only in an evidence-backed Scale-Lock tail: a very weak
-    // breath-like fragment keeps the already owned degree; a moderate fragment
-    // may change degree and will receive a tiny single-path micro-glide below.
-    const double preliminaryTailJump = state.targetValid
-        ? (newTarget - state.targetLog2) * 1200.0 : 0.0;
-    const double preliminaryIdentityThreshold = std::clamp(
-        0.18 * static_cast<double>(quantizer.minimumStepCents()), 0.5, 30.0);
-    const bool scaleLockTail = parameters.scaleLock
-        && state.targetValid
-        && state.noteBodyLatched
-        && !musicalOnset
-        && richEvidence
-        && parameters.voiceEventStrength < 0.35f
-        && bodyScore < 0.52f;
-    const bool tailTooWeakForNewDegree = scaleLockTail
-        && bodyScore < 0.28f
-        && parameters.voiceBreathiness > 0.42f
-        && std::abs(preliminaryTailJump) >= preliminaryIdentityThreshold;
-    if (tailTooWeakForNewDegree)
-        newTarget = state.targetLog2;
-
+    // GLIDE_STATE_MODEL_V2: target identity is never vetoed merely because
+    // a voiced fragment is weak. If the quantizer selects another real degree,
+    // transition owns a continuous glide to that exact destination.
     const bool targetChanged = !state.targetValid
         || std::abs(newTarget - state.targetLog2) * 1200.0 > 0.1;
     const double targetJump = state.targetValid
@@ -2539,43 +2483,23 @@ void ModernPitchEngine::updateCorrectionState(
     state.desiredCents = absoluteScaleLock
         ? errorCents
         : errorCents * static_cast<double>(clamp01(parameters.amount));
-    state.responseMs = responseTimeMs(parameters, targetChanged, targetJump);
-
-    // TAIL_MELODIC_MICRO_GLIDE_V1: Response=0 remains literal on a real note
-    // body. Only an evidence-backed weak tail that actually changes degree gets
-    // 5.5..13 ms of continuous movement. desiredCents remains the exact same
-    // destination and the renderer remains 100% wet throughout the glide.
-    if (scaleLockTail && targetIdentityChanged)
+    // GLIDE_STATE_MODEL_V2
+    // A stable voiced note is hard-locked: no confidence/mode smoothing remains
+    // between the requested correction and the wet renderer. Every non-stable
+    // musical state uses the same single trajectory. Real degree changes and
+    // release tails keep a tiny 5.5 ms anti-MIDI glide even at Response=0;
+    // attack/acquire otherwise follow the user Response literally.
+    if (state.trackingState == TrackingState::stable)
     {
-        const double weakness = std::clamp(
-            (0.52 - static_cast<double>(bodyScore)) / 0.24,
-            0.0, 1.0);
-        const double tailGlideMs = 5.5 + 7.5 * weakness;
-        state.responseMs = std::max(state.responseMs, tailGlideMs);
+        state.responseMs = 0.0;
     }
-
-    if (!musicalOnset)
+    else
     {
-        const int minimumStableSamples = static_cast<int>(std::lround(
-            0.012 * sampleRate_));
-        if (state.trackingState == TrackingState::transition)
+        state.responseMs = responseTimeMs(parameters, targetChanged, targetJump);
+        if (state.trackingState == TrackingState::transition
+            || state.trackingState == TrackingState::release)
         {
-            if (!targetIdentityChanged && bodyPresent
-                && state.stableBodyObservations >= 4
-                && state.stateAgeSamples >= minimumStableSamples)
-            {
-                setState(TrackingState::stable);
-            }
-        }
-        else if (state.trackingState == TrackingState::attack
-                 || state.trackingState == TrackingState::acquire)
-        {
-            if (state.noteBodyLatched && bodyPresent
-                && state.stableBodyObservations >= 4
-                && state.stateAgeSamples >= minimumStableSamples)
-            {
-                setState(TrackingState::stable);
-            }
+            state.responseMs = std::max(5.5, state.responseMs);
         }
     }
 
@@ -2591,28 +2515,42 @@ double ModernPitchEngine::advanceCorrection(CorrectionState& state) noexcept
     if (state.stateAgeSamples < std::numeric_limits<int>::max())
         ++state.stateAgeSamples;
 
-    // AUTHORITY_CONTROLS_EXPLICIT_V1: a literal zero Response contains no hidden
-    // 0.35 ms controller floor. The same single wet renderer receives the new
-    // ratio immediately; there is no dry transition or secondary synthesis path.
+    const auto settleTrajectory = [&state]() noexcept
+    {
+        if (state.trackingState == TrackingState::release
+            && std::abs(state.currentCents) < 0.001)
+        {
+            state.trackingState = TrackingState::unvoiced;
+            state.stateAgeSamples = 0;
+            state.noteBodyLatched = false;
+            state.noteBodyConfidence = 0.0f;
+            state.transportPeriodHz = 0.0;
+            state.pitchStaleSamples = 0;
+            state.pitchCentreValid = false;
+            state.stableBodyObservations = 0;
+        }
+        else if ((state.trackingState == TrackingState::attack
+                  || state.trackingState == TrackingState::transition)
+                 && state.noteBodyLatched)
+        {
+            // Arrival, not a confidence timer, defines the end of a glide.
+            state.trackingState = TrackingState::stable;
+            state.stateAgeSamples = 0;
+            state.responseMs = 0.0;
+        }
+    };
+
     if (state.responseMs <= 0.00001)
     {
         state.currentCents = state.desiredCents;
         state.velocityCentsPerSecond = 0.0;
+        settleTrajectory();
         return state.currentCents;
     }
 
-    // Transition describes a note boundary, never convergence of a second-order
-    // controller. A singing note must not remain in transition for seconds just
-    // because vibrato keeps the destination moving.
-    const int maximumTransitionSamples = static_cast<int>(std::lround(0.120 * sampleRate_));
-    if (state.trackingState == TrackingState::transition
-        && state.noteBodyLatched
-        && state.stateAgeSamples >= maximumTransitionSamples)
-    {
-        state.trackingState = TrackingState::stable;
-        state.stateAgeSamples = 0;
-    }
-
+    // One critically damped correction trajectory. There is deliberately no
+    // 120 ms prudence timeout: a 500 ms user glide remains a 500 ms glide and
+    // becomes locked only when the destination is actually reached.
     const double dt = 1.0 / sampleRate_;
     const double responseSeconds = std::max(0.00035, state.responseMs * 0.001);
     const double omega = std::min(0.22 / dt, 4.6 / responseSeconds);
@@ -2636,18 +2574,7 @@ double ModernPitchEngine::advanceCorrection(CorrectionState& state) noexcept
     {
         state.currentCents = state.desiredCents;
         state.velocityCentsPerSecond = 0.0;
-        if (state.trackingState == TrackingState::release
-            && std::abs(state.currentCents) < 0.001)
-        {
-            state.trackingState = TrackingState::unvoiced;
-            state.stateAgeSamples = 0;
-            state.noteBodyLatched = false;
-            state.noteBodyConfidence = 0.0f;
-            state.transportPeriodHz = 0.0;
-            state.pitchStaleSamples = 0;
-            state.pitchCentreValid = false;
-            state.stableBodyObservations = 0;
-        }
+        settleTrajectory();
     }
     return state.currentCents;
 }

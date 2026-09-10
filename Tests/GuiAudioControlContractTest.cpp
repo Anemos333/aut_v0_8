@@ -99,13 +99,17 @@ int main()
                          && has(editor, "processorRef.updateProcessingMode (newMode)"),
                      "scale_root_and_mode_selectors_reach_audio_state");
 
-    success &= check(has(editor, "3.0 + 2.0 * norm")
-                         && has(editor, "1.5 + 1.5 * norm")
-                         && has(editor, "0.35 + 1.15 * norm")
-                         && has(engine, "3.0 + 2.0 * norm")
-                         && has(engine, "1.5 + 1.5 * norm")
-                         && has(engine, "0.35 + 1.15 * norm"),
-                     "response_display_matches_dsp_curve");
+    success &= check(has(processor, "LOG_RESPONSE_TAPER_V1")
+                         && has(processor, "setSkewForCentre (25.0f)")
+                         && has(processor, "EXPONENTIAL_AMOUNT_V1")
+                         && has(processor, "std::expm1")
+                         && has(editor, "val < 10.0 ? 2 : 1")
+                         && has(engine, "GLIDE_STATE_MODEL_V2")
+                         && !has(editor, "3.0 + 2.0 * norm")
+                         && !has(engine, "3.0 + 2.0 * norm")
+                         && !has(engine, "1.5 + 1.5 * norm")
+                         && !has(engine, "0.35 + 1.15 * norm"),
+                     "response_log_taper_and_amount_exponential_are_explicit");
 
     success &= check(!has(engine, "TransportClock")
                          && !has(engine, "ChannelPath::")

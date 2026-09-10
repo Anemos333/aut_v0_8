@@ -655,10 +655,11 @@ int main()
 
     parameters.retuneTimeMs = 0.0f;
     parameters.transitionTimeMs = 40.0f;
+    parameters.tempo.mode = CreativeTempo::Mode::off;
     const double transitionResponse = engine->responseTimeMs(parameters, true, 100.0);
     std::cerr << "single_path_transition_response_ms=" << transitionResponse << '\n';
-    success &= check(transitionResponse > 8.0 && transitionResponse < 32.1,
-                     "target_revision_uses_bounded_single_path_transition");
+    success &= check(std::abs(transitionResponse) < 1.0e-12,
+                     "response_zero_has_no_hidden_transition_prudence");
 
     ModernPitchEngine::CorrectionState boundedTransition;
     boundedTransition.targetValid = true;
@@ -670,12 +671,16 @@ int main()
     boundedTransition.responseMs = 500.0;
     for (int i = 0; i < 5900; ++i)
         static_cast<void>(engine->advanceCorrection(boundedTransition));
-    std::cerr << "bounded_transition_velocity="
+    std::cerr << "long_transition_velocity="
               << boundedTransition.velocityCentsPerSecond << '\n';
-    success &= check(boundedTransition.trackingState == ModernPitchEngine::TrackingState::stable,
-                     "transition_has_hard_musical_time_bound");
-    success &= check(std::abs(boundedTransition.velocityCentsPerSecond) > 0.02,
-                     "stable_state_does_not_require_zero_controller_velocity");
+    success &= check(boundedTransition.trackingState == ModernPitchEngine::TrackingState::transition
+                     && std::abs(boundedTransition.velocityCentsPerSecond) > 0.02,
+                     "long_user_glide_is_not_cut_by_prudence_timeout");
+    for (int i = 0; i < 90000; ++i)
+        static_cast<void>(engine->advanceCorrection(boundedTransition));
+    success &= check(boundedTransition.trackingState == ModernPitchEngine::TrackingState::stable
+                     && std::abs(boundedTransition.currentCents - boundedTransition.desiredCents) < 0.001,
+                     "transition_locks_only_after_glide_arrives");
 
     // A long vibrato around one quantized note is stable musical content, not
     // an endless note transition.
@@ -809,8 +814,8 @@ int main()
     success &= check(hardDenseResidualCents <= 3.05,
                      "dense_scale_lock_residual_budget_is_degree_safe");
 
-    // The target-change path must remain inside Scale Lock's own fast range;
-    // the general 35-40 ms transition control may not stretch it again.
+    // GLIDE_STATE_MODEL_V2: no latency mode may silently compress the
+    // user's Response during a scale-degree transition.
     hardDenseParameters.retuneTimeMs = 500.0f;
     hardDenseParameters.transitionTimeMs = 80.0f;
     hardDenseParameters.tempo.mode = CreativeTempo::Mode::off;
@@ -818,8 +823,8 @@ int main()
         hardDenseParameters, true, 25.0);
     std::cerr << "dense_scale_lock_response_ms="
               << denseScaleLockResponse << '\n';
-    success &= check(denseScaleLockResponse <= 3.001,
-                     "scale_lock_target_change_stays_in_live_speed_budget");
+    success &= check(std::abs(denseScaleLockResponse - 500.0) < 1.0e-9,
+                     "response_owns_scale_lock_glide_without_mode_prudence");
 
     // ABSOLUTE_SCALE_LOCK_V4: the rigid endpoint is a mathematical
     // reference lock, not a tolerance band.  The selected degree may still be
@@ -1037,10 +1042,9 @@ int main()
                      "response_zero_reaches_destination_in_one_sample");
 
 
-    // TAIL_MELODIC_MICRO_GLIDE_V1 regression: a strong body keeps literal
-    // Response=0 above. A weak-but-still-musical Scale-Lock tail may move to the
-    // next real degree, but it must do so on the same wet trajectory and still
-    // converge exactly to the unattenuated destination.
+    // GLIDE_STATE_MODEL_V2 regression: target identity never loses authority
+    // because a fragment is weak. A real degree change becomes transition and
+    // receives the same wet musical glide to the exact destination.
     const std::array<double, 2> tailScale {
         1.0, std::exp2(1.0 / 12.0)
     };
@@ -1078,9 +1082,9 @@ int main()
     const double tailExpectedCents = 1200.0 * std::log2(
         tailTargetHz / static_cast<double>(melodicTail.correctionFrequencyHz));
     success &= check(std::abs(tailState.targetLog2 - bodyTarget) * 1200.0 > 30.0
-                     && tailState.responseMs >= 5.5
-                     && tailState.responseMs <= 13.1,
-                     "weak_tail_target_change_uses_single_wet_micro_glide");
+                     && tailState.trackingState == ModernPitchEngine::TrackingState::transition
+                     && tailState.responseMs >= 5.5,
+                     "target_change_becomes_single_wet_musical_glide");
     success &= check(std::abs(tailState.desiredCents - tailExpectedCents) < 1.0e-6,
                      "tail_micro_glide_does_not_weaken_authority_destination");
     for (int sample = 0; sample < 8000; ++sample)
@@ -1088,9 +1092,8 @@ int main()
     success &= check(std::abs(tailState.currentCents - tailState.desiredCents) < 0.001,
                      "tail_micro_glide_converges_to_exact_destination");
 
-    // Once the tail is breath-like and extremely weak, a lone pitch accident
-    // may not create another tiny note. The owned degree remains corrected;
-    // this is target identity hold, not a bypass or reduction of correction.
+    // Weak late pitch is not grounds for a prudence veto. If the quantizer
+    // chooses another degree, it must be allowed to transition there exactly.
     const double ownedTailTarget = tailState.targetLog2;
     tailParameters.voiceBodyEnergy = 0.08f;
     tailParameters.voiceHarmonicity = 0.10f;
@@ -1105,9 +1108,14 @@ int main()
     weakTailAccident.consensus = 0.08f;
     engine->updateCorrectionState(tailState, tailQuantizer,
                                   weakTailAccident, tailParameters);
-    success &= check(std::abs(tailState.targetLog2 - ownedTailTarget) < 1.0e-12
-                     && std::abs(tailState.desiredCents) > 5.0,
-                     "very_weak_tail_keeps_owned_degree_without_dry_bypass");
+    const double weakTailTargetHz = std::exp2(tailState.targetLog2);
+    const double weakTailExpectedCents = 1200.0 * std::log2(
+        weakTailTargetHz / static_cast<double>(weakTailAccident.correctionFrequencyHz));
+    success &= check(std::abs(tailState.targetLog2 - ownedTailTarget) * 1200.0 > 30.0
+                     && tailState.trackingState == ModernPitchEngine::TrackingState::transition
+                     && tailState.responseMs >= 5.5
+                     && std::abs(tailState.desiredCents - weakTailExpectedCents) < 1.0e-6,
+                     "very_weak_target_change_glides_without_prudence_veto");
     success &= check(engine->adaptiveHysteresis(explicitAuthorityParameters,
                                                  explicitAuthorityQuantizer,
                                                  explicitAuthorityObservation) == 0.0f,

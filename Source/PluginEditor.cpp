@@ -228,22 +228,11 @@ buildPresetMenu();
     speedKnob.setColour (juce::Slider::thumbColourId, juce::Colours::white);
     speedKnob.setLookAndFeel (&mainValveLookAndFeel);
     speedKnob.setMouseCursor (juce::MouseCursor::PointingHandCursor);
-    speedKnob.textFromValueFunction = [this](double val)
+    speedKnob.textFromValueFunction = [](double val)
     {
-        if (scaleLockButton.getToggleState())
-        {
-            const int mode = processorRef.processingMode.load();
-            if (mode > 0)
-            {
-                const double norm = std::pow(
-                    juce::jlimit(0.0, 1.0, val / 500.0), 1.35);
-                const double mappedVal = mode == 1 ? 3.0 + 2.0 * norm
-                    : mode == 2 ? 1.5 + 1.5 * norm
-                                : 0.35 + 1.15 * norm;
-                return juce::String(mappedVal, 2) + " ms";
-            }
-        }
-        return juce::String(val, 1) + " ms";
+        // LOG_RESPONSE_TAPER_V1: val already is the actual DSP time in ms.
+        // The parameter range owns the logarithmic physical taper.
+        return juce::String(val, val < 10.0 ? 2 : 1) + " ms";
     };
     addAndMakeVisible (speedKnob);
 
