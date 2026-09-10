@@ -2007,7 +2007,11 @@ void ModernPitchEngine::updateCorrectionState(
     const float humanize = clamp01(parameters.humanize);
     const bool exactAuthority = exactScaleLockAuthority(parameters);
     const bool zeroPrudence = zeroPrudenceAuthority(parameters); // AUTHORITY_CONTROLS_EXPLICIT_V1
-    const bool richEvidence = parameters.voiceEvidenceValid;
+    // EXPERIMENTAL_MINIMAL_TRANSPORT_V8: ultra-live cannot give semantic
+    // breath/body/transient classifiers authority over correction trajectory.
+    const bool experimentalMinimalTransport = latencyMode_ == LatencyMode::ultraLive;
+    const bool richEvidence = parameters.voiceEvidenceValid
+        && !experimentalMinimalTransport;
     const bool validPitch = observation.valid && observation.frequencyHz > 0.0f;
     if (validPitch)
         state.pitchStaleSamples = 0;
@@ -2129,7 +2133,8 @@ void ModernPitchEngine::updateCorrectionState(
     // Breath/absence is positive evidence and therefore wins even if a noisy
     // frame happens to yield a formally valid F0. This prevents breaths from
     // keeping the pitch engine latched through a spurious detector result.
-    if (state.targetValid && (confirmedBreath || confirmedAbsence))
+    if (!experimentalMinimalTransport
+        && state.targetValid && (confirmedBreath || confirmedAbsence))
     {
         setState(TrackingState::release);
         state.desiredCents = 0.0;
@@ -2173,6 +2178,14 @@ void ModernPitchEngine::updateCorrectionState(
             const int reacquireSamples = static_cast<int>(std::lround(0.070 * sampleRate_));
             if (state.pitchStaleSamples >= reacquireSamples)
                 setState(TrackingState::acquire);
+            return;
+        }
+
+        if (experimentalMinimalTransport && state.targetValid)
+        {
+            // Missing periodicity cannot request dry/unity. The existing
+            // trajectory remains active until fresh pitch replaces it.
+            setState(TrackingState::acquire);
             return;
         }
 

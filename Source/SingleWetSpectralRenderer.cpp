@@ -548,8 +548,10 @@ void SingleWetSpectralRenderer::synthesiseLayer(
                     // V7.1: at 128, retain 85% of measured-peak velocity
                     // coherence. This was the minimum-error one-voice point in
                     // the guarded H1-H8 sweep; it changes no timing or ratio.
+                    // EXPERIMENTAL_MINIMAL_TRANSPORT_V8: local peak
+                    // coherence is geometric support only, never semantic ownership.
                     const float coherence = frameSize_ <= 128
-                        ? clamp01(baseCoherence * 0.85f)
+                        ? clamp01(baseCoherence * 0.850000f)
                         : baseCoherence;
                     const double peakVelocityBin =
                         trueSourceBins_[static_cast<std::size_t>(velocityPeak)];
@@ -571,7 +573,12 @@ void SingleWetSpectralRenderer::synthesiseLayer(
             layer.synthesisPhases[static_cast<std::size_t>(sourceBin)];
     }
 
-    const float safeFormant = clamp01(formantPreservation);
+    // EXPERIMENTAL_MINIMAL_TRANSPORT_V8: at 128 the renderer does not
+    // attempt spectral-envelope/formant reconstruction. It transports the
+    // measured spectrum only. Live/Quality keep the explicit formant control.
+    const float safeFormant = frameSize_ <= 128
+        ? 0.0f
+        : clamp01(formantPreservation);
     const float energyScale = static_cast<float>(1.0 / std::sqrt(safeRatio));
 
     for (int sourceBin = 0; sourceBin <= positiveBins; ++sourceBin)
@@ -687,8 +694,11 @@ void SingleWetSpectralRenderer::synthesiseLayer(
             : 0.0f;
         const float correctionPhaseNeed = smoothStep(6.0f, 42.0f,
             static_cast<float>(std::abs(safeCents)));
+        // EXPERIMENTAL_MINIMAL_TRANSPORT_V8: final identity phase lock
+        // is disabled at the selected zero-prudence endpoint. Any nonzero value
+        // here is probe-only and has no F0/harmonic/breath/transient semantics.
         const float lockStrength = clamp01(spatialLock * correctionPhaseNeed
-            * (frameSize_ <= 128 ? 0.90f : 1.0f));
+            * (frameSize_ <= 128 ? 0.000000f : 1.0f));
 
         const double ownPhase = propagatedPhases_[sourceIndex];
         const double lockedPhase = peakValid
