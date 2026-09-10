@@ -36,17 +36,17 @@ jobs:
           from pathlib import Path
           p = Path('.github/workflows/tail-glide-experimental-128-v3-validation.yml')
           s = p.read_text()
-          replacements = {
+          required = {
             'name: Experimental Independent Partial Phase V6 Validation': 'name: Live Experimental Harmonic Coordinate V7 Validation',
             "grep -q 'EXPERIMENTAL_TRUE_PARTIAL_TRANSPORT_V5' Source/SingleWetSpectralRenderer.cpp": "grep -q 'LIVE_EXPERIMENTAL_HARMONIC_COORDINATE_TRANSPORT_V7' Source/SingleWetSpectralRenderer.cpp",
             "grep -q 'if (frameSize_ <= 128 && peakValid)' Source/SingleWetSpectralRenderer.cpp": "grep -q 'const bool harmonicGuideValid = frameSize_ <= 256' Source/SingleWetSpectralRenderer.cpp",
             "grep -q 'peakShiftBins = truePeakBin \\* safeRatio - truePeakBin' Source/SingleWetSpectralRenderer.cpp": "grep -q 'transportTargetBin = coherentMeasuredSourceBin + harmonicShiftBins' Source/SingleWetSpectralRenderer.cpp",
             "grep -q 'experimental_128_shifts_harmonic_family_not_original_grid' Tests/SingleWetSpectralRendererTest.cpp": "grep -q 'experimental_128_shifts_harmonic_family_not_original_grid' Tests/SingleWetSpectralRendererTest.cpp\n          grep -q 'live_256_shifts_harmonic_family_not_original_grid' Tests/SingleWetSpectralRendererTest.cpp",
             "grep -q 'experimental_128_harmonic_family_keeps_exact_ratio' Tests/SingleWetSpectralRendererTest.cpp": "grep -q 'experimental_128_harmonic_family_keeps_exact_ratio' Tests/SingleWetSpectralRendererTest.cpp\n          grep -q 'live_256_harmonic_family_keeps_exact_ratio' Tests/SingleWetSpectralRendererTest.cpp",
-            'Neumaton-Experimental-True-Partial-V5-Windows.zip': 'Neumaton-Harmonic-Coordinate-V7-Windows.zip',
-            'Neumaton-Experimental-True-Partial-V5-Windows': 'Neumaton-Harmonic-Coordinate-V7-Windows',
+            'Neumaton-Experimental-Independent-Partial-V6-Windows.zip': 'Neumaton-Harmonic-Coordinate-V7-Windows.zip',
+            'Neumaton-Experimental-Independent-Partial-V6-Windows': 'Neumaton-Harmonic-Coordinate-V7-Windows',
           }
-          for old, new in replacements.items():
+          for old, new in required.items():
               if old not in s:
                   raise SystemExit(f'validation contract missing: {old}')
               s = s.replace(old, new, 1)
