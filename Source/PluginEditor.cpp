@@ -212,11 +212,10 @@ buildPresetMenu();
     addAndMakeVisible (modeSelectorLabel);
 
     modeSelector.setJustificationType (juce::Justification::centredLeft);
-    modeSelector.addItem ("High Latency", 1);
-    modeSelector.addItem ("Quality",      2);
-    modeSelector.addItem ("Live",         3);
-    modeSelector.addItem ("Experimental", 4);
-    modeSelector.setSelectedId (processorRef.processingMode.load() + 1, juce::dontSendNotification);
+    modeSelector.addItem ("Quality",      1);
+    modeSelector.addItem ("Live",         2);
+    modeSelector.addItem ("Experimental", 3);
+    modeSelector.setSelectedId (processorRef.processingMode.load(), juce::dontSendNotification);
     modeSelector.onChange = [this]() { onModeSelected(); };
     addAndMakeVisible (modeSelector);
 
@@ -673,7 +672,7 @@ void MicrotonalAutotuneAudioProcessorEditor::onPresetSelected()
     processorRef.applyFactoryPreset (index);
 
     modeSelector.setSelectedId (
-        processorRef.processingMode.load() + 1,
+        processorRef.processingMode.load(),
         juce::dontSendNotification);
 
     updateTempoModeButtons();
@@ -1068,9 +1067,7 @@ void MicrotonalAutotuneAudioProcessorEditor::drawTempoPage(
     g.setColour (juce::Colour (0xFFD8DDF5));
 
     juce::String syncText;
-    if (processorRef.processingMode.load() == 0)
-        syncText = Neumaton::UI::Labels::Tempo::requiresMode;
-    else if (!displayedMetering.tempoActive)
+    if (!displayedMetering.tempoActive)
         syncText = Neumaton::UI::Labels::Tempo::disabled;
     else if (displayedMetering.tempoHostSyncValid)
         syncText = Neumaton::UI::Labels::Tempo::hostSync;
@@ -1554,7 +1551,7 @@ void MicrotonalAutotuneAudioProcessorEditor::onModeSelected()
     int selectedId = modeSelector.getSelectedId();
     if (selectedId > 0)
     {
-        int newMode = selectedId - 1; // ComboBox ID 1-4 → mode 0-3
+        const int newMode = selectedId; // IDs are the release mode values 1..3.
         processorRef.updateProcessingMode (newMode);
         speedKnob.updateText();
         repaint(); // refresh the mode indicator dot

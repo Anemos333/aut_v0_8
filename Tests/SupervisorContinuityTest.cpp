@@ -278,14 +278,13 @@ int main()
                 ++rapPitchlessPresentHops;
         }
     }
-    success &= check(rapPresenceHops > 20 && rapMinimumVoicing > 0.99f,
-                     "nonzero_audio_cannot_be_unvoiced");
-    success &= check(rapMaxDetectorSupport > 0,
-                     "nonzero_audio_keeps_detector_paths_alive");
-    success &= check(rapPresenceHops > 20 && rapMinDetectorSupport > 0,
-                     "nonzero_audio_never_reports_zero_detector_paths");
-    success &= check(rapPresenceHops > 20 && rapPitchlessPresentHops == 0,
-                     "nonzero_audio_never_reports_pitchless_stable");
+    success &= check(rapPresenceHops > 20,
+                     "audio_presence_is_reported_independently_of_f0");
+    success &= check(rapPresenceHops > 20 && rapPitchlessPresentHops > 0,
+                     "aperiodic_presence_may_report_no_trustworthy_f0");
+    success &= check(rapMinimumVoicing >= 0.0f && rapMinimumVoicing <= 1.0f
+                     && rapMaxDetectorSupport >= 0 && rapMinDetectorSupport >= 0,
+                     "detector_diagnostics_remain_bounded_without_fabricating_pitch");
 
     // Zero consensus is explicitly allowed to drive correction. A single weak
     // path is still better than pitchless "stable": presence must publish an
@@ -303,16 +302,14 @@ int main()
     zeroConsensusSlot.ageInHops = 0;
     zeroConsensusTracker->decoderBeam_.fill({});
     const auto zeroConsensusDecision = zeroConsensusTracker->decodeCandidate(false);
-    success &= check(zeroConsensusDecision.valid
-                     && zeroConsensusDecision.candidate.frequencyHz > 0.0f
-                     && std::abs(zeroConsensusDecision.consensus) < 1.0e-7f,
-                     "zero_consensus_presence_fallback_yields_valid_f0");
+    success &= check(!zeroConsensusDecision.valid,
+                     "presence_does_not_fabricate_weak_zero_consensus_f0");
 
     auto firstPresenceLock = zeroConsensusDecision;
     const bool firstPresenceAccepted = zeroConsensusTracker->confirmOctaveTransition(
         firstPresenceLock, false);
-    success &= check(firstPresenceAccepted && firstPresenceLock.valid,
-                     "presence_first_lock_does_not_wait_for_consensus");
+    success &= check(!firstPresenceAccepted && !firstPresenceLock.valid,
+                     "presence_cannot_bypass_initial_register_evidence");
 
     auto engine = std::make_unique<ModernPitchEngine>();
     engine->prepare(48000.0, 256, 1, ModernPitchEngine::LatencyMode::live);
@@ -439,9 +436,8 @@ int main()
     liveRescueDecision.freshSupportMask = 0x01;
     const bool liveRescueAccepted = liveRescueTracker->confirmOctaveTransition(
         liveRescueDecision, false);
-    success &= check(liveRescueAccepted && liveRescueDecision.valid
-                     && std::abs(liveRescueDecision.candidate.frequencyHz - 440.0f) < 0.1f,
-                     "live_presence_replaces_stale_rescue_register_immediately");
+    success &= check(!liveRescueAccepted && !liveRescueDecision.valid,
+                     "presence_cannot_override_rescue_register_without_evidence");
 
     // Acquire is permitted to describe detector search, but it must never mute
     // an already acquired correction. Presence plus a temporary F0 dropout holds
@@ -1017,31 +1013,8 @@ int main()
                                                  explicitAuthorityObservation) == 0.0f,
                      "hold_zero_means_exactly_zero_hysteresis");
 
-    // Even if stale temporal history has an artificially huge score, immediate
-    // authority keeps current detector fusion and removes only the history/hold
-    // preference. The current hypothesis must own the decoder immediately.
-    auto immediateTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
-    immediateTracker->prepare(48000.0);
-    immediateTracker->setImmediateAuthority(true);
-    immediateTracker->decoderBeam_[0].valid = true;
-    immediateTracker->decoderBeam_[0].logFrequency = std::log2(440.0);
-    immediateTracker->decoderBeam_[0].score = 100.0f;
-    std::array<ModernPitchEngine::MultiRatePitchTracker::ConsensusHypothesis,
-               ModernPitchEngine::MultiRatePitchTracker::maxConsensusHypotheses>
-        currentHypotheses {};
-    currentHypotheses[0].valid = true;
-    currentHypotheses[0].frequencyHz = 466.1638f;
-    currentHypotheses[0].confidence = 0.75f;
-    currentHypotheses[0].periodicity = 0.75f;
-    currentHypotheses[0].consensus = 0.25f;
-    currentHypotheses[0].evidenceScore = 0.45f;
-    currentHypotheses[0].supportCount = 1;
-    currentHypotheses[0].directSupportCount = 1;
-    immediateTracker->updateDecoderBeam(currentHypotheses, 1, false);
-    const double immediateDecodedHz = std::exp2(immediateTracker->decoderBeam_[0].logFrequency);
-    success &= check(std::abs(immediateDecodedHz - 466.1638) < 0.1
-                     && immediateTracker->decoderBeam_[0].ageInHops == 0,
-                     "zero_prudence_decoder_has_no_temporal_hold");
+    // DETECTOR_IS_OBSERVER_V1: rigid correction settings do not alter the
+    // detector decoder. Static CI below forbids that API from returning.
 
     // A consonant/transient may temporarily remove a usable F0, but while audio
     // is present the already-selected correction remains on the same wet path.

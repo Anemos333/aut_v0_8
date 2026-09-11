@@ -612,7 +612,11 @@ float SingleWetSpectralRenderer::processSample(
 {
     inputSample = sanitiseAudioSample(inputSample);
     if (frameSize_ <= 0 || inputRing_.empty())
-        return inputSample;
+    {
+        // ACTIVE_PATH_NEVER_DRY_FALLBACK_V1: an invalid lifecycle state
+        // fails closed instead of silently granting source-pitch authority.
+        return 0.0f;
+    }
     const std::int64_t currentSample = inputSampleCounter_;
     inputRing_[static_cast<std::size_t>(currentSample & inputRingMask_)] = inputSample;
     const float target = clamp01(formantPreservation);

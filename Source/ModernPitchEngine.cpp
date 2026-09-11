@@ -159,7 +159,6 @@ void ModernPitchEngine::MultiRatePitchTracker::reset() noexcept
     rescueMode_ = false;
     presenceMode_ = false;
     presenceSinceLastHop_ = false;
-    immediateAuthority_ = false; // AUTHORITY_CONTROLS_EXPLICIT_V1
 
     octaveState_ = 0;
     pendingOctaveDelta_ = 0;
@@ -245,12 +244,10 @@ ModernPitchEngine::MultiRatePitchTracker::analyse(
 
     const float rms = static_cast<float>(std::sqrt(
         squaredSum / static_cast<double>(analysisLength)));
-    // RAP_VOICING_V1_AUDIO_PRESENCE: detector confidence may be poor, but a
-    // numerically non-silent input is never allowed to erase the voice.  In
-    // presence mode analyse the best available period instead of returning no
-    // path merely because YIN confidence is low.
-    const float rmsFloor = presenceMode_ ? numericalPresenceRms : minimumDetectorRms;
-    if (rms < rmsFloor)
+    // DETECTOR_IS_OBSERVER_V1: audio presence does not lower pitch-analysis
+    // standards. Aperiodic material may correctly yield no F0 while the
+    // downstream scale target remains fully authoritative.
+    if (rms < minimumDetectorRms)
         return result;
 
     const int tauMinimum = std::clamp(
@@ -346,7 +343,7 @@ ModernPitchEngine::MultiRatePitchTracker::analyse(
         }
     }
 
-    if (!presenceMode_ && thresholdTau < 0 && globalValue > fallbackThreshold)
+    if (thresholdTau < 0 && globalValue > fallbackThreshold)
         return result;
 
     // Alternative periods are deliberately retained because a weak fundamental
@@ -755,10 +752,9 @@ void ModernPitchEngine::MultiRatePitchTracker::updateDecoderBeam(
         int bestOctaveIndex = octaveState_;
         bool foundPrevious = false;
 
-        // AUTHORITY_CONTROLS_EXPLICIT_V1: detector fusion remains active, but
-        // the zero-prudence endpoint removes temporal/history preference. Current
-        // evidence is measured; it is not required to defeat a stale beam first.
-        if (!immediateAuthority_)
+        // DETECTOR_IS_OBSERVER_V1: detector history is analysis evidence only.
+        // Musical rigidity never changes this decoder; Scale Lock authority lives
+        // downstream in the supervisor/quantizer.
         {
             for (const auto& previous : decoderBeam_)
             {
@@ -807,10 +803,9 @@ void ModernPitchEngine::MultiRatePitchTracker::updateDecoderBeam(
         proposals[static_cast<std::size_t>(proposalCount++)] = proposal;
     }
 
-    // A short hold branch prevents a single weak hop from forcing a jump in
-    // normal operation. AUTHORITY_CONTROLS_EXPLICIT_V1 removes that hidden hold
-    // when all six visible prudence controls request the rigid endpoint.
-    if (!immediateAuthority_)
+    // A short detector hold prevents one weak observation from becoming a new
+    // measured F0. It never weakens correction: downstream scale ownership
+    // continues while the detector is uncertain.
     {
         for (const auto& previous : decoderBeam_)
         {
@@ -869,93 +864,20 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
     if (candidateCount <= 0)
         return {};
 
-    // RAP_VOICING_V2_ZERO_CONSENSUS_CORRECTION: consensus is diagnostic
-    // evidence, never permission to correct. If audio is present and at least
-    // one detector path has a period estimate, publish the best register-safe
-    // F0 even when the consensus decoder cannot form an authoritative cluster.
-    const auto makePresenceFallback = [&]() noexcept
-    {
-        DecoderDecision fallback;
-        if (!presenceMode_ || candidateCount <= 0)
-            return fallback;
-
-        // SOUND_EQUALS_CORRECTION_V1: when audible input is present, a raw
-        // detector candidate is pitch authority. Never fold it toward a stale
-        // track/anchor merely to look continuous: that is exactly how a sung
-        // note can remain implausibly stuck for seconds after reacquisition.
-        const float referenceHz = 0.0f;
-        float bestScore = -1000.0f;
-
-        for (int index = 0; index < candidateCount; ++index)
-        {
-            const auto& raw = candidates[static_cast<std::size_t>(index)];
-            if (!raw.valid || raw.frequencyHz <= 0.0f)
-                continue;
-
-            float selectedFrequency = raw.frequencyHz;
-            float selectedDistance = referenceHz > 0.0f
-                ? centsDistance(selectedFrequency, referenceHz) : 0.0f;
-            int selectedOctaveShift = 0;
-
-            if (referenceHz > 0.0f)
-            {
-                for (int octaveShift = -2; octaveShift <= 2; ++octaveShift)
-                {
-                    const float shifted = std::ldexp(raw.frequencyHz, octaveShift);
-                    if (shifted < minimumPitchHz_ || shifted > maximumPitchHz_)
-                        continue;
-
-                    const float distance = centsDistance(shifted, referenceHz);
-                    if (distance < selectedDistance)
-                    {
-                        selectedDistance = distance;
-                        selectedFrequency = shifted;
-                        selectedOctaveShift = octaveShift;
-                    }
-                }
-
-                // The existing rescue register guard remains authoritative.
-                // Presence fallback can recover weak evidence, not invent a
-                // register outside the bounded musical search window.
-                if (rescueMode_ && selectedDistance > 700.0f)
-                    continue;
-            }
-
-            const float continuity = referenceHz > 0.0f
-                ? (1.0f - smoothStep(120.0f, 700.0f, selectedDistance))
-                : 0.0f;
-            const float score = candidateBaseScore(raw)
-                * (0.65f + 0.35f * pathReliability(raw.pathIndex, raw.frequencyHz))
-                + 0.45f * continuity;
-            if (score <= bestScore)
-                continue;
-
-            bestScore = score;
-            fallback.candidate = raw;
-            fallback.candidate.frequencyHz = selectedFrequency;
-            fallback.candidate.valid = true;
-            fallback.consensus = 0.0f;
-            fallback.supportCount = 1;
-            fallback.directSupportCount = selectedOctaveShift == 0 ? 1 : 0;
-            fallback.freshSupportMask = raw.ageInHops == 0 && raw.pathIndex >= 0
-                ? static_cast<std::uint8_t>(1u << raw.pathIndex) : 0;
-            fallback.decoderOctaveIndex = octaveState_;
-            fallback.valid = true;
-        }
-
-        return fallback;
-    };
-
+    // DETECTOR_IS_OBSERVER_V1: audio presence is not pitch evidence. A raw
+    // detector family may be reported diagnostically, but only the existing
+    // consensus/continuity machinery may publish a valid F0. Detector doubt
+    // is absorbed downstream by the already-owned scale target/glide.
     std::array<ConsensusHypothesis, maxConsensusHypotheses> hypotheses {};
     const int hypothesisCount = buildConsensusHypotheses(candidates,
                                                          candidateCount,
                                                          hypotheses);
     if (hypothesisCount <= 0)
-        return makePresenceFallback();
+        return {};
 
     updateDecoderBeam(hypotheses, hypothesisCount, onsetPending);
     if (!decoderBeam_[0].valid)
-        return makePresenceFallback();
+        return {};
 
     const float decodedFrequency = static_cast<float>(
         std::exp2(decoderBeam_[0].logFrequency));
@@ -972,7 +894,7 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
     // decoder beam is still useful evidence, but it may not restart the pitch
     // register from an unrelated subharmonic simply because trackedPitchHz_
     // has expired.
-    if (rescueMode_ && !presenceMode_ && rescueReferenceHz > 0.0f)
+    if (rescueMode_ && rescueReferenceHz > 0.0f)
     {
         float bestRescueScore = -1000.0f;
         for (int index = 0; index < hypothesisCount; ++index)
@@ -1029,11 +951,7 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
         }
 
         if (matchedHypothesis < 0 || matchedDistance > 65.0f)
-        {
-            if (presenceMode_)
-                return makePresenceFallback();
-            return {}; // the winning branch is only a decaying hold state
-        }
+            return {}; // detector has no new trustworthy F0
     }
 
     const auto& hypothesis = hypotheses[static_cast<std::size_t>(matchedHypothesis)];
@@ -1053,10 +971,6 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
         && centsDistance(trackedPitchHz_, decision.candidate.frequencyHz) < 95.0f;
     const bool sufficientInitialEvidence = decision.supportCount >= 2
         || decision.candidate.confidence >= 0.78f;
-    const bool presenceInitialEvidence = presenceMode_
-        && decision.supportCount >= 1
-        && decision.candidate.confidence >= 0.05f
-        && decision.candidate.periodicity >= 0.18f;
     const float rescueDistance = rescueReferenceHz > 0.0f
         ? centsDistance(rescueReferenceHz, decision.candidate.frequencyHz)
         : 100000.0f;
@@ -1077,11 +991,9 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
     // Strong evidence may acquire an initial register, but it may not bypass a
     // latched note body's rescue anchor.  This closes the path that previously
     // let a strong subharmonic become a new F0 during acquire.
-    decision.valid = presenceMode_
-        ? (decision.candidate.valid && decision.candidate.frequencyHz > 0.0f)
-        : (rescueMode_
-            ? rescueEvidence
-            : (closeToTrack || sufficientInitialEvidence || presenceInitialEvidence));
+    decision.valid = rescueMode_
+        ? rescueEvidence
+        : (closeToTrack || sufficientInitialEvidence);
     return decision;
 }
 
@@ -1097,40 +1009,8 @@ bool ModernPitchEngine::MultiRatePitchTracker::confirmOctaveTransition(
         return false;
     }
 
-    // SOUND_EQUALS_CORRECTION_V1: audible input plus a finite F0 is enough
-    // to own pitch immediately. No consensus/confirmation gate is allowed to
-    // turn a real vocal signal into an effective bypass or hold a stale note.
-    if (presenceMode_)
-    {
-        if (!decision.candidate.valid
-            || !std::isfinite(decision.candidate.frequencyHz)
-            || decision.candidate.frequencyHz <= 0.0f)
-        {
-            decision.valid = false;
-            return false;
-        }
-
-        if (trackedPitchHz_ > 0.0f)
-        {
-            int octaveDelta = 0;
-            float residualCents = 0.0f;
-            if (isOctaveLikeTransition(trackedPitchHz_,
-                                       decision.candidate.frequencyHz,
-                                       octaveDelta,
-                                       residualCents))
-            {
-                octaveState_ = std::clamp(octaveState_ + octaveDelta, -4, 4);
-            }
-        }
-
-        committedOctaveFrequencyHz_ = decision.candidate.frequencyHz;
-        octaveCommitGuardHops_ = 0;
-        pendingOctaveDelta_ = 0;
-        pendingOctaveCount_ = 0;
-        pendingOctaveFrequencyHz_ = 0.0f;
-        decision.decoderOctaveIndex = octaveState_;
-        return true;
-    }
+    // DETECTOR_IS_OBSERVER_V1: audio presence cannot commit a register.
+    // Octave-like observations always use the same evidence/continuity guards.
 
     // If current F0 expired while a musical note body is still latched,
     // reacquisition is NOT an initial register acquisition.  The persistent
@@ -1192,21 +1072,8 @@ bool ModernPitchEngine::MultiRatePitchTracker::confirmOctaveTransition(
         return true;
     }
 
-    // Presence owns correction authority. With actual input present, the first
-    // register-safe F0 becomes audible control immediately even at zero
-    // consensus. Subsequent octave/subharmonic changes still pass through the
-    // existing register guards, so this removes timidity without weakening
-    // continuity after lock.
-    if (trackedPitchHz_ <= 0.0f && presenceMode_)
-    {
-        committedOctaveFrequencyHz_ = decision.candidate.frequencyHz;
-        octaveCommitGuardHops_ = 6;
-        pendingOctaveDelta_ = 0;
-        pendingOctaveCount_ = 0;
-        pendingOctaveFrequencyHz_ = 0.0f;
-        return true;
-    }
-
+    // Initial register acquisition is an evidence decision, independent of
+    // whether samples are non-zero. Presence never upgrades weak F0 evidence.
     // Initial register acquisition without explicit audio presence remains
     // deliberately temporal for synthetic/offline detector-only use.
     if (trackedPitchHz_ <= 0.0f)
@@ -1516,12 +1383,11 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
 
         observation.frequencyHz = trackedPitchHz_;
 
-        // LIVE_CORRECTION_COORDINATE_V5: identity remains on the proven
-        // continuity-smoothed track, but a rigid lock must calculate its ratio
-        // from the latest accepted F0 rather than from that delayed identity
-        // coordinate. All non-rigid modes continue to use frequencyHz below.
-        observation.correctionFrequencyHz = presenceMode_
-            && std::isfinite(decision.candidate.frequencyHz)
+        // DETECTOR_IS_OBSERVER_V1: exact correction may use the latest F0 only
+        // after that F0 has survived the detector's normal evidence/register
+        // guards. Audio presence by itself has no pitch authority.
+        observation.correctionFrequencyHz =
+            std::isfinite(decision.candidate.frequencyHz)
             && decision.candidate.frequencyHz > 0.0f
             ? decision.candidate.frequencyHz
             : trackedPitchHz_;
@@ -1536,8 +1402,8 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
              + 0.30f * periodicityGate
              + 0.22f * consensusGate));
         observation.audioPresent = presenceMode_;
-        observation.voicing = presenceMode_ ? 1.0f : detectorVoicing;
-        observation.valid = presenceMode_ || detectorVoicing > 0.08f;
+        observation.voicing = detectorVoicing;
+        observation.valid = true; // this branch contains a confirmed F0
     }
     else
     {
@@ -1568,7 +1434,7 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
         observation.octaveState = octaveState_;
         observation.pendingOctaveObservations = pendingOctaveCount_;
         observation.audioPresent = presenceMode_;
-        observation.voicing = presenceMode_ ? 1.0f : 0.0f;
+        observation.voicing = 0.0f;
         observation.valid = false;
     }
 
@@ -2042,7 +1908,6 @@ bool ModernPitchEngine::advanceConservativeF0Rescue(
 
     const bool forbiddenState = state.trackingState == TrackingState::attack
         || state.trackingState == TrackingState::transition
-        || state.trackingState == TrackingState::release
         || state.trackingState == TrackingState::unvoiced;
     const bool continuationOfQualifiedDropout = state.rescueQualificationHops > 0
         || state.rescuePredictionActive;
@@ -2455,14 +2320,10 @@ void ModernPitchEngine::updateCorrectionState(
 
     // A strong breath/absence before any body latch must not become a note just
     // because the pitch tracker found a periodic accident in the noise.
-    if (!exactAuthority
-        && !state.noteBodyLatched && richEvidence
-        && (confirmedBreathFrame || confirmedAbsenceFrame))
-    {
-        setState(TrackingState::unvoiced);
-        state.desiredCents = 0.0;
-        return;
-    }
+    // PHONETIC_STATE_HAS_NO_CORRECTION_AUTHORITY_V1: breath/absence
+    // evidence may classify the detector state, but it never writes a
+    // source/unity correction. A valid coordinate continues into the same
+    // quantizer; an invalid coordinate keeps the already-owned target.
 
     if (bodyPresent || trackerBody > 0.58f)
     {
@@ -2490,16 +2351,14 @@ void ModernPitchEngine::updateCorrectionState(
     // represented by target identity and transition below.
     const bool musicalOnset = observation.onset
         && (!state.noteBodyLatched
-            || state.trackingState == TrackingState::unvoiced
-            || state.trackingState == TrackingState::release);
+            || state.trackingState == TrackingState::unvoiced);
     if (musicalOnset)
     {
         setState(TrackingState::attack);
         state.stableObservations = 0;
         state.stableBodyObservations = bodyPresent ? 1 : 0;
     }
-    else if (state.trackingState == TrackingState::unvoiced
-             || state.trackingState == TrackingState::release)
+    else if (state.trackingState == TrackingState::unvoiced)
     {
         setState(TrackingState::acquire);
         state.stableObservations = 0;
@@ -2852,18 +2711,6 @@ double ModernPitchEngine::advanceCorrection(CorrectionState& state) noexcept
     {
         state.currentCents = state.desiredCents;
         state.velocityCentsPerSecond = 0.0;
-        if (state.trackingState == TrackingState::release
-            && std::abs(state.currentCents) < 0.001)
-        {
-            state.trackingState = TrackingState::unvoiced;
-            state.stateAgeSamples = 0;
-            state.noteBodyLatched = false;
-            state.noteBodyConfidence = 0.0f;
-            state.transportPeriodHz = 0.0;
-            state.pitchStaleSamples = 0;
-            state.pitchCentreValid = false;
-            state.stableBodyObservations = 0;
-        }
     }
     return state.currentCents;
 }
@@ -2910,7 +2757,6 @@ void ModernPitchEngine::process(
     safe.maximumPitchHz = std::clamp(finiteOr(safe.maximumPitchHz, 1600.0f),
                                      safe.minimumPitchHz + 20.0f, 3000.0f);
     safe.latencyMode = static_cast<int>(latencyMode_);
-    const bool immediateAuthority = zeroPrudenceAuthority(safe); // AUTHORITY_CONTROLS_EXPLICIT_V1
 
     const int channels = std::min({buffer.getNumChannels(), channelCount_, maxSupportedChannels});
     const int samples = buffer.getNumSamples();
@@ -2931,15 +2777,12 @@ void ModernPitchEngine::process(
 
     linkedTracker_.setRange(safe.minimumPitchHz, safe.maximumPitchHz);
     linkedTracker_.setSensitivity(safe.detectorSensitivity);
-    linkedTracker_.setImmediateAuthority(immediateAuthority);
     for (int channel = 0; channel < channels; ++channel)
     {
         channelTrackers_[static_cast<std::size_t>(channel)].setRange(
             safe.minimumPitchHz, safe.maximumPitchHz);
         channelTrackers_[static_cast<std::size_t>(channel)].setSensitivity(
             safe.detectorSensitivity);
-        channelTrackers_[static_cast<std::size_t>(channel)].setImmediateAuthority(
-            immediateAuthority);
     }
 
     tempoController_.beginBlock(hostTempoPosition, safe.tempo, samples);
@@ -3092,8 +2935,7 @@ void ModernPitchEngine::process(
         }
 
         if (linkedCorrection_.noteBodyLatched
-            && linkedCorrection_.trackingState != TrackingState::unvoiced
-            && linkedCorrection_.trackingState != TrackingState::release)
+            && linkedCorrection_.trackingState != TrackingState::unvoiced)
         {
             ++sustainedSamples_;
         }

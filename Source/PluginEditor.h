@@ -194,21 +194,16 @@ private:
         void refresh()
         {
             const int processingMode = owner.processorRef.processingMode.load();
-            const bool modernMode = processingMode > 0;
-            const bool scaleLockActive = modernMode
-                && owner.scaleLockButton.getToggleState();
+            const bool scaleLockActive = owner.scaleLockButton.getToggleState();
             const bool mainPage = !owner.showingTempoPage
                 && !owner.showingScaleEditor
                 && !owner.showingControlRoom;
 
-            // High Latency intentionally stays the untouched legacy YIN path.
-            // Controls not consumed there are disabled instead of becoming
-            // placebo controls. Scale/root/Response/Amount/Analog/Output remain
-            // enabled because the legacy path genuinely consumes them.
-            owner.humanizeSlider.setEnabled (modernMode);
-            owner.humanizeLabel.setEnabled (modernMode);
-            owner.scaleLockButton.setEnabled (modernMode);
-            owner.tempoPageButton.setEnabled (modernMode);
+            // All selectable modes share the same modern audio path.
+            owner.humanizeSlider.setEnabled (true);
+            owner.humanizeLabel.setEnabled (true);
+            owner.scaleLockButton.setEnabled (true);
+            owner.tempoPageButton.setEnabled (true);
 
             owner.lockHysteresisSlider.setEnabled (scaleLockActive);
             owner.lockHysteresisLabel.setEnabled (scaleLockActive);
@@ -224,12 +219,12 @@ private:
                 static_cast<int> (std::lround (
                     owner.processorRef.getAPVTS()
                         .getRawParameterValue ("tempoMode")->load())));
-            const bool tempoShapesTrajectory = modernMode && tempoMode != 0;
-            const bool glideLockMode = modernMode && tempoMode == 2;
+            const bool tempoShapesTrajectory = tempoMode != 0;
+            const bool glideLockMode = tempoMode == 2;
 
-            owner.tempoOffButton.setEnabled (modernMode);
-            owner.tempoGlideButton.setEnabled (modernMode);
-            owner.glideLockButton.setEnabled (modernMode);
+            owner.tempoOffButton.setEnabled (true);
+            owner.tempoGlideButton.setEnabled (true);
+            owner.glideLockButton.setEnabled (true);
             owner.tempoDivisionSelector.setEnabled (tempoShapesTrajectory);
             owner.tempoDivisionLabel.setEnabled (tempoShapesTrajectory);
             owner.tempoGlideLength.setEnabled (tempoShapesTrajectory);
@@ -237,9 +232,6 @@ private:
             owner.tempoLockStrength.setEnabled (glideLockMode);
             owner.tempoLockStrengthLabel.setEnabled (glideLockMode);
             owner.tempoSmartOnset.setEnabled (glideLockMode);
-
-            if (!modernMode && owner.showingTempoPage)
-                owner.closeTempoPage();
 
             const bool lockState = owner.scaleLockButton.getToggleState();
             if (processingMode != lastProcessingMode_

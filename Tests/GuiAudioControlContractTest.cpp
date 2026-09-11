@@ -37,9 +37,11 @@ int main()
 {
     bool success = true;
     const auto processor = readFile("Source/PluginProcessor.cpp");
+    const auto processorHeader = readFile("Source/PluginProcessor.h");
     const auto editor = readFile("Source/PluginEditor.cpp");
     const auto editorHeader = readFile("Source/PluginEditor.h");
     const auto engine = readFile("Source/ModernPitchEngine.cpp");
+    const auto engineHeader = readFile("Source/ModernPitchEngine.h");
     const auto renderer = readFile("Source/SingleWetSpectralRenderer.cpp");
     const auto rendererHeader = readFile("Source/SingleWetSpectralRenderer.h");
     const auto tempo = readFile("Source/Tempo.cpp");
@@ -80,15 +82,24 @@ int main()
                      "analog_and_output_controls_change_samples");
 
     success &= check(has(editorHeader, "AudioControlAvailabilityGuard")
-                         && has(editorHeader, "humanizeSlider.setEnabled (modernMode)")
-                         && has(editorHeader, "scaleLockButton.setEnabled (modernMode)")
-                         && has(editorHeader, "tempoPageButton.setEnabled (modernMode)"),
-                     "high_latency_disables_modern_only_controls");
+                         && !has(editor, "\"High Latency\"")
+                         && !has(processor, "detectPitchYIN")
+                         && !has(processorHeader, "detectPitchYIN")
+                         && !has(processor, "smoothedShiftRatio")
+                         && !has(processorHeader, "smoothedShiftRatio")
+                         && !has(processor, "circularBuffer")
+                         && !has(processorHeader, "circularBuffer")
+                         && !has(processor, "yinBuffer")
+                         && !has(processorHeader, "yinBuffer")
+                         && !has(processor, "findNearestTarget")
+                         && !has(processorHeader, "findNearestTarget")
+                         && has(processor, "SINGLE_PLUGIN_AUDIO_PATH_V1"),
+                     "plugin_has_only_modern_single_audio_path");
 
     success &= check(has(editorHeader,
-                         "const bool tempoShapesTrajectory = modernMode && tempoMode != 0")
+                         "const bool tempoShapesTrajectory = tempoMode != 0")
                          && has(editorHeader,
-                                "const bool glideLockMode = modernMode && tempoMode == 2")
+                                "const bool glideLockMode = tempoMode == 2")
                          && has(editorHeader,
                                 "tempoDivisionSelector.setEnabled (tempoShapesTrajectory)")
                          && has(editorHeader,
@@ -96,7 +107,9 @@ int main()
                      "tempo_gui_matches_active_semantics");
 
     success &= check(has(editor, "processorRef.refreshScaleSnapshot()")
-                         && has(editor, "processorRef.updateProcessingMode (newMode)"),
+                         && has(editor, "processorRef.updateProcessingMode (newMode)")
+                         && has(editor, "const int newMode = selectedId")
+                         && !has(editor, "int newMode = selectedId - 1"),
                      "scale_root_and_mode_selectors_reach_audio_state");
 
     success &= check(has(editor, "3.0 + 2.0 * norm")
@@ -113,6 +126,24 @@ int main()
                          && !has(engine, "updateLpcTarget")
                          && has(engine, "wetRenderers_"),
                      "single_wet_has_no_dormant_transport_renderer");
+
+    success &= check(has(engine, "DETECTOR_IS_OBSERVER_V1")
+                         && !has(engine, "makePresenceFallback")
+                         && !has(engine, "setImmediateAuthority")
+                         && !has(engineHeader, "setImmediateAuthority")
+                         && !has(engine, "presenceInitialEvidence")
+                         && !has(engine, "presenceMode_ ? (decision.candidate.valid"),
+                     "detector_observes_but_never_owns_scale_authority");
+
+    success &= check(!has(engine, "desiredCents = 0.0")
+                         && !has(engine, "TrackingState::release")
+                         && has(engine, "PHONETIC_STATE_HAS_NO_CORRECTION_AUTHORITY_V1"),
+                     "phonetic_and_release_states_cannot_reduce_correction");
+
+    success &= check(has(processor, "HOST_BYPASS_ONLY_DRY_V1")
+                         && has(processor, "livePitchProcessor.processBypassed (buffer)")
+                         && has(renderer, "ACTIVE_PATH_NEVER_DRY_FALLBACK_V1"),
+                     "dry_exists_only_as_explicit_host_bypass");
 
     success &= check(has(renderer, "FULL_SPECTRUM_SINGLE_TRANSPORT_V1")
                          && has(renderer, "STABLE_SINGLE_LATTICE_TRANSPORT_V3")

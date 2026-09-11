@@ -186,19 +186,8 @@ ModernPitchEngine::LatencyMode MicrotonalAutotuneAudioProcessor::modeToLatency (
         case 1:  return ModernPitchEngine::LatencyMode::quality;
         case 2:  return ModernPitchEngine::LatencyMode::live;
         case 3:  return ModernPitchEngine::LatencyMode::ultraLive;
-        default: return ModernPitchEngine::LatencyMode::live; // fallback
+        default: return ModernPitchEngine::LatencyMode::quality; // fail-safe release mode
     }
-}
-
-int MicrotonalAutotuneAudioProcessor::getLatencyForMode (int mode) const
-{
-    if (mode == 0)
-        return yinWindowSize; // Slow mode: 2048 samples
-
-    // For ModernPitchEngine modes, query the engine
-    // The frame size depends on sample rate and mode
-    // We can compute it the same way the engine does
-    return livePitchProcessor.getLatencySamples();
 }
 
 //==============================================================================
@@ -210,68 +199,34 @@ void MicrotonalAutotuneAudioProcessor::prepareToPlay (double sampleRate, int sam
     analogOutputWasActive_ = false;
     lastSamplesPerBlock = std::max(1, samplesPerBlock);
     refreshScaleSnapshot();
-    smoothedShiftRatio = 1.0;
-
-    // Circular buffer: 4x YIN window for comfortable pitch shifting (Slow mode)
-    circBufSize = yinWindowSize * 4;
-    circularBuffer.assign (static_cast<size_t> (circBufSize), 0.0f);
-    circBufWritePos = 0;
-    circBufReadPos = static_cast<double> (circBufSize - yinWindowSize);
-
-    // YIN accumulation buffer (Slow mode)
-    yinBuffer.assign (yinWindowSize, 0.0f);
-    yinAccumulator.assign (static_cast<size_t> (yinWindowSize / 2), 0.0f);
-    yinBufferPos = 0;
-    lastDetectedPitch = 0.0f;
-    slowMeterPitchHz.store (0.0f, std::memory_order_relaxed);
-    slowMeterTargetHz.store (0.0f, std::memory_order_relaxed);
-    slowResetRequested.store (false, std::memory_order_relaxed);
-
-    // Prepare ModernPitchEngine-based live pitch processor
-    int mode = processingMode.load();
-    if (mode > 0)
-    {
-        livePitchProcessor.prepare (currentSampleRate,
-                                    lastSamplesPerBlock,
-                                    std::max (1, getTotalNumOutputChannels()),
-                                    modeToLatency (mode));
-        // Set sensible defaults for the advanced parameters
-        float humanizeVal = apvts.getRawParameterValue ("humanize")->load() / 100.0f;
-        livePitchProcessor.setAdvancedParameters (
-            35.0f,   // transitionMs
-            0.70f,   // preserveVibrato
-            humanizeVal, // humanize
-            0.90f,   // formantPreservation
-            0.85f,   // transientProtection
-            0.70f,   // detectorSensitivity
-            12.0f,   // maximumCorrectionSemitones
-            45.0f,   // minimumPitchHz
-            1600.0f, // maximumPitchHz
-            LivePitchProcessor::StereoMode::linkedMidSide
-        );
-        setLatencySamples (livePitchProcessor.getLatencySamples());
-    }
-    else
-    {
-        // Slow mode: prepare engine with default for potential future switch
-        livePitchProcessor.prepare (currentSampleRate,
-                                    lastSamplesPerBlock,
-                                    std::max (1, getTotalNumOutputChannels()),
-                                    ModernPitchEngine::LatencyMode::live);
-        float humanizeVal = apvts.getRawParameterValue ("humanize")->load() / 100.0f;
-        livePitchProcessor.setAdvancedParameters (
-            35.0f, 0.70f, humanizeVal, 0.90f, 0.85f, 0.70f, 12.0f, 45.0f, 1600.0f,
-            LivePitchProcessor::StereoMode::linkedMidSide
-        );
-        setLatencySamples (yinWindowSize);
-    }
+    // The plugin has one audio engine family only. Quality, Live and
+    // Experimental select already-prepared ModernPitchEngine profiles; no
+    // legacy renderer is kept beside them.
+    const int mode = juce::jlimit (1, 3,
+        processingMode.load (std::memory_order_acquire));
+    processingMode.store (mode, std::memory_order_release);
+    livePitchProcessor.prepare (currentSampleRate,
+                                lastSamplesPerBlock,
+                                std::max (1, getTotalNumOutputChannels()),
+                                modeToLatency (mode));
+    const float humanizeVal = apvts.getRawParameterValue ("humanize")->load() / 100.0f;
+    livePitchProcessor.setAdvancedParameters (
+        35.0f,   // transitionMs
+        0.70f,   // preserveVibrato
+        humanizeVal,
+        0.90f,   // formantPreservation
+        0.85f,   // transientProtection
+        0.70f,   // detectorSensitivity
+        12.0f,   // maximumCorrectionSemitones
+        45.0f,   // minimumPitchHz
+        1600.0f, // maximumPitchHz
+        LivePitchProcessor::StereoMode::linkedMidSide
+    );
+    setLatencySamples (livePitchProcessor.getLatencySamples());
 }
 
 void MicrotonalAutotuneAudioProcessor::releaseResources()
 {
-    circularBuffer.clear();
-    yinBuffer.clear();
-    yinAccumulator.clear();
     livePitchProcessor.reset();
     resetAnalogOutputFilters();
     analogOutputWasActive_ = false;
@@ -296,122 +251,14 @@ bool MicrotonalAutotuneAudioProcessor::isBusesLayoutSupported (const BusesLayout
 //==============================================================================
 void MicrotonalAutotuneAudioProcessor::updateProcessingMode (int newMode)
 {
-    newMode = juce::jlimit (0, 3, newMode);
+    newMode = juce::jlimit (1, 3, newMode);
     const int oldMode = processingMode.load (std::memory_order_acquire);
     if (newMode == oldMode)
         return;
 
-    if (newMode > 0)
-    {
-        // Publish a fully prepared modern engine before making the mode visible
-        // to the callback. No allocation or prepare() occurs here.
-        livePitchProcessor.setLatencyModeNonRealtime (modeToLatency (newMode));
-        processingMode.store (newMode, std::memory_order_release);
-        setLatencySamples (livePitchProcessor.getLatencySamples());
-    }
-    else
-    {
-        // Do not mutate Slow/High-Latency buffers from the message thread.
-        // The callback consumes this request before touching that state.
-        slowResetRequested.store (true, std::memory_order_release);
-        processingMode.store (0, std::memory_order_release);
-        setLatencySamples (yinWindowSize);
-    }
-}
-
-void MicrotonalAutotuneAudioProcessor::resetSlowStateNoAlloc() noexcept
-{
-    smoothedShiftRatio = 1.0;
-    std::fill (circularBuffer.begin(), circularBuffer.end(), 0.0f);
-    circBufWritePos = 0;
-    circBufReadPos = static_cast<double> (std::max (0, circBufSize - yinWindowSize));
-    std::fill (yinBuffer.begin(), yinBuffer.end(), 0.0f);
-    std::fill (yinAccumulator.begin(), yinAccumulator.end(), 0.0f);
-    yinBufferPos = 0;
-    lastDetectedPitch = 0.0f;
-    slowMeterPitchHz.store (0.0f, std::memory_order_relaxed);
-    slowMeterTargetHz.store (0.0f, std::memory_order_relaxed);
-}
-
-//==============================================================================
-// YIN Pitch Detection Algorithm (Slow mode — unchanged from original)
-float MicrotonalAutotuneAudioProcessor::detectPitchYIN (const float* buffer, int numSamples, double sampleRate) noexcept
-{
-    if (buffer == nullptr || numSamples < 2 || ! std::isfinite (sampleRate)
-        || sampleRate <= 0.0)
-        return 0.0f;
-
-    const int halfWindow = numSamples / 2;
-    if (halfWindow <= 1 || static_cast<int> (yinAccumulator.size()) < halfWindow)
-        return 0.0f;
-    float* diff = yinAccumulator.data();
-    std::fill_n (diff, halfWindow, 0.0f);
-
-    // Step 1: Difference function
-    for (int tau = 0; tau < halfWindow; ++tau)
-    {
-        float sum = 0.0f;
-        for (int j = 0; j < halfWindow; ++j)
-        {
-            float delta = buffer[j] - buffer[j + tau];
-            sum += delta * delta;
-        }
-        diff[tau] = sum;
-    }
-
-    // Step 2: Cumulative Mean Normalized Difference Function (CMNDF)
-    diff[0] = 1.0f;
-    float runningSum = 0.0f;
-    for (int tau = 1; tau < halfWindow; ++tau)
-    {
-        runningSum += diff[tau];
-        if (runningSum > 0.0f)
-            diff[tau] = diff[tau] * static_cast<float> (tau) / runningSum;
-        else
-            diff[tau] = 1.0f;
-    }
-
-    // Step 3: Absolute threshold
-    constexpr float threshold = 0.15f;
-    int tauEstimate = -1;
-
-    // Skip tau=0 and tau=1 (too high frequency / not meaningful)
-    for (int tau = 2; tau < halfWindow; ++tau)
-    {
-        if (diff[tau] < threshold)
-        {
-            // Find the local minimum
-            while (tau + 1 < halfWindow &&
-                   diff[static_cast<size_t> (tau + 1)] < diff[tau])
-            {
-                ++tau;
-            }
-            tauEstimate = tau;
-            break;
-        }
-    }
-
-    if (tauEstimate < 2)
-        return 0.0f;
-
-    // Step 4: Parabolic interpolation for sub-sample accuracy
-    double betterTau = static_cast<double> (tauEstimate);
-
-    if (tauEstimate > 0 && tauEstimate < halfWindow - 1)
-    {
-        float s0 = diff[static_cast<size_t> (tauEstimate - 1)];
-        float s1 = diff[static_cast<size_t> (tauEstimate)];
-        float s2 = diff[static_cast<size_t> (tauEstimate + 1)];
-
-        float denom = 2.0f * (2.0f * s1 - s0 - s2);
-        if (std::abs (denom) > 1e-10f)
-            betterTau = static_cast<double> (tauEstimate) + static_cast<double> ((s0 - s2) / denom);
-    }
-
-    if (betterTau <= 0.0)
-        return 0.0f;
-
-    return static_cast<float> (sampleRate / betterTau);
+    livePitchProcessor.setLatencyModeNonRealtime (modeToLatency (newMode));
+    processingMode.store (newMode, std::memory_order_release);
+    setLatencySamples (livePitchProcessor.getLatencySamples());
 }
 
 //==============================================================================
@@ -455,8 +302,8 @@ void MicrotonalAutotuneAudioProcessor::refreshScaleSnapshot() noexcept
     ScaleSnapshot next;
     next.count = 0;
 
-    // Preserve the musical invariant expected by both Slow mode and the modern
-    // ScaleQuantizer: every scale degree lives inside one octave [1.0, 2.0),
+    // Preserve the musical invariant expected by the modern ScaleQuantizer:
+    // every scale degree lives inside one octave [1.0, 2.0),
     // unison is present, and duplicate octave-equivalent degrees are removed.
     next.ratios[static_cast<std::size_t> (next.count++)] = 1.0;
     
@@ -527,42 +374,6 @@ void MicrotonalAutotuneAudioProcessor::releaseScaleSnapshot (int slotIndex) noex
 {
     scaleSnapshotSlots_[static_cast<std::size_t> (juce::jlimit (0, 2, slotIndex))]
         .readers.fetch_sub (1, std::memory_order_release);
-}
-
-double MicrotonalAutotuneAudioProcessor::findNearestTarget (
-    double detectedFreqHz, const ScaleSnapshot& snapshot) const noexcept
-{
-    if (! std::isfinite (detectedFreqHz) || detectedFreqHz <= 0.0
-        || snapshot.count <= 0 || ! std::isfinite (snapshot.rootFrequency)
-        || snapshot.rootFrequency <= 0.0)
-        return detectedFreqHz;
-
-    const double logRatio = std::log2 (detectedFreqHz / snapshot.rootFrequency);
-    const double octave = std::floor (logRatio);
-    const double fractionalOctave = logRatio - octave;
-    double bestDist = std::numeric_limits<double>::max();
-    double bestLogTarget = logRatio;
-
-    for (int index = 0; index < snapshot.count; ++index)
-    {
-        const double ratio = snapshot.ratios[static_cast<std::size_t> (index)];
-        if (! std::isfinite (ratio) || ratio <= 0.0)
-            continue;
-        const double logPos = std::log2 (ratio);
-        for (int wrap = -1; wrap <= 1; ++wrap)
-        {
-            const double candidate = logPos + static_cast<double> (wrap);
-            const double distance = std::abs (fractionalOctave - candidate);
-            if (distance < bestDist)
-            {
-                bestDist = distance;
-                bestLogTarget = octave + candidate;
-            }
-        }
-    }
-
-    const double result = snapshot.rootFrequency * std::exp2 (bestLogTarget);
-    return std::isfinite (result) && result > 0.0 ? result : detectedFreqHz;
 }
 
 //==============================================================================
@@ -643,7 +454,7 @@ void MicrotonalAutotuneAudioProcessor::applyFactoryPreset (int index)
 
     const auto& preset = FactoryPresets::getPreset (index);
 
-    updateProcessingMode (juce::jlimit (0, 3, preset.processingMode));
+    updateProcessingMode (juce::jlimit (1, 3, preset.processingMode));
 
     setParameterNotifyingHost (apvts, "speed",              preset.speedMs);
     setParameterNotifyingHost (apvts, "amount",             preset.amount);
@@ -768,7 +579,7 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
     bool analogMode = apvts.getRawParameterValue ("analogMode")->load() > 0.5f;
     float outVolumeDb = apvts.getRawParameterValue ("outVolume")->load();
     
-    int mode = juce::jlimit (0, 3, processingMode.load (std::memory_order_relaxed));
+    const int mode = juce::jlimit (1, 3, processingMode.load (std::memory_order_relaxed));
 
     speedMs = constrainRetuneSpeedMs (speedMs, mode, scaleLock);
     
@@ -794,165 +605,37 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
     const int snapshotIndex = acquireScaleSnapshot();
     const auto& scaleSnapshot = scaleSnapshotSlots_[static_cast<std::size_t> (snapshotIndex)].value;
 
-    // ==================== MODERN ENGINE MODES (Quality / Live / Experimental) ====================
-    if (mode > 0)
-    {
-        // Creative tempo is an optional target scheduler. Off is a strict
-        // pass-through, so the V5 correction path is unchanged.
-        livePitchProcessor.setTempoSettings (getTempoSettings());
-        livePitchProcessor.setTempoHostPosition (
-            readHostTempoPosition (numSamples));
-        livePitchProcessor.setScaleLockParameters(scaleLock, lockHysteresis, vibratoPreserve);
+    // SINGLE_PLUGIN_AUDIO_PATH_V1: every release mode uses the same modern
+    // detector -> correction controller -> SingleWetSpectralRenderer chain.
+    // There is no mode-local YIN/circular-buffer renderer and no dry blend.
+    livePitchProcessor.setTempoSettings (getTempoSettings());
+    livePitchProcessor.setTempoHostPosition (
+        readHostTempoPosition (numSamples));
+    livePitchProcessor.setScaleLockParameters(scaleLock, lockHysteresis, vibratoPreserve);
 
-        // Update dynamic advanced parameters
-        livePitchProcessor.setAdvancedParameters (
-            35.0f,   // transitionMs
-            0.70f,   // preserveVibrato
-            humanizeVal, // humanize
-            0.90f,   // formantPreservation
-            0.85f,   // transientProtection
-            0.70f,   // detectorSensitivity
-            12.0f,   // maximumCorrectionSemitones
-            45.0f,   // minimumPitchHz
-            1600.0f, // maximumPitchHz
-            LivePitchProcessor::StereoMode::linkedMidSide
-        );
+    livePitchProcessor.setAdvancedParameters (
+        35.0f,   // transitionMs
+        0.70f,   // preserveVibrato
+        humanizeVal,
+        0.90f,   // formantPreservation
+        0.85f,   // transientProtection
+        0.70f,   // detectorSensitivity
+        12.0f,   // maximumCorrectionSemitones
+        45.0f,   // minimumPitchHz
+        1600.0f, // maximumPitchHz
+        LivePitchProcessor::StereoMode::linkedMidSide
+    );
 
-        // Use the AudioBuffer overload so the engine handles mono/stereo properly
-        livePitchProcessor.process (buffer,
-                                    scaleSnapshot.ratios.data(),
-                                    scaleSnapshot.count,
-                                    scaleSnapshot.rootFrequency,
-                                    speedMs,
-                                    amount);
-        releaseScaleSnapshot (snapshotIndex);
-        
-        // Modifica B: Analog output + gain for modern mode
-       // Output stage for modern modes.
-// Independent of Scale Lock: scaleLock changes note targeting, not output colour.
-        processOutputStage (buffer,
-                            totalNumInputChannels,
-                            numSamples,
-                            analogMode,
-                            outGain);
-        return;
-            
-          
-    }
-
-    // ==================== SLOW MODE (original YIN processing — unchanged) ====================
-    if (slowResetRequested.exchange (false, std::memory_order_acq_rel))
-        resetSlowStateNoAlloc();
-
-    double speedSamples = (std::max)(1.0, (static_cast<double>(speedMs) / 1000.0) * currentSampleRate);
-    double speedCoeff = 1.0;
-    if (speedSamples > 1.0)
-    {
-        // Speed smoothing coefficient (one-pole filter)
-        // speedMs = time to reach ~63% of target
-        speedCoeff = 1.0 - std::exp (-1.0 / speedSamples);
-    }
-
-    // Process first channel, then copy to others (mono processing for pitch)
-    const float* inputData = buffer.getReadPointer (0);
-
-    // Accumulate samples into YIN buffer for pitch detection
-    for (int i = 0; i < numSamples; ++i)
-    {
-        yinBuffer[static_cast<size_t> (yinBufferPos)] = inputData[i];
-        yinBufferPos++;
-
-        if (yinBufferPos >= yinWindowSize)
-        {
-            // Run YIN pitch detection
-            float detectedPitch = detectPitchYIN (yinBuffer.data(), yinWindowSize, currentSampleRate);
-
-            // Only update if we got a valid pitch (20 Hz to 5000 Hz range)
-            if (detectedPitch > 20.0f && detectedPitch < 5000.0f)
-            {
-                lastDetectedPitch = detectedPitch;
-                slowMeterPitchHz.store (detectedPitch,
-                                        std::memory_order_relaxed);
-            }
-
-            yinBufferPos = 0;
-        }
-    }
-
-    // Compute target shift ratio
-    double targetShiftRatio = 1.0;
-    if (lastDetectedPitch > 20.0f)
-    {
-        double targetFreq = findNearestTarget (
-            static_cast<double> (lastDetectedPitch), scaleSnapshot);
-        if (targetFreq > 0.0)
-        {
-            targetShiftRatio = targetFreq / static_cast<double> (lastDetectedPitch);
-            slowMeterTargetHz.store (static_cast<float> (targetFreq),
-                                     std::memory_order_relaxed);
-        }
-    }
-    else
-    {
-        slowMeterTargetHz.store (0.0f, std::memory_order_relaxed);
-    }
+    livePitchProcessor.process (buffer,
+                                scaleSnapshot.ratios.data(),
+                                scaleSnapshot.count,
+                                scaleSnapshot.rootFrequency,
+                                speedMs,
+                                amount);
     releaseScaleSnapshot (snapshotIndex);
 
-    // Process each sample with pitch shifting via variable-rate read from circular buffer
-    float* outputData = buffer.getWritePointer (0);
-    if (! std::isfinite (smoothedShiftRatio))
-        smoothedShiftRatio = 1.0;
-    if (! std::isfinite (circBufReadPos))
-        circBufReadPos = static_cast<double> ((std::max) (0, circBufSize - yinWindowSize));
-
-    for (int i = 0; i < numSamples; ++i)
-    {
-        // Write input to circular buffer
-        circularBuffer[static_cast<size_t> (circBufWritePos)] = inputData[i];
-        circBufWritePos = (circBufWritePos + 1) % circBufSize;
-
-        // Smooth the shift ratio
-        smoothedShiftRatio += speedCoeff * (targetShiftRatio - smoothedShiftRatio);
-
-        // Apply amount: blend between 1.0 (no correction) and smoothedShiftRatio
-        double effectiveRatio = 1.0 + (smoothedShiftRatio - 1.0) * static_cast<double> (amount);
-
-        // Read from circular buffer at variable rate
-        circBufReadPos += effectiveRatio;
-        while (circBufReadPos >= static_cast<double> (circBufSize))
-            circBufReadPos -= static_cast<double> (circBufSize);
-        while (circBufReadPos < 0.0)
-            circBufReadPos += static_cast<double> (circBufSize);
-
-        // Hermite (cubic) interpolation for higher audio quality
-        int readIdx1 = static_cast<int> (circBufReadPos);
-        int readIdx0 = (readIdx1 - 1 + circBufSize) % circBufSize;
-        int readIdx2 = (readIdx1 + 1) % circBufSize;
-        int readIdx3 = (readIdx1 + 2) % circBufSize;
-        
-        double frac = circBufReadPos - static_cast<double> (readIdx1);
-        
-        float y0 = circularBuffer[static_cast<size_t> (readIdx0)];
-        float y1 = circularBuffer[static_cast<size_t> (readIdx1)];
-        float y2 = circularBuffer[static_cast<size_t> (readIdx2)];
-        float y3 = circularBuffer[static_cast<size_t> (readIdx3)];
-        
-        float c0 = y1;
-        float c1 = 0.5f * (y2 - y0);
-        float c2 = y0 - 2.5f * y1 + 2.0f * y2 - 0.5f * y3;
-        float c3 = 1.5f * (y1 - y2) + 0.5f * (y3 - y0);
-        
-        float sample = static_cast<float> (
-            ((c3 * frac + c2) * frac + c1) * frac + c0);
-
-        outputData[i] = std::isfinite (sample)
-            ? juce::jlimit (-32.0f, 32.0f, sample) : 0.0f;
-    }
-
-    // Output stage: Analog saturation + Output Gain (shared with modern path)
-
-     processOutputStage (buffer,
-                        1,
+    processOutputStage (buffer,
+                        totalNumInputChannels,
                         numSamples,
                         analogMode,
                         outGain);
@@ -961,77 +644,16 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
 void MicrotonalAutotuneAudioProcessor::processBlockBypassed (juce::AudioBuffer<float>& buffer,
                                                               juce::MidiBuffer&)
 {
-    int mode = processingMode.load (std::memory_order_relaxed);
-
-    if (mode > 0)
-    {
-        // Use the engine's bypassed processing to maintain aligned latency
-        livePitchProcessor.processBypassed (buffer);
-    }
-    else
-    {
-        // Slow mode: apply delay manually to maintain latency alignment.
-        if (slowResetRequested.exchange (false, std::memory_order_acq_rel))
-            resetSlowStateNoAlloc();
-        if (! std::isfinite (circBufReadPos))
-            circBufReadPos = static_cast<double> (std::max (0, circBufSize - yinWindowSize));
-
-        const int numSamples = buffer.getNumSamples();
-        const int numChannels = buffer.getNumChannels();
-
-        for (int ch = 0; ch < numChannels; ++ch)
-        {
-            float* data = buffer.getWritePointer (ch);
-
-            for (int i = 0; i < numSamples; ++i)
-            {
-                const float input = (! std::isfinite (data[i])
-                                     || std::fpclassify (data[i]) == FP_SUBNORMAL)
-                    ? 0.0f : juce::jlimit (-32.0f, 32.0f, data[i]);
-                circularBuffer[static_cast<size_t> (circBufWritePos)] = input;
-                circBufWritePos = (circBufWritePos + 1) % circBufSize;
-
-                circBufReadPos += 1.0;
-                while (circBufReadPos >= static_cast<double> (circBufSize))
-                    circBufReadPos -= static_cast<double> (circBufSize);
-
-                int readIdx = static_cast<int> (circBufReadPos);
-                const float delayed = circularBuffer[static_cast<size_t> (readIdx)];
-                data[i] = std::isfinite (delayed)
-                    ? juce::jlimit (-32.0f, 32.0f, delayed) : 0.0f;
-                if (! std::isfinite (delayed))
-                    circularBuffer[static_cast<size_t> (readIdx)] = 0.0f;
-            }
-        }
-    }
+    // HOST_BYPASS_ONLY_DRY_V1: this is the host's explicit plugin bypass, not
+    // a detector/correction decision and not an alternate active audio path.
+    livePitchProcessor.processBypassed (buffer);
 }
 
 //==============================================================================
 LivePitchProcessor::Metering
 MicrotonalAutotuneAudioProcessor::getPitchMetering() const noexcept
 {
-    if (processingMode.load (std::memory_order_relaxed) > 0)
-        return livePitchProcessor.getMetering();
-
-    LivePitchProcessor::Metering meter;
-    meter.detectedPitchHz = slowMeterPitchHz.load (std::memory_order_relaxed);
-    meter.targetPitchHz = slowMeterTargetHz.load (std::memory_order_relaxed);
-    // The legacy Slow detector does not expose calibrated confidence or
-    // voicing values, so report them as unavailable rather than inventing a
-    // percentage.  Pitch and target remain useful in this mode.
-    meter.confidence = 0.0f;
-    meter.voicing = 0.0f;
-    meter.consensus = 0.0f;
-    meter.detectorSupport = meter.detectedPitchHz > 0.0f ? 1 : 0;
-    if (meter.detectedPitchHz > 0.0f && meter.targetPitchHz > 0.0f)
-    {
-        meter.correctionCents = 1200.0f * std::log2(
-            meter.targetPitchHz / meter.detectedPitchHz);
-    }
-    meter.state = meter.detectedPitchHz > 0.0f
-        ? ModernPitchEngine::TrackingState::stable
-        : ModernPitchEngine::TrackingState::unvoiced;
-    return meter;
+    return livePitchProcessor.getMetering();
 }
 
 //==============================================================================
@@ -1086,19 +708,17 @@ void MicrotonalAutotuneAudioProcessor::setStateInformation (const void* data, in
             if (tree.hasProperty ("rootNoteIndex"))
                 rootNoteIndex.store (static_cast<int> (tree.getProperty ("rootNoteIndex")));
 
-            // Restore processing mode (with backward compatibility for liveModeEnabled)
+            // Restore only the three modern modes. Legacy mode 0 is mapped
+            // forward to Quality instead of resurrecting its removed renderer.
             if (tree.hasProperty ("processingMode"))
             {
-                int mode = juce::jlimit (0, 3,
-                    static_cast<int> (tree.getProperty ("processingMode")));
-                updateProcessingMode (mode);
+                const int storedMode = static_cast<int> (tree.getProperty ("processingMode"));
+                updateProcessingMode (storedMode == 0 ? 1 : juce::jlimit (1, 3, storedMode));
             }
             else if (tree.hasProperty ("liveModeEnabled"))
             {
-                // Backward compatibility: old sessions with liveModeEnabled bool
-                bool wasLive = static_cast<int> (tree.getProperty ("liveModeEnabled")) != 0;
-                int mode = wasLive ? 2 : 0; // map old Live to new Live mode
-                updateProcessingMode (mode);
+                const bool wasLive = static_cast<int> (tree.getProperty ("liveModeEnabled")) != 0;
+                updateProcessingMode (wasLive ? 2 : 1);
             }
             if (tree.hasProperty ("factoryPresetIndex"))
 {
