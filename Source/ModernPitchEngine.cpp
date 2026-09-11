@@ -159,7 +159,6 @@ void ModernPitchEngine::MultiRatePitchTracker::reset() noexcept
     rescueMode_ = false;
     presenceMode_ = false;
     presenceSinceLastHop_ = false;
-    immediateAuthority_ = false; // AUTHORITY_CONTROLS_EXPLICIT_V1
 
     octaveState_ = 0;
     pendingOctaveDelta_ = 0;
@@ -734,7 +733,8 @@ void ModernPitchEngine::MultiRatePitchTracker::updateDecoderBeam(
     int hypothesisCount,
     bool onsetPending) noexcept
 {
-    std::array<DecoderState, maxConsensusHypotheses + decoderBeamWidth> proposals {};
+    (void) onsetPending;
+    std::array<DecoderState, maxConsensusHypotheses> proposals {};
     int proposalCount = 0;
 
     for (int hypothesisIndex = 0;
@@ -750,80 +750,8 @@ void ModernPitchEngine::MultiRatePitchTracker::updateDecoderBeam(
         proposal.logFrequency = safeLog2(hypothesis.frequencyHz);
         proposal.score = hypothesis.evidenceScore + 0.26f * hypothesis.consensus;
         proposal.octaveIndex = octaveState_;
-
-        float bestTransitionScore = -1000.0f;
-        int bestOctaveIndex = octaveState_;
-        bool foundPrevious = false;
-
-        // AUTHORITY_CONTROLS_EXPLICIT_V1: detector fusion remains active, but
-        // the zero-prudence endpoint removes temporal/history preference. Current
-        // evidence is measured; it is not required to defeat a stale beam first.
-        if (!immediateAuthority_)
-        {
-            for (const auto& previous : decoderBeam_)
-            {
-                if (!previous.valid)
-                    continue;
-
-                foundPrevious = true;
-                const float deltaCents = static_cast<float>(1200.0
-                    * (proposal.logFrequency - previous.logFrequency));
-                const float absoluteCents = std::abs(deltaCents);
-                const float continuityBonus = 0.30f * std::exp(-absoluteCents / 85.0f);
-                const float transitionPenalty = onsetPending
-                    ? 0.10f * std::min(1.0f, absoluteCents / 1800.0f)
-                    : 0.19f * std::min(2.0f, absoluteCents / 650.0f);
-
-                int octaveDelta = 0;
-                float residualCents = 0.0f;
-                const bool octaveLike = isOctaveLikeTransition(
-                    static_cast<float>(std::exp2(previous.logFrequency)),
-                    hypothesis.frequencyHz,
-                    octaveDelta,
-                    residualCents);
-                const float octavePenalty = octaveLike
-                    ? 0.24f * static_cast<float>(std::abs(octaveDelta))
-                        * (1.0f - 0.70f * hypothesis.consensus)
-                    : 0.0f;
-
-                const float historyWeight = onsetPending ? 0.24f : 0.72f;
-                const float transitionScore = historyWeight * previous.score
-                                            + proposal.score
-                                            + continuityBonus
-                                            - transitionPenalty
-                                            - octavePenalty;
-                if (transitionScore > bestTransitionScore)
-                {
-                    bestTransitionScore = transitionScore;
-                    bestOctaveIndex = previous.octaveIndex
-                        + (octaveLike ? octaveDelta : 0);
-                }
-            }
-        }
-
-        if (foundPrevious)
-            proposal.score = bestTransitionScore;
-        proposal.octaveIndex = bestOctaveIndex;
+        proposal.ageInHops = 0;
         proposals[static_cast<std::size_t>(proposalCount++)] = proposal;
-    }
-
-    // A short hold branch prevents a single weak hop from forcing a jump in
-    // normal operation. AUTHORITY_CONTROLS_EXPLICIT_V1 removes that hidden hold
-    // when all six visible prudence controls request the rigid endpoint.
-    if (!immediateAuthority_)
-    {
-        for (const auto& previous : decoderBeam_)
-        {
-            if (!previous.valid || proposalCount >= static_cast<int>(proposals.size()))
-                continue;
-
-            DecoderState held = previous;
-            held.score = previous.score * (onsetPending ? 0.22f : 0.76f)
-                       - (onsetPending ? 0.10f : 0.055f);
-            ++held.ageInHops;
-            if (held.ageInHops <= 4)
-                proposals[static_cast<std::size_t>(proposalCount++)] = held;
-        }
     }
 
     std::sort(proposals.begin(),
@@ -840,9 +768,6 @@ void ModernPitchEngine::MultiRatePitchTracker::updateDecoderBeam(
          ++proposalIndex)
     {
         const auto& proposal = proposals[static_cast<std::size_t>(proposalIndex)];
-        if (!proposal.valid)
-            continue;
-
         bool duplicate = false;
         for (int existing = 0; existing < accepted; ++existing)
         {
@@ -855,7 +780,6 @@ void ModernPitchEngine::MultiRatePitchTracker::updateDecoderBeam(
                 break;
             }
         }
-
         if (!duplicate)
             decoderBeam_[static_cast<std::size_t>(accepted++)] = proposal;
     }
@@ -1709,7 +1633,12 @@ double ModernPitchEngine::ScaleQuantizer::chooseTargetLog2(
     bool onset,
     int& pendingObservations) noexcept
 {
+    (void) strictness;
+    (void) confidence;
+    (void) hardLock;
+    (void) onset;
     pendingObservations = 0;
+
     if (!std::isfinite(inputLog2) || ratioCount_ <= 0)
         return inputLog2;
 
@@ -1734,56 +1663,18 @@ double ModernPitchEngine::ScaleQuantizer::chooseTargetLog2(
         }
     }
 
-    if (!targetValid_ || onset)
+    if (targetValid_)
     {
-        targetLog2_ = nearest;
-        targetValid_ = true;
-        pendingValid_ = false;
-        pendingCount_ = 0;
-        return targetLog2_;
+        const double previousDistance = std::abs(targetLog2_ - inputLog2);
+        const double hysteresisOctaves = std::max(0.0f, hysteresisCents) / 1200.0;
+        if (previousDistance <= nearestDistance + hysteresisOctaves)
+            nearest = targetLog2_;
     }
 
-    // Keep the existing target until the challenger wins by the requested
-    // hysteresis margin. This acts in target selection, never as a dry/wet gate.
-    const double previousDistance = std::abs(targetLog2_ - inputLog2);
-    const double hysteresisOctaves = std::max(0.0f, hysteresisCents) / 1200.0;
-    if (previousDistance <= nearestDistance + hysteresisOctaves)
-    {
-        pendingValid_ = false;
-        pendingCount_ = 0;
-        return targetLog2_;
-    }
-
-    const double jumpCents = std::abs(nearest - targetLog2_) * 1200.0;
-    if (!hardLock || jumpCents < 0.5)
-    {
-        targetLog2_ = nearest;
-        pendingValid_ = false;
-        pendingCount_ = 0;
-        return targetLog2_;
-    }
-
-    if (pendingValid_ && std::abs(pendingLog2_ - nearest) * 1200.0 < 2.0)
-        ++pendingCount_;
-    else
-    {
-        pendingValid_ = true;
-        pendingLog2_ = nearest;
-        pendingCount_ = 1;
-    }
-
-    const float safeStrictness = ModernPitchEngine::clamp01(strictness);
-    const float safeConfidence = ModernPitchEngine::clamp01(confidence);
-    const int required = 1 + static_cast<int>(std::lround(
-        2.0f * safeStrictness + 1.5f * (1.0f - safeConfidence)));
-    pendingObservations = pendingCount_;
-    if (pendingCount_ >= required)
-    {
-        targetLog2_ = pendingLog2_;
-        pendingValid_ = false;
-        pendingCount_ = 0;
-        pendingObservations = 0;
-    }
+    targetLog2_ = nearest;
+    targetValid_ = true;
+    pendingValid_ = false;
+    pendingCount_ = 0;
     return targetLog2_;
 }
 
@@ -1807,26 +1698,6 @@ double ModernPitchEngine::wrapToNearestOctave(double cents) noexcept
     if (!std::isfinite(cents))
         return 0.0;
     return cents - 1200.0 * std::nearbyint(cents / 1200.0);
-}
-
-// AUTHORITY_CONTROLS_EXPLICIT_V1: only visible user controls define musical
-// softness. Internal confidence, mode and strictness may improve measurement or
-// identity safety, but they are not permission to weaken the requested lock.
-bool ModernPitchEngine::exactScaleLockAuthority(const Parameters& parameters) noexcept
-{
-    return parameters.scaleLock
-        && clamp01(parameters.amount) >= 0.99999f
-        && clamp01(parameters.humanize) <= 0.00001f
-        && clamp01(parameters.vibratoPreserve) <= 0.00001f;
-}
-
-bool ModernPitchEngine::zeroPrudenceAuthority(const Parameters& parameters) noexcept
-{
-    return exactScaleLockAuthority(parameters)
-        && std::clamp(static_cast<double>(finiteOr(parameters.retuneTimeMs, 50.0f)),
-                      0.0, 500.0) <= 0.00001
-        && std::clamp(static_cast<double>(finiteOr(parameters.lockHysteresis, 24.0f)),
-                      0.0, 80.0) <= 0.00001;
 }
 
 int ModernPitchEngine::latencyForMode(LatencyMode mode) noexcept
@@ -1919,55 +1790,19 @@ float ModernPitchEngine::adaptiveHysteresis(
     const ScaleQuantizer& quantizer,
     const PitchObservation& observation) const noexcept
 {
-    if (zeroPrudenceAuthority(parameters))
-        return 0.0f; // AUTHORITY_CONTROLS_EXPLICIT_V1: Hold=0 means exactly no target hold.
+    (void) observation;
+    const float minimumStep = std::max(0.1f, quantizer.minimumStepCents());
 
     if (!parameters.scaleLock)
     {
-        return static_cast<float>(std::clamp(
-            2.0 + 0.22 * static_cast<double>(quantizer.minimumStepCents())
-                * static_cast<double>(clamp01(parameters.humanize)),
-            1.0, 80.0));
+        return std::clamp(0.22f * minimumStep * clamp01(parameters.humanize),
+                          0.0f, 80.0f);
     }
 
-    float modeFactor = 0.78f;
-    switch (latencyMode_)
-    {
-        case LatencyMode::quality:   modeFactor = 1.15f; break;
-        case LatencyMode::live:      modeFactor = 0.78f; break;
-        case LatencyMode::ultraLive: modeFactor = 0.42f; break;
-    }
-    const float tempoFactor = parameters.tempo.mode == CreativeTempo::Mode::glideLock
-        ? 1.50f : parameters.tempo.mode == CreativeTempo::Mode::tempoGlide
-        ? 1.12f : 1.0f;
-    const float densityFactor = std::clamp(
-        std::sqrt(std::max(0.1f, quantizer.minimumStepCents()) / 100.0f)
-            * (1.0f - 0.32f * quantizer.asymmetry()),
-        0.22f, 1.40f);
-    const float confidenceFactor = 0.65f + 0.70f * clamp01(observation.confidence);
-    const float lockStrictness = clamp01(parameters.lockStrictness);
-    const float strictnessFactor = 1.0f - 0.28f * lockStrictness;
-    const float requestedHysteresis = std::clamp(
-        finiteOr(parameters.lockHysteresis, 24.0f)
-            * modeFactor * tempoFactor * densityFactor
-            * confidenceFactor * strictnessFactor,
-        0.0f, 80.0f);
-
-    // MICROTONAL_HARD_LOCK_V3: hysteresis may stabilise target identity, but
-    // it may never become a significant fraction of a dense scale degree.
-    // Otherwise 24/31/48-EDO can legally hold the previous target by one or
-    // more notes.  Keep the GUI range, then cap the effective musical margin
-    // relative to the actual minimum step of the selected/custom scale.
-    const float minimumStep = std::max(0.1f, quantizer.minimumStepCents());
-    // ABSOLUTE_SCALE_LOCK_V4_INTEGRATION: preserve an audible Hysteresis
-    // control on sparse/wide scales without weakening the strict microtonal
-    // endpoint. At strictness=1 this is still exactly 0.12 of the minimum
-    // scale step (3 cents in 48-EDO); at lower strictness the user deliberately
-    // requests more target-hold behaviour, capped well below half a degree.
-    const float degreeSafeCap = std::clamp(
-        minimumStep * (0.30f - 0.18f * lockStrictness),
-        0.35f, 36.0f);
-    return std::min(requestedHysteresis, degreeSafeCap);
+    const float requested = std::clamp(finiteOr(parameters.lockHysteresis, 24.0f),
+                                       0.0f, 80.0f);
+    const float degreeSafeCap = std::clamp(minimumStep * 0.30f, 0.35f, 36.0f);
+    return std::min(requested, degreeSafeCap);
 }
 
 double ModernPitchEngine::responseTimeMs(
@@ -1975,16 +1810,13 @@ double ModernPitchEngine::responseTimeMs(
     bool targetChanged,
     double targetJumpCents) const noexcept
 {
-    // GLIDE_STATE_MODEL_V2: Response is now the user's musical trajectory time,
-    // not a prudence budget. No latency mode, confidence, Humanize or Scale Lock
-    // state is allowed to compress it to a hidden 0.35..5 ms range.
-    double response = std::clamp(
+    const double requested = std::clamp(
         static_cast<double>(finiteOr(parameters.retuneTimeMs, 50.0f)),
         0.0, 500.0);
 
-    // Creative Tempo is an explicit user-requested scheduler and therefore may
-    // deliberately lengthen a target transition. With Tempo Off, Response owns
-    // the glide time exactly.
+    // One trajectory always exists. Response=0 therefore means the fastest
+    // finite trajectory (0.35 ms), not a bypass around the glide controller.
+    double response = std::max(0.35, requested);
     if (targetChanged && std::abs(targetJumpCents) > 0.1
         && parameters.tempo.mode != CreativeTempo::Mode::off)
     {
@@ -1993,7 +1825,7 @@ double ModernPitchEngine::responseTimeMs(
             0.0, 500.0);
         response = std::max(response, transitionMs);
     }
-    return std::clamp(response, 0.0, 500.0);
+    return std::clamp(response, 0.35, 500.0);
 }
 
 void ModernPitchEngine::updateCorrectionState(
@@ -2003,78 +1835,11 @@ void ModernPitchEngine::updateCorrectionState(
     const Parameters& parameters) noexcept
 {
     const int hopSamples = MultiRatePitchTracker::hopSize();
-    const double hopSeconds = static_cast<double>(hopSamples) / sampleRate_;
     const float humanize = clamp01(parameters.humanize);
-    const bool exactAuthority = exactScaleLockAuthority(parameters);
-    const bool zeroPrudence = zeroPrudenceAuthority(parameters); // AUTHORITY_CONTROLS_EXPLICIT_V1
-    // EXPERIMENTAL_MINIMAL_TRANSPORT_V8: ultra-live cannot give semantic
-    // breath/body/transient classifiers authority over correction trajectory.
-    const bool experimentalMinimalTransport = latencyMode_ == LatencyMode::ultraLive;
-    const bool richEvidence = parameters.voiceEvidenceValid
-        && !experimentalMinimalTransport;
-    const bool validPitch = observation.valid && observation.frequencyHz > 0.0f;
-    if (validPitch)
-        state.pitchStaleSamples = 0;
-    else if (state.noteBodyLatched)
-        state.pitchStaleSamples = std::min(std::numeric_limits<int>::max() - hopSamples,
-                                           state.pitchStaleSamples + hopSamples);
-
-    const float trackerBody = validPitch
-        ? clamp01(0.34f * observation.voicing
-                + 0.28f * observation.periodicity
-                + 0.23f * observation.confidence
-                + 0.15f * observation.consensus)
-        : 0.0f;
-    const float analysedBody = richEvidence
-        ? clamp01(0.44f * parameters.voiceBodyEnergy
-                + 0.24f * parameters.voiceHarmonicity
-                + 0.18f * parameters.voiceSpectralReliability
-                + 0.14f * (1.0f - parameters.voiceBreathiness))
-        : trackerBody;
-    const float bodyScore = richEvidence
-        ? std::max(0.72f * analysedBody, trackerBody)
-        : trackerBody;
-
-    // Entering a note requires stronger evidence than staying in one. This
-    // hysteresis is about note identity only: it never scales Amount or the
-    // correction destination.
-    const float enterBodyThreshold = 0.46f - 0.06f * humanize;
-    const float holdBodyThreshold = 0.34f - 0.05f * humanize;
-    const float bodyThreshold = state.noteBodyLatched
-        ? holdBodyThreshold : enterBodyThreshold;
-    const bool bodyPresent = observation.audioPresent
-        || (bodyScore >= bodyThreshold
-            && (!richEvidence || parameters.voiceBreathiness < 0.76f
-                || parameters.voiceHarmonicity > 0.48f));
-
-    const float breathScore = richEvidence
-        ? clamp01(0.58f * parameters.voiceBreathiness
-                + 0.22f * (1.0f - parameters.voiceBodyEnergy)
-                + 0.12f * (1.0f - parameters.voiceHarmonicity)
-                + 0.08f * (1.0f - parameters.voiceSpectralReliability))
-        : 0.0f;
-    const bool confirmedBreathFrame = richEvidence
-        && !observation.audioPresent
-        && breathScore > 0.62f
-        && parameters.voiceBreathiness > 0.56f
-        && parameters.voiceBodyEnergy < 0.48f
-        && parameters.voiceEventStrength < 0.82f;
-    const bool confirmedAbsenceFrame = richEvidence
-        && !observation.audioPresent
-        && parameters.voiceBodyEnergy < 0.20f
-        && parameters.voiceHarmonicity < 0.22f
-        && parameters.voiceSpectralReliability < 0.28f
-        && parameters.voiceEventStrength < 0.72f;
-
-    const float bodyAttack = std::clamp(static_cast<float>(
-        1.0 - std::exp(-hopSeconds / 0.018)), 0.001f, 1.0f);
-    const float bodyRelease = std::clamp(static_cast<float>(
-        1.0 - std::exp(-hopSeconds / 0.070)), 0.001f, 1.0f);
-    const float bodyAlpha = bodyScore >= state.noteBodyConfidence
-        ? bodyAttack : bodyRelease;
-    state.noteBodyConfidence += bodyAlpha
-        * (bodyScore - state.noteBodyConfidence);
-    state.noteBodyConfidence = clamp01(state.noteBodyConfidence);
+    const bool validPitch = observation.valid
+        && std::isfinite(observation.frequencyHz)
+        && observation.frequencyHz > 0.0f;
+    const bool audioPresent = observation.audioPresent || validPitch;
 
     const auto setState = [&state](TrackingState next) noexcept
     {
@@ -2085,93 +1850,31 @@ void ModernPitchEngine::updateCorrectionState(
         }
     };
 
-    bool bodyCounterAdvanced = false;
-    if (state.noteBodyLatched)
-    {
-        if (bodyPresent)
-        {
-            state.stableBodyObservations = std::min(32,
-                state.stableBodyObservations + 1);
-            bodyCounterAdvanced = true;
-            state.breathEvidenceSamples = std::max(0,
-                state.breathEvidenceSamples - 2 * hopSamples);
-            state.uncertainSamples = std::max(0,
-                state.uncertainSamples - 2 * hopSamples);
-        }
-        else if (confirmedBreathFrame)
-        {
-            state.breathEvidenceSamples += hopSamples;
-            state.uncertainSamples = std::max(0,
-                state.uncertainSamples - hopSamples);
-        }
-        else if (confirmedAbsenceFrame || !validPitch)
-        {
-            state.uncertainSamples += hopSamples;
-            state.breathEvidenceSamples = std::max(0,
-                state.breathEvidenceSamples - hopSamples);
-        }
-        else
-        {
-            // A valid but weak/ambiguous F0 is not enough to keep the latch
-            // forever. Accumulate absence slowly while giving the body sensors
-            // time to recover from consonants and vibrato minima.
-            state.uncertainSamples += std::max(1, hopSamples / 2);
-            state.breathEvidenceSamples = std::max(0,
-                state.breathEvidenceSamples - hopSamples);
-        }
-    }
-
-    const int breathConfirmSamples = static_cast<int>(std::lround(
-        sampleRate_ * (0.040 + 0.020 * static_cast<double>(humanize))));
-    const int ambiguousReleaseSamples = static_cast<int>(std::lround(
-        sampleRate_ * (0.160 + 0.080 * static_cast<double>(humanize))));
-    const bool confirmedBreath = state.noteBodyLatched
-        && state.breathEvidenceSamples >= breathConfirmSamples;
-    const bool confirmedAbsence = state.noteBodyLatched
-        && state.uncertainSamples >= ambiguousReleaseSamples;
-
-    // ONE_VOICE_BREATH_GLIDE_V11
-    // Breath/absence is part of the same voice. Evidence may describe the
-    // frame, but it cannot request release, unity or a weaker destination.
-    // If pitch is still valid we continue below; if pitch is missing, the
-    // existing musical destination is preserved by the acquisition branch.
-
     if (!validPitch)
     {
         ++state.invalidObservations;
+        if (state.noteBodyLatched)
+        {
+            state.pitchStaleSamples = std::min(
+                std::numeric_limits<int>::max() - hopSamples,
+                state.pitchStaleSamples + hopSamples);
+        }
 
-        // SOUND_EQUALS_CORRECTION_V1: audio presence owns the voice, but
-        // Stable is forbidden until a real target exists. Acquire is now only
-        // detector-search telemetry: an already acquired target/correction is
-        // preserved exactly while F0 is temporarily missing.
-        if (observation.audioPresent)
+        if (audioPresent)
         {
             state.noteBodyLatched = true;
             state.noteBodyConfidence = 1.0f;
-            state.stableBodyObservations = std::max(4, state.stableBodyObservations);
-            state.breathEvidenceSamples = 0;
-            state.uncertainSamples = 0;
-            setState(TrackingState::acquire);
+            state.stableBodyObservations = std::max(1, state.stableBodyObservations);
+            setState(state.targetValid ? TrackingState::stable
+                                       : TrackingState::acquire);
             return;
         }
 
-        // Missing F0 is not missing voice. A latched note keeps the exact
-        // destination while body evidence survives. Acquire/attack may also
-        // settle to stable from body evidence alone after a prior valid lock.
-        if (state.noteBodyLatched)
-        {
-            const int reacquireSamples = static_cast<int>(std::lround(0.070 * sampleRate_));
-            if (state.pitchStaleSamples >= reacquireSamples)
-                setState(TrackingState::acquire);
-            return;
-        }
-
+        // Silence does not rewrite the musical destination. There is no dry
+        // return path; the stored target simply waits for the next signal.
         if (state.targetValid)
         {
-            // ONE_VOICE_BREATH_GLIDE_V11: no periodicity is not permission to
-            // return toward dry/unity. Hold the exact acquired destination and
-            // keep searching; the next real target change will be a glide.
-            setState(TrackingState::acquire);
+            setState(TrackingState::stable);
             return;
         }
 
@@ -2180,56 +1883,10 @@ void ModernPitchEngine::updateCorrectionState(
     }
 
     state.invalidObservations = 0;
-
-    // ONE_VOICE_BREATH_GLIDE_V11: a breath/noise label cannot veto a valid F0.
-    // The waveform is one voice; valid pitch proceeds through the same target
-    // and correction law as every other frame.
-
-    if (bodyPresent || trackerBody > 0.58f)
-    {
-        if (!state.noteBodyLatched)
-        {
-            state.noteBodyLatched = true;
-            state.stableBodyObservations = 1;
-            state.noteBodyConfidence = std::max(state.noteBodyConfidence,
-                                                bodyScore);
-        }
-        else if (!bodyCounterAdvanced)
-        {
-            state.stableBodyObservations = std::min(32,
-                state.stableBodyObservations + 1);
-        }
-    }
-    else if (!bodyCounterAdvanced)
-    {
-        state.stableBodyObservations = std::max(0,
-            state.stableBodyObservations - 1);
-    }
-
-    // A tracker onset inside an already-latched note is usually consonant or
-    // energy modulation, not a new note identity. Legato note changes are
-    // represented by target identity and transition below.
-    const bool musicalOnset = observation.onset
-        && (!state.noteBodyLatched
-            || state.trackingState == TrackingState::unvoiced
-            || state.trackingState == TrackingState::release);
-    if (musicalOnset)
-    {
-        setState(TrackingState::attack);
-        state.stableObservations = 0;
-        state.stableBodyObservations = bodyPresent ? 1 : 0;
-    }
-    else if (state.trackingState == TrackingState::unvoiced
-             || state.trackingState == TrackingState::release)
-    {
-        setState(TrackingState::attack);
-        state.stableObservations = 0;
-    }
-    else if (state.trackingState == TrackingState::acquire)
-    {
-        setState(TrackingState::transition);
-        state.stableObservations = 0;
-    }
+    state.pitchStaleSamples = 0;
+    state.noteBodyLatched = true;
+    state.noteBodyConfidence = 1.0f;
+    state.stableBodyObservations = std::min(32, state.stableBodyObservations + 1);
 
     const double observedLog2 = safeLog2(observation.frequencyHz);
     const float correctionFrequencyHz =
@@ -2238,144 +1895,50 @@ void ModernPitchEngine::updateCorrectionState(
         ? observation.correctionFrequencyHz
         : observation.frequencyHz;
     const double correctionObservedLog2 = safeLog2(correctionFrequencyHz);
-    bool liveIdentityBreak = false;
-    if (!state.pitchCentreValid || musicalOnset)
+
+    // Pitch centre is not target authority. It exists only to extract the
+    // modulation component that the user may explicitly preserve.
+    if (!state.pitchCentreValid || observation.onset)
     {
         state.pitchCentreLog2 = observedLog2;
         state.pitchCentreValid = true;
-        state.stableObservations = 0;
     }
     else
     {
-        const double distanceCents = std::abs(observedLog2 - state.pitchCentreLog2) * 1200.0;
-        const double scaleStep = std::max(0.1,
-            static_cast<double>(quantizer.minimumStepCents()));
-        const double maximumWithinNoteTolerance = std::clamp(
-            0.42 * scaleStep, 0.5, 60.0);
-        const double withinNoteTolerance = std::min(
-            22.0 + 38.0 * static_cast<double>(humanize),
-            maximumWithinNoteTolerance);
-        double baseAlpha = distanceCents > 95.0 ? 0.30 : 0.07;
-        const double observedDistanceFromCurrentTarget = state.targetValid
-            ? std::abs(observedLog2 - state.targetLog2) * 1200.0
-            : 0.0;
-        const double currentIdentityRadius = 0.48 * scaleStep;
-        const double liveIdentityBreakRadius = 0.72 * scaleStep;
-        const bool insideCurrentMusicalIdentity = !state.targetValid
-            || observedDistanceFromCurrentTarget < currentIdentityRadius;
-
-        // SOUND_EQUALS_CORRECTION_V2_DENSE_SAFE: live pitch outside a clear
-        // 0.72-step boundary owns identity immediately, while the original
-        // 0.48-step within-note boundary remains intact for dense microtonal
-        // tracking. Consensus/confidence never gates the forced live change.
-        liveIdentityBreak = observation.audioPresent
-            && state.targetValid
-            && observedDistanceFromCurrentTarget >= liveIdentityBreakRadius
-            && distanceCents >= liveIdentityBreakRadius;
-        if (liveIdentityBreak)
-        {
-            state.pitchCentreLog2 = observedLog2;
-            state.stableObservations = 0;
-        }
-        else
-        {
-            if (state.noteBodyLatched
-                && insideCurrentMusicalIdentity
-                && distanceCents <= withinNoteTolerance)
-            {
-                baseAlpha = 0.018 + 0.035 * static_cast<double>(1.0f - humanize);
-            }
-            const double stableGate = 0.35
-                + 0.65 * static_cast<double>(clamp01(observation.confidence)
-                                          * clamp01(observation.periodicity));
-            state.pitchCentreLog2 += baseAlpha * stableGate
-                * (observedLog2 - state.pitchCentreLog2);
-            ++state.stableObservations;
-        }
+        const double centreAlpha = 0.12 + 0.28 * (1.0 - static_cast<double>(humanize));
+        state.pitchCentreLog2 += centreAlpha * (observedLog2 - state.pitchCentreLog2);
     }
 
     const float hysteresis = adaptiveHysteresis(parameters, quantizer, observation);
     int pending = 0;
-    const double targetSelectionLog2 = zeroPrudence
-        ? correctionObservedLog2 : state.pitchCentreLog2;
-    const float targetStrictness = zeroPrudence
-        ? 0.0f : parameters.lockStrictness;
-    const float targetConfidence = zeroPrudence
-        ? 1.0f : observation.confidence;
     double newTarget = quantizer.chooseTargetLog2(
-        targetSelectionLog2,
+        correctionObservedLog2,
         hysteresis,
-        targetStrictness,
-        targetConfidence,
-        parameters.scaleLock && parameters.hardLockActive,
-        musicalOnset || liveIdentityBreak,
+        0.0f,
+        1.0f,
+        false,
+        observation.onset,
         pending);
+    newTarget += std::round(correctionObservedLog2 - newTarget);
 
-    // SOUND_EQUALS_CORRECTION_V2: target register follows the current live F0,
-    // never a stale centre. AUTHORITY_CONTROLS_EXPLICIT_V1 extends that rule to
-    // the zero-prudence target selector itself: the live correction coordinate
-    // chooses the degree and its register instead of a continuity-delayed centre.
-    const double targetRegisterReference = zeroPrudence
-        ? correctionObservedLog2 : observedLog2;
-    newTarget += std::round(targetRegisterReference - newTarget);
-
-    // GLIDE_STATE_MODEL_V2: target identity is never vetoed merely because
-    // a voiced fragment is weak. If the quantizer selects another real degree,
-    // transition owns a continuous glide to that exact destination.
-    const bool targetChanged = !state.targetValid
-        || std::abs(newTarget - state.targetLog2) * 1200.0 > 0.1;
     const double targetJump = state.targetValid
-        ? (newTarget - state.targetLog2) * 1200.0 : 0.0;
-    const double identityThreshold = std::clamp(
-        0.18 * static_cast<double>(quantizer.minimumStepCents()), 0.5, 30.0);
-    const bool targetIdentityChanged = state.targetValid
-        && std::abs(targetJump) >= identityThreshold;
+        ? (newTarget - state.targetLog2) * 1200.0
+        : 0.0;
+    const bool targetChanged = !state.targetValid || std::abs(targetJump) > 0.5;
+    state.lastTargetJumpCents = targetJump;
     if (targetChanged)
-    {
         ++state.revision;
-        state.lastTargetJumpCents = targetJump;
-        if (targetIdentityChanged && state.trackingState != TrackingState::transition)
-        {
-            setState(TrackingState::transition);
-            state.stableObservations = 0;
-            state.stableBodyObservations = bodyPresent ? 1 : 0;
-        }
-    }
     state.targetLog2 = newTarget;
     state.targetValid = true;
+    ++state.stableObservations;
 
-    // The period model follows musical identity, not vibrato-rate detector
-    // motion. A real target identity change is acquired while period guidance
-    // is frozen; within a stable note the central period moves on a long time
-    // constant so vibrato cannot become delay modulation.
-    if (state.noteBodyLatched && bodyPresent)
-    {
-        const double observedHz = static_cast<double>(observation.frequencyHz);
-        if (!(state.transportPeriodHz > 0.0)
-            || !std::isfinite(state.transportPeriodHz)
-            || musicalOnset || liveIdentityBreak || targetIdentityChanged)
-        {
-            state.transportPeriodHz = observedHz;
-        }
-        else
-        {
-            const double periodTauSeconds = 0.28
-                + 0.55 * static_cast<double>(humanize);
-            const double alpha = std::clamp(
-                1.0 - std::exp(-hopSeconds / periodTauSeconds),
-                0.0002, 0.05);
-            const double currentLog = safeLog2(state.transportPeriodHz);
-            state.transportPeriodHz = std::exp2(currentLog + alpha
-                * (safeLog2(observedHz) - currentLog));
-        }
-    }
+    // A target exists and signal exists: this is a voiced/stable musical state.
+    // The glide is represented by currentCents != desiredCents, not by a long
+    // acquire/transition permission state.
+    setState(TrackingState::stable);
+    state.transportPeriodHz = static_cast<double>(correctionFrequencyHz);
 
     const double vibratoComponent = observedLog2 - state.pitchCentreLog2;
-    const float stable = clamp01(0.45f * observation.confidence
-                               + 0.35f * observation.consensus
-                               + 0.20f * std::min(1.0f,
-                                   static_cast<float>(state.stableObservations) / 5.0f));
-    const float periodic = clamp01(observation.periodicity);
     const double halfStep = 0.5 * static_cast<double>(quantizer.minimumStepCents());
     const double centreError = std::abs((state.targetLog2 - state.pitchCentreLog2) * 1200.0);
     const float boundarySafety = 1.0f - smoothStep(
@@ -2386,35 +1949,21 @@ void ModernPitchEngine::updateCorrectionState(
     float preserve = parameters.scaleLock
         ? clamp01(parameters.vibratoPreserve + 0.35f * humanize)
         : clamp01(parameters.preserveVibrato);
-    preserve *= stable * periodic * boundarySafety;
+    preserve *= clamp01(observation.periodicity) * boundarySafety;
 
-    // AUTHORITY_CONTROLS_EXPLICIT_V1: exact centering is controlled only by
-    // visible Amount / Scale Lock / Humanize / Vibrato. Hold chooses WHICH degree
-    // and Response chooses HOW FAST; neither may create steady-state residual.
-    const bool absoluteScaleLock = exactAuthority;
-
+    double humanWindow = 16.0 * static_cast<double>(humanize);
     double correctedLog2 = state.targetLog2
         + static_cast<double>(preserve) * vibratoComponent;
-    double humanWindow = 1.5 + 16.0 * static_cast<double>(humanize);
 
     if (parameters.scaleLock)
     {
-        // MICROTONAL_HARD_LOCK_V3: Humanize and preserved vibrato are allowed
-        // to live inside the selected target, but their COMBINED steady-state
-        // residual is bounded by the scale spacing.
-        const double minimumStep = std::max(0.1,
-            static_cast<double>(quantizer.minimumStepCents()));
-        const double lockStrictness = static_cast<double>(
-            clamp01(parameters.lockStrictness));
-        const double residualBudgetCents = std::clamp(
-            minimumStep * (0.18 - 0.06 * lockStrictness),
-            1.0, 6.0);
-        humanWindow = std::min(
-            0.40 + 1.60 * static_cast<double>(humanize),
-            0.30 * residualBudgetCents);
-
-        const double vibratoBudgetCents = std::max(
-            0.0, residualBudgetCents - humanWindow);
+        const double minimumStep = std::max(
+            0.1, static_cast<double>(quantizer.minimumStepCents()));
+        const double residualBudgetCents = std::clamp(minimumStep * 0.18, 1.0, 6.0);
+        humanWindow = std::min(2.0 * static_cast<double>(humanize),
+                               0.30 * residualBudgetCents);
+        const double vibratoBudgetCents = std::max(0.0,
+            residualBudgetCents - humanWindow);
         const double requestedVibratoCents =
             static_cast<double>(preserve) * vibratoComponent * 1200.0;
         const double preservedVibratoCents = std::clamp(
@@ -2422,106 +1971,32 @@ void ModernPitchEngine::updateCorrectionState(
             -vibratoBudgetCents,
             vibratoBudgetCents);
         correctedLog2 = state.targetLog2 + preservedVibratoCents / 1200.0;
-
-        // ABSOLUTE_SCALE_LOCK_V4: the fully rigid endpoint contains no hidden
-        // musical softness. With Amount=100%, Humanize=0, Scale-Lock Vibrato=0
-        // and Hard Lock/Strictness at maximum, correction destination is the
-        // exact selected reference frequency. Hysteresis may decide WHICH scale
-        // degree owns identity, and Speed may decide HOW FAST we arrive, but
-        // neither is allowed to leave pitch offset around that chosen target.
-        if (absoluteScaleLock)
-        {
-            preserve = 0.0f;
-            correctedLog2 = state.targetLog2;
-            humanWindow = 0.0;
-        }
     }
 
-    // SOUND_EQUALS_CORRECTION_V2: target and F0 are absolute pitches in the
-    // same live register. Never wrap their error by an octave.
-    //
-    // LIVE_CORRECTION_COORDINATE_V5: only the fully rigid endpoint uses the
-    // latest accepted live F0. Musical identity, hysteresis, Humanize and all
-    // softer modes intentionally remain on the previous continuity coordinate,
-    // so this change cannot alter their established sound or target behaviour.
-    const double correctionReferenceLog2 = absoluteScaleLock
-        ? correctionObservedLog2
-        : observedLog2;
-    double errorCents = (correctedLog2 - correctionReferenceLog2) * 1200.0;
-    if (!absoluteScaleLock)
-    {
-        if (std::abs(errorCents) <= humanWindow)
-            errorCents = 0.0;
-        else
-            errorCents = std::copysign(std::abs(errorCents) - humanWindow, errorCents);
-    }
+    double errorCents = (correctedLog2 - correctionObservedLog2) * 1200.0;
+    const double errorMagnitude = std::abs(errorCents);
+    const double liveMagnitude = std::max(0.0, errorMagnitude - humanWindow);
+    errorCents = std::copysign(liveMagnitude, errorCents);
 
     const double maximumCents = 100.0 * std::clamp(
         static_cast<double>(finiteOr(parameters.maximumCorrectionSemitones, 12.0f)),
         0.0, 48.0);
     errorCents = std::clamp(errorCents, -maximumCents, maximumCents);
+    state.desiredCents = errorCents * static_cast<double>(clamp01(parameters.amount));
+    state.responseMs = responseTimeMs(parameters, targetChanged, targetJump);
 
-    // Sensors determine how carefully identity is interpreted, never how much
-    // of the requested correction is applied.
-    state.desiredCents = absoluteScaleLock
-        ? errorCents
-        : errorCents * static_cast<double>(clamp01(parameters.amount));
-    // GLIDE_STATE_MODEL_V2
-    // A stable voiced note is hard-locked: no confidence/mode smoothing remains
-    // between the requested correction and the wet renderer. Every non-stable
-    // musical state uses the same single trajectory. Real degree changes and
-    // release tails keep a tiny 5.5 ms anti-MIDI glide even at Response=0;
-    // attack/acquire otherwise follow the user Response literally.
-    if (state.trackingState == TrackingState::stable)
-    {
-        state.responseMs = 0.0;
-    }
-    else
-    {
-        state.responseMs = responseTimeMs(parameters, targetChanged, targetJump);
-        if (state.trackingState == TrackingState::transition
-            || state.trackingState == TrackingState::release)
-        {
-            state.responseMs = std::max(5.5, state.responseMs);
-        }
-    }
-
-    meterPendingOctave_.store(pending, std::memory_order_relaxed);
+    meterPendingOctave_.store(0, std::memory_order_relaxed);
     meterOctaveState_.store(observation.octaveState, std::memory_order_relaxed);
 }
 
 double ModernPitchEngine::advanceCorrection(CorrectionState& state) noexcept
 {
     if (!state.targetValid)
-        return state.currentCents; // ONE_VOICE_BREATH_GLIDE_V11: never force unity.
+        return state.currentCents;
 
     if (state.stateAgeSamples < std::numeric_limits<int>::max())
         ++state.stateAgeSamples;
 
-    const auto settleTrajectory = [&state]() noexcept
-    {
-        if ((state.trackingState == TrackingState::attack
-             || state.trackingState == TrackingState::transition)
-            && state.noteBodyLatched)
-        {
-            // Arrival, not a confidence timer, defines the end of a glide.
-            state.trackingState = TrackingState::stable;
-            state.stateAgeSamples = 0;
-            state.responseMs = 0.0;
-        }
-    };
-
-    if (state.responseMs <= 0.00001)
-    {
-        state.currentCents = state.desiredCents;
-        state.velocityCentsPerSecond = 0.0;
-        settleTrajectory();
-        return state.currentCents;
-    }
-
-    // One critically damped correction trajectory. There is deliberately no
-    // 120 ms prudence timeout: a 500 ms user glide remains a 500 ms glide and
-    // becomes locked only when the destination is actually reached.
     const double dt = 1.0 / sampleRate_;
     const double responseSeconds = std::max(0.00035, state.responseMs * 0.001);
     const double omega = std::min(0.22 / dt, 4.6 / responseSeconds);
@@ -2540,12 +2015,14 @@ double ModernPitchEngine::advanceCorrection(CorrectionState& state) noexcept
                                               -maximumVelocity,
                                               maximumVelocity);
     state.currentCents += state.velocityCentsPerSecond * dt;
+
+    // Exact convergence is part of the contract: once the continuous glide has
+    // arrived, numerical residue is snapped to the exact requested destination.
     if (std::abs(state.desiredCents - state.currentCents) < 0.001
         && std::abs(state.velocityCentsPerSecond) < 0.02)
     {
         state.currentCents = state.desiredCents;
         state.velocityCentsPerSecond = 0.0;
-        settleTrajectory();
     }
     return state.currentCents;
 }
@@ -2592,7 +2069,6 @@ void ModernPitchEngine::process(
     safe.maximumPitchHz = std::clamp(finiteOr(safe.maximumPitchHz, 1600.0f),
                                      safe.minimumPitchHz + 20.0f, 3000.0f);
     safe.latencyMode = static_cast<int>(latencyMode_);
-    const bool immediateAuthority = zeroPrudenceAuthority(safe); // AUTHORITY_CONTROLS_EXPLICIT_V1
 
     const int channels = std::min({buffer.getNumChannels(), channelCount_, maxSupportedChannels});
     const int samples = buffer.getNumSamples();
@@ -2613,15 +2089,16 @@ void ModernPitchEngine::process(
 
     linkedTracker_.setRange(safe.minimumPitchHz, safe.maximumPitchHz);
     linkedTracker_.setSensitivity(safe.detectorSensitivity);
-    linkedTracker_.setImmediateAuthority(immediateAuthority);
+    linkedTracker_.setRescueMode(false);
+    linkedTracker_.clearReacquisitionAnchor();
     for (int channel = 0; channel < channels; ++channel)
     {
         channelTrackers_[static_cast<std::size_t>(channel)].setRange(
             safe.minimumPitchHz, safe.maximumPitchHz);
         channelTrackers_[static_cast<std::size_t>(channel)].setSensitivity(
             safe.detectorSensitivity);
-        channelTrackers_[static_cast<std::size_t>(channel)].setImmediateAuthority(
-            immediateAuthority);
+        channelTrackers_[static_cast<std::size_t>(channel)].setRescueMode(false);
+        channelTrackers_[static_cast<std::size_t>(channel)].clearReacquisitionAnchor();
     }
 
     tempoController_.beginBlock(hostTempoPosition, safe.tempo, samples);
@@ -2676,17 +2153,10 @@ void ModernPitchEngine::process(
                 PitchObservation observation;
                 auto& tracker = channelTrackers_[static_cast<std::size_t>(channel)];
                 auto& correction = channelCorrections_[static_cast<std::size_t>(channel)];
-                if (correction.noteBodyLatched && correction.transportPeriodHz > 0.0)
-                    tracker.setReacquisitionAnchor(static_cast<float>(correction.transportPeriodHz));
-                else
-                    tracker.clearReacquisitionAnchor();
-                const bool rescueSearch = correction.noteBodyLatched
-                    && correction.pitchStaleSamples >= static_cast<int>(0.060 * sampleRate_);
-                tracker.setRange(rescueSearch ? std::min(safe.minimumPitchHz, 28.0f) : safe.minimumPitchHz,
-                                 safe.maximumPitchHz);
-                tracker.setSensitivity(rescueSearch ? std::max(safe.detectorSensitivity, 0.98f)
-                                                    : safe.detectorSensitivity);
-                tracker.setRescueMode(rescueSearch); // PITCH_RESCUE_V1
+                tracker.clearReacquisitionAnchor();
+                tracker.setRange(safe.minimumPitchHz, safe.maximumPitchHz);
+                tracker.setSensitivity(safe.detectorSensitivity);
+                tracker.setRescueMode(false);
                 if (tracker.processSample(data[static_cast<std::size_t>(channel)][sample],
                                           observation))
                 {
@@ -2739,18 +2209,10 @@ void ModernPitchEngine::process(
         {
             const float analysis = data[static_cast<std::size_t>(linkedAnalysisChannel)][sample];
             PitchObservation observation;
-            if (linkedCorrection_.noteBodyLatched && linkedCorrection_.transportPeriodHz > 0.0)
-                linkedTracker_.setReacquisitionAnchor(
-                    static_cast<float>(linkedCorrection_.transportPeriodHz));
-            else
-                linkedTracker_.clearReacquisitionAnchor();
-            const bool rescueSearch = linkedCorrection_.noteBodyLatched
-                && linkedCorrection_.pitchStaleSamples >= static_cast<int>(0.060 * sampleRate_);
-            linkedTracker_.setRange(rescueSearch ? std::min(safe.minimumPitchHz, 28.0f) : safe.minimumPitchHz,
-                                    safe.maximumPitchHz);
-            linkedTracker_.setSensitivity(rescueSearch ? std::max(safe.detectorSensitivity, 0.98f)
-                                                       : safe.detectorSensitivity);
-            linkedTracker_.setRescueMode(rescueSearch); // PITCH_RESCUE_V1
+            linkedTracker_.clearReacquisitionAnchor();
+            linkedTracker_.setRange(safe.minimumPitchHz, safe.maximumPitchHz);
+            linkedTracker_.setSensitivity(safe.detectorSensitivity);
+            linkedTracker_.setRescueMode(false);
             if (linkedTracker_.processSample(analysis, observation))
             {
                 latestObservation_ = observation;

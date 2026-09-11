@@ -186,9 +186,9 @@ private:
         // smoothed by the tracker so target ownership remains stable.
         float frequencyHz = 0.0f;
 
-        // LIVE_CORRECTION_COORDINATE_V5: latest accepted live F0 in the same
-        // register, used only by the fully rigid Scale Lock endpoint. This
-        // prevents continuity smoothing from becoming audible pitch residual.
+        // AUTHORITATIVE_SINGLE_GLIDE_V12: latest accepted live F0 in the
+        // same register. Every setting uses this coordinate; Amount, Response,
+        // Humanize, Hold and Vibrato only soften one common correction law.
         float correctionFrequencyHz = 0.0f;
         float confidence = 0.0f;
         float periodicity = 0.0f;
@@ -229,7 +229,6 @@ private:
         void setRange(float minimumPitchHz, float maximumPitchHz) noexcept;
         void setSensitivity(float sensitivity) noexcept;
         void setRescueMode(bool enabled) noexcept { rescueMode_ = enabled; }
-        void setImmediateAuthority(bool enabled) noexcept { immediateAuthority_ = enabled; } // AUTHORITY_CONTROLS_EXPLICIT_V1
         void setReacquisitionAnchor(float frequencyHz) noexcept;
         void clearReacquisitionAnchor() noexcept { reacquisitionAnchorHz_ = 0.0f; }
         bool processSample(float inputSample, PitchObservation& observation) noexcept;
@@ -339,7 +338,6 @@ private:
         bool rescueMode_ = false;
         bool presenceMode_ = false;
         bool presenceSinceLastHop_ = false;
-        bool immediateAuthority_ = false; // AUTHORITY_CONTROLS_EXPLICIT_V1
 
         std::array<float, ringSize> fullRateRing_ {};
         std::array<float, ringSize> halfRateRing_ {};
@@ -456,8 +454,6 @@ private:
     [[nodiscard]] static float clamp01(float value) noexcept;
     [[nodiscard]] static double safeLog2(double value) noexcept;
     [[nodiscard]] static double wrapToNearestOctave(double cents) noexcept;
-    [[nodiscard]] static bool exactScaleLockAuthority(const Parameters& parameters) noexcept; // AUTHORITY_CONTROLS_EXPLICIT_V1
-    [[nodiscard]] static bool zeroPrudenceAuthority(const Parameters& parameters) noexcept;
     [[nodiscard]] static int latencyForMode(LatencyMode mode) noexcept;
     [[nodiscard]] float adaptiveHysteresis(const Parameters& parameters,
                                            const ScaleQuantizer& quantizer,
