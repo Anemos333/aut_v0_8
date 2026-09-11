@@ -39,7 +39,7 @@ jobs:
           ! grep -q 'sourceHarmonicForMagnitude' Source/SingleWetSpectralRenderer.cpp
           ! grep -q 'sameExperimentalHarmonicFamily' Source/SingleWetSpectralRenderer.cpp
           grep -q '(void) sourceFundamentalHz;' Source/SingleWetSpectralRenderer.cpp
-          grep -q 'ONE_VOICE_SELF_COORDINATE_SHIFT_V11_1' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'ONE_VOICE_LIVE_SELF_COORDINATE_SHIFT_V11_1' Source/SingleWetSpectralRenderer.cpp
           grep -q 'lookupFormantGain(envelopeRatio, safeFormant)' Source/SingleWetSpectralRenderer.cpp
           grep -q 'calculateEnvelope(positiveBins);' Source/SingleWetSpectralRenderer.cpp
           echo ONE_VOICE_BREATH_GLIDE_V11_SOURCE_CONTRACT=PASS
