@@ -22,9 +22,9 @@ marker = "        && parameters.voiceEventStrength <= 0.30f;\n\n    const float 
 require_once(s, marker, "phonetic insertion marker")
 insert = """        && parameters.voiceEventStrength <= 0.30f;
 
-    // SCALE_OWNS_VOICE_V1: audible material is a voiced musical body by
-    // default. Only strong explicit phonetic/breath evidence may suspend
-    // that interpretation; weak pitch confidence is never such permission.
+    // SCALE_OWNS_VOICE_V2: detector state describes evidence only. Audible
+    // material never receives permission to return to dry/source pitch merely
+    // because it is breathy, aperiodic or phonetic.
     const bool explicitPhoneticFrame = richEvidence
         && (parameters.voiceEventStrength >= 0.82f
             || (parameters.voiceBreathiness >= 0.76f
@@ -61,8 +61,10 @@ new = """        if (observation.audioPresent)
             state.stableBodyObservations = std::max(4, state.stableBodyObservations);
             state.breathEvidenceSamples = 0;
             state.uncertainSamples = 0;
-            if (state.targetValid && !explicitPhoneticFrame)
-                setState(TrackingState::stable);
+            if (state.targetValid)
+                setState(explicitPhoneticFrame
+                    ? TrackingState::unvoiced
+                    : TrackingState::stable);
             else
                 setState(TrackingState::acquire);
             return;
@@ -75,9 +77,11 @@ end_marker = "\n\n        // TARGET_AUTHORITY_TAIL_HOLD_V1:"
 end = s.index(end_marker, start)
 new = """        if (state.noteBodyLatched)
         {
-            if (state.targetValid && bodyPresent && !explicitPhoneticFrame)
+            if (state.targetValid)
             {
-                setState(TrackingState::stable);
+                setState(explicitPhoneticFrame
+                    ? TrackingState::unvoiced
+                    : TrackingState::stable);
                 return;
             }
             const int reacquireSamples = static_cast<int>(std::lround(0.070 * sampleRate_));
@@ -87,10 +91,34 @@ new = """        if (state.noteBodyLatched)
         }"""
 s = s[:start] + new + s[end:]
 
+# A formally valid F0 is still enough to define a scale coordinate at the fully
+# rigid endpoint, even when the timbral evidence calls that frame breath/noise.
+# Softer settings retain the old phonetic behaviour because the user explicitly
+# requested less authority.
+old = """    if (!state.noteBodyLatched && richEvidence
+        && (confirmedBreathFrame || confirmedAbsenceFrame))
+    {
+        setState(TrackingState::unvoiced);
+        state.desiredCents = 0.0;
+        return;
+    }
+"""
+require_once(s, old, "pre-body unvoiced zero branch")
+new = """    if (!exactAuthority
+        && !state.noteBodyLatched && richEvidence
+        && (confirmedBreathFrame || confirmedAbsenceFrame))
+    {
+        setState(TrackingState::unvoiced);
+        state.desiredCents = 0.0;
+        return;
+    }
+"""
+s = s.replace(old, new, 1)
+
 start = s.index("        // SOUND_EQUALS_CORRECTION_V2_DENSE_SAFE: live pitch outside a clear")
 end_marker = "\n        if (liveIdentityBreak)\n"
 end = s.index(end_marker, start)
-new = """        // SCALE_OWNS_VOICE_V1: raw dry pitch measures error; it does not
+new = """        // SCALE_OWNS_VOICE_V2: raw dry pitch measures error; it does not
         // own note identity. Ordinary degree changes require the continuity
         // centre itself to cross the existing half-cell identity boundary in
         // the same direction. This preserves dense/microtonal scale ownership
@@ -112,6 +140,8 @@ new = """        // SCALE_OWNS_VOICE_V1: raw dry pitch measures error; it does n
             && (obviousRegisterBreak || sustainedCellExit);"""
 s = s[:start] + new + s[end:]
 
+# Keep the existing quantizer and visible Hold control active, but feed musical
+# identity from the continuity centre rather than the instantaneous dry F0.
 start = s.index("    const float hysteresis = adaptiveHysteresis(parameters, quantizer, observation);")
 end_marker = "\n\n    const bool targetChanged = !state.targetValid"
 end = s.index(end_marker, start)
@@ -122,32 +152,28 @@ new = """    const float hysteresis = adaptiveHysteresis(parameters, quantizer, 
         ? 0.0f : parameters.lockStrictness;
     const float targetConfidence = zeroPrudence
         ? 1.0f : observation.confidence;
-
-    const bool stableOwnsTarget = state.targetValid
-        && state.trackingState == TrackingState::stable
-        && !musicalOnset
-        && !liveIdentityBreak;
-    double newTarget = state.targetLog2;
-    if (!stableOwnsTarget)
-    {
-        newTarget = quantizer.chooseTargetLog2(
-            targetSelectionLog2,
-            hysteresis,
-            targetStrictness,
-            targetConfidence,
-            parameters.scaleLock && parameters.hardLockActive,
-            musicalOnset || liveIdentityBreak,
-            pending);
-        newTarget += std::round(state.pitchCentreLog2 - newTarget);
-    }"""
+    double newTarget = quantizer.chooseTargetLog2(
+        targetSelectionLog2,
+        hysteresis,
+        targetStrictness,
+        targetConfidence,
+        parameters.scaleLock && parameters.hardLockActive,
+        musicalOnset || liveIdentityBreak,
+        pending);
+    newTarget += std::round(state.pitchCentreLog2 - newTarget);"""
 s = s[:start] + new + s[end:]
 engine_path.write_text(s)
 
 test_path = Path("Tests/SupervisorContinuityTest.cpp")
 t = test_path.read_text()
-for variable in ("heldCorrectionState", "dropoutState", "acquireState", "explicitAuthorityState"):
+for variable in ("heldCorrectionState", "dropoutState", "acquireState"):
     pattern = rf"({variable}\.trackingState\s*==\s*ModernPitchEngine::TrackingState::)acquire"
     t = regex_once(t, pattern, r"\1stable", f"{variable} acquire assertion")
+
+# The explicit dropout is not phonetic evidence, so an acquired target must be
+# reported stable rather than search/acquire.
+pattern = r"(explicitAuthorityState\.trackingState\s*==\s*ModernPitchEngine::TrackingState::)acquire"
+t = regex_once(t, pattern, r"\1stable", "explicitAuthorityState acquire assertion")
 
 renames = [
     ('"acquire_search_never_mutes_existing_correction"',
@@ -161,4 +187,47 @@ renames = [
 for old, new in renames:
     require_once(t, old, f"test replacement {old}")
     t = t.replace(old, new, 1)
+
+# Add explicit rigid-authority regressions before the native semitone-cap test.
+anchor = "    // Native API semantics: one semitone means 100 cents, with no adapter hack.\n"
+require_once(t, anchor, "scale-owned unvoiced test insertion")
+extra = r'''    // SCALE_OWNS_VOICE_V2: once a scale destination exists, an explicitly
+    // aperiodic/breathy frame may change the detector label but may never undo
+    // or attenuate the scale transport.
+    ModernPitchEngine::Parameters rigidBreathParameters = explicitAuthorityParameters;
+    setBreathEvidence(rigidBreathParameters);
+    ModernPitchEngine::CorrectionState rigidBreathState = explicitAuthorityState;
+    const double rigidBreathTarget = rigidBreathState.targetLog2;
+    const double rigidBreathCents = rigidBreathState.desiredCents;
+    ModernPitchEngine::PitchObservation rigidAperiodic;
+    rigidAperiodic.valid = false;
+    rigidAperiodic.audioPresent = false;
+    engine->updateCorrectionState(rigidBreathState,
+                                  explicitAuthorityQuantizer,
+                                  rigidAperiodic,
+                                  rigidBreathParameters);
+    success &= check(rigidBreathState.targetValid
+                     && std::abs(rigidBreathState.targetLog2 - rigidBreathTarget) < 1.0e-12
+                     && std::abs(rigidBreathState.desiredCents - rigidBreathCents) < 1.0e-9
+                     && rigidBreathState.trackingState != ModernPitchEngine::TrackingState::release,
+                     "rigid_aperiodic_material_never_leaves_scale_target");
+
+    // Even before the body latch, a formally valid pitch coordinate at maximum
+    // authority is quantized into the selected scale instead of being discarded
+    // as breath and replaced by zero correction.
+    ModernPitchEngine::CorrectionState rigidPreBodyBreath;
+    auto rigidPreBodyObservation = strongPitch(452.0f);
+    rigidPreBodyObservation.audioPresent = false;
+    rigidPreBodyObservation.correctionFrequencyHz = 452.0f;
+    engine->updateCorrectionState(rigidPreBodyBreath,
+                                  explicitAuthorityQuantizer,
+                                  rigidPreBodyObservation,
+                                  rigidBreathParameters);
+    success &= check(rigidPreBodyBreath.targetValid
+                     && std::abs(std::exp2(rigidPreBodyBreath.targetLog2) - 440.0) < 0.1
+                     && std::abs(rigidPreBodyBreath.desiredCents) > 5.0,
+                     "exact_authority_valid_aperiodic_input_enters_scale");
+
+'''
+t = t.replace(anchor, extra + anchor, 1)
 test_path.write_text(t)
