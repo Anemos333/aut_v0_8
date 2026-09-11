@@ -1,0 +1,48 @@
+name: Probe One Voice Breath Glide V11
+
+on:
+  push:
+    branches:
+      - one-voice-breath-glide-v11
+    paths:
+      - Tests/OneVoiceBreathGlideV11Patch.py
+      - Tests/OneVoiceBreathGlideV11Probe.cpp
+      - .github/workflows/probe-one-voice-breath-glide-v11.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Apply guarded V11 patch
+        run: python3 Tests/OneVoiceBreathGlideV11Patch.py
+
+      - name: Verify authority and topology contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! grep -q 'state.desiredCents = 0.0' Source/ModernPitchEngine.cpp
+          ! grep -q 'setState(TrackingState::release)' Source/ModernPitchEngine.cpp
+          grep -q 'return state.currentCents; // ONE_VOICE_BREATH_GLIDE_V11' Source/ModernPitchEngine.cpp
+          ! grep -q 'maximumMagnitude \* 0.018f' Source/SingleWetSpectralRenderer.cpp
+          ! grep -q 'harmonicGuideValid' Source/SingleWetSpectralRenderer.cpp
+          ! grep -q 'sourceHarmonicForMagnitude' Source/SingleWetSpectralRenderer.cpp
+          ! grep -q 'sameExperimentalHarmonicFamily' Source/SingleWetSpectralRenderer.cpp
+          grep -q '(void) sourceFundamentalHz;' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'lookupFormantGain(envelopeRatio, safeFormant)' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'calculateEnvelope(positiveBins);' Source/SingleWetSpectralRenderer.cpp
+          echo ONE_VOICE_BREATH_GLIDE_V11_SOURCE_CONTRACT=PASS
+
+      - name: Build renderer probe
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -pedantic \
+            Tests/OneVoiceBreathGlideV11Probe.cpp Source/SingleWetSpectralRenderer.cpp \
+            -o /tmp/v11-probe
+
+      - name: Run renderer probe
+        run: /tmp/v11-probe
