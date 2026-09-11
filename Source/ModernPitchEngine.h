@@ -410,6 +410,8 @@ private:
                                               int& pendingObservations) noexcept;
         [[nodiscard]] float minimumStepCents() const noexcept { return minStepCents_; }
         [[nodiscard]] float asymmetry() const noexcept { return asymmetry_; }
+        [[nodiscard]] double adjacentTargetLog2(double currentTargetLog2,
+                                                int direction) const noexcept;
 
     private:
         [[nodiscard]] static std::uint64_t hashScale(const double* ratios,
@@ -450,6 +452,22 @@ private:
         bool noteBodyLatched = false;
         float noteBodyConfidence = 0.0f;
         double transportPeriodHz = 0.0;
+
+        // CONSERVATIVE_F0_RESCUE_V1: short memory contains detector-derived
+        // F0 only. Predicted coordinates are never fed back into the tracker.
+        std::array<double, 10> recentRealPitchLog2 {};
+        int recentRealPitchCount = 0;
+        int rescueQualificationHops = 0;
+        bool rescuePredictionActive = false;
+        int rescuePredictionHops = 0;
+        int rescueDirection = 0;
+        bool rescueTargetShifted = false;
+        double rescueBaseSourceLog2 = 0.0;
+        double rescueSourceLog2 = 0.0;
+        double rescueBaseTargetLog2 = 0.0;
+        double rescueBaseDesiredCents = 0.0;
+        double rescueSlopeCentsPerHop = 0.0;
+
         TrackingState trackingState = TrackingState::unvoiced;
     };
 
@@ -469,6 +487,12 @@ private:
                                ScaleQuantizer& quantizer,
                                const PitchObservation& observation,
                                const Parameters& parameters) noexcept;
+    [[nodiscard]] bool advanceConservativeF0Rescue(
+        CorrectionState& state,
+        ScaleQuantizer& quantizer,
+        const PitchObservation& observation,
+        const Parameters& parameters,
+        bool bodyLikeFrame) noexcept;
     [[nodiscard]] double advanceCorrection(CorrectionState& state) noexcept;
     void publishMetering(const PitchObservation& observation,
                          const CorrectionState& state,

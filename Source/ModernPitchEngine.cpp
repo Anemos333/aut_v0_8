@@ -1765,6 +1765,38 @@ double ModernPitchEngine::ScaleQuantizer::chooseTargetLog2(
     return targetLog2_;
 }
 
+double ModernPitchEngine::ScaleQuantizer::adjacentTargetLog2(
+    double currentTargetLog2,
+    int direction) const noexcept
+{
+    if (!std::isfinite(currentTargetLog2) || direction == 0 || ratioCount_ <= 0)
+        return currentTargetLog2;
+
+    const int sign = direction > 0 ? 1 : -1;
+    const double relative = currentTargetLog2 - rootLog2_;
+    const double octave = std::floor(relative);
+    double best = currentTargetLog2;
+    double bestDistance = std::numeric_limits<double>::infinity();
+
+    for (int octaveOffset = -2; octaveOffset <= 2; ++octaveOffset)
+    {
+        for (int degreeIndex = 0; degreeIndex < ratioCount_; ++degreeIndex)
+        {
+            const double candidate = rootLog2_ + octave
+                + static_cast<double>(octaveOffset)
+                + logRatios_[static_cast<std::size_t>(degreeIndex)];
+            const double signedDistance = static_cast<double>(sign)
+                * (candidate - currentTargetLog2);
+            if (signedDistance > 1.0e-8 && signedDistance < bestDistance)
+            {
+                bestDistance = signedDistance;
+                best = candidate;
+            }
+        }
+    }
+    return best;
+}
+
 //==============================================================================
 // ModernPitchEngine control and processing
 //==============================================================================
@@ -1996,6 +2028,186 @@ double ModernPitchEngine::responseTimeMs(
     return std::clamp(response, 0.35, 500.0);
 }
 
+bool ModernPitchEngine::advanceConservativeF0Rescue(
+    CorrectionState& state,
+    ScaleQuantizer& quantizer,
+    const PitchObservation& observation,
+    const Parameters& parameters,
+    bool bodyLikeFrame) noexcept
+{
+    constexpr int minimumHistory = 6;
+    const int hopSamples = MultiRatePitchTracker::hopSize();
+    const int maximumPredictionHops = std::max(2, static_cast<int>(std::ceil(
+        0.024 * sampleRate_ / static_cast<double>(hopSamples))));
+
+    const bool forbiddenState = state.trackingState == TrackingState::attack
+        || state.trackingState == TrackingState::transition
+        || state.trackingState == TrackingState::release
+        || state.trackingState == TrackingState::unvoiced;
+    const bool continuationOfQualifiedDropout = state.rescueQualificationHops > 0
+        || state.rescuePredictionActive;
+    const bool eligible = observation.audioPresent
+        && state.targetValid
+        && state.noteBodyLatched
+        && bodyLikeFrame
+        && !observation.onset
+        && !forbiddenState
+        && state.recentRealPitchCount >= minimumHistory
+        && (state.trackingState == TrackingState::stable
+            || continuationOfQualifiedDropout);
+
+    if (!eligible)
+    {
+        state.rescueQualificationHops = 0;
+        state.rescuePredictionActive = false;
+        state.rescuePredictionHops = 0;
+        state.rescueDirection = 0;
+        state.rescueTargetShifted = false;
+        return false;
+    }
+
+    if (!state.rescuePredictionActive)
+    {
+        ++state.rescueQualificationHops;
+        if (state.rescueQualificationHops < 2)
+            return false;
+
+        const int count = state.recentRealPitchCount;
+        const double first = state.recentRealPitchLog2[0];
+        const double last = state.recentRealPitchLog2[static_cast<std::size_t>(count - 1)];
+        double minimum = first;
+        double maximum = first;
+        int positiveSteps = 0;
+        int negativeSteps = 0;
+        int signChanges = 0;
+        int previousSign = 0;
+        double lastStepCents = 0.0;
+
+        for (int i = 1; i < count; ++i)
+        {
+            const double value = state.recentRealPitchLog2[static_cast<std::size_t>(i)];
+            minimum = std::min(minimum, value);
+            maximum = std::max(maximum, value);
+            const double stepCents = (value
+                - state.recentRealPitchLog2[static_cast<std::size_t>(i - 1)]) * 1200.0;
+            lastStepCents = stepCents;
+            const int sign = stepCents > 0.6 ? 1 : (stepCents < -0.6 ? -1 : 0);
+            if (sign > 0)
+                ++positiveSteps;
+            else if (sign < 0)
+                ++negativeSteps;
+            if (sign != 0)
+            {
+                if (previousSign != 0 && sign != previousSign)
+                    ++signChanges;
+                previousSign = sign;
+            }
+        }
+
+        const double degreeCents = std::min(100.0,
+            std::max(0.1, static_cast<double>(quantizer.minimumStepCents())));
+        const double netCents = (last - first) * 1200.0;
+        const double rangeCents = (maximum - minimum) * 1200.0;
+        const int activeSteps = positiveSteps + negativeSteps;
+        const int direction = netCents > 0.0 ? 1 : (netCents < 0.0 ? -1 : 0);
+        const int consistentSteps = direction > 0 ? positiveSteps : negativeSteps;
+        const double signConsistency = activeSteps > 0
+            ? static_cast<double>(consistentSteps) / static_cast<double>(activeSteps)
+            : 0.0;
+        const double fromCentreCents = state.pitchCentreValid
+            ? (last - state.pitchCentreLog2) * 1200.0 : 0.0;
+        const bool nearBoundary = direction > 0
+            ? fromCentreCents >= 0.32 * degreeCents
+            : direction < 0 && fromCentreCents <= -0.32 * degreeCents;
+        const bool strongDirectionalHistory = direction != 0
+            && std::abs(netCents) >= 0.30 * degreeCents
+            && signConsistency >= 0.80
+            && signChanges <= 1
+            && (nearBoundary || std::abs(netCents) >= 0.60 * degreeCents)
+            && rangeCents >= 0.34 * degreeCents;
+
+        state.rescueDirection = strongDirectionalHistory ? direction : 0;
+        const double averageSlope = netCents
+            / static_cast<double>(std::max(1, count - 1));
+        const double slopeLimit = state.rescueDirection == 0
+            ? std::min(4.0, 0.08 * degreeCents)
+            : std::min(8.0, 0.12 * degreeCents);
+        const double requestedSlope = state.rescueDirection == 0
+            ? lastStepCents : averageSlope;
+        state.rescueSlopeCentsPerHop = std::clamp(
+            requestedSlope, -slopeLimit, slopeLimit);
+        if (state.rescueDirection > 0)
+            state.rescueSlopeCentsPerHop = std::max(0.0, state.rescueSlopeCentsPerHop);
+        else if (state.rescueDirection < 0)
+            state.rescueSlopeCentsPerHop = std::min(0.0, state.rescueSlopeCentsPerHop);
+
+        state.rescueBaseSourceLog2 = last;
+        state.rescueSourceLog2 = last;
+        state.rescueBaseTargetLog2 = state.targetLog2;
+        state.rescueBaseDesiredCents = state.desiredCents;
+        state.rescuePredictionHops = 0;
+        state.rescueTargetShifted = false;
+        state.rescuePredictionActive = true;
+
+        // A scale move is permitted only after a strongly directional real-F0
+        // history. The helper returns exactly the immediate adjacent degree, so
+        // one dropout can never invent a multi-degree melody.
+        if (parameters.scaleLock && state.rescueDirection != 0)
+        {
+            const double adjacent = quantizer.adjacentTargetLog2(
+                state.rescueBaseTargetLog2, state.rescueDirection);
+            const double jumpCents = (adjacent - state.rescueBaseTargetLog2) * 1200.0;
+            if (std::isfinite(adjacent)
+                && state.rescueDirection * jumpCents > 0.1)
+            {
+                state.targetLog2 = adjacent;
+                state.rescueTargetShifted = true;
+                ++state.revision;
+                state.lastTargetJumpCents = jumpCents;
+            }
+        }
+    }
+
+    if (++state.rescuePredictionHops > maximumPredictionHops)
+    {
+        state.rescueQualificationHops = 0;
+        state.rescuePredictionActive = false;
+        state.rescuePredictionHops = 0;
+        state.rescueDirection = 0;
+        state.rescueTargetShifted = false;
+        return false;
+    }
+
+    const double degreeCents = std::min(100.0,
+        std::max(0.1, static_cast<double>(quantizer.minimumStepCents())));
+    const double decay = state.rescueDirection == 0
+        ? std::pow(0.55, static_cast<double>(state.rescuePredictionHops - 1))
+        : std::pow(0.82, static_cast<double>(state.rescuePredictionHops - 1));
+    const double stepCents = state.rescueSlopeCentsPerHop * decay;
+    const double proposedLog2 = state.rescueSourceLog2 + stepCents / 1200.0;
+    const double proposedDeltaCents = (proposedLog2 - state.rescueBaseSourceLog2) * 1200.0;
+    const double maximumDeltaCents = (state.rescueDirection == 0 ? 0.20 : 0.75)
+        * degreeCents;
+    const double boundedDeltaCents = std::clamp(
+        proposedDeltaCents, -maximumDeltaCents, maximumDeltaCents);
+    state.rescueSourceLog2 = state.rescueBaseSourceLog2
+        + boundedDeltaCents / 1200.0;
+
+    const double targetDeltaCents = (state.targetLog2
+        - state.rescueBaseTargetLog2) * 1200.0;
+    const double sourceDeltaCents = (state.rescueSourceLog2
+        - state.rescueBaseSourceLog2) * 1200.0;
+    const double amount = static_cast<double>(clamp01(parameters.amount));
+    const double maximumCents = 100.0 * std::clamp(
+        static_cast<double>(finiteOr(parameters.maximumCorrectionSemitones, 12.0f)),
+        0.0, 48.0);
+    state.desiredCents = std::clamp(
+        state.rescueBaseDesiredCents
+            + amount * (targetDeltaCents - sourceDeltaCents),
+        -maximumCents, maximumCents);
+    return true;
+}
+
 void ModernPitchEngine::updateCorrectionState(
     CorrectionState& state,
     ScaleQuantizer& quantizer,
@@ -2010,7 +2222,14 @@ void ModernPitchEngine::updateCorrectionState(
     const bool richEvidence = parameters.voiceEvidenceValid;
     const bool validPitch = observation.valid && observation.frequencyHz > 0.0f;
     if (validPitch)
+    {
         state.pitchStaleSamples = 0;
+        state.rescueQualificationHops = 0;
+        state.rescuePredictionActive = false;
+        state.rescuePredictionHops = 0;
+        state.rescueDirection = 0;
+        state.rescueTargetShifted = false;
+    }
     else if (state.noteBodyLatched)
         state.pitchStaleSamples = std::min(std::numeric_limits<int>::max() - hopSamples,
                                            state.pitchStaleSamples + hopSamples);
@@ -2061,6 +2280,14 @@ void ModernPitchEngine::updateCorrectionState(
         && parameters.voiceHarmonicity < 0.22f
         && parameters.voiceSpectralReliability < 0.28f
         && parameters.voiceEventStrength < 0.72f;
+
+    const bool rescueBodyFrame = richEvidence
+        && observation.audioPresent
+        && parameters.voiceBodyEnergy >= 0.34f
+        && parameters.voiceHarmonicity >= 0.32f
+        && parameters.voiceSpectralReliability >= 0.44f
+        && parameters.voiceBreathiness <= 0.34f
+        && parameters.voiceEventStrength <= 0.30f;
 
     const float bodyAttack = std::clamp(static_cast<float>(
         1.0 - std::exp(-hopSeconds / 0.018)), 0.001f, 1.0f);
@@ -2153,6 +2380,16 @@ void ModernPitchEngine::updateCorrectionState(
     if (!validPitch)
     {
         ++state.invalidObservations;
+
+        // CONSERVATIVE_F0_RESCUE_V1: prediction is an exceptional continuity
+        // aid, never generic fallback. It must prove body-like non-phonetic
+        // material over consecutive invalid hops and can live only briefly.
+        if (advanceConservativeF0Rescue(state, quantizer, observation,
+                                        parameters, rescueBodyFrame))
+        {
+            setState(TrackingState::acquire);
+            return;
+        }
 
         // SOUND_EQUALS_CORRECTION_V1: audio presence owns the voice, but
         // Stable is forbidden until a real target exists. Acquire is now only
@@ -2250,6 +2487,23 @@ void ModernPitchEngine::updateCorrectionState(
         ? observation.correctionFrequencyHz
         : observation.frequencyHz;
     const double correctionObservedLog2 = safeLog2(correctionFrequencyHz);
+
+    if (rescueBodyFrame && !observation.onset)
+    {
+        if (state.recentRealPitchCount
+            < static_cast<int>(state.recentRealPitchLog2.size()))
+        {
+            state.recentRealPitchLog2[static_cast<std::size_t>(
+                state.recentRealPitchCount++)] = correctionObservedLog2;
+        }
+        else
+        {
+            for (std::size_t i = 1; i < state.recentRealPitchLog2.size(); ++i)
+                state.recentRealPitchLog2[i - 1] = state.recentRealPitchLog2[i];
+            state.recentRealPitchLog2.back() = correctionObservedLog2;
+        }
+    }
+
     bool liveIdentityBreak = false;
     if (!state.pitchCentreValid || musicalOnset)
     {
@@ -2339,6 +2593,12 @@ void ModernPitchEngine::updateCorrectionState(
         0.18 * static_cast<double>(quantizer.minimumStepCents()), 0.5, 30.0);
     const bool targetIdentityChanged = state.targetValid
         && std::abs(targetJump) >= identityThreshold;
+    if (targetIdentityChanged || musicalOnset || liveIdentityBreak)
+    {
+        state.recentRealPitchCount = rescueBodyFrame ? 1 : 0;
+        if (rescueBodyFrame)
+            state.recentRealPitchLog2[0] = correctionObservedLog2;
+    }
     if (targetChanged)
     {
         ++state.revision;

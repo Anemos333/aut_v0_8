@@ -634,8 +634,8 @@ int main()
     parameters.transitionTimeMs = 40.0f;
     const double transitionResponse = engine->responseTimeMs(parameters, true, 100.0);
     std::cerr << "single_path_transition_response_ms=" << transitionResponse << '\n';
-    success &= check(transitionResponse > 8.0 && transitionResponse < 32.1,
-                     "target_revision_uses_bounded_single_path_transition");
+    success &= check(std::abs(transitionResponse) < 1.0e-12,
+                     "response_zero_remains_literal_across_target_revision");
 
     ModernPitchEngine::CorrectionState boundedTransition;
     boundedTransition.targetValid = true;
@@ -1077,6 +1077,138 @@ int main()
                      "native_semitone_limit_is_100_cents");
     success &= check(std::abs(capState.desiredCents) > 95.0,
                      "native_semitone_limit_is_not_divided_by_twelve");
+
+
+    // CONSERVATIVE_F0_RESCUE_V1: rescue requires a real-F0 history plus two
+    // consecutive body-like invalid hops. It may not activate on breath,
+    // phonetic events or an already-active transition.
+    std::array<double, 12> rescueChromatic {};
+    for (int degree = 0; degree < 12; ++degree)
+        rescueChromatic[static_cast<std::size_t>(degree)] = std::exp2(degree / 12.0);
+    ModernPitchEngine::ScaleQuantizer rescueQuantizer;
+    rescueQuantizer.reset();
+    rescueQuantizer.setScale(rescueChromatic.data(),
+                             static_cast<int>(rescueChromatic.size()), 440.0);
+    ModernPitchEngine::Parameters rescueParameters;
+    setBodyEvidence(rescueParameters);
+    rescueParameters.scaleLock = true;
+    rescueParameters.lockHysteresis = 0.0f;
+    rescueParameters.amount = 1.0f;
+    rescueParameters.retuneTimeMs = 0.0f;
+    rescueParameters.humanize = 0.0f;
+    rescueParameters.vibratoPreserve = 0.0f;
+    rescueParameters.maximumCorrectionSemitones = 24.0f;
+
+    const auto makeRescueState = [](const std::array<double, 6>& frequencies)
+    {
+        ModernPitchEngine::CorrectionState state;
+        state.targetValid = true;
+        state.targetLog2 = std::log2(440.0);
+        state.pitchCentreValid = true;
+        state.pitchCentreLog2 = std::log2(440.0);
+        state.noteBodyLatched = true;
+        state.noteBodyConfidence = 0.95f;
+        state.trackingState = ModernPitchEngine::TrackingState::stable;
+        state.stableBodyObservations = 12;
+        state.recentRealPitchCount = static_cast<int>(frequencies.size());
+        for (std::size_t i = 0; i < frequencies.size(); ++i)
+            state.recentRealPitchLog2[i] = std::log2(frequencies[i]);
+        const double last = frequencies.back();
+        state.desiredCents = 1200.0 * std::log2(440.0 / last);
+        state.currentCents = state.desiredCents;
+        return state;
+    };
+    ModernPitchEngine::PitchObservation rescueHole;
+    rescueHole.audioPresent = true;
+    rescueHole.valid = false;
+    rescueHole.onset = false;
+
+    auto risingRescue = makeRescueState({438.0, 440.5, 443.0, 446.0, 449.0, 452.0});
+    engine->updateCorrectionState(risingRescue, rescueQuantizer,
+                                  rescueHole, rescueParameters);
+    success &= check(!risingRescue.rescuePredictionActive
+                     && risingRescue.rescueQualificationHops == 1,
+                     "rescue_requires_consecutive_invalid_body_frames");
+    engine->updateCorrectionState(risingRescue, rescueQuantizer,
+                                  rescueHole, rescueParameters);
+    const double risingTargetHz = std::exp2(risingRescue.targetLog2);
+    success &= check(risingRescue.rescuePredictionActive
+                     && risingRescue.rescueDirection == 1
+                     && risingTargetHz > 460.0 && risingTargetHz < 472.0,
+                     "strong_rising_history_may_choose_only_adjacent_upper_degree");
+
+    auto vibratoRescue = makeRescueState({440.0, 445.0, 439.5, 444.0, 440.5, 443.0});
+    engine->updateCorrectionState(vibratoRescue, rescueQuantizer,
+                                  rescueHole, rescueParameters);
+    engine->updateCorrectionState(vibratoRescue, rescueQuantizer,
+                                  rescueHole, rescueParameters);
+    success &= check(vibratoRescue.rescuePredictionActive
+                     && vibratoRescue.rescueDirection == 0
+                     && std::abs((vibratoRescue.targetLog2 - std::log2(440.0)) * 1200.0) < 0.1,
+                     "oscillating_history_rescues_same_scale_degree");
+
+    auto fallingRescue = makeRescueState({442.0, 439.5, 437.0, 434.0, 431.0, 428.0});
+    fallingRescue.pitchCentreLog2 = std::log2(440.0);
+    engine->updateCorrectionState(fallingRescue, rescueQuantizer,
+                                  rescueHole, rescueParameters);
+    engine->updateCorrectionState(fallingRescue, rescueQuantizer,
+                                  rescueHole, rescueParameters);
+    const double fallingTargetHz = std::exp2(fallingRescue.targetLog2);
+    success &= check(fallingRescue.rescuePredictionActive
+                     && fallingRescue.rescueDirection == -1
+                     && fallingTargetHz > 410.0 && fallingTargetHz < 420.0,
+                     "strong_falling_history_may_choose_only_adjacent_lower_degree");
+
+    auto breathRescue = makeRescueState({438.0, 440.5, 443.0, 446.0, 449.0, 452.0});
+    ModernPitchEngine::Parameters breathRescueParameters = rescueParameters;
+    setBreathEvidence(breathRescueParameters);
+    engine->updateCorrectionState(breathRescue, rescueQuantizer,
+                                  rescueHole, breathRescueParameters);
+    engine->updateCorrectionState(breathRescue, rescueQuantizer,
+                                  rescueHole, breathRescueParameters);
+    success &= check(!breathRescue.rescuePredictionActive
+                     && breathRescue.rescueQualificationHops == 0,
+                     "breath_cannot_activate_f0_prediction");
+
+    auto consonantRescue = makeRescueState({438.0, 440.5, 443.0, 446.0, 449.0, 452.0});
+    ModernPitchEngine::Parameters consonantParameters = rescueParameters;
+    consonantParameters.voiceEventStrength = 0.92f;
+    consonantParameters.voiceHarmonicity = 0.18f;
+    engine->updateCorrectionState(consonantRescue, rescueQuantizer,
+                                  rescueHole, consonantParameters);
+    engine->updateCorrectionState(consonantRescue, rescueQuantizer,
+                                  rescueHole, consonantParameters);
+    success &= check(!consonantRescue.rescuePredictionActive,
+                     "phonetic_event_cannot_activate_f0_prediction");
+
+    auto transitionRescue = makeRescueState({438.0, 440.5, 443.0, 446.0, 449.0, 452.0});
+    transitionRescue.trackingState = ModernPitchEngine::TrackingState::transition;
+    engine->updateCorrectionState(transitionRescue, rescueQuantizer,
+                                  rescueHole, rescueParameters);
+    engine->updateCorrectionState(transitionRescue, rescueQuantizer,
+                                  rescueHole, rescueParameters);
+    success &= check(!transitionRescue.rescuePredictionActive,
+                     "active_transition_cannot_start_f0_prediction");
+
+    for (int hop = 0; hop < 60; ++hop)
+        engine->updateCorrectionState(risingRescue, rescueQuantizer,
+                                      rescueHole, rescueParameters);
+    success &= check(!risingRescue.rescuePredictionActive,
+                     "f0_prediction_has_hard_short_time_limit");
+
+    auto realReturns = makeRescueState({438.0, 440.5, 443.0, 446.0, 449.0, 452.0});
+    engine->updateCorrectionState(realReturns, rescueQuantizer,
+                                  rescueHole, rescueParameters);
+    engine->updateCorrectionState(realReturns, rescueQuantizer,
+                                  rescueHole, rescueParameters);
+    auto returnedRealPitch = strongPitch(454.0f);
+    returnedRealPitch.audioPresent = true;
+    returnedRealPitch.correctionFrequencyHz = 454.0f;
+    engine->updateCorrectionState(realReturns, rescueQuantizer,
+                                  returnedRealPitch, rescueParameters);
+    success &= check(!realReturns.rescuePredictionActive
+                     && realReturns.rescueQualificationHops == 0,
+                     "real_f0_immediately_cancels_prediction");
 
     return success ? 0 : 1;
 }
