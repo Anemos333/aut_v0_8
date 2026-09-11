@@ -1,0 +1,67 @@
+name: Validate Simple Authority Cleanup
+
+on:
+  push:
+    branches:
+      - simple-fix-from-quality-baseline
+    paths:
+      - '.github/workflows/validate-simple-authority-cleanup.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@v4
+        with:
+          ref: simple-fix-from-quality-baseline
+          fetch-depth: 0
+
+      - name: Verify materialized contract and frozen renderer
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "3080ba804cb038421b075d76f5eceec335c22396"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+          grep -Fq 'TARGET_AUTHORITY_TAIL_HOLD_V1' Source/ModernPitchEngine.cpp
+          grep -Fq 'const double targetPosition = static_cast<double>(sourceBin) * safeRatio;' Source/SingleWetSpectralRenderer.cpp
+          grep -Fq 'const float safeFormant = clamp01(formantPreservation);' Source/SingleWetSpectralRenderer.cpp
+          if grep -Fq 'modeFactor = 1.15f' Source/ModernPitchEngine.cpp; then exit 1; fi
+          if grep -Fq 'confidenceFactor = 0.65f' Source/ModernPitchEngine.cpp; then exit 1; fi
+          if grep -Fq '2.0f * safeStrictness + 1.5f * (1.0f - safeConfidence)' Source/ModernPitchEngine.cpp; then exit 1; fi
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libjack-jackd2-dev ladspa-sdk libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev
+
+      - name: Configure
+        run: cmake -S . -B build-simple -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Build focused invariants
+        run: cmake --build build-simple --config Release --target CleanModernPitchEngineTest SupervisorContinuityTest SingleWetSpectralRendererTest --parallel 2
+
+      - name: Run focused invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./build-simple/clean-engine-tests/CleanModernPitchEngineTest
+          ./build-simple/clean-engine-tests/SupervisorContinuityTest
+          ./build-simple/clean-engine-tests/SingleWetSpectralRendererTest
+
+      - name: Build VST3
+        run: cmake --build build-simple --config Release --target Neumaton_VST3 --parallel 2
+
+      - name: Remove temporary validator
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/validate-simple-authority-cleanup.yml
+          git commit -m 'Remove temporary authority validator'
+          git push origin HEAD:simple-fix-from-quality-baseline
