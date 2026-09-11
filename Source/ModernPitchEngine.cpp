@@ -2162,6 +2162,7 @@ bool ModernPitchEngine::advanceConservativeF0Rescue(
             {
                 state.targetLog2 = adjacent;
                 state.rescueTargetShifted = true;
+                state.recentRealPitchCount = 0;
                 ++state.revision;
                 state.lastTargetJumpCents = jumpCents;
             }
@@ -2175,6 +2176,7 @@ bool ModernPitchEngine::advanceConservativeF0Rescue(
         state.rescuePredictionHops = 0;
         state.rescueDirection = 0;
         state.rescueTargetShifted = false;
+        state.recentRealPitchCount = 0;
         return false;
     }
 
@@ -2289,6 +2291,14 @@ void ModernPitchEngine::updateCorrectionState(
         && parameters.voiceBreathiness <= 0.34f
         && parameters.voiceEventStrength <= 0.30f;
 
+    // SCALE_OWNS_VOICE_V2: detector state describes evidence only. Audible
+    // material never receives permission to return to dry/source pitch merely
+    // because it is breathy, aperiodic or phonetic.
+    const bool explicitPhoneticFrame = richEvidence
+        && (parameters.voiceEventStrength >= 0.82f
+            || (parameters.voiceBreathiness >= 0.76f
+                && parameters.voiceHarmonicity <= 0.48f));
+
     const float bodyAttack = std::clamp(static_cast<float>(
         1.0 - std::exp(-hopSeconds / 0.018)), 0.001f, 1.0f);
     const float bodyRelease = std::clamp(static_cast<float>(
@@ -2387,7 +2397,9 @@ void ModernPitchEngine::updateCorrectionState(
         if (advanceConservativeF0Rescue(state, quantizer, observation,
                                         parameters, rescueBodyFrame))
         {
-            setState(TrackingState::acquire);
+            setState(state.rescueTargetShifted
+                ? TrackingState::transition
+                : TrackingState::stable);
             return;
         }
 
@@ -2402,7 +2414,12 @@ void ModernPitchEngine::updateCorrectionState(
             state.stableBodyObservations = std::max(4, state.stableBodyObservations);
             state.breathEvidenceSamples = 0;
             state.uncertainSamples = 0;
-            setState(TrackingState::acquire);
+            if (state.targetValid)
+                setState(explicitPhoneticFrame
+                    ? TrackingState::unvoiced
+                    : TrackingState::stable);
+            else
+                setState(TrackingState::acquire);
             return;
         }
 
@@ -2411,6 +2428,13 @@ void ModernPitchEngine::updateCorrectionState(
         // settle to stable from body evidence alone after a prior valid lock.
         if (state.noteBodyLatched)
         {
+            if (state.targetValid)
+            {
+                setState(explicitPhoneticFrame
+                    ? TrackingState::unvoiced
+                    : TrackingState::stable);
+                return;
+            }
             const int reacquireSamples = static_cast<int>(std::lround(0.070 * sampleRate_));
             if (state.pitchStaleSamples >= reacquireSamples)
                 setState(TrackingState::acquire);
@@ -2431,7 +2455,8 @@ void ModernPitchEngine::updateCorrectionState(
 
     // A strong breath/absence before any body latch must not become a note just
     // because the pitch tracker found a periodic accident in the noise.
-    if (!state.noteBodyLatched && richEvidence
+    if (!exactAuthority
+        && !state.noteBodyLatched && richEvidence
         && (confirmedBreathFrame || confirmedAbsenceFrame))
     {
         setState(TrackingState::unvoiced);
@@ -2505,6 +2530,7 @@ void ModernPitchEngine::updateCorrectionState(
     }
 
     bool liveIdentityBreak = false;
+    bool forceTargetSwitch = false;
     if (!state.pitchCentreValid || musicalOnset)
     {
         state.pitchCentreLog2 = observedLog2;
@@ -2530,14 +2556,29 @@ void ModernPitchEngine::updateCorrectionState(
         const bool insideCurrentMusicalIdentity = !state.targetValid
             || observedDistanceFromCurrentTarget < currentIdentityRadius;
 
-        // SOUND_EQUALS_CORRECTION_V2_DENSE_SAFE: live pitch outside a clear
-        // 0.72-step boundary owns identity immediately, while the original
-        // 0.48-step within-note boundary remains intact for dense microtonal
-        // tracking. Consensus/confidence never gates the forced live change.
+        // SCALE_OWNS_VOICE_V2: raw dry pitch measures error; it does not
+        // own note identity. Ordinary degree changes require the continuity
+        // centre itself to cross the existing half-cell identity boundary in
+        // the same direction. This preserves dense/microtonal scale ownership
+        // without letting instantaneous vibrato choose a neighbouring degree.
+        const double centreDistanceFromCurrentTarget = state.targetValid
+            ? std::abs(state.pitchCentreLog2 - state.targetLog2) * 1200.0
+            : 0.0;
+        const double observedDirection = observedLog2 - state.targetLog2;
+        const double centreDirection = state.pitchCentreLog2 - state.targetLog2;
+        const double obviousRegisterBreakCents = std::max(700.0, liveIdentityBreakRadius);
+        const bool obviousRegisterBreak = observedDistanceFromCurrentTarget
+            >= obviousRegisterBreakCents;
+        const bool sustainedCellExit = centreDistanceFromCurrentTarget
+            >= currentIdentityRadius
+            && observedDistanceFromCurrentTarget >= currentIdentityRadius
+            && observedDirection * centreDirection > 0.0;
         liveIdentityBreak = observation.audioPresent
             && state.targetValid
-            && observedDistanceFromCurrentTarget >= liveIdentityBreakRadius
-            && distanceCents >= liveIdentityBreakRadius;
+            && (obviousRegisterBreak || sustainedCellExit);
+        forceTargetSwitch = observation.audioPresent
+            && state.targetValid
+            && obviousRegisterBreak;
         if (liveIdentityBreak)
         {
             state.pitchCentreLog2 = observedLog2;
@@ -2562,8 +2603,7 @@ void ModernPitchEngine::updateCorrectionState(
 
     const float hysteresis = adaptiveHysteresis(parameters, quantizer, observation);
     int pending = 0;
-    const double targetSelectionLog2 = zeroPrudence
-        ? correctionObservedLog2 : state.pitchCentreLog2;
+    const double targetSelectionLog2 = state.pitchCentreLog2;
     const float targetStrictness = zeroPrudence
         ? 0.0f : parameters.lockStrictness;
     const float targetConfidence = zeroPrudence
@@ -2574,16 +2614,9 @@ void ModernPitchEngine::updateCorrectionState(
         targetStrictness,
         targetConfidence,
         parameters.scaleLock && parameters.hardLockActive,
-        musicalOnset || liveIdentityBreak,
+        musicalOnset || forceTargetSwitch,
         pending);
-
-    // SOUND_EQUALS_CORRECTION_V2: target register follows the current live F0,
-    // never a stale centre. AUTHORITY_CONTROLS_EXPLICIT_V1 extends that rule to
-    // the zero-prudence target selector itself: the live correction coordinate
-    // chooses the degree and its register instead of a continuity-delayed centre.
-    const double targetRegisterReference = zeroPrudence
-        ? correctionObservedLog2 : observedLog2;
-    newTarget += std::round(targetRegisterReference - newTarget);
+    newTarget += std::round(state.pitchCentreLog2 - newTarget);
 
     const bool targetChanged = !state.targetValid
         || std::abs(newTarget - state.targetLog2) * 1200.0 > 0.1;

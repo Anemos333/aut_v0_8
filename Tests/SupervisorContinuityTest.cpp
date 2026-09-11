@@ -459,10 +459,10 @@ int main()
     engine->updateCorrectionState(heldCorrectionState, presenceQuantizer,
                                   presentDropout, presenceParameters);
     success &= check(heldCorrectionState.trackingState
-                         == ModernPitchEngine::TrackingState::acquire
+                         == ModernPitchEngine::TrackingState::unvoiced
                      && heldCorrectionState.targetValid
                      && std::abs(heldCorrectionState.desiredCents + 42.0) < 1.0e-9,
-                     "acquire_search_never_mutes_existing_correction");
+                     "explicit_unvoiced_label_never_mutes_scale_correction");
 
     // SOUND_EQUALS_CORRECTION_V2 regression: reproduce the audible
     // intermittent bypass. The supervisor starts one octave stale, then a live
@@ -530,11 +530,11 @@ int main()
         for (int s = 0; s < ModernPitchEngine::MultiRatePitchTracker::hopSize(); ++s)
             static_cast<void>(engine->advanceCorrection(dropoutState));
     }
-    success &= check(dropoutState.trackingState == ModernPitchEngine::TrackingState::acquire
+    success &= check(dropoutState.trackingState == ModernPitchEngine::TrackingState::stable
                      && dropoutState.noteBodyLatched
                      && dropoutState.pitchStaleSamples > 0
                      && std::abs(dropoutState.desiredCents - 100.0) < 1.0e-9,
-                     "stale_pitch_reacquires_without_reducing_correction");
+                     "body_evidence_keeps_stale_pitch_musically_stable");
     success &= check(std::abs(dropoutState.transportPeriodHz - 220.0) < 1.0e-9,
                      "pitch_dropout_keeps_latched_transport_period");
 
@@ -596,10 +596,10 @@ int main()
         for (int s = 0; s < ModernPitchEngine::MultiRatePitchTracker::hopSize(); ++s)
             static_cast<void>(engine->advanceCorrection(acquireState));
     }
-    success &= check(acquireState.trackingState == ModernPitchEngine::TrackingState::acquire
+    success &= check(acquireState.trackingState == ModernPitchEngine::TrackingState::stable
                      && acquireState.noteBodyLatched
                      && std::abs(acquireState.desiredCents - 100.0) < 1.0e-9,
-                     "stale_f0_cannot_masquerade_as_stable_note");
+                     "body_signal_cannot_be_stuck_in_acquire");
 
     // TARGET_AUTHORITY_TAIL_HOLD_V1: once a target exists, breath/noise is
     // allowed to remove confidence in the current F0 but never to undo the
@@ -672,7 +672,7 @@ int main()
     double vibratoTargetReference = 0.0;
     for (int hop = 0; hop < 1800; ++hop)
     {
-        const double vibratoCents = 34.0 * std::sin(2.0 * 3.14159265358979323846
+        const double vibratoCents = 70.0 * std::sin(2.0 * 3.14159265358979323846
             * static_cast<double>(hop) / 150.0);
         auto vibratoObservation = strongPitch(static_cast<float>(440.0
             * std::exp2(vibratoCents / 1200.0)));
@@ -1056,10 +1056,47 @@ int main()
                                   explicitAuthorityParameters);
     const double dropoutController = engine->advanceCorrection(explicitAuthorityState);
     success &= check(explicitAuthorityState.trackingState
-                         == ModernPitchEngine::TrackingState::acquire
+                         == ModernPitchEngine::TrackingState::stable
                      && std::abs(explicitAuthorityState.desiredCents - heldExplicitCents) < 1.0e-9
                      && std::abs(dropoutController - heldExplicitCents) < 1.0e-9,
                      "transient_f0_hole_keeps_authoritative_wet_correction");
+
+    // SCALE_OWNS_VOICE_V2: once a scale destination exists, an explicitly
+    // aperiodic/breathy frame may change the detector label but may never undo
+    // or attenuate the scale transport.
+    ModernPitchEngine::Parameters rigidBreathParameters = explicitAuthorityParameters;
+    setBreathEvidence(rigidBreathParameters);
+    ModernPitchEngine::CorrectionState rigidBreathState = explicitAuthorityState;
+    const double rigidBreathTarget = rigidBreathState.targetLog2;
+    const double rigidBreathCents = rigidBreathState.desiredCents;
+    ModernPitchEngine::PitchObservation rigidAperiodic;
+    rigidAperiodic.valid = false;
+    rigidAperiodic.audioPresent = false;
+    engine->updateCorrectionState(rigidBreathState,
+                                  explicitAuthorityQuantizer,
+                                  rigidAperiodic,
+                                  rigidBreathParameters);
+    success &= check(rigidBreathState.targetValid
+                     && std::abs(rigidBreathState.targetLog2 - rigidBreathTarget) < 1.0e-12
+                     && std::abs(rigidBreathState.desiredCents - rigidBreathCents) < 1.0e-9
+                     && rigidBreathState.trackingState != ModernPitchEngine::TrackingState::release,
+                     "rigid_aperiodic_material_never_leaves_scale_target");
+
+    // Even before the body latch, a formally valid pitch coordinate at maximum
+    // authority is quantized into the selected scale instead of being discarded
+    // as breath and replaced by zero correction.
+    ModernPitchEngine::CorrectionState rigidPreBodyBreath;
+    auto rigidPreBodyObservation = strongPitch(452.0f);
+    rigidPreBodyObservation.audioPresent = false;
+    rigidPreBodyObservation.correctionFrequencyHz = 452.0f;
+    engine->updateCorrectionState(rigidPreBodyBreath,
+                                  explicitAuthorityQuantizer,
+                                  rigidPreBodyObservation,
+                                  rigidBreathParameters);
+    success &= check(rigidPreBodyBreath.targetValid
+                     && std::abs(std::exp2(rigidPreBodyBreath.targetLog2) - 440.0) < 0.1
+                     && std::abs(rigidPreBodyBreath.desiredCents) > 5.0,
+                     "exact_authority_valid_aperiodic_input_enters_scale");
 
     // Native API semantics: one semitone means 100 cents, with no adapter hack.
     const double unison = 1.0;
