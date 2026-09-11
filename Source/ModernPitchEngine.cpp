@@ -2130,26 +2130,11 @@ void ModernPitchEngine::updateCorrectionState(
     const bool confirmedAbsence = state.noteBodyLatched
         && state.uncertainSamples >= ambiguousReleaseSamples;
 
-    // Breath/absence is positive evidence and therefore wins even if a noisy
-    // frame happens to yield a formally valid F0. This prevents breaths from
-    // keeping the pitch engine latched through a spurious detector result.
-    if (!experimentalMinimalTransport
-        && state.targetValid && (confirmedBreath || confirmedAbsence))
-    {
-        setState(TrackingState::release);
-        state.desiredCents = 0.0;
-        state.stableBodyObservations = 0;
-        // Unvoiced material is a musical tail, not permission to drop
-        // authority abruptly. The same wet trajectory glides toward unity.
-        state.responseMs = std::max(5.5,
-            responseTimeMs(parameters, true, state.lastTargetJumpCents));
-        if (confirmedAbsence
-            || state.breathEvidenceSamples > static_cast<int>(0.12 * sampleRate_))
-        {
-            state.pitchCentreValid = false;
-        }
-        return;
-    }
+    // ONE_VOICE_BREATH_GLIDE_V11
+    // Breath/absence is part of the same voice. Evidence may describe the
+    // frame, but it cannot request release, unity or a weaker destination.
+    // If pitch is still valid we continue below; if pitch is missing, the
+    // existing musical destination is preserved by the acquisition branch.
 
     if (!validPitch)
     {
@@ -2181,39 +2166,24 @@ void ModernPitchEngine::updateCorrectionState(
             return;
         }
 
-        if (experimentalMinimalTransport && state.targetValid)
+        if (state.targetValid)
         {
-            // Missing periodicity cannot request dry/unity. The existing
-            // trajectory remains active until fresh pitch replaces it.
+            // ONE_VOICE_BREATH_GLIDE_V11: no periodicity is not permission to
+            // return toward dry/unity. Hold the exact acquired destination and
+            // keep searching; the next real target change will be a glide.
             setState(TrackingState::acquire);
             return;
         }
 
-        if (state.targetValid && std::abs(state.currentCents) > 0.001)
-        {
-            setState(TrackingState::release);
-            state.desiredCents = 0.0;
-            state.responseMs = std::max(5.5,
-                responseTimeMs(parameters, true, state.lastTargetJumpCents));
-        }
-        else
-        {
-            setState(TrackingState::unvoiced);
-        }
+        setState(TrackingState::unvoiced);
         return;
     }
 
     state.invalidObservations = 0;
 
-    // A strong breath/absence before any body latch must not become a note just
-    // because the pitch tracker found a periodic accident in the noise.
-    if (!state.noteBodyLatched && richEvidence
-        && (confirmedBreathFrame || confirmedAbsenceFrame))
-    {
-        setState(TrackingState::unvoiced);
-        state.desiredCents = 0.0;
-        return;
-    }
+    // ONE_VOICE_BREATH_GLIDE_V11: a breath/noise label cannot veto a valid F0.
+    // The waveform is one voice; valid pitch proceeds through the same target
+    // and correction law as every other frame.
 
     if (bodyPresent || trackerBody > 0.58f)
     {
@@ -2523,28 +2493,16 @@ void ModernPitchEngine::updateCorrectionState(
 double ModernPitchEngine::advanceCorrection(CorrectionState& state) noexcept
 {
     if (!state.targetValid)
-        return 0.0;
+        return state.currentCents; // ONE_VOICE_BREATH_GLIDE_V11: never force unity.
 
     if (state.stateAgeSamples < std::numeric_limits<int>::max())
         ++state.stateAgeSamples;
 
     const auto settleTrajectory = [&state]() noexcept
     {
-        if (state.trackingState == TrackingState::release
-            && std::abs(state.currentCents) < 0.001)
-        {
-            state.trackingState = TrackingState::unvoiced;
-            state.stateAgeSamples = 0;
-            state.noteBodyLatched = false;
-            state.noteBodyConfidence = 0.0f;
-            state.transportPeriodHz = 0.0;
-            state.pitchStaleSamples = 0;
-            state.pitchCentreValid = false;
-            state.stableBodyObservations = 0;
-        }
-        else if ((state.trackingState == TrackingState::attack
-                  || state.trackingState == TrackingState::transition)
-                 && state.noteBodyLatched)
+        if ((state.trackingState == TrackingState::attack
+             || state.trackingState == TrackingState::transition)
+            && state.noteBodyLatched)
         {
             // Arrival, not a confidence timer, defines the end of a glide.
             state.trackingState = TrackingState::stable;
