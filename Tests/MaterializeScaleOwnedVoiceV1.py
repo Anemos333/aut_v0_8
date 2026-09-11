@@ -176,10 +176,26 @@ new = """    const float hysteresis = adaptiveHysteresis(parameters, quantizer, 
     newTarget += std::round(state.pitchCentreLog2 - newTarget);"""
 s = s[:start] + new + s[end:]
 
-# A rescue prediction may use only the existing finite real-F0 history once.
-# When its hard time budget expires, invalidate that history so the same stale
-# samples cannot immediately restart a new prediction. The target itself is not
-# released; subsequent aperiodic material remains on the already-owned degree.
+# One finite real-F0 history may authorize at most one adjacent rescue move.
+# Consuming it at the moment of the scale transition prevents a prolonged
+# dropout from repeatedly walking through neighbouring degrees without any new
+# real pitch evidence. The selected target remains active.
+old = """                state.targetLog2 = adjacent;
+                state.rescueTargetShifted = true;
+                ++state.revision;
+                state.lastTargetJumpCents = jumpCents;
+"""
+require_once(s, old, "consume rescue history on adjacent move")
+new = """                state.targetLog2 = adjacent;
+                state.rescueTargetShifted = true;
+                state.recentRealPitchCount = 0;
+                ++state.revision;
+                state.lastTargetJumpCents = jumpCents;
+"""
+s = s.replace(old, new, 1)
+
+# A same-degree rescue also has a hard finite prediction budget. Once expired,
+# discard its old F0 history so the identical stale samples cannot restart it.
 old = """    if (++state.rescuePredictionHops > maximumPredictionHops)
     {
         state.rescueQualificationHops = 0;
