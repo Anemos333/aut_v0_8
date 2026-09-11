@@ -11,29 +11,27 @@ permissions:
 
 jobs:
   apply:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
         with:
           ref: simple-fix-from-quality-baseline
           fetch-depth: 0
 
-      - name: Remove hidden prudence and zero-return tail
-        shell: python
+      - name: Remove remaining hidden target prudence
+        shell: bash
         run: |
+          python3 - <<'PY'
           from pathlib import Path
           p = Path('Source/ModernPitchEngine.cpp')
           s = p.read_text()
-
-          def replace_once(old, new, label):
+          def r(old,new,label):
               global s
-              n = s.count(old)
-              if n != 1:
-                  raise SystemExit(f'{label}: expected 1 match, got {n}')
-              s = s.replace(old, new, 1)
+              n=s.count(old)
+              if n!=1: raise SystemExit(f'{label}: expected 1 match, got {n}')
+              s=s.replace(old,new,1)
 
-          replace_once(
-'''bool ModernPitchEngine::zeroPrudenceAuthority(const Parameters& parameters) noexcept
+          r('''bool ModernPitchEngine::zeroPrudenceAuthority(const Parameters& parameters) noexcept
 {
     return exactScaleLockAuthority(parameters)
         && std::clamp(static_cast<double>(finiteOr(parameters.retuneTimeMs, 50.0f)),
@@ -41,29 +39,25 @@ jobs:
         && std::clamp(static_cast<double>(finiteOr(parameters.lockHysteresis, 24.0f)),
                       0.0, 80.0) <= 0.00001;
 }
-''',
-'''bool ModernPitchEngine::zeroPrudenceAuthority(const Parameters& parameters) noexcept
+''','''bool ModernPitchEngine::zeroPrudenceAuthority(const Parameters& parameters) noexcept
 {
-    // Target authority and glide speed are independent user decisions.
-    // With rigid correction and Hold=0 there is no hidden target prudence,
-    // regardless of the user-selected Response time.
+    // Hold is the only user permission to retain the previous target degree.
+    // Response controls glide speed only and cannot weaken target authority.
     return exactScaleLockAuthority(parameters)
         && std::clamp(static_cast<double>(finiteOr(parameters.lockHysteresis, 24.0f)),
                       0.0, 80.0) <= 0.00001;
 }
-''', 'zeroPrudenceAuthority')
+''','zero prudence')
 
-          replace_once(
-'''    if (zeroPrudenceAuthority(parameters))
+          r('''    if (zeroPrudenceAuthority(parameters))
         return 0.0; // AUTHORITY_CONTROLS_EXPLICIT_V1: Response=0 is literal.
     double response = std::max(0.35, requested);
-''',
-'''    if (requested <= 0.00001)
-        return 0.0; // Response=0 is literal; target authority does not override user timing.
+''','''    if (requested <= 0.00001)
+        return 0.0; // Response=0 is literal and independent from target authority.
     double response = std::max(0.35, requested);
-''', 'response separation')
+''','response')
 
-          old = '''    float modeFactor = 0.78f;
+          r('''    float modeFactor = 0.78f;
     switch (latencyMode_)
     {
         case LatencyMode::quality:   modeFactor = 1.15f; break;
@@ -85,16 +79,13 @@ jobs:
             * modeFactor * tempoFactor * densityFactor
             * confidenceFactor * strictnessFactor,
         0.0f, 80.0f);
-'''
-          new = '''    // Hold is the only permission to retain the previous scale degree.
-    // Mode, tempo, confidence and detector evidence may not add hidden prudence.
+''','''    // No mode, tempo, confidence or detector-derived multiplier may add Hold.
     const float lockStrictness = clamp01(parameters.lockStrictness);
     const float requestedHysteresis = std::clamp(
         finiteOr(parameters.lockHysteresis, 24.0f), 0.0f, 80.0f);
-'''
-          replace_once(old, new, 'adaptiveHysteresis hidden factors')
+''','adaptive hysteresis')
 
-          old = '''    const double jumpCents = std::abs(nearest - targetLog2_) * 1200.0;
+          r('''    const double jumpCents = std::abs(nearest - targetLog2_) * 1200.0;
     if (!hardLock || jumpCents < 0.5)
     {
         targetLog2_ = nearest;
@@ -125,10 +116,9 @@ jobs:
         pendingObservations = 0;
     }
     return targetLog2_;
-'''
-          new = '''    // Once the explicit Hold margin has been crossed, the nearest degree wins
-    // immediately. Confidence/consensus/strictness are evidence descriptors,
-    // not permission to keep an out-of-target note.
+''','''    // After the explicit Hold boundary is crossed, the nearest scale degree
+    // wins immediately. Evidence quality may rank F0 candidates, never veto the
+    // already-selected musical target.
     (void) strictness;
     (void) confidence;
     (void) hardLock;
@@ -136,102 +126,30 @@ jobs:
     pendingValid_ = false;
     pendingCount_ = 0;
     return targetLog2_;
-'''
-          replace_once(old, new, 'quantizer confirmation prudence')
-
-          old = '''    if (state.targetValid && (confirmedBreath || confirmedAbsence))
-    {
-        setState(TrackingState::release);
-        state.desiredCents = 0.0;
-        state.stableBodyObservations = 0;
-        const double protection = static_cast<double>(
-            clamp01(parameters.transientProtection));
-        state.responseMs = std::clamp(32.0 - 20.0 * protection,
-                                      8.0, 32.0);
-        if (confirmedAbsence
-            || state.breathEvidenceSamples > static_cast<int>(0.12 * sampleRate_))
-        {
-            state.pitchCentreValid = false;
-        }
-        return;
-    }
-'''
-          new = '''    if (state.targetValid && (confirmedBreath || confirmedAbsence))
-    {
-        // A breath/noise tail belongs to the note that was already acquired.
-        // Never relax the spectral translation back toward the original pitch.
-        setState(TrackingState::release);
-        state.stableBodyObservations = 0;
-        if (confirmedAbsence
-            || state.breathEvidenceSamples > static_cast<int>(0.12 * sampleRate_))
-        {
-            state.pitchCentreValid = false;
-        }
-        return;
-    }
-'''
-          replace_once(old, new, 'breath tail zero return')
-
-          old = '''        if (state.targetValid && std::abs(state.currentCents) > 0.001)
-        {
-            setState(TrackingState::release);
-            state.desiredCents = 0.0;
-            state.responseMs = std::clamp(32.0 - 20.0
-                * static_cast<double>(clamp01(parameters.transientProtection)),
-                8.0, 32.0);
-        }
-        else
-        {
-            setState(TrackingState::unvoiced);
-        }
-        return;
-'''
-          new = '''        if (state.targetValid)
-        {
-            // Silence or pitchless material after a valid note keeps the last
-            // acquired translation. The next valid note will replace it.
-            setState(TrackingState::release);
-        }
-        else
-        {
-            setState(TrackingState::unvoiced);
-        }
-        return;
-'''
-          replace_once(old, new, 'invalid pitch zero return')
-
-          replace_once(
-'''        setState(TrackingState::unvoiced);
-        state.desiredCents = 0.0;
-        return;
-''',
-'''        setState(TrackingState::unvoiced);
-        // No acquired target is weakened here; detector evidence cannot pull
-        // an existing correction back toward the source pitch.
-        return;
-''', 'pre-body breath reset')
+''','quantizer confirmation')
 
           p.write_text(s)
-
-      - name: Verify subtractive contract
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          s = Path('Source/ModernPitchEngine.cpp').read_text()
-          assert 'modeFactor = 1.15f' not in s
-          assert 'confidenceFactor = 0.65f' not in s
-          assert '2.0f * safeStrictness + 1.5f * (1.0f - safeConfidence)' not in s
-          assert 'state.desiredCents = 0.0;' not in s
-          r = Path('Source/SingleWetSpectralRenderer.cpp').read_text()
-          assert 'const double targetPosition = static_cast<double>(sourceBin) * safeRatio;' in r
-          assert 'const float safeFormant = clamp01(formantPreservation);' in r
-          print('SIMPLE_AUTHORITY_CONTRACT=PASS')
           PY
 
-      - name: Commit real source change
+      - name: Verify frozen simple renderer and authority contract
+        shell: bash
         run: |
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          set -euo pipefail
+          grep -Fq 'TARGET_AUTHORITY_TAIL_HOLD_V1' Source/ModernPitchEngine.cpp
+          ! grep -Fq 'modeFactor = 1.15f' Source/ModernPitchEngine.cpp
+          ! grep -Fq 'confidenceFactor = 0.65f' Source/ModernPitchEngine.cpp
+          ! grep -Fq '2.0f * safeStrictness + 1.5f * (1.0f - safeConfidence)' Source/ModernPitchEngine.cpp
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "3080ba804cb038421b075d76f5eceec335c22396"
+          grep -Fq 'const double targetPosition = static_cast<double>(sourceBin) * safeRatio;' Source/SingleWetSpectralRenderer.cpp
+          grep -Fq 'const float safeFormant = clamp01(formantPreservation);' Source/SingleWetSpectralRenderer.cpp
+
+      - name: Commit real source and remove one-shot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add Source/ModernPitchEngine.cpp
-          git commit -m "Remove hidden pitch prudence and keep tail on target"
+          git rm .github/workflows/apply-simple-authority-cleanup.yml
+          git commit -m 'Remove hidden target prudence from rigid correction'
           git push origin HEAD:simple-fix-from-quality-baseline
