@@ -1,0 +1,184 @@
+from pathlib import Path
+
+
+def require_once(text: str, needle: str, label: str) -> None:
+    count = text.count(needle)
+    if count != 1:
+        raise SystemExit(f"{label}: expected 1 occurrence, found {count}")
+
+
+engine_path = Path("Source/ModernPitchEngine.cpp")
+s = engine_path.read_text()
+
+# Reuse existing voice evidence as the only explicit exception to
+# "audible signal is a musical body".
+marker = "        && parameters.voiceEventStrength <= 0.30f;\n\n    const float bodyAttack"
+require_once(s, marker, "phonetic insertion marker")
+insert = """        && parameters.voiceEventStrength <= 0.30f;
+
+    // SCALE_OWNS_VOICE_V1: audible material is a voiced musical body by
+    // default. Only strong explicit phonetic/breath evidence may suspend
+    // that interpretation; weak pitch confidence is never such permission.
+    const bool explicitPhoneticFrame = richEvidence
+        && (parameters.voiceEventStrength >= 0.82f
+            || (parameters.voiceBreathiness >= 0.76f
+                && parameters.voiceHarmonicity <= 0.48f));
+
+    const float bodyAttack"""
+s = s.replace(marker, insert, 1)
+
+# Rescue remains a musical state. Only a rescue that selected the adjacent
+# degree becomes a transition.
+start_marker = "        if (advanceConservativeF0Rescue(state, quantizer, observation,"
+start = s.index(start_marker)
+end_marker = "\n\n        // SOUND_EQUALS_CORRECTION_V1: audio presence owns the voice"
+end = s.index(end_marker, start)
+old = s[start:end]
+if "setState(TrackingState::acquire);" not in old:
+    raise SystemExit("rescue block shape changed")
+new = """        if (advanceConservativeF0Rescue(state, quantizer, observation,
+                                        parameters, rescueBodyFrame))
+        {
+            setState(state.rescueTargetShifted
+                ? TrackingState::transition
+                : TrackingState::stable);
+            return;
+        }"""
+s = s[:start] + new + s[end:]
+
+# Existing target + present audio must not get stuck in acquire.
+anchor = s.index("// SOUND_EQUALS_CORRECTION_V1: audio presence owns the voice")
+start = s.index("        if (observation.audioPresent)\n", anchor)
+end_marker = "\n\n        // Missing F0 is not missing voice."
+end = s.index(end_marker, start)
+new = """        if (observation.audioPresent)
+        {
+            state.noteBodyLatched = true;
+            state.noteBodyConfidence = 1.0f;
+            state.stableBodyObservations = std::max(4, state.stableBodyObservations);
+            state.breathEvidenceSamples = 0;
+            state.uncertainSamples = 0;
+            if (state.targetValid && !explicitPhoneticFrame)
+                setState(TrackingState::stable);
+            else
+                setState(TrackingState::acquire);
+            return;
+        }"""
+s = s[:start] + new + s[end:]
+
+# Independent body evidence is still a note even if the pitch tracker is stale.
+anchor = s.index("// Missing F0 is not missing voice.")
+start = s.index("        if (state.noteBodyLatched)\n", anchor)
+end_marker = "\n\n        // TARGET_AUTHORITY_TAIL_HOLD_V1:"
+end = s.index(end_marker, start)
+new = """        if (state.noteBodyLatched)
+        {
+            if (state.targetValid && bodyPresent && !explicitPhoneticFrame)
+            {
+                setState(TrackingState::stable);
+                return;
+            }
+            const int reacquireSamples = static_cast<int>(std::lround(0.070 * sampleRate_));
+            if (state.pitchStaleSamples >= reacquireSamples)
+                setState(TrackingState::acquire);
+            return;
+        }"""
+s = s[:start] + new + s[end:]
+
+# Raw dry F0 measures error; it does not own note identity. Ordinary degree
+# changes require the continuity centre itself to leave the current scale cell.
+start = s.index("        // SOUND_EQUALS_CORRECTION_V2_DENSE_SAFE: live pitch outside a clear")
+end_marker = "\n        if (liveIdentityBreak)\n"
+end = s.index(end_marker, start)
+new = """        // SCALE_OWNS_VOICE_V1: raw dry pitch measures error; it does not
+        // own note identity. Ordinary degree changes require the continuity
+        // centre itself to leave the current scale cell in the same direction.
+        const double centreDistanceFromCurrentTarget = state.targetValid
+            ? std::abs(state.pitchCentreLog2 - state.targetLog2) * 1200.0
+            : 0.0;
+        const double observedDirection = observedLog2 - state.targetLog2;
+        const double centreDirection = state.pitchCentreLog2 - state.targetLog2;
+        const double obviousRegisterBreakCents = std::max(700.0, 3.5 * scaleStep);
+        const bool obviousRegisterBreak = observedDistanceFromCurrentTarget
+            >= obviousRegisterBreakCents;
+        const bool sustainedCellExit = centreDistanceFromCurrentTarget
+            >= liveIdentityBreakRadius
+            && observedDistanceFromCurrentTarget >= liveIdentityBreakRadius
+            && observedDirection * centreDirection > 0.0;
+        liveIdentityBreak = observation.audioPresent
+            && state.targetValid
+            && (obviousRegisterBreak || sustainedCellExit);"""
+s = s[:start] + new + s[end:]
+
+# Stable owns the selected degree. correctionObservedLog2 remains exclusively
+# the correction-depth coordinate later in updateCorrectionState().
+start = s.index("    const float hysteresis = adaptiveHysteresis(parameters, quantizer, observation);")
+end_marker = "\n\n    const bool targetChanged = !state.targetValid"
+end = s.index(end_marker, start)
+new = """    const float hysteresis = adaptiveHysteresis(parameters, quantizer, observation);
+    int pending = 0;
+    const double targetSelectionLog2 = state.pitchCentreLog2;
+    const float targetStrictness = zeroPrudence
+        ? 0.0f : parameters.lockStrictness;
+    const float targetConfidence = zeroPrudence
+        ? 1.0f : observation.confidence;
+
+    const bool stableOwnsTarget = state.targetValid
+        && state.trackingState == TrackingState::stable
+        && !musicalOnset
+        && !liveIdentityBreak;
+    double newTarget = state.targetLog2;
+    if (!stableOwnsTarget)
+    {
+        newTarget = quantizer.chooseTargetLog2(
+            targetSelectionLog2,
+            hysteresis,
+            targetStrictness,
+            targetConfidence,
+            parameters.scaleLock && parameters.hardLockActive,
+            musicalOnset || liveIdentityBreak,
+            pending);
+        newTarget += std::round(state.pitchCentreLog2 - newTarget);
+    }"""
+s = s[:start] + new + s[end:]
+engine_path.write_text(s)
+
+# Update only tests whose old acquire semantics contradict the final contract,
+# and widen the long-vibrato stress case to cross a semitone midpoint.
+test_path = Path("Tests/SupervisorContinuityTest.cpp")
+t = test_path.read_text()
+replacements = [
+    (
+        "heldCorrectionState.trackingState\n                     == ModernPitchEngine::TrackingState::acquire",
+        "heldCorrectionState.trackingState\n                     == ModernPitchEngine::TrackingState::stable",
+    ),
+    (
+        '"acquire_search_never_mutes_existing_correction"',
+        '"present_f0_search_remains_stable_on_existing_target"',
+    ),
+    (
+        "dropoutState.trackingState == ModernPitchEngine::TrackingState::acquire",
+        "dropoutState.trackingState == ModernPitchEngine::TrackingState::stable",
+    ),
+    (
+        '"stale_pitch_reacquires_without_reducing_correction"',
+        '"body_evidence_keeps_stale_pitch_musically_stable"',
+    ),
+    (
+        "acquireState.trackingState == ModernPitchEngine::TrackingState::acquire",
+        "acquireState.trackingState == ModernPitchEngine::TrackingState::stable",
+    ),
+    (
+        '"stale_f0_cannot_masquerade_as_stable_note"',
+        '"body_signal_cannot_be_stuck_in_acquire"',
+    ),
+    (
+        "explicitAuthorityState.trackingState\n                         == ModernPitchEngine::TrackingState::acquire",
+        "explicitAuthorityState.trackingState\n                         == ModernPitchEngine::TrackingState::stable",
+    ),
+    ("34.0 * std::sin", "70.0 * std::sin"),
+]
+for old, new in replacements:
+    require_once(t, old, f"test replacement {old[:48]}")
+    t = t.replace(old, new, 1)
+test_path.write_text(t)
