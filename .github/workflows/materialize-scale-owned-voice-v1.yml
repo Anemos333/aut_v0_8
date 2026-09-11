@@ -1,0 +1,292 @@
+name: Materialize Scale Owned Voice V1
+
+on:
+  push:
+    branches: [simple-fix-from-quality-baseline]
+    paths:
+      - '.github/workflows/materialize-scale-owned-voice-v1.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  validate-and-materialize:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: simple-fix-from-quality-baseline
+          fetch-depth: 0
+
+      - name: Verify frozen renderer
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "3080ba804cb038421b075d76f5eceec335c22396"
+
+      - name: Apply authority rewire
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected 1 occurrence, found {count}')
+              return text.replace(old, new, 1)
+
+          p = Path('Source/ModernPitchEngine.cpp')
+          s = p.read_text()
+
+          old = '''    const bool rescueBodyFrame = richEvidence
+              && observation.audioPresent
+              && parameters.voiceBodyEnergy >= 0.34f
+              && parameters.voiceHarmonicity >= 0.32f
+              && parameters.voiceSpectralReliability >= 0.44f
+              && parameters.voiceBreathiness <= 0.34f
+              && parameters.voiceEventStrength <= 0.30f;
+          '''
+          new = old + '''
+              // SCALE_OWNS_VOICE_V1: audible material is a voiced musical body by
+              // default. Only strong, explicit phonetic/breath evidence may suspend
+              // that interpretation; weak confidence is never such permission.
+              const bool explicitPhoneticFrame = richEvidence
+                  && (parameters.voiceEventStrength >= 0.82f
+                      || (parameters.voiceBreathiness >= 0.76f
+                          && parameters.voiceHarmonicity <= 0.48f));
+          '''
+          s = replace_once(s, old, new, 'insert explicit phonetic gate')
+
+          old = '''        if (advanceConservativeF0Rescue(state, quantizer, observation,
+                                                  parameters, rescueBodyFrame))
+                  {
+                      setState(TrackingState::acquire);
+                      return;
+                  }
+          '''
+          new = '''        if (advanceConservativeF0Rescue(state, quantizer, observation,
+                                                  parameters, rescueBodyFrame))
+                  {
+                      // A rescue is still a musical note. Same-degree rescue remains
+                      // stable; only an actual adjacent-degree rescue is a transition.
+                      setState(state.rescueTargetShifted
+                          ? TrackingState::transition
+                          : TrackingState::stable);
+                      return;
+                  }
+          '''
+          s = replace_once(s, old, new, 'rescue audible state')
+
+          old = '''        if (observation.audioPresent)
+                  {
+                      state.noteBodyLatched = true;
+                      state.noteBodyConfidence = 1.0f;
+                      state.stableBodyObservations = std::max(4, state.stableBodyObservations);
+                      state.breathEvidenceSamples = 0;
+                      state.uncertainSamples = 0;
+                      setState(TrackingState::acquire);
+                      return;
+                  }
+          '''
+          new = '''        if (observation.audioPresent)
+                  {
+                      state.noteBodyLatched = true;
+                      state.noteBodyConfidence = 1.0f;
+                      state.stableBodyObservations = std::max(4, state.stableBodyObservations);
+                      state.breathEvidenceSamples = 0;
+                      state.uncertainSamples = 0;
+                      // SCALE_OWNS_VOICE_V1: once a target exists, audible material
+                      // cannot become an indeterminate state merely because F0 dropped.
+                      // Explicit consonant/breath evidence is the only exception.
+                      if (state.targetValid && !explicitPhoneticFrame)
+                          setState(TrackingState::stable);
+                      else
+                          setState(TrackingState::acquire);
+                      return;
+                  }
+          '''
+          s = replace_once(s, old, new, 'present dropout state')
+
+          old = '''        if (state.noteBodyLatched)
+                  {
+                      const int reacquireSamples = static_cast<int>(std::lround(0.070 * sampleRate_));
+                      if (state.pitchStaleSamples >= reacquireSamples)
+                          setState(TrackingState::acquire);
+                      return;
+                  }
+          '''
+          new = '''        if (state.noteBodyLatched)
+                  {
+                      // Independent body evidence is still signal. If the musical
+                      // destination already exists, keep reporting the note as stable
+                      // while the detector searches underneath it.
+                      if (state.targetValid && bodyPresent && !explicitPhoneticFrame)
+                      {
+                          setState(TrackingState::stable);
+                          return;
+                      }
+                      const int reacquireSamples = static_cast<int>(std::lround(0.070 * sampleRate_));
+                      if (state.pitchStaleSamples >= reacquireSamples)
+                          setState(TrackingState::acquire);
+                      return;
+                  }
+          '''
+          s = replace_once(s, old, new, 'latched body dropout state')
+
+          old = '''        // SOUND_EQUALS_CORRECTION_V2_DENSE_SAFE: live pitch outside a clear
+                  // 0.72-step boundary owns identity immediately, while the original
+                  // 0.48-step within-note boundary remains intact for dense microtonal
+                  // tracking. Consensus/confidence never gates the forced live change.
+                  liveIdentityBreak = observation.audioPresent
+                      && state.targetValid
+                      && observedDistanceFromCurrentTarget >= liveIdentityBreakRadius
+                      && distanceCents >= liveIdentityBreakRadius;
+          '''
+          new = '''        // SCALE_OWNS_VOICE_V1: raw dry pitch is an error measurement,
+                  // not note identity. A normal degree change is accepted only after the
+                  // continuity centre itself has left the current scale cell in the same
+                  // direction. Huge register contradictions remain immediate because
+                  // they cannot plausibly be ordinary vibrato.
+                  const double centreDistanceFromCurrentTarget = state.targetValid
+                      ? std::abs(state.pitchCentreLog2 - state.targetLog2) * 1200.0
+                      : 0.0;
+                  const double observedDirection = observedLog2 - state.targetLog2;
+                  const double centreDirection = state.pitchCentreLog2 - state.targetLog2;
+                  const double obviousRegisterBreakCents = std::max(700.0, 3.5 * scaleStep);
+                  const bool obviousRegisterBreak = observedDistanceFromCurrentTarget
+                      >= obviousRegisterBreakCents;
+                  const bool sustainedCellExit = centreDistanceFromCurrentTarget
+                      >= liveIdentityBreakRadius
+                      && observedDistanceFromCurrentTarget >= liveIdentityBreakRadius
+                      && observedDirection * centreDirection > 0.0;
+                  liveIdentityBreak = observation.audioPresent
+                      && state.targetValid
+                      && (obviousRegisterBreak || sustainedCellExit);
+          '''
+          s = replace_once(s, old, new, 'scale-owned identity break')
+
+          old = '''    const float hysteresis = adaptiveHysteresis(parameters, quantizer, observation);
+              int pending = 0;
+              const double targetSelectionLog2 = zeroPrudence
+                  ? correctionObservedLog2 : state.pitchCentreLog2;
+              const float targetStrictness = zeroPrudence
+                  ? 0.0f : parameters.lockStrictness;
+              const float targetConfidence = zeroPrudence
+                  ? 1.0f : observation.confidence;
+              double newTarget = quantizer.chooseTargetLog2(
+                  targetSelectionLog2,
+                  hysteresis,
+                  targetStrictness,
+                  targetConfidence,
+                  parameters.scaleLock && parameters.hardLockActive,
+                  musicalOnset || liveIdentityBreak,
+                  pending);
+
+              // SOUND_EQUALS_CORRECTION_V2: target register follows the current live F0,
+              // never a stale centre. AUTHORITY_CONTROLS_EXPLICIT_V1 extends that rule to
+              // the zero-prudence target selector itself: the live correction coordinate
+              // chooses the degree and its register instead of a continuity-delayed centre.
+              const double targetRegisterReference = zeroPrudence
+                  ? correctionObservedLog2 : observedLog2;
+              newTarget += std::round(targetRegisterReference - newTarget);
+          '''
+          new = '''    const float hysteresis = adaptiveHysteresis(parameters, quantizer, observation);
+              int pending = 0;
+              // SCALE_OWNS_VOICE_V1: the continuity centre chooses musical identity.
+              // correctionObservedLog2 is reserved for correction depth below.
+              const double targetSelectionLog2 = state.pitchCentreLog2;
+              const float targetStrictness = zeroPrudence
+                  ? 0.0f : parameters.lockStrictness;
+              const float targetConfidence = zeroPrudence
+                  ? 1.0f : observation.confidence;
+
+              // Stable owns the already selected scale degree. Dry motion inside the
+              // same note may change how many cents are required, but cannot revise
+              // target identity. A new degree is considered only at a real onset or a
+              // sustained cell exit promoted to liveIdentityBreak above.
+              const bool stableOwnsTarget = state.targetValid
+                  && state.trackingState == TrackingState::stable
+                  && !musicalOnset
+                  && !liveIdentityBreak;
+              double newTarget = state.targetLog2;
+              if (!stableOwnsTarget)
+              {
+                  newTarget = quantizer.chooseTargetLog2(
+                      targetSelectionLog2,
+                      hysteresis,
+                      targetStrictness,
+                      targetConfidence,
+                      parameters.scaleLock && parameters.hardLockActive,
+                      musicalOnset || liveIdentityBreak,
+                      pending);
+                  newTarget += std::round(state.pitchCentreLog2 - newTarget);
+              }
+          '''
+          s = replace_once(s, old, new, 'stable owns target')
+
+          p.write_text(s)
+
+          p = Path('Tests/SupervisorContinuityTest.cpp')
+          t = p.read_text()
+          replacements = [
+              ('heldCorrectionState.trackingState\n                         == ModernPitchEngine::TrackingState::acquire',
+               'heldCorrectionState.trackingState\n                         == ModernPitchEngine::TrackingState::stable'),
+              ('"acquire_search_never_mutes_existing_correction"',
+               '"present_f0_search_remains_stable_on_existing_target"'),
+              ('dropoutState.trackingState == ModernPitchEngine::TrackingState::acquire',
+               'dropoutState.trackingState == ModernPitchEngine::TrackingState::stable'),
+              ('"stale_pitch_reacquires_without_reducing_correction"',
+               '"body_evidence_keeps_stale_pitch_musically_stable"'),
+              ('acquireState.trackingState == ModernPitchEngine::TrackingState::acquire',
+               'acquireState.trackingState == ModernPitchEngine::TrackingState::stable'),
+              ('"stale_f0_cannot_masquerade_as_stable_note"',
+               '"body_signal_cannot_be_stuck_in_acquire"'),
+              ('explicitAuthorityState.trackingState\n                         == ModernPitchEngine::TrackingState::acquire',
+               'explicitAuthorityState.trackingState\n                         == ModernPitchEngine::TrackingState::stable'),
+              ('34.0 * std::sin', '70.0 * std::sin'),
+          ]
+          for old, new in replacements:
+              if old not in t:
+                  raise SystemExit(f'missing test replacement: {old}')
+              t = t.replace(old, new, 1)
+          p.write_text(t)
+          PY
+
+      - name: Verify architecture
+        run: |
+          set -euo pipefail
+          grep -Fq 'SCALE_OWNS_VOICE_V1' Source/ModernPitchEngine.cpp
+          grep -Fq 'stableOwnsTarget' Source/ModernPitchEngine.cpp
+          grep -Fq 'explicitPhoneticFrame' Source/ModernPitchEngine.cpp
+          grep -Fq 'body_signal_cannot_be_stuck_in_acquire' Tests/SupervisorContinuityTest.cpp
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "3080ba804cb038421b075d76f5eceec335c22396"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libjack-jackd2-dev ladspa-sdk libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev
+
+      - name: Configure
+        run: cmake -S . -B build-scale-owned -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Build focused tests
+        run: cmake --build build-scale-owned --config Release --target CleanModernPitchEngineTest SupervisorContinuityTest SingleWetSpectralRendererTest --parallel 2
+
+      - name: Run focused tests
+        run: |
+          set -euo pipefail
+          ./build-scale-owned/clean-engine-tests/CleanModernPitchEngineTest
+          ./build-scale-owned/clean-engine-tests/SupervisorContinuityTest
+          ./build-scale-owned/clean-engine-tests/SingleWetSpectralRendererTest
+
+      - name: Build VST3
+        run: cmake --build build-scale-owned --config Release --target Neumaton_VST3 --parallel 2
+
+      - name: Commit tested source
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Source/ModernPitchEngine.cpp Tests/SupervisorContinuityTest.cpp
+          git rm .github/workflows/materialize-scale-owned-voice-v1.yml
+          git commit -m 'Make stable voice scale-owned and remove acquire holes'
+          git push origin HEAD:simple-fix-from-quality-baseline
