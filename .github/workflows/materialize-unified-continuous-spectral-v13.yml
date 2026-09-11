@@ -28,6 +28,8 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
+
           p = Path('Source/SingleWetSpectralRenderer.cpp')
           s = p.read_text()
           start = s.index('void SingleWetSpectralRenderer::calculateContinuousCorrectionField(')
@@ -62,15 +64,19 @@ jobs:
 
           '''
           s = s[:start] + replacement + s[end:]
-          old_phase = '''            const double correctedPhaseVelocityBin = measuredSourceBin
-                + correctionShiftBins_[sourceIndex];'''
-          new_phase = '''            // Exact musical transport: instantaneous frequency is scaled
-            // directly by the commanded ratio. Energy geometry is bounded
-            // separately only at the spectral support boundary.
-            const double correctedPhaseVelocityBin = measuredSourceBin * safeRatio;'''
-          if old_phase not in s:
+
+          phase_pattern = re.compile(
+              r'(?P<indent>\s*)const double correctedPhaseVelocityBin\s*=\s*measuredSourceBin\s*\n\s*\+\s*correctionShiftBins_\[sourceIndex\];')
+          m = phase_pattern.search(s)
+          if not m:
               raise SystemExit('phase velocity anchor not found')
-          s = s.replace(old_phase, new_phase, 1)
+          indent = m.group('indent').split('\n')[-1]
+          new_phase = (
+              f'{indent}// Exact musical transport: instantaneous frequency is scaled\n'
+              f'{indent}// directly by the commanded ratio. Energy geometry is bounded\n'
+              f'{indent}// separately only at the spectral support boundary.\n'
+              f'{indent}const double correctedPhaseVelocityBin = measuredSourceBin * safeRatio;')
+          s = s[:m.start()] + new_phase + s[m.end():]
           s = s.replace('UNIFIED_CONTINUOUS_CORRECTION_FIELD_V13_3',
                         'UNIFIED_CONTINUOUS_CORRECTION_FIELD_V13_6')
           s = s.replace(
