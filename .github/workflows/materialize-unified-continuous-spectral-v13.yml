@@ -23,12 +23,11 @@ jobs:
       - name: Apply unified continuous spectral field
         run: python3 Tests/UnifiedContinuousSpectralTransportV13.py
 
-      - name: Use one global continuous spectral warp
+      - name: Use bilateral continuous carrier field
         shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          import re
 
           p = Path('Source/SingleWetSpectralRenderer.cpp')
           s = p.read_text()
@@ -42,45 +41,93 @@ jobs:
                   || correctionShiftBins_.size() < static_cast<std::size_t>(positiveBins + 1))
                   return;
 
-              // UNIFIED_CONTINUOUS_CORRECTION_FIELD_V13_7
-              // Energy uses one global dilation of the spectral axis. This is
-              // deliberately independent of local peaks, regions, harmonic
-              // identities or instantaneous-frequency ownership. Phase still
-              // follows the measured local instantaneous frequency exactly.
+              // UNIFIED_CONTINUOUS_CORRECTION_FIELD_V13_8
+              // A soft bilateral field estimates one continuous carrier coordinate
+              // from adjacent instantaneous-frequency measurements. There are no
+              // peaks, regions, harmonic identities, masks or ownership boundaries.
+              // The same displacement is later added to source phase motion and to
+              // spectral energy geometry, so a local spectral lobe moves as a whole
+              // without becoming an independently reconstructed object.
+              const int radius = frameSize_ <= 128 ? 5
+                               : frameSize_ <= 256 ? 3
+                                                   : 2;
+              const double affinitySigmaBins = frameSize_ <= 128 ? 0.72
+                                               : frameSize_ <= 256 ? 0.56
+                                                                   : 0.44;
+              const double coherenceBlend = frameSize_ <= 128 ? 0.92
+                                            : frameSize_ <= 256 ? 0.68
+                                                                : 0.46;
+
               for (int sourceBin = 0; sourceBin <= positiveBins; ++sourceBin)
               {
                   const std::size_t sourceIndex = static_cast<std::size_t>(sourceBin);
+                  const double rawSourceBin = std::isfinite(trueSourceBins_[sourceIndex])
+                      ? trueSourceBins_[sourceIndex]
+                      : static_cast<double>(sourceBin);
+
+                  double weightedCarrier = 0.0;
+                  double weightSum = 0.0;
+                  const float selfMagnitude = std::max(
+                      magnitudes_[sourceIndex],
+                      1.0e-8f);
+
+                  const int first = std::max(0, sourceBin - radius);
+                  const int last = std::min(positiveBins, sourceBin + radius);
+                  for (int neighbourBin = first; neighbourBin <= last; ++neighbourBin)
+                  {
+                      const std::size_t neighbourIndex =
+                          static_cast<std::size_t>(neighbourBin);
+                      const double rawNeighbourBin =
+                          std::isfinite(trueSourceBins_[neighbourIndex])
+                              ? trueSourceBins_[neighbourIndex]
+                              : static_cast<double>(neighbourBin);
+
+                      const double spatialDistance = static_cast<double>(
+                          std::abs(neighbourBin - sourceBin));
+                      const double spatialWeight = std::max(
+                          0.0,
+                          1.0 - spatialDistance / static_cast<double>(radius + 1));
+
+                      const double frequencyDistance =
+                          (rawNeighbourBin - rawSourceBin) / affinitySigmaBins;
+                      const double frequencyWeight = std::exp(
+                          -0.5 * frequencyDistance * frequencyDistance);
+
+                      const double magnitudeRatio = std::clamp(
+                          static_cast<double>(magnitudes_[neighbourIndex])
+                              / static_cast<double>(selfMagnitude),
+                          0.0,
+                          4.0);
+                      const double magnitudeWeight =
+                          0.18 + 0.82 * std::sqrt(magnitudeRatio);
+
+                      const double weight = spatialWeight
+                                          * frequencyWeight
+                                          * magnitudeWeight;
+                      weightedCarrier += weight * rawNeighbourBin;
+                      weightSum += weight;
+                  }
+
+                  const double neighbourCarrier = weightSum > 1.0e-12
+                      ? weightedCarrier / weightSum
+                      : rawSourceBin;
+                  const double continuousCarrier = rawSourceBin
+                      + coherenceBlend * (neighbourCarrier - rawSourceBin);
+
                   correctionShiftBins_[sourceIndex] =
-                      static_cast<double>(sourceBin) * shiftScale;
+                      continuousCarrier * shiftScale;
               }
           }
 
           '''
           s = s[:start] + replacement + s[end:]
-
-          phase_pattern = re.compile(
-              r'(?P<indent>\s*)const double correctedPhaseVelocityBin\s*=\s*measuredSourceBin\s*\n\s*\+\s*correctionShiftBins_\[sourceIndex\];')
-          m = phase_pattern.search(s)
-          if not m:
-              raise SystemExit('phase velocity anchor not found')
-          indent = m.group('indent').split('\n')[-1]
-          new_phase = (
-              f'{indent}// Exact musical transport: scale the measured instantaneous\n'
-              f'{indent}// frequency by the commanded ratio. No peak/region authority.\n'
-              f'{indent}const double correctedPhaseVelocityBin = measuredSourceBin * safeRatio;')
-          s = s[:m.start()] + new_phase + s[m.end():]
           s = s.replace('UNIFIED_CONTINUOUS_CORRECTION_FIELD_V13_3',
-                        'UNIFIED_CONTINUOUS_CORRECTION_FIELD_V13_7')
-          s = s.replace(
-              '// Phase correction and energy displacement are two views of the same\n'
-              '        // field. There are no spectral territories to reconstruct separately.',
-              '// Energy is one global continuous warp over the whole spectrum.\n'
-              '        // There are no spectral territories to reconstruct separately.')
+                        'UNIFIED_CONTINUOUS_CORRECTION_FIELD_V13_8')
           p.write_text(s)
 
           h = Path('Source/SingleWetSpectralRenderer.h')
           hs = h.read_text().replace('UNIFIED_CONTINUOUS_CORRECTION_FIELD_V13_3',
-                                     'UNIFIED_CONTINUOUS_CORRECTION_FIELD_V13_7')
+                                     'UNIFIED_CONTINUOUS_CORRECTION_FIELD_V13_8')
           h.write_text(hs)
           PY
 
@@ -94,10 +141,11 @@ jobs:
           ! grep -q 'EXPERIMENTAL_TRUE_PARTIAL_TRANSPORT' Source/SingleWetSpectralRenderer.cpp
           ! grep -q 'identity phase lock' Source/SingleWetSpectralRenderer.cpp
           ! grep -q 'sourceHarmonic' Source/SingleWetSpectralRenderer.cpp
-          grep -q 'UNIFIED_CONTINUOUS_CORRECTION_FIELD_V13_7' Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
+          grep -q 'UNIFIED_CONTINUOUS_CORRECTION_FIELD_V13_8' Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
           grep -q 'calculateContinuousCorrectionField' Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
-          grep -q 'static_cast<double>(sourceBin) \* shiftScale;' Source/SingleWetSpectralRenderer.cpp
-          grep -q 'const double correctedPhaseVelocityBin = measuredSourceBin \* safeRatio;' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'continuousCarrier \* shiftScale;' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'const double correctedPhaseVelocityBin = measuredSourceBin' Source/SingleWetSpectralRenderer.cpp
+          grep -q '+ correctionShiftBins_' Source/SingleWetSpectralRenderer.cpp
           grep -q 'const float safeFormant = clamp01(formantPreservation);' Source/SingleWetSpectralRenderer.cpp
           grep -q 'lookupFormantGain' Source/SingleWetSpectralRenderer.cpp
           echo UNIFIED_CONTINUOUS_CORRECTION_SOURCE_CONTRACT=PASS
