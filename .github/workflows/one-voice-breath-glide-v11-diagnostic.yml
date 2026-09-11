@@ -1,0 +1,84 @@
+name: One Voice Breath Glide V11 Diagnostic
+
+on:
+  push:
+    branches:
+      - one-voice-breath-glide-v11
+    paths:
+      - .github/workflows/one-voice-breath-glide-v11-diagnostic.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Static one-voice authority contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'ONE_VOICE_BREATH_GLIDE_V11' Source/ModernPitchEngine.cpp
+          grep -q 'ONE_VOICE_BREATH_GLIDE_V11' Source/SingleWetSpectralRenderer.cpp
+          ! grep -q 'state.desiredCents = 0.0' Source/ModernPitchEngine.cpp
+          ! grep -q 'setState(TrackingState::release)' Source/ModernPitchEngine.cpp
+          grep -q 'return state.currentCents; // ONE_VOICE_BREATH_GLIDE_V11' Source/ModernPitchEngine.cpp
+          ! grep -q 'maximumMagnitude \* 0.018f' Source/SingleWetSpectralRenderer.cpp
+          ! grep -q 'harmonicGuideValid' Source/SingleWetSpectralRenderer.cpp
+          ! grep -q 'sourceHarmonicForMagnitude' Source/SingleWetSpectralRenderer.cpp
+          ! grep -q 'sameExperimentalHarmonicFamily' Source/SingleWetSpectralRenderer.cpp
+          grep -q '(void) sourceFundamentalHz;' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'lookupFormantGain(envelopeRatio, safeFormant)' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'calculateEnvelope(positiveBins);' Source/SingleWetSpectralRenderer.cpp
+          echo ONE_VOICE_V11_STATIC_CONTRACT=PASS
+
+      - name: Build focused full-spectrum probe
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -pedantic \
+            Tests/OneVoiceBreathGlideV11Probe.cpp Source/SingleWetSpectralRenderer.cpp \
+            -o /tmp/v11-probe
+          /tmp/v11-probe
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev
+
+      - name: Configure and build tests
+        run: |
+          cmake -S . -B build-v11 -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+          cmake --build build-v11 --config Release \
+            --target CleanModernPitchEngineTest SupervisorContinuityTest SingleWetSpectralRendererTest \
+            --parallel 2
+
+      - name: Run clean engine diagnostic
+        shell: bash
+        run: |
+          set +e
+          ./build-v11/clean-engine-tests/CleanModernPitchEngineTest 2>&1 | tee clean.log
+          echo CLEAN_EXIT=${PIPESTATUS[0]}
+          exit 0
+
+      - name: Run supervisor diagnostic
+        shell: bash
+        run: |
+          set +e
+          ./build-v11/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee supervisor.log
+          echo SUPERVISOR_EXIT=${PIPESTATUS[0]}
+          exit 0
+
+      - name: Run renderer diagnostic
+        shell: bash
+        run: |
+          set +e
+          ./build-v11/clean-engine-tests/SingleWetSpectralRendererTest 2>&1 | tee renderer.log
+          echo RENDERER_EXIT=${PIPESTATUS[0]}
+          exit 0
