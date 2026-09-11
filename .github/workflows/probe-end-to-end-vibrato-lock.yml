@@ -1,0 +1,157 @@
+name: Probe End To End Vibrato Lock
+
+on:
+  push:
+    branches: [simple-fix-from-quality-baseline]
+    paths:
+      - '.github/workflows/probe-end-to-end-vibrato-lock.yml'
+
+jobs:
+  probe:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: simple-fix-from-quality-baseline
+
+      - name: Apply candidate scale-owned control patch
+        run: python3 Tests/MaterializeScaleOwnedVoiceV1.py
+
+      - name: Write end-to-end probe
+        run: |
+          cat > Tests/EndToEndVibratoLockProbe.cpp <<'CPP'
+          #include "ModernPitchEngine.h"
+          #include <JuceHeader.h>
+          #include <algorithm>
+          #include <array>
+          #include <cmath>
+          #include <iostream>
+          #include <vector>
+
+          namespace {
+          constexpr double pi = 3.14159265358979323846;
+          constexpr double sr = 48000.0;
+
+          double tonePower(const std::vector<float>& signal, double hz, int start, int count) {
+              double re = 0.0, im = 0.0;
+              for (int i = 0; i < count; ++i) {
+                  const double ph = 2.0*pi*hz*double(start+i)/sr;
+                  const double v = signal[static_cast<std::size_t>(start+i)];
+                  re += v*std::cos(ph); im -= v*std::sin(ph);
+              }
+              return re*re + im*im;
+          }
+
+          double estimate(const std::vector<float>& x, int start, int count) {
+              double best = 440.0, bestPower = -1.0;
+              for (double f = 434.0; f <= 446.0001; f += 0.05) {
+                  const double p = tonePower(x, f, start, count);
+                  if (p > bestPower) { bestPower = p; best = f; }
+              }
+              double left = best - 0.08, right = best + 0.08;
+              for (int it = 0; it < 22; ++it) {
+                  const double d = (right-left)/3.0, a = left+d, b = right-d;
+                  if (tonePower(x,a,start,count) < tonePower(x,b,start,count)) left=a; else right=b;
+              }
+              return 0.5*(left+right);
+          }
+
+          void run(ModernPitchEngine::LatencyMode mode, const char* name) {
+              ModernPitchEngine engine;
+              engine.prepare(sr, 64, 1, mode);
+              ModernPitchEngine::Parameters p;
+              p.scaleLock = true;
+              p.hardLockActive = true;
+              p.lockHysteresis = 0.0f;
+              p.lockStrictness = 0.0f;
+              p.amount = 1.0f;
+              p.retuneTimeMs = 0.0f;
+              p.humanize = 0.0f;
+              p.vibratoPreserve = 0.0f;
+              p.preserveVibrato = 0.0f;
+              p.formantPreservation = 0.9f;
+              p.maximumCorrectionSemitones = 12.0f;
+              p.minimumPitchHz = 70.0f;
+              p.maximumPitchHz = 1000.0f;
+              p.detectorSensitivity = 0.98f;
+
+              std::array<double,12> scale{};
+              for (int d=0; d<12; ++d) scale[static_cast<std::size_t>(d)] = std::exp2(double(d)/12.0);
+
+              constexpr int total = 6*48000;
+              constexpr int block = 64;
+              std::vector<float> out(static_cast<std::size_t>(total),0.0f);
+              double phase = 0.0;
+              int acquireBlocksAfterWarmup = 0;
+              int targetRevisionBlocks = 0;
+              double previousTarget = 0.0;
+              bool haveTarget = false;
+              for (int offset=0; offset<total; offset+=block) {
+                  const int n = std::min(block,total-offset);
+                  juce::AudioBuffer<float> b(1,n);
+                  float* w=b.getWritePointer(0);
+                  for(int i=0;i<n;++i){
+                      const int sample=offset+i;
+                      const double t=double(sample)/sr;
+                      const double vib=70.0*std::sin(2.0*pi*5.0*t);
+                      const double f=440.0*std::exp2(vib/1200.0);
+                      phase += 2.0*pi*f/sr;
+                      w[i]=0.24f*static_cast<float>(std::sin(phase));
+                  }
+                  engine.process(b,scale.data(),static_cast<int>(scale.size()),440.0,p);
+                  for(int i=0;i<n;++i) out[static_cast<std::size_t>(offset+i)]=b.getSample(0,i);
+                  const auto m=engine.getMetering();
+                  if(offset>48000){
+                      if(m.state==ModernPitchEngine::TrackingState::acquire) ++acquireBlocksAfterWarmup;
+                      if(m.targetPitchHz>0.0f){
+                          if(haveTarget && std::abs(1200.0*std::log2(double(m.targetPitchHz)/previousTarget))>0.5) ++targetRevisionBlocks;
+                          previousTarget=m.targetPitchHz; haveTarget=true;
+                      }
+                  }
+              }
+
+              const int win=4096, step=2048;
+              double maxAbs=0.0, meanAbs=0.0, minRms=1e9, maxRms=0.0; int count=0;
+              for(int start=2*48000; start+win<total; start+=step){
+                  const double hz=estimate(out,start,win);
+                  const double cents=1200.0*std::log2(hz/440.0);
+                  maxAbs=std::max(maxAbs,std::abs(cents)); meanAbs+=std::abs(cents);
+                  double e=0.0; for(int i=0;i<win;++i){double v=out[static_cast<std::size_t>(start+i)];e+=v*v;}
+                  const double rms=std::sqrt(e/double(win)); minRms=std::min(minRms,rms); maxRms=std::max(maxRms,rms); ++count;
+              }
+              std::cout<<name<<" max_abs_cents="<<maxAbs<<" mean_abs_cents="<<(meanAbs/std::max(1,count))
+                       <<" rms_ratio="<<(maxRms/std::max(1e-12,minRms))
+                       <<" acquire_blocks="<<acquireBlocksAfterWarmup
+                       <<" target_revision_blocks="<<targetRevisionBlocks
+                       <<" final_target_hz="<<previousTarget<<"\n";
+          }
+          }
+
+          int main(){
+              run(ModernPitchEngine::LatencyMode::live,"live256");
+              run(ModernPitchEngine::LatencyMode::quality,"quality512");
+              return 0;
+          }
+          CPP
+          cat >> CMakeLists.txt <<'CMAKE'
+          if(NEUMATON_BUILD_CLEAN_ENGINE_TESTS)
+            juce_add_console_app(EndToEndVibratoLockProbe PRODUCT_NAME EndToEndVibratoLockProbe)
+            juce_generate_juce_header(EndToEndVibratoLockProbe)
+            target_sources(EndToEndVibratoLockProbe PRIVATE Tests/EndToEndVibratoLockProbe.cpp Source/ModernPitchEngine.cpp Source/SingleWetSpectralRenderer.cpp Source/Tempo.cpp)
+            target_include_directories(EndToEndVibratoLockProbe PRIVATE Source)
+            target_compile_definitions(EndToEndVibratoLockProbe PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+            target_link_libraries(EndToEndVibratoLockProbe PRIVATE juce::juce_audio_basics juce::juce_core PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
+            set_target_properties(EndToEndVibratoLockProbe PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/clean-engine-tests")
+          endif()
+          CMAKE
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libjack-jackd2-dev ladspa-sdk libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev
+      - name: Configure
+        run: cmake -S . -B build-e2e -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+      - name: Build
+        run: cmake --build build-e2e --config Release --target EndToEndVibratoLockProbe --parallel 2
+      - name: Run
+        run: ./build-e2e/clean-engine-tests/EndToEndVibratoLockProbe
