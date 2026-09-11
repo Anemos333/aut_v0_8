@@ -7,6 +7,7 @@ on:
     paths:
       - Tests/OneVoiceBreathGlideV11Patch.py
       - Tests/OneVoiceBreathGlideV11CompileFix.py
+      - Tests/OneVoiceBreathGlideV11SelfShift.py
       - Tests/OneVoiceBreathGlideV11Probe.cpp
       - .github/workflows/probe-one-voice-breath-glide-v11.yml
   workflow_dispatch:
@@ -24,6 +25,7 @@ jobs:
         run: |
           python3 Tests/OneVoiceBreathGlideV11Patch.py
           python3 Tests/OneVoiceBreathGlideV11CompileFix.py
+          python3 Tests/OneVoiceBreathGlideV11SelfShift.py
 
       - name: Verify authority and topology contract
         shell: bash
@@ -37,6 +39,7 @@ jobs:
           ! grep -q 'sourceHarmonicForMagnitude' Source/SingleWetSpectralRenderer.cpp
           ! grep -q 'sameExperimentalHarmonicFamily' Source/SingleWetSpectralRenderer.cpp
           grep -q '(void) sourceFundamentalHz;' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'ONE_VOICE_SELF_COORDINATE_SHIFT_V11_1' Source/SingleWetSpectralRenderer.cpp
           grep -q 'lookupFormantGain(envelopeRatio, safeFormant)' Source/SingleWetSpectralRenderer.cpp
           grep -q 'calculateEnvelope(positiveBins);' Source/SingleWetSpectralRenderer.cpp
           echo ONE_VOICE_BREATH_GLIDE_V11_SOURCE_CONTRACT=PASS
