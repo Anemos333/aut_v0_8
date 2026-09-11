@@ -2169,16 +2169,20 @@ void ModernPitchEngine::updateCorrectionState(
     // Breath/absence is positive evidence and therefore wins even if a noisy
     // frame happens to yield a formally valid F0. This prevents breaths from
     // keeping the pitch engine latched through a spurious detector result.
-    if (state.targetValid && (confirmedBreath || confirmedAbsence))
+    // TARGET_AUTHORITY_TAIL_HOLD_V1: once a musical target exists, breath or
+    // temporary absence may stop supplying a trustworthy F0, but it is not
+    // permission to move the audio back toward the source pitch. The current
+    // frame evidence already exists here, so do not wait for temporal breath
+    // confirmation while a spurious periodicity is free to retarget the note.
+    if (state.targetValid
+        && (confirmedBreath
+            || confirmedAbsence
+            || (richEvidence
+                && (confirmedBreathFrame || confirmedAbsenceFrame))))
     {
-        setState(TrackingState::release);
-        state.desiredCents = 0.0;
         state.stableBodyObservations = 0;
-        const double protection = static_cast<double>(
-            clamp01(parameters.transientProtection));
-        state.responseMs = std::clamp(32.0 - 20.0 * protection,
-                                      8.0, 32.0);
         if (confirmedAbsence
+            || confirmedAbsenceFrame
             || state.breathEvidenceSamples > static_cast<int>(0.12 * sampleRate_))
         {
             state.pitchCentreValid = false;
@@ -2216,18 +2220,13 @@ void ModernPitchEngine::updateCorrectionState(
             return;
         }
 
-        if (state.targetValid && std::abs(state.currentCents) > 0.001)
-        {
-            setState(TrackingState::release);
-            state.desiredCents = 0.0;
-            state.responseMs = std::clamp(32.0 - 20.0
-                * static_cast<double>(clamp01(parameters.transientProtection)),
-                8.0, 32.0);
-        }
+        // TARGET_AUTHORITY_TAIL_HOLD_V1: a previously selected scale degree
+        // remains the destination through pitchless material. No hidden release
+        // is allowed to undo the correction and reveal the source note.
+        if (state.targetValid)
+            setState(TrackingState::acquire);
         else
-        {
             setState(TrackingState::unvoiced);
-        }
         return;
     }
 

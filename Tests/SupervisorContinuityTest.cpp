@@ -601,57 +601,34 @@ int main()
                      && std::abs(acquireState.desiredCents - 100.0) < 1.0e-9,
                      "stale_f0_cannot_masquerade_as_stable_note");
 
-    // Positive breath evidence releases the note even if the tracker happens to
-    // produce a strong spurious F0 on the noise.
+    // TARGET_AUTHORITY_TAIL_HOLD_V1: once a target exists, breath/noise is
+    // allowed to remove confidence in the current F0 but never to undo the
+    // requested pitch displacement. A spurious periodic accident in breath
+    // must therefore be ignored rather than retargeting or releasing to source.
     ModernPitchEngine::CorrectionState spuriousBreath = dropoutState;
     setBreathEvidence(parameters);
     const auto falsePitchOnBreath = strongPitch(231.0f);
-    bool validBreathReleased = false;
     for (int i = 0; i < 100; ++i)
-    {
         engine->updateCorrectionState(spuriousBreath, quantizer,
                                       falsePitchOnBreath, parameters);
-        if (spuriousBreath.trackingState == ModernPitchEngine::TrackingState::release)
-        {
-            validBreathReleased = true;
-            break;
-        }
-    }
-    success &= check(validBreathReleased
-                     && std::abs(spuriousBreath.desiredCents) < 1.0e-9,
-                     "breath_wins_over_spurious_valid_f0");
+    success &= check(spuriousBreath.trackingState != ModernPitchEngine::TrackingState::release
+                     && spuriousBreath.targetValid
+                     && std::abs(spuriousBreath.desiredCents - 100.0) < 1.0e-9,
+                     "breath_cannot_release_existing_target_to_source");
 
-    // The same must hold when the pitch detector correctly reports no F0.
-    ModernPitchEngine::CorrectionState releaseState = dropoutState;
-    bool invalidBreathReleased = false;
+    // The same invariant holds when the detector correctly reports no F0.
+    ModernPitchEngine::CorrectionState pitchlessTail = dropoutState;
     for (int i = 0; i < 100; ++i)
-    {
-        engine->updateCorrectionState(releaseState, quantizer, invalid, parameters);
-        if (releaseState.trackingState == ModernPitchEngine::TrackingState::release)
-        {
-            invalidBreathReleased = true;
-            break;
-        }
-    }
-    success &= check(invalidBreathReleased
-                     && std::abs(releaseState.desiredCents) < 1.0e-9,
-                     "confirmed_breath_releases_missing_f0_note");
+        engine->updateCorrectionState(pitchlessTail, quantizer, invalid, parameters);
+    success &= check(pitchlessTail.trackingState != ModernPitchEngine::TrackingState::release
+                     && pitchlessTail.targetValid
+                     && std::abs(pitchlessTail.desiredCents - 100.0) < 1.0e-9,
+                     "pitchless_tail_keeps_arrival_scale_degree");
 
-    double maximumReleaseStep = 0.0;
-    double previous = releaseState.currentCents;
     for (int i = 0; i < 4800; ++i)
-    {
-        const double current = engine->advanceCorrection(releaseState);
-        maximumReleaseStep = std::max(maximumReleaseStep, std::abs(current - previous));
-        previous = current;
-    }
-    std::cerr << "maximum_release_step_cents=" << maximumReleaseStep << '\n';
-    success &= check(maximumReleaseStep < 1.0,
-                     "unvoiced_release_has_no_correction_jump");
-    success &= check(std::abs(releaseState.currentCents) < 0.05
-                     && releaseState.trackingState == ModernPitchEngine::TrackingState::unvoiced
-                     && !releaseState.noteBodyLatched,
-                     "unvoiced_release_reaches_unity_and_clears_note_latch");
+        static_cast<void>(engine->advanceCorrection(pitchlessTail));
+    success &= check(std::abs(pitchlessTail.currentCents - 100.0) < 1.0e-9,
+                     "pitchless_tail_never_glides_back_to_source");
 
     parameters.retuneTimeMs = 0.0f;
     parameters.transitionTimeMs = 40.0f;
