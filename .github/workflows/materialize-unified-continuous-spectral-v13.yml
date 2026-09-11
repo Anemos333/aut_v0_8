@@ -33,13 +33,14 @@ jobs:
           ! grep -q 'EXPERIMENTAL_TRUE_PARTIAL_TRANSPORT' Source/SingleWetSpectralRenderer.cpp
           ! grep -q 'identity phase lock' Source/SingleWetSpectralRenderer.cpp
           ! grep -q 'sourceHarmonic' Source/SingleWetSpectralRenderer.cpp
-          grep -q 'UNIFIED_CONTINUOUS_COHERENCE_FIELD_V13_2' Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
-          grep -q 'calculateContinuousShiftField' Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
-          grep -q 'continuousOutputPhase' Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
-          grep -q 'measuredSourceBin \* safeRatio' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'UNIFIED_CONTINUOUS_CORRECTION_FIELD_V13_3' Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
+          grep -q 'calculateContinuousCorrectionField' Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
+          grep -q 'measuredSourceBin' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'measuredSourceBin.*correctionShiftBins_' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'sourceBin).*correctionShiftBins_' Source/SingleWetSpectralRenderer.cpp
           grep -q 'const float safeFormant = clamp01(formantPreservation);' Source/SingleWetSpectralRenderer.cpp
           grep -q 'lookupFormantGain' Source/SingleWetSpectralRenderer.cpp
-          echo UNIFIED_CONTINUOUS_COHERENCE_SOURCE_CONTRACT=PASS
+          echo UNIFIED_CONTINUOUS_CORRECTION_SOURCE_CONTRACT=PASS
 
       - name: Install Linux dependencies
         run: |
@@ -79,5 +80,3 @@ jobs:
           fi
           git commit -m 'Remove piecewise reconstruction from all renderer modes'
           git push origin HEAD:one-voice-breath-glide-v11
-
-# Triggered after architectural decision: no piecewise voice reconstruction; formants are the only permitted reconstruction envelope.
