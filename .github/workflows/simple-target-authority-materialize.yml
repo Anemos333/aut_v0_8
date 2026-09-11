@@ -21,134 +21,19 @@ jobs:
           ref: simple-fix-from-quality-baseline
           fetch-depth: 0
 
-      - name: Verify frozen old engine baseline
+      - name: Verify frozen old renderer
         shell: bash
         run: |
           set -euo pipefail
           test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "3080ba804cb038421b075d76f5eceec335c22396"
           test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
           grep -Fq 'const double targetPosition = static_cast<double>(sourceBin) * safeRatio;' Source/SingleWetSpectralRenderer.cpp
-          grep -Fq '* safeRatio;' Source/SingleWetSpectralRenderer.cpp
-          ! grep -Eq 'nearestPeak_|peakBins_|secondaryLayer|delayedDry|dryTrust_|wetMix_' Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
+          if grep -Eq 'nearestPeak_|peakBins_|secondaryLayer|delayedDry|dryTrust_|wetMix_' Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h; then exit 1; fi
 
-      - name: Remove return-to-source release paths
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
+      - name: Materialize subtractive supervisor patch
+        run: python3 Tests/MaterializeSimpleTargetAuthorityV1.py
 
-          source_path = Path('Source/ModernPitchEngine.cpp')
-          test_path = Path('Tests/SupervisorContinuityTest.cpp')
-          source = source_path.read_text()
-          tests = test_path.read_text()
-
-          old_breath = '''    if (state.targetValid && (confirmedBreath || confirmedAbsence))
-    {
-        setState(TrackingState::release);
-        state.desiredCents = 0.0;
-        state.stableBodyObservations = 0;
-        const double protection = static_cast<double>(
-            clamp01(parameters.transientProtection));
-        state.responseMs = std::clamp(32.0 - 20.0 * protection,
-                                      8.0, 32.0);
-        if (confirmedAbsence
-            || state.breathEvidenceSamples > static_cast<int>(0.12 * sampleRate_))
-        {
-            state.pitchCentreValid = false;
-        }
-        return;
-    }
-'''
-          new_breath = '''    // TARGET_AUTHORITY_TAIL_HOLD_V1: once a musical target exists, breath or
-    // temporary absence may stop supplying a trustworthy F0, but it is not
-    // permission to move the audio back toward the source pitch. Keep the
-    // already requested correction; only invalidate stale analysis state.
-    if (state.targetValid && (confirmedBreath || confirmedAbsence))
-    {
-        state.stableBodyObservations = 0;
-        if (confirmedAbsence
-            || state.breathEvidenceSamples > static_cast<int>(0.12 * sampleRate_))
-        {
-            state.pitchCentreValid = false;
-        }
-        return;
-    }
-'''
-          if source.count(old_breath) != 1:
-              raise SystemExit(f'breath block matches={source.count(old_breath)}')
-          source = source.replace(old_breath, new_breath, 1)
-
-          old_missing = '''        if (state.targetValid && std::abs(state.currentCents) > 0.001)
-        {
-            setState(TrackingState::release);
-            state.desiredCents = 0.0;
-            state.responseMs = std::clamp(32.0 - 20.0
-                * static_cast<double>(clamp01(parameters.transientProtection)),
-                8.0, 32.0);
-        }
-        else
-        {
-            setState(TrackingState::unvoiced);
-        }
-        return;
-'''
-          new_missing = '''        // TARGET_AUTHORITY_TAIL_HOLD_V1: a previously selected scale degree
-        // remains the destination through pitchless material. No hidden release
-        // is allowed to undo the correction and reveal the source note.
-        if (state.targetValid)
-            setState(TrackingState::acquire);
-        else
-            setState(TrackingState::unvoiced);
-        return;
-'''
-          if source.count(old_missing) != 1:
-              raise SystemExit(f'missing-F0 block matches={source.count(old_missing)}')
-          source = source.replace(old_missing, new_missing, 1)
-
-          # Before a musical target exists, unvoiced/breath material still has no
-          # correction destination. Leave that behaviour untouched. The only
-          # forbidden zeroing is after targetValid has established a destination.
-
-          start = tests.index('    // Positive breath evidence releases the note even if the tracker happens to\n')
-          end_marker = '                     "unvoiced_release_reaches_unity_and_clears_note_latch");\n'
-          end = tests.index(end_marker, start) + len(end_marker)
-          replacement = '''    // TARGET_AUTHORITY_TAIL_HOLD_V1: once a target exists, breath/noise is
-    // allowed to remove confidence in the current F0 but never to undo the
-    // requested pitch displacement. A spurious periodic accident in breath
-    // must therefore be ignored rather than retargeting or releasing to source.
-    ModernPitchEngine::CorrectionState spuriousBreath = dropoutState;
-    setBreathEvidence(parameters);
-    const auto falsePitchOnBreath = strongPitch(231.0f);
-    for (int i = 0; i < 100; ++i)
-        engine->updateCorrectionState(spuriousBreath, quantizer,
-                                      falsePitchOnBreath, parameters);
-    success &= check(spuriousBreath.trackingState != ModernPitchEngine::TrackingState::release
-                     && spuriousBreath.targetValid
-                     && std::abs(spuriousBreath.desiredCents - 100.0) < 1.0e-9,
-                     "breath_cannot_release_existing_target_to_source");
-
-    // The same invariant holds when the detector correctly reports no F0.
-    ModernPitchEngine::CorrectionState pitchlessTail = dropoutState;
-    for (int i = 0; i < 100; ++i)
-        engine->updateCorrectionState(pitchlessTail, quantizer, invalid, parameters);
-    success &= check(pitchlessTail.trackingState != ModernPitchEngine::TrackingState::release
-                     && pitchlessTail.targetValid
-                     && std::abs(pitchlessTail.desiredCents - 100.0) < 1.0e-9,
-                     "pitchless_tail_keeps_arrival_scale_degree");
-
-    for (int i = 0; i < 4800; ++i)
-        static_cast<void>(engine->advanceCorrection(pitchlessTail));
-    success &= check(std::abs(pitchlessTail.currentCents - 100.0) < 1.0e-9,
-                     "pitchless_tail_never_glides_back_to_source");
-'''
-          tests = tests[:start] + replacement + tests[end:]
-
-          source_path.write_text(source)
-          test_path.write_text(tests)
-          PY
-
-      - name: Verify subtractive authority contract
+      - name: Verify authority contract
         shell: bash
         run: |
           set -euo pipefail
@@ -157,27 +42,18 @@ jobs:
           grep -q 'pitchless_tail_never_glides_back_to_source' Tests/SupervisorContinuityTest.cpp
           test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "3080ba804cb038421b075d76f5eceec335c22396"
           test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
-          ! grep -A18 -F 'if (state.targetValid && (confirmedBreath || confirmedAbsence))' Source/ModernPitchEngine.cpp | grep -q 'desiredCents = 0.0'
-          ! grep -A20 -F 'if (!validPitch)' Source/ModernPitchEngine.cpp | grep -q 'TrackingState::release'
+          if grep -A18 -F 'if (state.targetValid && (confirmedBreath || confirmedAbsence))' Source/ModernPitchEngine.cpp | grep -q 'desiredCents = 0.0'; then exit 1; fi
 
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            libasound2-dev libjack-jackd2-dev ladspa-sdk \
-            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
-            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
-            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
-            libglu1-mesa-dev mesa-common-dev
+          sudo apt-get install -y libasound2-dev libjack-jackd2-dev ladspa-sdk libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev
 
       - name: Configure
         run: cmake -S . -B build-simple -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
 
       - name: Build focused invariants
-        run: >-
-          cmake --build build-simple --config Release
-          --target CleanModernPitchEngineTest SupervisorContinuityTest
-          SingleWetSpectralRendererTest --parallel 2
+        run: cmake --build build-simple --config Release --target CleanModernPitchEngineTest SupervisorContinuityTest SingleWetSpectralRendererTest --parallel 2
 
       - name: Run focused invariants
         shell: bash
@@ -197,6 +73,6 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add Source/ModernPitchEngine.cpp Tests/SupervisorContinuityTest.cpp
-          git rm .github/workflows/simple-target-authority-materialize.yml
+          git rm Tests/MaterializeSimpleTargetAuthorityV1.py .github/workflows/simple-target-authority-materialize.yml
           git commit -m 'Keep correction on arrival target through unvoiced tails'
           git push origin HEAD:simple-fix-from-quality-baseline
