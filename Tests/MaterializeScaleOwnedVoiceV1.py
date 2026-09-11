@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 
 def require_once(text: str, needle: str, label: str) -> None:
@@ -7,11 +8,16 @@ def require_once(text: str, needle: str, label: str) -> None:
         raise SystemExit(f"{label}: expected 1 occurrence, found {count}")
 
 
+def regex_once(text: str, pattern: str, replacement: str, label: str) -> str:
+    result, count = re.subn(pattern, replacement, text, count=1, flags=re.MULTILINE)
+    if count != 1:
+        raise SystemExit(f"{label}: expected 1 occurrence, found {count}")
+    return result
+
+
 engine_path = Path("Source/ModernPitchEngine.cpp")
 s = engine_path.read_text()
 
-# Reuse existing voice evidence as the only explicit exception to
-# "audible signal is a musical body".
 marker = "        && parameters.voiceEventStrength <= 0.30f;\n\n    const float bodyAttack"
 require_once(s, marker, "phonetic insertion marker")
 insert = """        && parameters.voiceEventStrength <= 0.30f;
@@ -27,8 +33,6 @@ insert = """        && parameters.voiceEventStrength <= 0.30f;
     const float bodyAttack"""
 s = s.replace(marker, insert, 1)
 
-# Rescue remains a musical state. Only a rescue that selected the adjacent
-# degree becomes a transition.
 start_marker = "        if (advanceConservativeF0Rescue(state, quantizer, observation,"
 start = s.index(start_marker)
 end_marker = "\n\n        // SOUND_EQUALS_CORRECTION_V1: audio presence owns the voice"
@@ -46,7 +50,6 @@ new = """        if (advanceConservativeF0Rescue(state, quantizer, observation,
         }"""
 s = s[:start] + new + s[end:]
 
-# Existing target + present audio must not get stuck in acquire.
 anchor = s.index("// SOUND_EQUALS_CORRECTION_V1: audio presence owns the voice")
 start = s.index("        if (observation.audioPresent)\n", anchor)
 end_marker = "\n\n        // Missing F0 is not missing voice."
@@ -66,7 +69,6 @@ new = """        if (observation.audioPresent)
         }"""
 s = s[:start] + new + s[end:]
 
-# Independent body evidence is still a note even if the pitch tracker is stale.
 anchor = s.index("// Missing F0 is not missing voice.")
 start = s.index("        if (state.noteBodyLatched)\n", anchor)
 end_marker = "\n\n        // TARGET_AUTHORITY_TAIL_HOLD_V1:"
@@ -85,8 +87,6 @@ new = """        if (state.noteBodyLatched)
         }"""
 s = s[:start] + new + s[end:]
 
-# Raw dry F0 measures error; it does not own note identity. Ordinary degree
-# changes require the continuity centre itself to leave the current scale cell.
 start = s.index("        // SOUND_EQUALS_CORRECTION_V2_DENSE_SAFE: live pitch outside a clear")
 end_marker = "\n        if (liveIdentityBreak)\n"
 end = s.index(end_marker, start)
@@ -110,8 +110,6 @@ new = """        // SCALE_OWNS_VOICE_V1: raw dry pitch measures error; it does n
             && (obviousRegisterBreak || sustainedCellExit);"""
 s = s[:start] + new + s[end:]
 
-# Stable owns the selected degree. correctionObservedLog2 remains exclusively
-# the correction-depth coordinate later in updateCorrectionState().
 start = s.index("    const float hysteresis = adaptiveHysteresis(parameters, quantizer, observation);")
 end_marker = "\n\n    const bool targetChanged = !state.targetValid"
 end = s.index(end_marker, start)
@@ -143,42 +141,24 @@ new = """    const float hysteresis = adaptiveHysteresis(parameters, quantizer, 
 s = s[:start] + new + s[end:]
 engine_path.write_text(s)
 
-# Update only tests whose old acquire semantics contradict the final contract,
-# and widen the long-vibrato stress case to cross a semitone midpoint.
+# Tests: whitespace-independent state assertions, plus semantic names and a
+# vibrato excursion large enough to cross the ordinary semitone midpoint.
 test_path = Path("Tests/SupervisorContinuityTest.cpp")
 t = test_path.read_text()
-replacements = [
-    (
-        "heldCorrectionState.trackingState\n                     == ModernPitchEngine::TrackingState::acquire",
-        "heldCorrectionState.trackingState\n                     == ModernPitchEngine::TrackingState::stable",
-    ),
-    (
-        '"acquire_search_never_mutes_existing_correction"',
-        '"present_f0_search_remains_stable_on_existing_target"',
-    ),
-    (
-        "dropoutState.trackingState == ModernPitchEngine::TrackingState::acquire",
-        "dropoutState.trackingState == ModernPitchEngine::TrackingState::stable",
-    ),
-    (
-        '"stale_pitch_reacquires_without_reducing_correction"',
-        '"body_evidence_keeps_stale_pitch_musically_stable"',
-    ),
-    (
-        "acquireState.trackingState == ModernPitchEngine::TrackingState::acquire",
-        "acquireState.trackingState == ModernPitchEngine::TrackingState::stable",
-    ),
-    (
-        '"stale_f0_cannot_masquerade_as_stable_note"',
-        '"body_signal_cannot_be_stuck_in_acquire"',
-    ),
-    (
-        "explicitAuthorityState.trackingState\n                         == ModernPitchEngine::TrackingState::acquire",
-        "explicitAuthorityState.trackingState\n                         == ModernPitchEngine::TrackingState::stable",
-    ),
+for variable in ("heldCorrectionState", "dropoutState", "acquireState", "explicitAuthorityState"):
+    pattern = rf"({variable}\.trackingState\s*==\s*ModernPitchEngine::TrackingState::)acquire"
+    t = regex_once(t, pattern, r"\1stable", f"{variable} acquire assertion")
+
+renames = [
+    ('"acquire_search_never_mutes_existing_correction"',
+     '"present_f0_search_remains_stable_on_existing_target"'),
+    ('"stale_pitch_reacquires_without_reducing_correction"',
+     '"body_evidence_keeps_stale_pitch_musically_stable"'),
+    ('"stale_f0_cannot_masquerade_as_stable_note"',
+     '"body_signal_cannot_be_stuck_in_acquire"'),
     ("34.0 * std::sin", "70.0 * std::sin"),
 ]
-for old, new in replacements:
-    require_once(t, old, f"test replacement {old[:48]}")
+for old, new in renames:
+    require_once(t, old, f"test replacement {old}")
     t = t.replace(old, new, 1)
 test_path.write_text(t)
