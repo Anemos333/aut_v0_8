@@ -33,12 +33,13 @@ jobs:
           ! grep -q 'EXPERIMENTAL_TRUE_PARTIAL_TRANSPORT' Source/SingleWetSpectralRenderer.cpp
           ! grep -q 'identity phase lock' Source/SingleWetSpectralRenderer.cpp
           ! grep -q 'sourceHarmonic' Source/SingleWetSpectralRenderer.cpp
-          grep -q 'UNIFIED_CONTINUOUS_SHIFT_FIELD_V13_1' Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
+          grep -q 'UNIFIED_CONTINUOUS_COHERENCE_FIELD_V13_2' Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
           grep -q 'calculateContinuousShiftField' Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
+          grep -q 'continuousOutputPhase' Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
           grep -q 'measuredSourceBin \* safeRatio' Source/SingleWetSpectralRenderer.cpp
           grep -q 'const float safeFormant = clamp01(formantPreservation);' Source/SingleWetSpectralRenderer.cpp
           grep -q 'lookupFormantGain' Source/SingleWetSpectralRenderer.cpp
-          echo UNIFIED_CONTINUOUS_SHIFT_SOURCE_CONTRACT=PASS
+          echo UNIFIED_CONTINUOUS_COHERENCE_SOURCE_CONTRACT=PASS
 
       - name: Install Linux dependencies
         run: |
