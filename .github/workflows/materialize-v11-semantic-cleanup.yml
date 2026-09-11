@@ -1,0 +1,71 @@
+name: Materialize V11 Semantic Cleanup
+
+on:
+  push:
+    branches:
+      - one-voice-breath-glide-v11
+    paths:
+      - .github/workflows/materialize-v11-semantic-cleanup.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply semantic cleanup
+        run: python3 Tests/OneVoiceBreathGlideV11SemanticCleanup.py
+
+      - name: Verify no unity authority and new test semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! grep -q 'state.desiredCents = 0.0' Source/ModernPitchEngine.cpp
+          ! grep -q 'setState(TrackingState::release)' Source/ModernPitchEngine.cpp
+          ! grep -q 'breathConfirmSamples' Source/ModernPitchEngine.cpp
+          ! grep -q 'ambiguousReleaseSamples' Source/ModernPitchEngine.cpp
+          grep -q 'breath_evidence_cannot_veto_valid_f0' Tests/SupervisorContinuityTest.cpp
+          grep -q 'breath_without_f0_holds_exact_musical_destination' Tests/SupervisorContinuityTest.cpp
+          grep -q 'breath_tail_never_returns_to_unity_or_clears_voice' Tests/SupervisorContinuityTest.cpp
+          ! grep -q 'breath_wins_over_spurious_valid_f0' Tests/SupervisorContinuityTest.cpp
+          ! grep -q 'confirmed_breath_releases_missing_f0_note' Tests/SupervisorContinuityTest.cpp
+          ! grep -q 'unvoiced_release_reaches_unity_and_clears_note_latch' Tests/SupervisorContinuityTest.cpp
+          echo V11_SEMANTIC_SOURCE_CONTRACT=PASS
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev
+
+      - name: Build supervisor test
+        run: |
+          cmake -S . -B build-semantic -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+          cmake --build build-semantic --config Release --target SupervisorContinuityTest --parallel 2
+
+      - name: Run supervisor test
+        run: ./build-semantic/clean-engine-tests/SupervisorContinuityTest
+
+      - name: Commit semantic cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Source/ModernPitchEngine.cpp Tests/SupervisorContinuityTest.cpp
+          if git diff --cached --quiet; then
+            echo 'Already materialized.'
+            exit 0
+          fi
+          git commit -m 'Materialize one-voice breath glide semantics'
+          git push origin HEAD:one-voice-breath-glide-v11
