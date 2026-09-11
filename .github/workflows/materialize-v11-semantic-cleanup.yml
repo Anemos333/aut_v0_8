@@ -1,4 +1,4 @@
-name: Materialize V11 Semantic Cleanup
+name: Materialize Authoritative Single Glide V12
 
 on:
   push:
@@ -6,6 +6,7 @@ on:
       - one-voice-breath-glide-v11
     paths:
       - .github/workflows/materialize-v11-semantic-cleanup.yml
+      - Tests/OneVoiceBreathGlideV11SemanticCleanup.py
   workflow_dispatch:
 
 permissions:
@@ -19,24 +20,28 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Apply semantic cleanup
+      - name: Apply authoritative single-glide semantics
         run: python3 Tests/OneVoiceBreathGlideV11SemanticCleanup.py
 
-      - name: Verify no unity authority and new test semantics
+      - name: Verify authority and single-path source contract
         shell: bash
         run: |
           set -euo pipefail
-          ! grep -q 'state.desiredCents = 0.0' Source/ModernPitchEngine.cpp
-          ! grep -q 'setState(TrackingState::release)' Source/ModernPitchEngine.cpp
+          ! grep -q 'exactScaleLockAuthority' Source/ModernPitchEngine.cpp Source/ModernPitchEngine.h
+          ! grep -q 'zeroPrudenceAuthority' Source/ModernPitchEngine.cpp Source/ModernPitchEngine.h
+          ! grep -q 'immediateAuthority_' Source/ModernPitchEngine.cpp Source/ModernPitchEngine.h
+          ! grep -q 'setImmediateAuthority' Source/ModernPitchEngine.cpp Source/ModernPitchEngine.h
           ! grep -q 'breathConfirmSamples' Source/ModernPitchEngine.cpp
           ! grep -q 'ambiguousReleaseSamples' Source/ModernPitchEngine.cpp
-          grep -q 'breath_evidence_cannot_veto_valid_f0' Tests/SupervisorContinuityTest.cpp
-          grep -q 'breath_without_f0_holds_exact_musical_destination' Tests/SupervisorContinuityTest.cpp
-          grep -q 'breath_tail_never_returns_to_unity_or_clears_voice' Tests/SupervisorContinuityTest.cpp
-          ! grep -q 'breath_wins_over_spurious_valid_f0' Tests/SupervisorContinuityTest.cpp
-          ! grep -q 'confirmed_breath_releases_missing_f0_note' Tests/SupervisorContinuityTest.cpp
-          ! grep -q 'unvoiced_release_reaches_unity_and_clears_note_latch' Tests/SupervisorContinuityTest.cpp
-          echo V11_SEMANTIC_SOURCE_CONTRACT=PASS
+          grep -q 'signal_with_target_is_immediately_voiced_stable' Tests/SupervisorContinuityTest.cpp
+          grep -q 'glide_converges_exactly_to_requested_target' Tests/SupervisorContinuityTest.cpp
+          grep -q 'hold_crossing_changes_degree_without_confidence_confirmation' Tests/SupervisorContinuityTest.cpp
+          grep -q 'audible_consonant_keeps_voiced_target_and_correction' Tests/SupervisorContinuityTest.cpp
+          ! grep -q 'wetMix' Source/SingleWetSpectralRenderer.cpp
+          ! grep -q 'harmonicMask' Source/SingleWetSpectralRenderer.cpp
+          ! grep -q 'noiseWeight' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'lookupFormantGain' Source/SingleWetSpectralRenderer.cpp
+          echo AUTHORITATIVE_SINGLE_GLIDE_SOURCE_CONTRACT=PASS
 
       - name: Install Linux dependencies
         run: |
@@ -48,24 +53,31 @@ jobs:
             libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
             libglu1-mesa-dev mesa-common-dev
 
-      - name: Build supervisor test
-        run: |
-          cmake -S . -B build-semantic -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
-          cmake --build build-semantic --config Release --target SupervisorContinuityTest --parallel 2
+      - name: Configure tests and plugin
+        run: cmake -S . -B build-authority -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
 
-      - name: Run supervisor test
-        run: ./build-semantic/clean-engine-tests/SupervisorContinuityTest
+      - name: Build authority and renderer tests
+        run: cmake --build build-authority --config Release --target SupervisorContinuityTest SingleWetSpectralRendererTest --parallel 2
 
-      - name: Commit semantic cleanup
+      - name: Run authority tests
+        run: ./build-authority/clean-engine-tests/SupervisorContinuityTest
+
+      - name: Run single-wet renderer tests
+        run: ./build-authority/clean-engine-tests/SingleWetSpectralRendererTest
+
+      - name: Build complete VST3
+        run: cmake --build build-authority --config Release --target Neumaton_VST3 --parallel 2
+
+      - name: Commit materialized engine
         shell: bash
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add Source/ModernPitchEngine.cpp Tests/SupervisorContinuityTest.cpp
+          git add Source/ModernPitchEngine.h Source/ModernPitchEngine.cpp Tests/SupervisorContinuityTest.cpp
           if git diff --cached --quiet; then
             echo 'Already materialized.'
             exit 0
           fi
-          git commit -m 'Materialize one-voice breath glide semantics'
+          git commit -m 'Materialize authoritative single-glide V11 semantics'
           git push origin HEAD:one-voice-breath-glide-v11
