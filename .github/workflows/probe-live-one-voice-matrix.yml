@@ -1,0 +1,34 @@
+name: Probe Live One Voice Matrix
+
+on:
+  push:
+    branches:
+      - one-voice-breath-glide-v11
+    paths:
+      - Tests/LiveOneVoiceTransportMatrix.py
+      - Tests/LiveOneVoiceMatrixProbe.cpp
+      - .github/workflows/probe-live-one-voice-matrix.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  matrix:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        phase: [self, peak]
+        mag: [self, peak]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply matrix variant
+        env:
+          LIVE_PHASE: ${{ matrix.phase }}
+          LIVE_MAG: ${{ matrix.mag }}
+        run: python3 Tests/LiveOneVoiceTransportMatrix.py
+      - name: Build matrix probe
+        run: g++ -std=c++17 -O2 Tests/LiveOneVoiceMatrixProbe.cpp Source/SingleWetSpectralRenderer.cpp -o /tmp/live-matrix
+      - name: Run matrix probe
+        run: /tmp/live-matrix
