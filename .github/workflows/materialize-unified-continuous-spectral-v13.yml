@@ -23,6 +23,53 @@ jobs:
       - name: Apply unified continuous spectral field
         run: python3 Tests/UnifiedContinuousSpectralTransportV13.py
 
+      - name: Preserve exact local ratio without spectral territories
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('Source/SingleWetSpectralRenderer.cpp')
+          s = p.read_text()
+          start = s.index('void SingleWetSpectralRenderer::calculateContinuousCorrectionField(')
+          end = s.index('float SingleWetSpectralRenderer::interpolateEnvelope(', start)
+          replacement = r'''void SingleWetSpectralRenderer::calculateContinuousCorrectionField(
+              int positiveBins,
+              double shiftScale) noexcept
+          {
+              if (positiveBins < 0
+                  || correctionShiftBins_.size() < static_cast<std::size_t>(positiveBins + 1))
+                  return;
+
+              // UNIFIED_CONTINUOUS_CORRECTION_FIELD_V13_4
+              // One equation for every spectral coordinate. There are no peaks,
+              // regions, harmonic identities, masks or ownership boundaries.
+              // Do not average instantaneous-frequency coordinates here: that
+              // changes the requested ratio on coarse 128/256 FFTs. Each bin's
+              // measured coordinate contributes only its correction displacement.
+              // The same displacement drives both phase velocity and energy geometry.
+              for (int sourceBin = 0; sourceBin <= positiveBins; ++sourceBin)
+              {
+                  const std::size_t sourceIndex = static_cast<std::size_t>(sourceBin);
+                  const double measuredSourceBin = std::clamp(
+                      trueSourceBins_[sourceIndex],
+                      0.0,
+                      static_cast<double>(positiveBins));
+                  correctionShiftBins_[sourceIndex] = measuredSourceBin * shiftScale;
+              }
+          }
+
+          '''
+          s = s[:start] + replacement + s[end:]
+          s = s.replace('UNIFIED_CONTINUOUS_CORRECTION_FIELD_V13_3',
+                        'UNIFIED_CONTINUOUS_CORRECTION_FIELD_V13_4')
+          p.write_text(s)
+
+          h = Path('Source/SingleWetSpectralRenderer.h')
+          hs = h.read_text().replace('UNIFIED_CONTINUOUS_CORRECTION_FIELD_V13_3',
+                                     'UNIFIED_CONTINUOUS_CORRECTION_FIELD_V13_4')
+          h.write_text(hs)
+          PY
+
       - name: Verify no piecewise reconstruction remains
         shell: bash
         run: |
@@ -33,12 +80,11 @@ jobs:
           ! grep -q 'EXPERIMENTAL_TRUE_PARTIAL_TRANSPORT' Source/SingleWetSpectralRenderer.cpp
           ! grep -q 'identity phase lock' Source/SingleWetSpectralRenderer.cpp
           ! grep -q 'sourceHarmonic' Source/SingleWetSpectralRenderer.cpp
-          grep -q 'UNIFIED_CONTINUOUS_CORRECTION_FIELD_V13_3' Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
+          grep -q 'UNIFIED_CONTINUOUS_CORRECTION_FIELD_V13_4' Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
           grep -q 'calculateContinuousCorrectionField' Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
-          grep -q 'const double measuredSourceBin = trueSourceBins_' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'correctionShiftBins_\[sourceIndex\] = measuredSourceBin \* shiftScale;' Source/SingleWetSpectralRenderer.cpp
           grep -q 'const double correctedPhaseVelocityBin = measuredSourceBin' Source/SingleWetSpectralRenderer.cpp
           grep -q '+ correctionShiftBins_' Source/SingleWetSpectralRenderer.cpp
-          grep -q '+ correctionShiftBins_\[sourceIndex\]' Source/SingleWetSpectralRenderer.cpp
           grep -q 'const float safeFormant = clamp01(formantPreservation);' Source/SingleWetSpectralRenderer.cpp
           grep -q 'lookupFormantGain' Source/SingleWetSpectralRenderer.cpp
           echo UNIFIED_CONTINUOUS_CORRECTION_SOURCE_CONTRACT=PASS
@@ -81,3 +127,5 @@ jobs:
           fi
           git commit -m 'Remove piecewise reconstruction from all renderer modes'
           git push origin HEAD:one-voice-breath-glide-v11
+
+# Architectural invariant: no piecewise voice reconstruction; formants are the only permitted reconstruction envelope.
