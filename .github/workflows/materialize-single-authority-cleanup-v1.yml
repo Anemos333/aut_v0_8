@@ -29,7 +29,24 @@ jobs:
           grep -Fq 'SINGLE_WET_PURITY_V6' Source/ModernPitchEngine.cpp
 
       - name: Apply subtractive cleanup
-        run: python3 Tests/MaterializeSingleAuthorityCleanupV1.py
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('Tests/MaterializeSingleAuthorityCleanupV1.py')
+          text = path.read_text()
+          old = 'mode_update_end = p.find("//==============================================================================\\nvoid MicrotonalAutotuneAudioProcessor::resetSlowStateNoAlloc()", mode_update_start)'
+          new = 'mode_update_end = p.find("void MicrotonalAutotuneAudioProcessor::resetSlowStateNoAlloc()", mode_update_start)'
+          if text.count(old) != 1:
+              raise SystemExit('mode-update marker patch did not match exactly once')
+          text = text.replace(old, new, 1)
+          old = '    "//==============================================================================\\nvoid MicrotonalAutotuneAudioProcessor::resetSlowStateNoAlloc() noexcept\\n",'
+          new = '    "void MicrotonalAutotuneAudioProcessor::resetSlowStateNoAlloc() noexcept\\n",'
+          if text.count(old) != 1:
+              raise SystemExit('slow-reset marker patch did not match exactly once')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          python3 Tests/MaterializeSingleAuthorityCleanupV1.py
 
       - name: Verify single authority architecture
         run: |
