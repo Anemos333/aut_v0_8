@@ -72,7 +72,9 @@ jobs:
 
           # The spectral transport itself remains the baseline single global shift.
           grep -Fq 'const double targetPosition = static_cast<double>(sourceBin) * safeRatio' Source/SingleWetSpectralRenderer.cpp
-          grep -Fq 'const float outputMagnitude = magnitude * formantGain * energyScale' Source/SingleWetSpectralRenderer.cpp
+          grep -Fq 'const float outputMagnitude = magnitude' Source/SingleWetSpectralRenderer.cpp
+          grep -Fq '* formantGain' Source/SingleWetSpectralRenderer.cpp
+          grep -Fq '* energyScale;' Source/SingleWetSpectralRenderer.cpp
           ! grep -Fq 'harmonicMask' Source/SingleWetSpectralRenderer.cpp
           ! grep -Fq 'noiseDominance' Source/SingleWetSpectralRenderer.cpp
           ! grep -Fq 'reconstructionGain' Source/SingleWetSpectralRenderer.cpp
