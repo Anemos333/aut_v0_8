@@ -6,6 +6,7 @@ on:
       - one-voice-breath-glide-v11
     paths:
       - Tests/OneVoiceBreathGlideV11Patch.py
+      - Tests/OneVoiceBreathGlideV11CompileFix.py
       - Tests/OneVoiceBreathGlideV11Probe.cpp
       - .github/workflows/probe-one-voice-breath-glide-v11.yml
   workflow_dispatch:
@@ -20,7 +21,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Apply guarded V11 patch
-        run: python3 Tests/OneVoiceBreathGlideV11Patch.py
+        run: |
+          python3 Tests/OneVoiceBreathGlideV11Patch.py
+          python3 Tests/OneVoiceBreathGlideV11CompileFix.py
 
       - name: Verify authority and topology contract
         shell: bash
