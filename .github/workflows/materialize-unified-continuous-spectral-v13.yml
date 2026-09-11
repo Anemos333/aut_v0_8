@@ -32,11 +32,13 @@ jobs:
           ! grep -q 'calculatePeakRegions' Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
           ! grep -q 'EXPERIMENTAL_TRUE_PARTIAL_TRANSPORT' Source/SingleWetSpectralRenderer.cpp
           ! grep -q 'identity phase lock' Source/SingleWetSpectralRenderer.cpp
-          grep -q 'UNIFIED_CONTINUOUS_SPECTRAL_FIELD_V13' Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
-          grep -q 'calculateContinuousTransportField' Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
+          ! grep -q 'sourceHarmonic' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'UNIFIED_CONTINUOUS_SHIFT_FIELD_V13_1' Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
+          grep -q 'calculateContinuousShiftField' Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
+          grep -q 'measuredSourceBin \* safeRatio' Source/SingleWetSpectralRenderer.cpp
           grep -q 'const float safeFormant = clamp01(formantPreservation);' Source/SingleWetSpectralRenderer.cpp
           grep -q 'lookupFormantGain' Source/SingleWetSpectralRenderer.cpp
-          echo UNIFIED_CONTINUOUS_SPECTRAL_SOURCE_CONTRACT=PASS
+          echo UNIFIED_CONTINUOUS_SHIFT_SOURCE_CONTRACT=PASS
 
       - name: Install Linux dependencies
         run: |
@@ -74,5 +76,5 @@ jobs:
             echo 'Already materialized.'
             exit 0
           fi
-          git commit -m 'Unify all modes on one continuous spectral field'
+          git commit -m 'Remove piecewise reconstruction from all renderer modes'
           git push origin HEAD:one-voice-breath-glide-v11
