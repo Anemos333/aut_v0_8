@@ -33,12 +33,18 @@ old_breath = """    if (state.targetValid && (confirmedBreath || confirmedAbsenc
 """
 new_breath = """    // TARGET_AUTHORITY_TAIL_HOLD_V1: once a musical target exists, breath or
     // temporary absence may stop supplying a trustworthy F0, but it is not
-    // permission to move the audio back toward the source pitch. Keep the
-    // already requested correction; only invalidate stale analysis state.
-    if (state.targetValid && (confirmedBreath || confirmedAbsence))
+    // permission to move the audio back toward the source pitch. The current
+    // frame evidence already exists here, so do not wait for temporal breath
+    // confirmation while a spurious periodicity is free to retarget the note.
+    if (state.targetValid
+        && (confirmedBreath
+            || confirmedAbsence
+            || (richEvidence
+                && (confirmedBreathFrame || confirmedAbsenceFrame))))
     {
         state.stableBodyObservations = 0;
         if (confirmedAbsence
+            || confirmedAbsenceFrame
             || state.breathEvidenceSamples > static_cast<int>(0.12 * sampleRate_))
         {
             state.pitchCentreValid = false;
