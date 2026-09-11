@@ -92,7 +92,9 @@ end_marker = "\n        if (liveIdentityBreak)\n"
 end = s.index(end_marker, start)
 new = """        // SCALE_OWNS_VOICE_V1: raw dry pitch measures error; it does not
         // own note identity. Ordinary degree changes require the continuity
-        // centre itself to leave the current scale cell in the same direction.
+        // centre itself to cross the existing half-cell identity boundary in
+        // the same direction. This preserves dense/microtonal scale ownership
+        // without letting instantaneous vibrato choose a neighbouring degree.
         const double centreDistanceFromCurrentTarget = state.targetValid
             ? std::abs(state.pitchCentreLog2 - state.targetLog2) * 1200.0
             : 0.0;
@@ -102,8 +104,8 @@ new = """        // SCALE_OWNS_VOICE_V1: raw dry pitch measures error; it does n
         const bool obviousRegisterBreak = observedDistanceFromCurrentTarget
             >= obviousRegisterBreakCents;
         const bool sustainedCellExit = centreDistanceFromCurrentTarget
-            >= liveIdentityBreakRadius
-            && observedDistanceFromCurrentTarget >= liveIdentityBreakRadius
+            >= currentIdentityRadius
+            && observedDistanceFromCurrentTarget >= currentIdentityRadius
             && observedDirection * centreDirection > 0.0;
         liveIdentityBreak = observation.audioPresent
             && state.targetValid
@@ -141,8 +143,6 @@ new = """    const float hysteresis = adaptiveHysteresis(parameters, quantizer, 
 s = s[:start] + new + s[end:]
 engine_path.write_text(s)
 
-# Tests: whitespace-independent state assertions, plus semantic names and a
-# vibrato excursion large enough to cross the ordinary semitone midpoint.
 test_path = Path("Tests/SupervisorContinuityTest.cpp")
 t = test_path.read_text()
 for variable in ("heldCorrectionState", "dropoutState", "acquireState", "explicitAuthorityState"):
