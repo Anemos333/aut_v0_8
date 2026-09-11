@@ -1,0 +1,94 @@
+name: Materialize Single Authority Cleanup V1
+
+on:
+  push:
+    branches:
+      - simple-fix-from-quality-baseline
+    paths:
+      - '.github/workflows/materialize-single-authority-cleanup-v1.yml'
+      - 'Tests/MaterializeSingleAuthorityCleanupV1.py'
+
+permissions:
+  contents: write
+
+jobs:
+  validate-and-materialize:
+    if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: simple-fix-from-quality-baseline
+          fetch-depth: 0
+
+      - name: Verify frozen transport before subtractive cleanup
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "3080ba804cb038421b075d76f5eceec335c22396"
+          grep -Fq 'SCALE_OWNS_VOICE_V2' Source/ModernPitchEngine.cpp
+          grep -Fq 'SINGLE_WET_PURITY_V6' Source/ModernPitchEngine.cpp
+
+      - name: Apply subtractive cleanup
+        run: python3 Tests/MaterializeSingleAuthorityCleanupV1.py
+
+      - name: Verify single authority architecture
+        run: |
+          set -euo pipefail
+          git diff --check
+
+          grep -Fq 'SINGLE_PLUGIN_AUDIO_PATH_V1' Source/PluginProcessor.cpp
+          grep -Fq 'HOST_BYPASS_ONLY_DRY_V1' Source/PluginProcessor.cpp
+          grep -Fq 'PHONETIC_STATE_HAS_NO_CORRECTION_AUTHORITY_V1' Source/ModernPitchEngine.cpp
+          grep -Fq 'ACTIVE_PATH_NEVER_DRY_FALLBACK_V1' Source/SingleWetSpectralRenderer.cpp
+
+          ! grep -Fq 'detectPitchYIN' Source/PluginProcessor.cpp
+          ! grep -Fq 'detectPitchYIN' Source/PluginProcessor.h
+          ! grep -Fq 'smoothedShiftRatio' Source/PluginProcessor.cpp
+          ! grep -Fq 'circularBuffer' Source/PluginProcessor.cpp
+          ! grep -Fq 'yinBuffer' Source/PluginProcessor.cpp
+          ! grep -Fq 'findNearestTarget' Source/PluginProcessor.cpp
+          ! grep -Fq 'SLOW MODE' Source/PluginProcessor.cpp
+          ! grep -Fq '"High Latency"' Source/PluginEditor.cpp
+          ! grep -Fq 'modernMode' Source/PluginEditor.h
+          ! grep -Fq 'desiredCents = 0.0' Source/ModernPitchEngine.cpp
+          ! grep -Fq 'TrackingState::release' Source/ModernPitchEngine.cpp
+
+          # The spectral transport itself remains the baseline single global shift.
+          grep -Fq 'const double targetPosition = static_cast<double>(sourceBin) * safeRatio' Source/SingleWetSpectralRenderer.cpp
+          grep -Fq 'const float outputMagnitude = magnitude * formantGain * energyScale' Source/SingleWetSpectralRenderer.cpp
+          ! grep -Fq 'harmonicMask' Source/SingleWetSpectralRenderer.cpp
+          ! grep -Fq 'noiseDominance' Source/SingleWetSpectralRenderer.cpp
+          ! grep -Fq 'reconstructionGain' Source/SingleWetSpectralRenderer.cpp
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libjack-jackd2-dev ladspa-sdk libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev
+
+      - name: Configure
+        run: cmake -S . -B build-single-authority -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Build focused tests
+        run: cmake --build build-single-authority --config Release --target CleanModernPitchEngineTest SupervisorContinuityTest SingleWetSpectralRendererTest GuiAudioControlContractTest GuiAudibilityTest --parallel 2
+
+      - name: Run focused tests
+        run: |
+          set -euo pipefail
+          ./build-single-authority/clean-engine-tests/CleanModernPitchEngineTest
+          ./build-single-authority/clean-engine-tests/SupervisorContinuityTest
+          ./build-single-authority/clean-engine-tests/SingleWetSpectralRendererTest
+          ./build-single-authority/clean-engine-tests/GuiAudioControlContractTest
+          ./build-single-authority/clean-engine-tests/GuiAudibilityTest
+
+      - name: Build VST3
+        run: cmake --build build-single-authority --config Release --target Neumaton_VST3 --parallel 2
+
+      - name: Commit tested cleanup
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Source/PluginProcessor.cpp Source/PluginProcessor.h Source/PluginEditor.cpp Source/PluginEditor.h Source/ModernPitchEngine.cpp Source/SingleWetSpectralRenderer.cpp Tests/GuiAudioControlContractTest.cpp
+          git rm Tests/MaterializeSingleAuthorityCleanupV1.py .github/workflows/materialize-single-authority-cleanup-v1.yml
+          git commit -m "Remove legacy dry authority paths [skip ci]"
+          git push origin HEAD:simple-fix-from-quality-baseline
