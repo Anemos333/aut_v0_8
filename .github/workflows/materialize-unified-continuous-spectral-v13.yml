@@ -79,3 +79,5 @@ jobs:
           fi
           git commit -m 'Remove piecewise reconstruction from all renderer modes'
           git push origin HEAD:one-voice-breath-glide-v11
+
+# Triggered after architectural decision: no piecewise voice reconstruction; formants are the only permitted reconstruction envelope.
