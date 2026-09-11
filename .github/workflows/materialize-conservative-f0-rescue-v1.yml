@@ -1,0 +1,73 @@
+name: Materialize Conservative F0 Rescue V1
+
+on:
+  push:
+    branches: [simple-fix-from-quality-baseline]
+    paths:
+      - '.github/workflows/materialize-conservative-f0-rescue-v1.yml'
+      - 'Tests/MaterializeConservativeF0RescueV1.py'
+
+permissions:
+  contents: write
+
+jobs:
+  validate-and-materialize:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@v4
+        with:
+          ref: simple-fix-from-quality-baseline
+          fetch-depth: 0
+
+      - name: Verify frozen renderer
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "3080ba804cb038421b075d76f5eceec335c22396"
+          grep -Fq 'const double targetPosition = static_cast<double>(sourceBin) * safeRatio;' Source/SingleWetSpectralRenderer.cpp
+          grep -Fq 'const float safeFormant = clamp01(formantPreservation);' Source/SingleWetSpectralRenderer.cpp
+
+      - name: Materialize rescue in runner
+        run: python3 Tests/MaterializeConservativeF0RescueV1.py
+
+      - name: Verify rescue architecture
+        run: |
+          set -euo pipefail
+          grep -Fq 'CONSERVATIVE_F0_RESCUE_V1' Source/ModernPitchEngine.h
+          grep -Fq 'advanceConservativeF0Rescue' Source/ModernPitchEngine.cpp
+          grep -Fq 'breath_cannot_activate_f0_prediction' Tests/SupervisorContinuityTest.cpp
+          grep -Fq 'phonetic_event_cannot_activate_f0_prediction' Tests/SupervisorContinuityTest.cpp
+          grep -Fq 'real_f0_immediately_cancels_prediction' Tests/SupervisorContinuityTest.cpp
+          ! grep -Fq 'trackedPitchHz_ = state.rescue' Source/ModernPitchEngine.cpp
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "3080ba804cb038421b075d76f5eceec335c22396"
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libjack-jackd2-dev ladspa-sdk libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev
+
+      - name: Configure
+        run: cmake -S . -B build-rescue -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Build focused invariants
+        run: cmake --build build-rescue --config Release --target CleanModernPitchEngineTest SupervisorContinuityTest SingleWetSpectralRendererTest --parallel 2
+
+      - name: Run focused invariants
+        run: |
+          set -euo pipefail
+          ./build-rescue/clean-engine-tests/CleanModernPitchEngineTest
+          ./build-rescue/clean-engine-tests/SupervisorContinuityTest
+          ./build-rescue/clean-engine-tests/SingleWetSpectralRendererTest
+
+      - name: Build VST3
+        run: cmake --build build-rescue --config Release --target Neumaton_VST3 --parallel 2
+
+      - name: Commit tested rescue source
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Source/ModernPitchEngine.cpp Source/ModernPitchEngine.h Tests/SupervisorContinuityTest.cpp
+          git rm Tests/MaterializeConservativeF0RescueV1.py .github/workflows/materialize-conservative-f0-rescue-v1.yml
+          git commit -m 'Add conservative melodic F0 dropout rescue'
+          git push origin HEAD:simple-fix-from-quality-baseline
