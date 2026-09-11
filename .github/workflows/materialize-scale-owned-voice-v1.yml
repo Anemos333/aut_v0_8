@@ -30,10 +30,12 @@ jobs:
       - name: Verify architecture
         run: |
           set -euo pipefail
-          grep -Fq 'SCALE_OWNS_VOICE_V1' Source/ModernPitchEngine.cpp
-          grep -Fq 'stableOwnsTarget' Source/ModernPitchEngine.cpp
+          grep -Fq 'SCALE_OWNS_VOICE_V2' Source/ModernPitchEngine.cpp
+          grep -Fq 'targetSelectionLog2 = state.pitchCentreLog2' Source/ModernPitchEngine.cpp
           grep -Fq 'explicitPhoneticFrame' Source/ModernPitchEngine.cpp
           grep -Fq 'body_signal_cannot_be_stuck_in_acquire' Tests/SupervisorContinuityTest.cpp
+          grep -Fq 'rigid_aperiodic_material_never_leaves_scale_target' Tests/SupervisorContinuityTest.cpp
+          grep -Fq 'exact_authority_valid_aperiodic_input_enters_scale' Tests/SupervisorContinuityTest.cpp
           test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "3080ba804cb038421b075d76f5eceec335c22396"
 
       - name: Install dependencies
@@ -64,5 +66,5 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add Source/ModernPitchEngine.cpp Tests/SupervisorContinuityTest.cpp
           git rm Tests/MaterializeScaleOwnedVoiceV1.py .github/workflows/materialize-scale-owned-voice-v1.yml
-          git commit -m 'Make stable voice scale-owned and remove acquire holes'
+          git commit -m 'Keep all rigid material inside the target scale'
           git push origin HEAD:simple-fix-from-quality-baseline
