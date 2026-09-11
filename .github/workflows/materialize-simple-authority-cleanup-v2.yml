@@ -1,0 +1,54 @@
+name: Materialize Simple Authority Cleanup V2
+
+on:
+  push:
+    branches:
+      - simple-fix-from-quality-baseline
+    paths:
+      - '.github/workflows/materialize-simple-authority-cleanup-v2.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@v4
+        with:
+          ref: simple-fix-from-quality-baseline
+          fetch-depth: 0
+
+      - name: Verify frozen renderer
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "3080ba804cb038421b075d76f5eceec335c22396"
+          grep -Fq 'const double targetPosition = static_cast<double>(sourceBin) * safeRatio;' Source/SingleWetSpectralRenderer.cpp
+          grep -Fq 'const float safeFormant = clamp01(formantPreservation);' Source/SingleWetSpectralRenderer.cpp
+
+      - name: Apply subtractive supervisor cleanup
+        run: python3 Tests/MaterializeSimpleAuthorityCleanupV2.py
+
+      - name: Verify contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq 'TARGET_AUTHORITY_TAIL_HOLD_V1' Source/ModernPitchEngine.cpp
+          ! grep -Fq 'modeFactor = 1.15f' Source/ModernPitchEngine.cpp
+          ! grep -Fq 'confidenceFactor = 0.65f' Source/ModernPitchEngine.cpp
+          ! grep -Fq '2.0f * safeStrictness + 1.5f * (1.0f - safeConfidence)' Source/ModernPitchEngine.cpp
+          grep -Fq 'Response=0 is literal and independent from target authority.' Source/ModernPitchEngine.cpp
+
+      - name: Commit real source only
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Source/ModernPitchEngine.cpp
+          git rm Tests/MaterializeSimpleAuthorityCleanupV2.py .github/workflows/materialize-simple-authority-cleanup-v2.yml .github/workflows/apply-simple-authority-cleanup.yml
+          git commit -m 'Remove hidden target prudence from rigid correction'
+          git push origin HEAD:simple-fix-from-quality-baseline
