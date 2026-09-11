@@ -35,9 +35,10 @@ jobs:
           ! grep -q 'sourceHarmonic' Source/SingleWetSpectralRenderer.cpp
           grep -q 'UNIFIED_CONTINUOUS_CORRECTION_FIELD_V13_3' Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
           grep -q 'calculateContinuousCorrectionField' Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
-          grep -q 'measuredSourceBin' Source/SingleWetSpectralRenderer.cpp
-          grep -q 'measuredSourceBin.*correctionShiftBins_' Source/SingleWetSpectralRenderer.cpp
-          grep -q 'sourceBin).*correctionShiftBins_' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'const double measuredSourceBin = trueSourceBins_' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'const double correctedPhaseVelocityBin = measuredSourceBin' Source/SingleWetSpectralRenderer.cpp
+          grep -q '+ correctionShiftBins_' Source/SingleWetSpectralRenderer.cpp
+          grep -q '+ correctionShiftBins_\[sourceIndex\]' Source/SingleWetSpectralRenderer.cpp
           grep -q 'const float safeFormant = clamp01(formantPreservation);' Source/SingleWetSpectralRenderer.cpp
           grep -q 'lookupFormantGain' Source/SingleWetSpectralRenderer.cpp
           echo UNIFIED_CONTINUOUS_CORRECTION_SOURCE_CONTRACT=PASS
