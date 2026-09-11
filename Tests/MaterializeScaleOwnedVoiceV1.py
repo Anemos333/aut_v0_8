@@ -135,7 +135,7 @@ new = """        // SCALE_OWNS_VOICE_V2: raw dry pitch measures error; it does n
             : 0.0;
         const double observedDirection = observedLog2 - state.targetLog2;
         const double centreDirection = state.pitchCentreLog2 - state.targetLog2;
-        const double obviousRegisterBreakCents = std::max(700.0, 3.5 * scaleStep);
+        const double obviousRegisterBreakCents = std::max(700.0, liveIdentityBreakRadius);
         const bool obviousRegisterBreak = observedDistanceFromCurrentTarget
             >= obviousRegisterBreakCents;
         const bool sustainedCellExit = centreDistanceFromCurrentTarget
@@ -175,22 +175,55 @@ new = """    const float hysteresis = adaptiveHysteresis(parameters, quantizer, 
         pending);
     newTarget += std::round(state.pitchCentreLog2 - newTarget);"""
 s = s[:start] + new + s[end:]
+
+# A rescue prediction may use only the existing finite real-F0 history once.
+# When its hard time budget expires, invalidate that history so the same stale
+# samples cannot immediately restart a new prediction. The target itself is not
+# released; subsequent aperiodic material remains on the already-owned degree.
+old = """    if (++state.rescuePredictionHops > maximumPredictionHops)
+    {
+        state.rescueQualificationHops = 0;
+        state.rescuePredictionActive = false;
+        state.rescuePredictionHops = 0;
+        state.rescueDirection = 0;
+        state.rescueTargetShifted = false;
+        return false;
+    }
+"""
+require_once(s, old, "rescue hard timeout")
+new = """    if (++state.rescuePredictionHops > maximumPredictionHops)
+    {
+        state.rescueQualificationHops = 0;
+        state.rescuePredictionActive = false;
+        state.rescuePredictionHops = 0;
+        state.rescueDirection = 0;
+        state.rescueTargetShifted = false;
+        state.recentRealPitchCount = 0;
+        return false;
+    }
+"""
+s = s.replace(old, new, 1)
 engine_path.write_text(s)
 
 test_path = Path("Tests/SupervisorContinuityTest.cpp")
 t = test_path.read_text()
-for variable in ("heldCorrectionState", "dropoutState", "acquireState"):
+for variable in ("dropoutState", "acquireState"):
     pattern = rf"({variable}\.trackingState\s*==\s*ModernPitchEngine::TrackingState::)acquire"
     t = regex_once(t, pattern, r"\1stable", f"{variable} acquire assertion")
 
-# The explicit dropout is not phonetic evidence, so an acquired target must be
-# reported stable rather than search/acquire.
+# Explicit breath/phonetic evidence is allowed to retain the diagnostic
+# `unvoiced` label, but it must remain scale-owned and preserve correction.
+pattern = r"(heldCorrectionState\.trackingState\s*==\s*ModernPitchEngine::TrackingState::)acquire"
+t = regex_once(t, pattern, r"\1unvoiced", "heldCorrectionState phonetic label")
+
+# The explicit authority dropout is ordinary body/search evidence rather than
+# a phonetic event, so the acquired musical state remains stable.
 pattern = r"(explicitAuthorityState\.trackingState\s*==\s*ModernPitchEngine::TrackingState::)acquire"
 t = regex_once(t, pattern, r"\1stable", "explicitAuthorityState acquire assertion")
 
 renames = [
     ('"acquire_search_never_mutes_existing_correction"',
-     '"present_f0_search_remains_stable_on_existing_target"'),
+     '"explicit_unvoiced_label_never_mutes_scale_correction"'),
     ('"stale_pitch_reacquires_without_reducing_correction"',
      '"body_evidence_keeps_stale_pitch_musically_stable"'),
     ('"stale_f0_cannot_masquerade_as_stable_note"',
