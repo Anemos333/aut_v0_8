@@ -1,0 +1,12 @@
+#include "../Source/SingleWetSpectralRenderer.h"
+#include <algorithm>
+#include <cmath>
+#include <iostream>
+#include <vector>
+namespace { constexpr double pi=3.14159265358979323846,sr=48000.0;
+double powerAt(const std::vector<float>&x,double hz,int start){double re=0,im=0;for(int n=start;n<(int)x.size();++n){double p=2*pi*hz*n/sr;re+=x[(size_t)n]*std::cos(p);im-=x[(size_t)n]*std::sin(p);}return re*re+im*im;}
+double estimate(const std::vector<float>&x,double e,int st){double b=e,bp=-1;for(double f=e-5;f<=e+5;f+=0.05){double p=powerAt(x,f,st);if(p>bp){bp=p;b=f;}}double l=b-.08,r=b+.08;for(int i=0;i<24;++i){double d=(r-l)/3,a=l+d,c=r-d;if(powerAt(x,a,st)<powerAt(x,c,st))l=a;else r=c;}return .5*(l+r);}
+double ct(double m,double e){return 1200*std::log2(m/e);}
+std::vector<float> render(const std::vector<double>&hz,const std::vector<double>&amp,double cents){SingleWetSpectralRenderer r;r.prepare(sr,256);std::vector<float>o(96000);for(int n=0;n<(int)o.size();++n){double x=0;for(size_t i=0;i<hz.size();++i)x+=amp[i]*std::sin(2*pi*hz[i]*n/sr+.271*(i+1));o[(size_t)n]=r.processSample((float)x,cents,0.0f,173.7);}return o;}}
+int main(){constexpr double c=137.6;const double ratio=std::exp2(c/1200.0);constexpr int st=24000;std::vector<double>h{173.7,347.4,521.1,694.8,868.5,1042.2,1215.9,1389.6};std::vector<double>a{.12,.06,.04,.03,.024,.02,.017,.015};auto y=render(h,a,c);double ht=0,hs=0,maxe=0,mae=0;for(size_t i=0;i<h.size();++i){double e=h[i]*ratio,m=estimate(y,e,st),er=ct(m,e);std::cout<<"H"<<i+1<<"="<<er<<"\n";ht+=powerAt(y,e,st);hs+=powerAt(y,h[i],st);maxe=std::max(maxe,std::abs(er));mae+=std::abs(er);}mae/=h.size();std::cout<<"harmonic_ratio="<<ht/std::max(1e-20,hs)<<" max_abs_ct="<<maxe<<" mean_abs_ct="<<mae<<"\n";
+std::vector<double>cloud{220.0};std::vector<double>amp{.16};for(int i=0;i<24;++i){cloud.push_back(1450+211*i+17*((i*i+3*i)%7));amp.push_back(.0045*(1-.018*i));}auto q=render(cloud,amp,c);double at=0,as=0;for(size_t i=1;i<cloud.size();++i){double f=cloud[i];if(f*ratio<sr*.48){at+=powerAt(q,f*ratio,st);as+=powerAt(q,f,st);}}double vt=powerAt(q,220*ratio,st),vs=powerAt(q,220,st);std::cout<<"air_ratio="<<at/std::max(1e-20,as)<<" voice_ratio="<<vt/std::max(1e-20,vs)<<"\n";return 0;}
