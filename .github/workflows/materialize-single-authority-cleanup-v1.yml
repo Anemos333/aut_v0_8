@@ -47,6 +47,29 @@ jobs:
           path.write_text(text.replace(old, new, 1))
           PY
           python3 Tests/MaterializeSingleAuthorityCleanupV1.py
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('Tests/GuiAudioControlContractTest.cpp')
+          text = path.read_text()
+          old = '''    success &= check(has(editor, "processorRef.refreshScaleSnapshot()")
+                         && has(editor, "processorRef.updateProcessingMode (newMode)")
+                         && has(editor, "const int newMode = selectedId")
+                         && !has(editor, "selectedId - 1"),
+                     "scale_root_and_mode_selectors_reach_audio_state");
+'''
+          new = '''    success &= check(has(editor, "processorRef.refreshScaleSnapshot()")
+                         && has(editor, "processorRef.updateProcessingMode (newMode)")
+                         && has(editor, "const int newMode = selectedId")
+                         && !has(editor, "int newMode = selectedId - 1")
+                         && has(editor, "modeSelector.addItem (\\\"Quality\\\",      1)")
+                         && has(editor, "modeSelector.addItem (\\\"Live\\\",         2)")
+                         && has(editor, "modeSelector.addItem (\\\"Experimental\\\", 3)"),
+                     "scale_root_and_mode_selectors_reach_audio_state");
+'''
+          if text.count(old) != 1:
+              raise SystemExit('mode-selector contract patch did not match exactly once')
+          path.write_text(text.replace(old, new, 1))
+          PY
 
       - name: Verify single authority architecture
         run: |
