@@ -1,0 +1,78 @@
+name: Materialize Unified Continuous Spectral V13
+
+on:
+  push:
+    branches:
+      - one-voice-breath-glide-v11
+    paths:
+      - .github/workflows/materialize-unified-continuous-spectral-v13.yml
+      - Tests/UnifiedContinuousSpectralTransportV13.py
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply unified continuous spectral field
+        run: python3 Tests/UnifiedContinuousSpectralTransportV13.py
+
+      - name: Verify no piecewise reconstruction remains
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! grep -q 'nearestPeak_' Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
+          ! grep -q 'peakBins_' Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
+          ! grep -q 'calculatePeakRegions' Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
+          ! grep -q 'EXPERIMENTAL_TRUE_PARTIAL_TRANSPORT' Source/SingleWetSpectralRenderer.cpp
+          ! grep -q 'identity phase lock' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'UNIFIED_CONTINUOUS_SPECTRAL_FIELD_V13' Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
+          grep -q 'calculateContinuousTransportField' Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h
+          grep -q 'const float safeFormant = clamp01(formantPreservation);' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'lookupFormantGain' Source/SingleWetSpectralRenderer.cpp
+          echo UNIFIED_CONTINUOUS_SPECTRAL_SOURCE_CONTRACT=PASS
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev
+
+      - name: Configure tests and plugin
+        run: cmake -S . -B build-unified-spectral -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Build renderer and authority tests
+        run: cmake --build build-unified-spectral --config Release --target SingleWetSpectralRendererTest SupervisorContinuityTest --parallel 2
+
+      - name: Run renderer contract
+        run: ./build-unified-spectral/clean-engine-tests/SingleWetSpectralRendererTest
+
+      - name: Run authority regression
+        run: ./build-unified-spectral/clean-engine-tests/SupervisorContinuityTest
+
+      - name: Build complete VST3
+        run: cmake --build build-unified-spectral --config Release --target Neumaton_VST3 --parallel 2
+
+      - name: Commit unified renderer
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Source/SingleWetSpectralRenderer.h Source/SingleWetSpectralRenderer.cpp
+          if git diff --cached --quiet; then
+            echo 'Already materialized.'
+            exit 0
+          fi
+          git commit -m 'Unify all modes on one continuous spectral field'
+          git push origin HEAD:one-voice-breath-glide-v11
