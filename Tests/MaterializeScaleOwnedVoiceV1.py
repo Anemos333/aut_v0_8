@@ -115,6 +115,13 @@ new = """    if (!exactAuthority
 """
 s = s.replace(old, new, 1)
 
+# Distinguish a normal scale-cell exit from a truly implausible register jump.
+# Both are musical transition evidence, but only the latter may bypass an
+# explicit user Hold value.
+old = "    bool liveIdentityBreak = false;\n"
+require_once(s, old, "identity break declaration")
+s = s.replace(old, old + "    bool forceTargetSwitch = false;\n", 1)
+
 start = s.index("        // SOUND_EQUALS_CORRECTION_V2_DENSE_SAFE: live pitch outside a clear")
 end_marker = "\n        if (liveIdentityBreak)\n"
 end = s.index(end_marker, start)
@@ -137,11 +144,17 @@ new = """        // SCALE_OWNS_VOICE_V2: raw dry pitch measures error; it does n
             && observedDirection * centreDirection > 0.0;
         liveIdentityBreak = observation.audioPresent
             && state.targetValid
-            && (obviousRegisterBreak || sustainedCellExit);"""
+            && (obviousRegisterBreak || sustainedCellExit);
+        forceTargetSwitch = observation.audioPresent
+            && state.targetValid
+            && obviousRegisterBreak;"""
 s = s[:start] + new + s[end:]
 
 # Keep the existing quantizer and visible Hold control active, but feed musical
 # identity from the continuity centre rather than the instantaneous dry F0.
+# A normal cell exit is not a force switch: Hold must remain an explicit user
+# permission to retain the previous degree. Only a huge register contradiction
+# may bypass it.
 start = s.index("    const float hysteresis = adaptiveHysteresis(parameters, quantizer, observation);")
 end_marker = "\n\n    const bool targetChanged = !state.targetValid"
 end = s.index(end_marker, start)
@@ -158,7 +171,7 @@ new = """    const float hysteresis = adaptiveHysteresis(parameters, quantizer, 
         targetStrictness,
         targetConfidence,
         parameters.scaleLock && parameters.hardLockActive,
-        musicalOnset || liveIdentityBreak,
+        musicalOnset || forceTargetSwitch,
         pending);
     newTarget += std::round(state.pitchCentreLog2 - newTarget);"""
 s = s[:start] + new + s[end:]
