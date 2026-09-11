@@ -18,11 +18,15 @@ jobs:
           cat > Tests/DynamicVibratoRendererProbe.cpp <<'CPP'
           #include "SingleWetSpectralRenderer.h"
           #include <algorithm>
+          #include <array>
           #include <cmath>
           #include <iostream>
           #include <vector>
           constexpr double pi = 3.14159265358979323846;
           constexpr double sr = 48000.0;
+          constexpr double vibHz = 5.0;
+          constexpr double vibDepth = 70.0;
+          double centsAt(double t) { return vibDepth * std::sin(2.0*pi*vibHz*t); }
           double powerAt(const std::vector<float>& x, double hz, int start, int count) {
               double re=0.0, im=0.0;
               for(int i=0;i<count;++i){
@@ -38,23 +42,33 @@ jobs:
               for(int it=0;it<22;++it){double d=(r-l)/3.0,a=l+d,b=r-d; if(powerAt(x,a,start,count)<powerAt(x,b,start,count)) l=a; else r=b;}
               return 0.5*(l+r);
           }
+          void report(const char* name,int frame,const std::vector<float>& y){
+              double maxAbsCent=0.0, minRms=1e9, maxRms=0.0, sumAbs=0.0; int blocks=0;
+              const int win=4096, step=2048;
+              for(int s=24000;s+win<static_cast<int>(y.size());s+=step){
+                  double f=estimate(y,s,win); double c=1200.0*std::log2(f/220.0); maxAbsCent=std::max(maxAbsCent,std::abs(c)); sumAbs+=std::abs(c);
+                  double e=0.0; for(int i=0;i<win;++i){double v=y[static_cast<std::size_t>(s+i)];e+=v*v;} double rms=std::sqrt(e/double(win)); minRms=std::min(minRms,rms);maxRms=std::max(maxRms,rms);++blocks;
+              }
+              std::cout << "frame="<<frame<<" mode="<<name<<" max_abs_cents="<<maxAbsCent<<" mean_abs_cents="<<(sumAbs/std::max(1,blocks))
+                        <<" rms_min="<<minRms<<" rms_max="<<maxRms<<" rms_ratio="<<(maxRms/std::max(1e-12,minRms))<<"\n";
+          }
           int main(){
               for(int frame : {256,512}){
-                  SingleWetSpectralRenderer r; r.prepare(sr,frame);
-                  const int n=144000; std::vector<float> y(static_cast<std::size_t>(n), 0.0f); double phase=0.0;
+                  std::array<SingleWetSpectralRenderer,3> r; for(auto& v:r) v.prepare(sr,frame);
+                  const int n=144000; std::array<std::vector<float>,3> y;
+                  for(auto& v:y) v.assign(static_cast<std::size_t>(n),0.0f);
+                  double phase=0.0;
+                  const double frameSpan=double(frame-1)/sr;
+                  const double omega=2.0*pi*vibHz;
                   for(int i=0;i<n;++i){
-                      double t=double(i)/sr; double cents=70.0*std::sin(2.0*pi*5.0*t);
-                      double f=220.0*std::exp2(cents/1200.0); phase += 2.0*pi*f/sr;
-                      float in=0.22f*float(std::sin(phase)); y[static_cast<std::size_t>(i)]=r.processSample(in,-cents,0.9f);
+                      double t=double(i)/sr; double cents=centsAt(t); double f=220.0*std::exp2(cents/1200.0); phase += 2.0*pi*f/sr;
+                      float in=0.22f*float(std::sin(phase));
+                      double centreCents=centsAt(t-0.5*frameSpan);
+                      double meanCents = frameSpan>0.0 ? vibDepth*(std::cos(omega*(t-frameSpan))-std::cos(omega*t))/(omega*frameSpan) : cents;
+                      const std::array<double,3> commands{-cents,-centreCents,-meanCents};
+                      for(int m=0;m<3;++m) y[static_cast<std::size_t>(m)][static_cast<std::size_t>(i)]=r[static_cast<std::size_t>(m)].processSample(in,commands[static_cast<std::size_t>(m)],0.9f);
                   }
-                  double maxAbsCent=0.0, minRms=1e9, maxRms=0.0, sumAbs=0.0; int blocks=0;
-                  const int win=4096, step=2048;
-                  for(int s=24000;s+win<n;s+=step){
-                      double f=estimate(y,s,win); double c=1200.0*std::log2(f/220.0); maxAbsCent=std::max(maxAbsCent,std::abs(c)); sumAbs+=std::abs(c);
-                      double e=0.0; for(int i=0;i<win;++i){double v=y[static_cast<std::size_t>(s+i)];e+=v*v;} double rms=std::sqrt(e/double(win)); minRms=std::min(minRms,rms);maxRms=std::max(maxRms,rms);++blocks;
-                  }
-                  std::cout << "frame="<<frame<<" max_abs_cents="<<maxAbsCent<<" mean_abs_cents="<<(sumAbs/std::max(1,blocks))
-                            <<" rms_min="<<minRms<<" rms_max="<<maxRms<<" rms_ratio="<<(maxRms/std::max(1e-12,minRms))<<"\n";
+                  report("frame_end",frame,y[0]); report("frame_center",frame,y[1]); report("frame_mean",frame,y[2]);
               }
               return 0;
           }
