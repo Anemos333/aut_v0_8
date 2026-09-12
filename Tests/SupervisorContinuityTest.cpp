@@ -73,12 +73,35 @@ int main()
     };
     auto first = makeInitialDecision();
     const bool firstAccepted = tracker->confirmOctaveTransition(first, true);
-    auto second = makeInitialDecision();
-    const bool secondAccepted = tracker->confirmOctaveTransition(second, true);
-    success &= check(!firstAccepted && !first.valid,
-                     "initial_register_waits_for_repeat");
-    success &= check(secondAccepted,
-                     "repeated_initial_register_is_committed");
+    success &= check(firstAccepted && first.valid,
+                     "credible_multi_evidence_initial_register_commits_immediately");
+
+    auto cautiousTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+    cautiousTracker->prepare(48000.0);
+    auto makeSingleFamilyInitial = []
+    {
+        ModernPitchEngine::MultiRatePitchTracker::DecoderDecision d;
+        d.valid = true;
+        d.candidate.valid = true;
+        d.candidate.frequencyHz = 440.0f;
+        d.candidate.confidence = 0.54f;
+        d.candidate.periodicity = 0.62f;
+        d.consensus = 0.18f;
+        d.supportCount = 1;
+        d.directSupportCount = 1;
+        d.freshSupportMask = 1;
+        return d;
+    };
+    auto cautiousFirst = makeSingleFamilyInitial();
+    const bool cautiousFirstAccepted = cautiousTracker->confirmOctaveTransition(
+        cautiousFirst, false);
+    auto cautiousSecond = makeSingleFamilyInitial();
+    const bool cautiousSecondAccepted = cautiousTracker->confirmOctaveTransition(
+        cautiousSecond, false);
+    success &= check(!cautiousFirstAccepted && !cautiousFirst.valid,
+                     "single_family_initial_register_still_needs_repeat");
+    success &= check(cautiousSecondAccepted && cautiousSecond.valid,
+                     "repeated_single_family_initial_register_can_commit");
 
 
     auto rescueTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();

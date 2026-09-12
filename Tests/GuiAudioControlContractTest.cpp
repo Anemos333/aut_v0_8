@@ -145,6 +145,14 @@ int main()
                          && has(renderer, "ACTIVE_PATH_NEVER_DRY_FALLBACK_V1"),
                      "dry_exists_only_as_explicit_host_bypass");
 
+    success &= check(has(engine, "NO_AUDIO_DROPOUT_ON_UNCERTAINTY_V1")
+                         && has(engine, "FAST_INITIAL_ACQUIRE_V1")
+                         && has(engine, "SCALE_CHANGE_PRESERVES_AUDIO_CONTINUITY_V1")
+                         && !has(engine, "UNOWNED_AUDIO_FAILS_CLOSED_V1")
+                         && !has(engine, "correction.targetValid ? rendered : 0.0f")
+                         && !has(engine, "linkedCorrection_.targetValid ? rendered : 0.0f"),
+                     "detector_uncertainty_never_mutes_active_audio");
+
     success &= check(has(renderer, "FULL_SPECTRUM_SINGLE_TRANSPORT_V1")
                          && has(renderer, "STABLE_SINGLE_LATTICE_TRANSPORT_V3")
                          && has(renderer, "PURE_SINGLE_TRANSPORT_V4")
