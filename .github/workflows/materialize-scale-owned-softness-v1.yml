@@ -1,0 +1,80 @@
+name: Materialize Scale-Owned Softness V1
+
+on:
+  push:
+    branches: [ simple-fix-from-quality-baseline ]
+
+permissions:
+  contents: write
+
+jobs:
+  validate-and-materialize:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: simple-fix-from-quality-baseline
+          fetch-depth: 0
+
+      - name: Guard baseline and renderer
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "7eae364fc8974c10980c21fea739ed66b69b0e56"
+          grep -Fq 'SCALE_OWNS_VOICE_V2' Source/ModernPitchEngine.cpp
+          grep -Fq 'DETECTOR_IS_OBSERVER_V1' Source/ModernPitchEngine.cpp
+
+      - name: Materialize scale-owned softness cleanup
+        run: python3 Tests/MaterializeScaleOwnedSoftnessV1.py
+
+      - name: Verify architecture contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          grep -Fq 'SCALE_CELL_OWNS_SOFTNESS_V1' Source/ModernPitchEngine.cpp
+          grep -Fq 'SOURCE_COORDINATE_REBASE_V1' Source/ModernPitchEngine.cpp
+          grep -Fq 'SCALE_CHANGE_REBASE_V1' Source/ModernPitchEngine.cpp
+          grep -Fq 'UNOWNED_AUDIO_FAILS_CLOSED_V1' Source/ModernPitchEngine.cpp
+          grep -Fq 'NO_UNITY_ESCAPE_V1' Source/ModernPitchEngine.cpp
+          ! grep -Fq 'exactScaleLockAuthority' Source/ModernPitchEngine.cpp
+          ! grep -Fq 'exactScaleLockAuthority' Source/ModernPitchEngine.h
+          ! grep -Fq 'if (std::abs(errorCents) <= humanWindow)' Source/ModernPitchEngine.cpp
+          ! grep -Fq 'errorCents * static_cast<double>(clamp01(parameters.amount))' Source/ModernPitchEngine.cpp
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "7eae364fc8974c10980c21fea739ed66b69b0e56"
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libjack-jackd2-dev ladspa-sdk libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev
+
+      - name: Configure focused tests
+        run: cmake -S . -B build-scale-softness -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Build focused tests
+        run: cmake --build build-scale-softness --config Release --target CleanModernPitchEngineTest SupervisorContinuityTest SingleWetSpectralRendererTest GuiAudioControlContractTest GuiAudibilityTest --parallel 2
+
+      - name: Run focused tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./build-scale-softness/clean-engine-tests/CleanModernPitchEngineTest
+          ./build-scale-softness/clean-engine-tests/SupervisorContinuityTest
+          ./build-scale-softness/clean-engine-tests/SingleWetSpectralRendererTest
+          ./build-scale-softness/clean-engine-tests/GuiAudioControlContractTest
+          ./build-scale-softness/clean-engine-tests/GuiAudibilityTest
+
+      - name: Build VST3
+        run: cmake --build build-scale-softness --config Release --target Neumaton_VST3 --parallel 2
+
+      - name: Commit validated cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Source/ModernPitchEngine.cpp Source/ModernPitchEngine.h Tests/CleanModernPitchEngineTest.cpp Tests/SupervisorContinuityTest.cpp Tests/GuiAudioControlContractTest.cpp Tests/GuiAudibilityTest.cpp
+          git rm -f Tests/MaterializeScaleOwnedSoftnessV1.py .github/workflows/materialize-scale-owned-softness-v1.yml
+          git commit -m "Keep every soft correction scale-owned [skip ci]"
+          git push origin HEAD:simple-fix-from-quality-baseline
