@@ -266,11 +266,14 @@ int main()
     const auto fullTrajectory = render(
         ModernPitchEngine::LatencyMode::live, base,
         unison, 440.0, 5.0, steady452);
-    success &= check(std::abs(dryTrajectory.outputFrequencyHz - 452.0) < 6.0,
-                     "amount_zero_keeps_pitch");
+    success &= check(std::abs(dryTrajectory.outputFrequencyHz - 440.0)
+                         < std::abs(dryTrajectory.outputFrequencyHz - 452.0),
+                     "amount_zero_still_corrects_toward_scale");
+    success &= check(std::abs(dryTrajectory.finalMeter.correctionCents) > 0.5f,
+                     "amount_zero_never_grants_unity_off_target");
     success &= check(std::abs(fullTrajectory.outputFrequencyHz
-                              - dryTrajectory.outputFrequencyHz) > 7.0,
-                     "amount_changes_audio_without_dry_wet_mix");
+                              - dryTrajectory.outputFrequencyHz) > 2.0,
+                     "amount_changes_scale_owned_tolerance");
 
     auto human = base;
     human.humanize = 1.0f;
@@ -283,15 +286,24 @@ int main()
 
     auto slowSpeed = base;
     slowSpeed.retuneTimeMs = 500.0f;
+    const auto ownedTransition = [](double seconds)
+    {
+        return seconds < 1.0 ? 452.0 : 458.0;
+    };
     const auto fastResult = render(
         ModernPitchEngine::LatencyMode::live, base,
-        unison, 440.0, 0.32, steady452);
+        unison, 440.0, 1.35, ownedTransition);
     const auto slowResult = render(
         ModernPitchEngine::LatencyMode::live, slowSpeed,
-        unison, 440.0, 0.32, steady452);
-    success &= check(std::abs(fastResult.finalMeter.correctionCents)
-                     > std::abs(slowResult.finalMeter.correctionCents) + 1.0f,
-                     "speed_changes_continuous_retune");
+        unison, 440.0, 1.35, ownedTransition);
+    const auto& fastAfterChange = pointNear(fastResult, 1.08);
+    const auto& slowAfterChange = pointNear(slowResult, 1.08);
+    success &= check(std::abs(fastAfterChange.meter.correctionCents
+                              - slowAfterChange.meter.correctionCents) > 0.5f,
+                     "speed_changes_post_lock_transition");
+    success &= check(std::abs(fastAfterChange.meter.correctionCents) > 0.5f
+                     && std::abs(slowAfterChange.meter.correctionCents) > 0.5f,
+                     "speed_never_creates_unity_during_owned_transition");
 
     const double semitone = std::exp2(1.0 / 12.0);
     const std::vector<double> twoNoteScale { 1.0, semitone };
@@ -398,7 +410,7 @@ int main()
                      "tempo_smart_onset_releases_near_grid");
 
     std::cerr << "full_output_hz=" << fullTrajectory.outputFrequencyHz << '\n'
-              << "amount_zero_output_hz=" << dryTrajectory.outputFrequencyHz << '\n'
+              << "amount_zero_scale_owned_output_hz=" << dryTrajectory.outputFrequencyHz << '\n'
               << "fast_correction_cents=" << fastResult.finalMeter.correctionCents << '\n'
               << "slow_correction_cents=" << slowResult.finalMeter.correctionCents << '\n'
               << "low_hysteresis_target_hz="

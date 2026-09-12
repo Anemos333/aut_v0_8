@@ -472,7 +472,6 @@ private:
     [[nodiscard]] static float clamp01(float value) noexcept;
     [[nodiscard]] static double safeLog2(double value) noexcept;
     [[nodiscard]] static double wrapToNearestOctave(double cents) noexcept;
-    [[nodiscard]] static bool exactScaleLockAuthority(const Parameters& parameters) noexcept; // AUTHORITY_CONTROLS_EXPLICIT_V1
     [[nodiscard]] static bool zeroPrudenceAuthority(const Parameters& parameters) noexcept;
     [[nodiscard]] static int latencyForMode(LatencyMode mode) noexcept;
     [[nodiscard]] float adaptiveHysteresis(const Parameters& parameters,

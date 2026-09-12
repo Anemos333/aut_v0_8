@@ -1688,19 +1688,11 @@ double ModernPitchEngine::wrapToNearestOctave(double cents) noexcept
 // AUTHORITY_CONTROLS_EXPLICIT_V1: only visible user controls define musical
 // softness. Internal confidence, mode and strictness may improve measurement or
 // identity safety, but they are not permission to weaken the requested lock.
-bool ModernPitchEngine::exactScaleLockAuthority(const Parameters& parameters) noexcept
-{
-    return parameters.scaleLock
-        && clamp01(parameters.amount) >= 0.99999f
-        && clamp01(parameters.humanize) <= 0.00001f
-        && clamp01(parameters.vibratoPreserve) <= 0.00001f;
-}
-
 bool ModernPitchEngine::zeroPrudenceAuthority(const Parameters& parameters) noexcept
 {
-    // Hold is the only user permission to retain the previous target degree.
-    // Response controls glide speed only and cannot weaken target authority.
-    return exactScaleLockAuthority(parameters)
+    // SCALE_CELL_OWNS_SOFTNESS_V1: Hold alone owns target-retention prudence.
+    // Amount/Humanize/Vibrato never select a source-authoritative regime.
+    return parameters.scaleLock
         && std::clamp(static_cast<double>(finiteOr(parameters.lockHysteresis, 24.0f)),
                       0.0, 80.0) <= 0.00001;
 }
@@ -2064,13 +2056,13 @@ bool ModernPitchEngine::advanceConservativeF0Rescue(
         - state.rescueBaseTargetLog2) * 1200.0;
     const double sourceDeltaCents = (state.rescueSourceLog2
         - state.rescueBaseSourceLog2) * 1200.0;
-    const double amount = static_cast<double>(clamp01(parameters.amount));
     const double maximumCents = 100.0 * std::clamp(
         static_cast<double>(finiteOr(parameters.maximumCorrectionSemitones, 12.0f)),
         0.0, 48.0);
+    // NO_UNITY_ESCAPE_V1: a detector hole continues the scale-owned transport;
+    // Amount cannot pull rescue motion back toward the source coordinate.
     state.desiredCents = std::clamp(
-        state.rescueBaseDesiredCents
-            + amount * (targetDeltaCents - sourceDeltaCents),
+        state.rescueBaseDesiredCents + targetDeltaCents - sourceDeltaCents,
         -maximumCents, maximumCents);
     return true;
 }
@@ -2084,7 +2076,6 @@ void ModernPitchEngine::updateCorrectionState(
     const int hopSamples = MultiRatePitchTracker::hopSize();
     const double hopSeconds = static_cast<double>(hopSamples) / sampleRate_;
     const float humanize = clamp01(parameters.humanize);
-    const bool exactAuthority = exactScaleLockAuthority(parameters);
     const bool zeroPrudence = zeroPrudenceAuthority(parameters); // AUTHORITY_CONTROLS_EXPLICIT_V1
     const bool richEvidence = parameters.voiceEvidenceValid;
     const bool validPitch = observation.valid && observation.frequencyHz > 0.0f;
@@ -2477,7 +2468,8 @@ void ModernPitchEngine::updateCorrectionState(
         pending);
     newTarget += std::round(state.pitchCentreLog2 - newTarget);
 
-    const bool targetChanged = !state.targetValid
+    const bool firstOwnedTarget = !state.targetValid;
+    const bool targetChanged = firstOwnedTarget
         || std::abs(newTarget - state.targetLog2) * 1200.0 > 0.1;
     const double targetJump = state.targetValid
         ? (newTarget - state.targetLog2) * 1200.0 : 0.0;
@@ -2537,97 +2529,74 @@ void ModernPitchEngine::updateCorrectionState(
                                + 0.20f * std::min(1.0f,
                                    static_cast<float>(state.stableObservations) / 5.0f));
     const float periodic = clamp01(observation.periodicity);
-    const double halfStep = 0.5 * static_cast<double>(quantizer.minimumStepCents());
+    const double minimumStep = std::max(0.1,
+        static_cast<double>(quantizer.minimumStepCents()));
+    const double halfStep = 0.5 * minimumStep;
     const double centreError = std::abs((state.targetLog2 - state.pitchCentreLog2) * 1200.0);
     const float boundarySafety = 1.0f - smoothStep(
         static_cast<float>(0.58 * halfStep),
         static_cast<float>(0.92 * halfStep),
         static_cast<float>(centreError));
 
-    float preserve = parameters.scaleLock
-        ? clamp01(parameters.vibratoPreserve + 0.35f * humanize)
+    const float requestedVibrato = parameters.scaleLock
+        ? clamp01(parameters.vibratoPreserve)
         : clamp01(parameters.preserveVibrato);
-    preserve *= stable * periodic * boundarySafety;
+    const float preserve = requestedVibrato * stable * periodic * boundarySafety;
 
-    // AUTHORITY_CONTROLS_EXPLICIT_V1: exact centering is controlled only by
-    // visible Amount / Scale Lock / Humanize / Vibrato. Hold chooses WHICH degree
-    // and Response chooses HOW FAST; neither may create steady-state residual.
-    const bool absoluteScaleLock = exactAuthority;
+    // SCALE_CELL_OWNS_SOFTNESS_V1: every setting uses the same target-owned
+    // law. Softer controls enlarge a bounded cage around the selected degree;
+    // they never multiply correction toward unity and never create a dry zone.
+    const double amount = static_cast<double>(clamp01(parameters.amount));
+    const double softness = std::clamp(
+        0.72 * (1.0 - amount) + 0.20 * static_cast<double>(humanize),
+        0.0, 0.88);
+    const double lockStrictness = parameters.scaleLock
+        ? static_cast<double>(clamp01(parameters.lockStrictness)) : 0.0;
+    const double cageFraction = parameters.scaleLock
+        ? (0.16 + 0.10 * (1.0 - lockStrictness))
+        : 0.34;
+    const double cageLimit = parameters.scaleLock ? 18.0 : 42.0;
+    const double residualBudgetCents = std::clamp(
+        minimumStep * cageFraction, 0.25, cageLimit);
 
-    double correctedLog2 = state.targetLog2
-        + static_cast<double>(preserve) * vibratoComponent;
-    double humanWindow = 1.5 + 16.0 * static_cast<double>(humanize);
+    // SOURCE_COORDINATE_REBASE_V1: the dry is only the coordinate from which
+    // transport is measured. The latest accepted live F0 is used in every mode;
+    // no softer branch is allowed to fall back to a dry-owned reference.
+    const double sourceOffsetCents =
+        (correctionObservedLog2 - state.targetLog2) * 1200.0;
+    const double targetOwnedSourceResidual = residualBudgetCents > 1.0e-9
+        ? residualBudgetCents
+            * std::tanh(sourceOffsetCents / residualBudgetCents)
+            * softness
+        : 0.0;
+    const double requestedVibratoCents =
+        static_cast<double>(preserve) * vibratoComponent * 1200.0;
+    const double vibratoBudgetCents = residualBudgetCents
+        * static_cast<double>(requestedVibrato);
+    const double targetOwnedOffsetCents = std::clamp(
+        targetOwnedSourceResidual
+            + std::clamp(requestedVibratoCents,
+                         -vibratoBudgetCents,
+                         vibratoBudgetCents),
+        -residualBudgetCents,
+        residualBudgetCents);
+    const double correctedLog2 = state.targetLog2
+        + targetOwnedOffsetCents / 1200.0;
 
-    if (parameters.scaleLock)
-    {
-        // MICROTONAL_HARD_LOCK_V3: Humanize and preserved vibrato are allowed
-        // to live inside the selected target, but their COMBINED steady-state
-        // residual is bounded by the scale spacing.
-        const double minimumStep = std::max(0.1,
-            static_cast<double>(quantizer.minimumStepCents()));
-        const double lockStrictness = static_cast<double>(
-            clamp01(parameters.lockStrictness));
-        const double residualBudgetCents = std::clamp(
-            minimumStep * (0.18 - 0.06 * lockStrictness),
-            1.0, 6.0);
-        humanWindow = std::min(
-            0.40 + 1.60 * static_cast<double>(humanize),
-            0.30 * residualBudgetCents);
-
-        const double vibratoBudgetCents = std::max(
-            0.0, residualBudgetCents - humanWindow);
-        const double requestedVibratoCents =
-            static_cast<double>(preserve) * vibratoComponent * 1200.0;
-        const double preservedVibratoCents = std::clamp(
-            requestedVibratoCents,
-            -vibratoBudgetCents,
-            vibratoBudgetCents);
-        correctedLog2 = state.targetLog2 + preservedVibratoCents / 1200.0;
-
-        // ABSOLUTE_SCALE_LOCK_V4: the fully rigid endpoint contains no hidden
-        // musical softness. With Amount=100%, Humanize=0, Scale-Lock Vibrato=0
-        // and Hard Lock/Strictness at maximum, correction destination is the
-        // exact selected reference frequency. Hysteresis may decide WHICH scale
-        // degree owns identity, and Speed may decide HOW FAST we arrive, but
-        // neither is allowed to leave pitch offset around that chosen target.
-        if (absoluteScaleLock)
-        {
-            preserve = 0.0f;
-            correctedLog2 = state.targetLog2;
-            humanWindow = 0.0;
-        }
-    }
-
-    // SOUND_EQUALS_CORRECTION_V2: target and F0 are absolute pitches in the
-    // same live register. Never wrap their error by an octave.
-    //
-    // LIVE_CORRECTION_COORDINATE_V5: only the fully rigid endpoint uses the
-    // latest accepted live F0. Musical identity, hysteresis, Humanize and all
-    // softer modes intentionally remain on the previous continuity coordinate,
-    // so this change cannot alter their established sound or target behaviour.
-    const double correctionReferenceLog2 = absoluteScaleLock
-        ? correctionObservedLog2
-        : observedLog2;
-    double errorCents = (correctedLog2 - correctionReferenceLog2) * 1200.0;
-    if (!absoluteScaleLock)
-    {
-        if (std::abs(errorCents) <= humanWindow)
-            errorCents = 0.0;
-        else
-            errorCents = std::copysign(std::abs(errorCents) - humanWindow, errorCents);
-    }
-
+    double errorCents = (correctedLog2 - correctionObservedLog2) * 1200.0;
     const double maximumCents = 100.0 * std::clamp(
         static_cast<double>(finiteOr(parameters.maximumCorrectionSemitones, 12.0f)),
         0.0, 48.0);
     errorCents = std::clamp(errorCents, -maximumCents, maximumCents);
-
-    // Sensors determine how carefully identity is interpreted, never how much
-    // of the requested correction is applied.
-    state.desiredCents = absoluteScaleLock
-        ? errorCents
-        : errorCents * static_cast<double>(clamp01(parameters.amount));
+    state.desiredCents = errorCents;
     state.responseMs = responseTimeMs(parameters, targetChanged, targetJump);
+    if (firstOwnedTarget)
+    {
+        // NO_UNITY_ESCAPE_V1: first acquisition starts already owned by scale;
+        // Response may shape later movement, never reveal an initial dry ramp.
+        state.currentCents = state.desiredCents;
+        state.velocityCentsPerSecond = 0.0;
+    }
 
     if (!musicalOnset)
     {
@@ -2770,10 +2739,18 @@ void ModernPitchEngine::process(
         const bool changed = channelQuantizers_[static_cast<std::size_t>(channel)].setScale(
             scaleRatios, numberOfScaleRatios, rootFrequency);
         if (changed)
+        {
+            // SCALE_CHANGE_REBASE_V1: invalidate ownership until the first
+            // trustworthy coordinate is quantized in the new scale. The audio
+            // path below fails closed during this tiny reacquisition window.
             channelCorrections_[static_cast<std::size_t>(channel)] = {};
+        }
     }
     if (linkedScaleChanged)
+    {
+        // SCALE_CHANGE_REBASE_V1
         linkedCorrection_ = {};
+    }
 
     linkedTracker_.setRange(safe.minimumPitchHz, safe.maximumPitchHz);
     linkedTracker_.setSensitivity(safe.detectorSensitivity);
@@ -2877,10 +2854,14 @@ void ModernPitchEngine::process(
                     correction.velocityCentsPerSecond = 0.0;
                 }
                 const double audible = decision.controllerCents;
-                data[static_cast<std::size_t>(channel)][sample] =
+                const float rendered =
                     wetRenderers_[static_cast<std::size_t>(channel)].processSample(
                         data[static_cast<std::size_t>(channel)][sample], audible,
                         safe.formantPreservation);
+                // UNOWNED_AUDIO_FAILS_CLOSED_V1: before a degree exists there
+                // is no legal unity/source-pitch output in the active path.
+                data[static_cast<std::size_t>(channel)][sample] =
+                    correction.targetValid ? rendered : 0.0f;
                 if (channel == 0)
                 {
                     latestObservation_ = latestChannelObservation_[0];
@@ -2928,10 +2909,15 @@ void ModernPitchEngine::process(
             }
             audibleCorrectionCents_ = decision.controllerCents;
             for (int channel = 0; channel < channels; ++channel)
-                data[static_cast<std::size_t>(channel)][sample] =
+            {
+                const float rendered =
                     wetRenderers_[static_cast<std::size_t>(channel)].processSample(
                         data[static_cast<std::size_t>(channel)][sample], audibleCorrectionCents_,
                         safe.formantPreservation);
+                // UNOWNED_AUDIO_FAILS_CLOSED_V1
+                data[static_cast<std::size_t>(channel)][sample] =
+                    linkedCorrection_.targetValid ? rendered : 0.0f;
+            }
         }
 
         if (linkedCorrection_.noteBodyLatched

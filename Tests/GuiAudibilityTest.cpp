@@ -114,33 +114,45 @@ int main()
                               - shiftedRootTarget.meter.targetPitchHz) > 20.0f,
                      "root_selector_changes_target_pitch");
 
-    // Amount remains correction depth, never dry/wet.
+    // SCALE_CELL_OWNS_SOFTNESS_V1: Amount changes the width of the
+    // target-owned tolerance. Even at zero it may not grant unity when
+    // the accepted source coordinate is off the owned degree.
     auto amountZero = base;
     amountZero.amount = 0.0f;
-    const auto noCorrection = render(
+    const auto softAmount = render(
         ModernPitchEngine::LatencyMode::live, amountZero,
         unison, 440.0, 4.0, steady458);
-    success &= check(std::abs(noCorrection.meter.correctionCents) < 0.1f
-                     && std::abs(unisonTarget.meter.correctionCents) > 8.0f,
-                     "amount_changes_correction_depth");
+    success &= check(std::abs(softAmount.meter.correctionCents) > 0.5f,
+                     "amount_zero_never_grants_unity_off_target_gui");
+    success &= check(std::abs(softAmount.meter.correctionCents)
+                         < std::abs(unisonTarget.meter.correctionCents)
+                     && std::abs(softAmount.meter.correctionCents
+                                 - unisonTarget.meter.correctionCents) > 2.0f,
+                     "amount_changes_scale_owned_tolerance_gui");
 
-    // Response changes only trajectory time. This intentionally mirrors the
-    // already-proven core-engine invariant instead of inventing a new response
-    // curve just to make the control look more dramatic.
+    // First acquisition is immediately scale-owned. Response is therefore
+    // evaluated only after ownership exists, on a real source transition.
     const auto steady452 = [](double) { return 452.0; };
+    const auto ownedTransition = [](double seconds)
+    {
+        return seconds < 1.0 ? 452.0 : 458.0;
+    };
     auto fastResponseParameters = base;
     fastResponseParameters.retuneTimeMs = 0.0f;
     auto slowResponseParameters = base;
     slowResponseParameters.retuneTimeMs = 500.0f;
     const auto fastResponse = render(
         ModernPitchEngine::LatencyMode::live, fastResponseParameters,
-        unison, 440.0, 0.32, steady452);
+        unison, 440.0, 1.08, ownedTransition);
     const auto slowResponse = render(
         ModernPitchEngine::LatencyMode::live, slowResponseParameters,
-        unison, 440.0, 0.32, steady452);
-    success &= check(std::abs(fastResponse.meter.correctionCents)
-                     > std::abs(slowResponse.meter.correctionCents) + 1.0f,
-                     "response_changes_continuous_retune");
+        unison, 440.0, 1.08, ownedTransition);
+    success &= check(std::abs(fastResponse.meter.correctionCents
+                              - slowResponse.meter.correctionCents) > 0.5f,
+                     "response_changes_post_lock_transition_gui");
+    success &= check(std::abs(fastResponse.meter.correctionCents) > 0.5f
+                     && std::abs(slowResponse.meter.correctionCents) > 0.5f,
+                     "response_never_grants_unity_during_owned_transition_gui");
 
     // Humanize already has an audible meaning in the engine: it widens the
     // same-note human window and therefore changes the actual correction cents.
