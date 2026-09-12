@@ -55,16 +55,19 @@ cpp = one(cpp,
 '''    const bool sufficientInitialEvidence = decision.supportCount >= 2
         || decision.candidate.confidence >= 0.78f;
 ''',
-'''    // FAST_INITIAL_ACQUIRE_V1: do not demand near-perfect consensus before
-    // the supervisor is allowed to own a first scale degree. Fresh direct
-    // evidence may bootstrap acquisition, while confirmation below still
-    // requires either multi-family support or a repeated single family.
-    const bool freshDirectInitialEvidence = decision.freshSupportMask != 0
+'''    // FAST_INITIAL_ACQUIRE_V1: relax only a genuinely unowned first lock.
+    // Existing tracking and reacquisition anchors keep the previous stronger
+    // evidence rule, so a single detector family cannot override musical
+    // history just because startup acquisition was made faster.
+    const bool genuinelyUnownedInitial = trackedPitchHz_ <= 0.0f
+        && reacquisitionAnchorHz_ <= 0.0f;
+    const bool freshDirectInitialEvidence = genuinelyUnownedInitial
+        && decision.freshSupportMask != 0
         && decision.directSupportCount >= 1
         && decision.candidate.confidence >= 0.46f
         && decision.candidate.periodicity >= 0.52f;
     const bool sufficientInitialEvidence = decision.supportCount >= 2
-        || decision.candidate.confidence >= 0.72f
+        || decision.candidate.confidence >= 0.78f
         || freshDirectInitialEvidence;
 ''',
 'initial evidence gate')
