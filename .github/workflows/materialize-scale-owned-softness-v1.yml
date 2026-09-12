@@ -28,9 +28,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Restore the complete previously validated supervisor test after a
-          # connector-side partial-file write, then change only the obsolete
-          # soft-lock expectation. No DSP source is restored or altered here.
           git show 3f2d5cebee10f5a0a953796313f64c3600e5612d:Tests/SupervisorContinuityTest.cpp > Tests/SupervisorContinuityTest.cpp
           python3 Tests/MaterializeScaleOwnedSoftnessV1.py
           python3 - <<'PY'
@@ -81,9 +78,85 @@ jobs:
               raise SystemExit(f'obsolete soft-lock test matches={s.count(old)}')
           p.write_text(s.replace(old, new, 1))
           PY
-          if ! grep -Fq 'const auto steady452' Tests/GuiAudibilityTest.cpp; then
-            sed -i '/const auto steady458/a\    const auto steady452 = [](double) { return 452.0; };' Tests/GuiAudibilityTest.cpp
-          fi
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('Tests/GuiAudibilityTest.cpp')
+          s = p.read_text()
+          old_amount = '''    // Amount remains correction depth, never dry/wet.
+              auto amountZero = base;
+              amountZero.amount = 0.0f;
+              const auto noCorrection = render(
+                  ModernPitchEngine::LatencyMode::live, amountZero,
+                  unison, 440.0, 4.0, steady458);
+              success &= check(std::abs(noCorrection.meter.correctionCents) < 0.1f
+                               && std::abs(unisonTarget.meter.correctionCents) > 8.0f,
+                               "amount_changes_correction_depth");
+          '''
+          new_amount = '''    // SCALE_CELL_OWNS_SOFTNESS_V1: Amount changes the width of the
+              // target-owned tolerance. Even at zero it may not grant unity when
+              // the accepted source coordinate is off the owned degree.
+              auto amountZero = base;
+              amountZero.amount = 0.0f;
+              const auto softAmount = render(
+                  ModernPitchEngine::LatencyMode::live, amountZero,
+                  unison, 440.0, 4.0, steady458);
+              success &= check(std::abs(softAmount.meter.correctionCents) > 0.5f,
+                               "amount_zero_never_grants_unity_off_target_gui");
+              success &= check(std::abs(softAmount.meter.correctionCents)
+                                   < std::abs(unisonTarget.meter.correctionCents)
+                               && std::abs(softAmount.meter.correctionCents
+                                           - unisonTarget.meter.correctionCents) > 2.0f,
+                               "amount_changes_scale_owned_tolerance_gui");
+          '''
+          old_response = '''    // Response changes only trajectory time. This intentionally mirrors the
+              // already-proven core-engine invariant instead of inventing a new response
+              // curve just to make the control look more dramatic.
+              const auto steady452 = [](double) { return 452.0; };
+              auto fastResponseParameters = base;
+              fastResponseParameters.retuneTimeMs = 0.0f;
+              auto slowResponseParameters = base;
+              slowResponseParameters.retuneTimeMs = 500.0f;
+              const auto fastResponse = render(
+                  ModernPitchEngine::LatencyMode::live, fastResponseParameters,
+                  unison, 440.0, 0.32, steady452);
+              const auto slowResponse = render(
+                  ModernPitchEngine::LatencyMode::live, slowResponseParameters,
+                  unison, 440.0, 0.32, steady452);
+              success &= check(std::abs(fastResponse.meter.correctionCents)
+                               > std::abs(slowResponse.meter.correctionCents) + 1.0f,
+                               "response_changes_continuous_retune");
+          '''
+          new_response = '''    // First acquisition is immediately scale-owned. Response is therefore
+              // evaluated only after ownership exists, on a real source transition.
+              const auto steady452 = [](double) { return 452.0; };
+              const auto ownedTransition = [](double seconds)
+              {
+                  return seconds < 1.0 ? 452.0 : 458.0;
+              };
+              auto fastResponseParameters = base;
+              fastResponseParameters.retuneTimeMs = 0.0f;
+              auto slowResponseParameters = base;
+              slowResponseParameters.retuneTimeMs = 500.0f;
+              const auto fastResponse = render(
+                  ModernPitchEngine::LatencyMode::live, fastResponseParameters,
+                  unison, 440.0, 1.08, ownedTransition);
+              const auto slowResponse = render(
+                  ModernPitchEngine::LatencyMode::live, slowResponseParameters,
+                  unison, 440.0, 1.08, ownedTransition);
+              success &= check(std::abs(fastResponse.meter.correctionCents
+                                        - slowResponse.meter.correctionCents) > 0.5f,
+                               "response_changes_post_lock_transition_gui");
+              success &= check(std::abs(fastResponse.meter.correctionCents) > 0.5f
+                               && std::abs(slowResponse.meter.correctionCents) > 0.5f,
+                               "response_never_grants_unity_during_owned_transition_gui");
+          '''
+          if s.count(old_amount) != 1:
+              raise SystemExit(f'old amount gui test matches={s.count(old_amount)}')
+          if s.count(old_response) != 1:
+              raise SystemExit(f'old response gui test matches={s.count(old_response)}')
+          s = s.replace(old_amount, new_amount, 1).replace(old_response, new_response, 1)
+          p.write_text(s)
+          PY
 
       - name: Verify architecture contract
         shell: bash
@@ -96,7 +169,11 @@ jobs:
           grep -Fq 'UNOWNED_AUDIO_FAILS_CLOSED_V1' Source/ModernPitchEngine.cpp
           grep -Fq 'NO_UNITY_ESCAPE_V1' Source/ModernPitchEngine.cpp
           grep -Fq 'soft_scale_lock_uses_live_coordinate_inside_target_cell' Tests/SupervisorContinuityTest.cpp
+          grep -Fq 'amount_zero_never_grants_unity_off_target_gui' Tests/GuiAudibilityTest.cpp
+          grep -Fq 'response_never_grants_unity_during_owned_transition_gui' Tests/GuiAudibilityTest.cpp
           ! grep -Fq 'soft_scale_lock_ignores_live_correction_coordinate' Tests/SupervisorContinuityTest.cpp
+          ! grep -Fq 'amount_changes_correction_depth' Tests/GuiAudibilityTest.cpp
+          ! grep -Fq 'response_changes_continuous_retune' Tests/GuiAudibilityTest.cpp
           ! grep -Fq 'exactScaleLockAuthority' Source/ModernPitchEngine.cpp
           ! grep -Fq 'exactScaleLockAuthority' Source/ModernPitchEngine.h
           ! grep -Fq 'if (std::abs(errorCents) <= humanWindow)' Source/ModernPitchEngine.cpp
