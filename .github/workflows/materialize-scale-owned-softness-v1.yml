@@ -28,7 +28,59 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Restore the complete previously validated supervisor test after a
+          # connector-side partial-file write, then change only the obsolete
+          # soft-lock expectation. No DSP source is restored or altered here.
+          git show 3f2d5cebee10f5a0a953796313f64c3600e5612d:Tests/SupervisorContinuityTest.cpp > Tests/SupervisorContinuityTest.cpp
           python3 Tests/MaterializeScaleOwnedSoftnessV1.py
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('Tests/SupervisorContinuityTest.cpp')
+          s = p.read_text()
+          old = '''    // Softer Scale Lock must remain bit-for-contract on the continuity F0. The
+              // new field is deliberately ignored unless every absolute-lock condition
+              // is active.
+              ModernPitchEngine::Parameters softCoordinateParameters = absoluteLockParameters;
+              softCoordinateParameters.humanize = 0.25f;
+              ModernPitchEngine::ScaleQuantizer softCoordinateQuantizer;
+              softCoordinateQuantizer.reset();
+              softCoordinateQuantizer.setScale(&liveCoordinateUnison, 1, 440.0);
+              ModernPitchEngine::CorrectionState softCoordinateState;
+              engine->updateCorrectionState(softCoordinateState,
+                                            softCoordinateQuantizer,
+                                            liveCoordinateObservation,
+                                            softCoordinateParameters);
+              const double softReferenceError = std::abs(
+                  softCoordinateState.desiredCents - expectedLiveCorrection);
+              success &= check(softReferenceError > 1.0,
+                               "soft_scale_lock_ignores_live_correction_coordinate");
+          '''
+          new = '''    // SCALE_CELL_OWNS_SOFTNESS_V1: a softer lock still measures transport
+              // from the accepted live F0. Humanize may leave a small target-centred
+              // residual, but it cannot switch to a source-authoritative coordinate.
+              ModernPitchEngine::Parameters softCoordinateParameters = absoluteLockParameters;
+              softCoordinateParameters.humanize = 0.25f;
+              ModernPitchEngine::ScaleQuantizer softCoordinateQuantizer;
+              softCoordinateQuantizer.reset();
+              softCoordinateQuantizer.setScale(&liveCoordinateUnison, 1, 440.0);
+              ModernPitchEngine::CorrectionState softCoordinateState;
+              engine->updateCorrectionState(softCoordinateState,
+                                            softCoordinateQuantizer,
+                                            liveCoordinateObservation,
+                                            softCoordinateParameters);
+              const double softOutputHz = static_cast<double>(
+                  liveCoordinateObservation.correctionFrequencyHz)
+                  * std::exp2(softCoordinateState.desiredCents / 1200.0);
+              const double softResidualCents = std::abs(
+                  1200.0 * std::log2(softOutputHz / liveCoordinateTargetHz));
+              success &= check(std::abs(softCoordinateState.desiredCents) > 0.5
+                               && softResidualCents < 18.1,
+                               "soft_scale_lock_uses_live_coordinate_inside_target_cell");
+          '''
+          if s.count(old) != 1:
+              raise SystemExit(f'obsolete soft-lock test matches={s.count(old)}')
+          p.write_text(s.replace(old, new, 1))
+          PY
           if ! grep -Fq 'const auto steady452' Tests/GuiAudibilityTest.cpp; then
             sed -i '/const auto steady458/a\    const auto steady452 = [](double) { return 452.0; };' Tests/GuiAudibilityTest.cpp
           fi
@@ -43,6 +95,8 @@ jobs:
           grep -Fq 'SCALE_CHANGE_REBASE_V1' Source/ModernPitchEngine.cpp
           grep -Fq 'UNOWNED_AUDIO_FAILS_CLOSED_V1' Source/ModernPitchEngine.cpp
           grep -Fq 'NO_UNITY_ESCAPE_V1' Source/ModernPitchEngine.cpp
+          grep -Fq 'soft_scale_lock_uses_live_coordinate_inside_target_cell' Tests/SupervisorContinuityTest.cpp
+          ! grep -Fq 'soft_scale_lock_ignores_live_correction_coordinate' Tests/SupervisorContinuityTest.cpp
           ! grep -Fq 'exactScaleLockAuthority' Source/ModernPitchEngine.cpp
           ! grep -Fq 'exactScaleLockAuthority' Source/ModernPitchEngine.h
           ! grep -Fq 'if (std::abs(errorCents) <= humanWindow)' Source/ModernPitchEngine.cpp
