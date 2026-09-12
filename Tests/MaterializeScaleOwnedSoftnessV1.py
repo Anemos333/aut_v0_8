@@ -147,7 +147,6 @@ cpp = one(cpp, '''    const bool targetChanged = !state.targetValid
         || std::abs(newTarget - state.targetLog2) * 1200.0 > 0.1;
 ''', 'first target capture')
 
-# Keep scale changes fail-closed instead of resetting to an audible unity path.
 cpp = cpp.replace('''        if (changed)
             channelCorrections_[static_cast<std::size_t>(channel)] = {};
 ''', '''        if (changed)
@@ -202,7 +201,6 @@ h = one(h,
         '    [[nodiscard]] static bool exactScaleLockAuthority(const Parameters& parameters) noexcept; // AUTHORITY_CONTROLS_EXPLICIT_V1\n',
         '', 'header exact authority')
 
-# Update the old Amount=0 expectation: softness changes tolerance, never grants dry.
 t = one(t, '''    success &= check(std::abs(dryTrajectory.outputFrequencyHz - 452.0) < 6.0,
                      "amount_zero_keeps_pitch");
     success &= check(std::abs(fullTrajectory.outputFrequencyHz
@@ -218,6 +216,41 @@ t = one(t, '''    success &= check(std::abs(dryTrajectory.outputFrequencyHz - 45
                      "amount_changes_scale_owned_tolerance");
 ''', 'amount tests')
 t = t.replace('"amount_zero_output_hz="', '"amount_zero_scale_owned_output_hz="', 1)
+
+# Response is intentionally not tested on first acquisition anymore: first lock
+# must be immediately scale-owned. Test it after a real source/target transition.
+t = one(t, '''    auto slowSpeed = base;
+    slowSpeed.retuneTimeMs = 500.0f;
+    const auto fastResult = render(
+        ModernPitchEngine::LatencyMode::live, base,
+        unison, 440.0, 0.32, steady452);
+    const auto slowResult = render(
+        ModernPitchEngine::LatencyMode::live, slowSpeed,
+        unison, 440.0, 0.32, steady452);
+    success &= check(std::abs(fastResult.finalMeter.correctionCents)
+                     > std::abs(slowResult.finalMeter.correctionCents) + 1.0f,
+                     "speed_changes_continuous_retune");
+''', '''    auto slowSpeed = base;
+    slowSpeed.retuneTimeMs = 500.0f;
+    const auto ownedTransition = [](double seconds)
+    {
+        return seconds < 1.0 ? 452.0 : 458.0;
+    };
+    const auto fastResult = render(
+        ModernPitchEngine::LatencyMode::live, base,
+        unison, 440.0, 1.35, ownedTransition);
+    const auto slowResult = render(
+        ModernPitchEngine::LatencyMode::live, slowSpeed,
+        unison, 440.0, 1.35, ownedTransition);
+    const auto& fastAfterChange = pointNear(fastResult, 1.08);
+    const auto& slowAfterChange = pointNear(slowResult, 1.08);
+    success &= check(std::abs(fastAfterChange.meter.correctionCents
+                              - slowAfterChange.meter.correctionCents) > 0.5f,
+                     "speed_changes_post_lock_transition");
+    success &= check(std::abs(fastAfterChange.meter.correctionCents) > 0.5f
+                     && std::abs(slowAfterChange.meter.correctionCents) > 0.5f,
+                     "speed_never_creates_unity_during_owned_transition");
+''', 'speed test')
 
 cpp_p.write_text(cpp)
 h_p.write_text(h)
