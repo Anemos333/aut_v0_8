@@ -25,7 +25,13 @@ jobs:
           grep -Fq 'DETECTOR_IS_OBSERVER_V1' Source/ModernPitchEngine.cpp
 
       - name: Materialize scale-owned softness cleanup
-        run: python3 Tests/MaterializeScaleOwnedSoftnessV1.py
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 Tests/MaterializeScaleOwnedSoftnessV1.py
+          if ! grep -Fq 'const auto steady452' Tests/GuiAudibilityTest.cpp; then
+            sed -i '/const auto steady458/a\    const auto steady452 = [](double) { return 452.0; };' Tests/GuiAudibilityTest.cpp
+          fi
 
       - name: Verify architecture contract
         shell: bash
