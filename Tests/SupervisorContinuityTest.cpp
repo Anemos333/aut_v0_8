@@ -103,6 +103,42 @@ int main()
     success &= check(cautiousSecondAccepted && cautiousSecond.valid,
                      "repeated_single_family_initial_register_can_commit");
 
+    // REAL_VOICE_BOOTSTRAP_V1: exercise the actual raw-candidate -> consensus
+    // -> decoder -> initial-register path. The previous test constructed an
+    // already-approved DecoderDecision and therefore missed the real vocal
+    // failure where consensus attenuation could veto acquire forever.
+    auto vocalBootstrapTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+    vocalBootstrapTracker->prepare(48000.0);
+    vocalBootstrapTracker->presenceMode_ = true;
+    auto& vocalSlot = vocalBootstrapTracker->halfRateCandidate_;
+    vocalSlot.candidate.valid = true;
+    vocalSlot.candidate.frequencyHz = 220.0f;
+    vocalSlot.candidate.confidence = 0.54f;
+    vocalSlot.candidate.periodicity = 0.62f;
+    vocalSlot.candidate.pathIndex = 1;
+    vocalSlot.candidate.ageInHops = 0;
+    vocalSlot.ageInHops = 0;
+    auto vocalBootstrapDecision = vocalBootstrapTracker->decodeCandidate(false);
+    const bool vocalBootstrapAccepted = vocalBootstrapTracker->confirmOctaveTransition(
+        vocalBootstrapDecision, false);
+    success &= check(vocalBootstrapDecision.valid && vocalBootstrapAccepted,
+                     "real_voice_single_fresh_path_can_bootstrap_first_target");
+
+    auto weakBootstrapTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+    weakBootstrapTracker->prepare(48000.0);
+    weakBootstrapTracker->presenceMode_ = true;
+    auto& weakSlot = weakBootstrapTracker->halfRateCandidate_;
+    weakSlot.candidate.valid = true;
+    weakSlot.candidate.frequencyHz = 220.0f;
+    weakSlot.candidate.confidence = 0.24f;
+    weakSlot.candidate.periodicity = 0.38f;
+    weakSlot.candidate.pathIndex = 1;
+    weakSlot.candidate.ageInHops = 0;
+    weakSlot.ageInHops = 0;
+    const auto weakBootstrapDecision = weakBootstrapTracker->decodeCandidate(false);
+    success &= check(!weakBootstrapDecision.valid,
+                     "weak_single_path_does_not_fabricate_first_f0");
+
 
     auto rescueTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
     rescueTracker->prepare(48000.0);

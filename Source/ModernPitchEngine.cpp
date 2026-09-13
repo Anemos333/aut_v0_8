@@ -975,11 +975,18 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
     // history just because startup acquisition was made faster.
     const bool genuinelyUnownedInitial = trackedPitchHz_ <= 0.0f
         && reacquisitionAnchorHz_ <= 0.0f;
+    // REAL_VOICE_BOOTSTRAP_V1: cross-path consensus is useful after a note
+    // exists, but it must not veto the first musical ownership. During the
+    // genuinely unowned bootstrap, judge a fresh direct candidate by the raw
+    // hypothesis quality before consensus attenuation. No candidate means no
+    // invented F0; this only stops four conservative paths from mutually
+    // preventing a real vocal onset from ever acquiring.
     const bool freshDirectInitialEvidence = genuinelyUnownedInitial
         && decision.freshSupportMask != 0
         && decision.directSupportCount >= 1
-        && decision.candidate.confidence >= 0.46f
-        && decision.candidate.periodicity >= 0.52f;
+        && hypothesis.confidence >= 0.40f
+        && hypothesis.periodicity >= 0.48f
+        && hypothesis.evidenceScore >= 0.22f;
     const bool sufficientInitialEvidence = decision.supportCount >= 2
         || decision.candidate.confidence >= 0.78f
         || freshDirectInitialEvidence;
@@ -1106,18 +1113,26 @@ bool ModernPitchEngine::MultiRatePitchTracker::confirmOctaveTransition(
         if (decision.freshSupportMask != 0)
             ++pendingOctaveCount_;
 
-        // FAST_INITIAL_ACQUIRE_V1: two independent detector families with
-        // fresh direct support are enough to establish the first register in
-        // one hop. A single family still needs repetition. This is deliberately
-        // less permissive than an already-owned octave change: speed is gained
-        // only before musical identity exists, not by weakening register guards.
-        const bool fastInitialEvidence = decision.supportCount >= 2
+        // REAL_VOICE_BOOTSTRAP_V1: the first target is provisional musical
+        // ownership, not a claim of perfect detector certainty. A real fresh
+        // direct candidate on audible material may establish it immediately;
+        // subsequent tracking, octave changes and rescue still use the normal
+        // conservative guards. This prevents permanent acquire/bypass without
+        // fabricating an F0 when every detector is genuinely empty.
+        const bool realVoiceBootstrapEvidence = reacquisitionAnchorHz_ <= 0.0f
+            && presenceMode_
+            && decision.directSupportCount >= 1
+            && decision.freshSupportMask != 0
+            && decision.candidate.confidence >= 0.34f
+            && decision.candidate.periodicity >= 0.48f;
+        const bool multiPathFastInitialEvidence = decision.supportCount >= 2
             && decision.directSupportCount >= 1
             && decision.freshSupportMask != 0
             && decision.candidate.confidence >= 0.62f
             && decision.candidate.periodicity >= 0.58f
             && decision.consensus >= 0.32f;
-        const int requiredObservations = fastInitialEvidence ? 1 : 2;
+        const int requiredObservations = (realVoiceBootstrapEvidence
+            || multiPathFastInitialEvidence) ? 1 : 2;
         if (pendingOctaveCount_ < requiredObservations)
         {
             decision.valid = false;
