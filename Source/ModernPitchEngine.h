@@ -451,6 +451,13 @@ private:
         float noteBodyConfidence = 0.0f;
         double transportPeriodHz = 0.0;
 
+        // SCALE_OWNS_IDENTITY_V2: detector observations may nominate a new
+        // cell, but only bounded same-side geometric persistence may present
+        // that challenger to ScaleQuantizer. Confidence/consensus never enter
+        // this accumulator; user Hold remains a separate later authority.
+        int identityChallengerDirection = 0;
+        double identityChallengerEvidence = 0.0;
+
         // CONSERVATIVE_F0_RESCUE_V1: short memory contains detector-derived
         // F0 only. Predicted coordinates are never fed back into the tracker.
         std::array<double, 10> recentRealPitchLog2 {};

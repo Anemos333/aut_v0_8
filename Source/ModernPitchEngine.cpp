@@ -2149,6 +2149,10 @@ void ModernPitchEngine::updateCorrectionState(
             || (richEvidence
                 && (confirmedBreathFrame || confirmedAbsenceFrame))))
     {
+        // CONSECUTIVE_CHALLENGER_EVIDENCE_V1: a breath/absence interval
+        // breaks musical-change persistence but never changes audible state.
+        state.identityChallengerDirection = 0;
+        state.identityChallengerEvidence = 0.0;
         state.stableBodyObservations = 0;
         if (confirmedAbsence
             || confirmedAbsenceFrame
@@ -2161,19 +2165,21 @@ void ModernPitchEngine::updateCorrectionState(
 
     if (!validPitch)
     {
+        // CONSECUTIVE_CHALLENGER_EVIDENCE_V1: detector holes cannot bridge
+        // two unrelated challenger fragments into a target revision.
+        state.identityChallengerDirection = 0;
+        state.identityChallengerEvidence = 0.0;
         ++state.invalidObservations;
 
-        // CONSERVATIVE_F0_RESCUE_V1: prediction is an exceptional continuity
-        // aid, never generic fallback. It must prove body-like non-phonetic
-        // material over consecutive invalid hops and can live only briefly.
-        if (advanceConservativeF0Rescue(state, quantizer, observation,
-                                        parameters, rescueBodyFrame))
-        {
-            setState(state.rescueTargetShifted
-                ? TrackingState::transition
-                : TrackingState::stable);
-            return;
-        }
+        // SCALE_OWNS_TRANSPORT_V1: an F0 hole never invents an audible
+        // source coordinate. Detector search/reacquisition may continue, but
+        // target, transportPeriodHz and desiredCents remain exactly held until
+        // a real non-vetoed measurement returns.
+        state.rescueQualificationHops = 0;
+        state.rescuePredictionActive = false;
+        state.rescuePredictionHops = 0;
+        state.rescueDirection = 0;
+        state.rescueTargetShifted = false;
 
         // SOUND_EQUALS_CORRECTION_V1: audio presence owns the voice, but
         // Stable is forbidden until a real target exists. Acquire is now only
@@ -2225,10 +2231,19 @@ void ModernPitchEngine::updateCorrectionState(
 
     state.invalidObservations = 0;
 
-    // VALID_F0_OUTRANKS_LABEL_V1: once the detector has produced a finite valid
-    // F0, a secondary breath/phonetic label cannot erase that coordinate.
-    // Falsification belongs in the detector/register logic; confidence and
-    // descriptive voice labels never become permission to correct.
+    // PHONETIC_VETO_HOLDS_TRANSPORT_V1: a formally valid detector period on
+    // a consonant/breathy event is still not a musical source coordinate.
+    // Positive phonetic evidence may veto this observation, but it cannot
+    // attenuate, release or otherwise modify an already-owned correction.
+    if (explicitPhoneticFrame && state.targetValid)
+    {
+        // A consonant can veto this observation, but cannot contribute stale
+        // evidence to a later note change or touch target/transport/correction.
+        state.identityChallengerDirection = 0;
+        state.identityChallengerEvidence = 0.0;
+        state.stableBodyObservations = 0;
+        return;
+    }
 
     // A strong breath/absence before any body latch must not become a note just
     // because the pitch tracker found a periodic accident in the noise.
@@ -2323,77 +2338,104 @@ void ModernPitchEngine::updateCorrectionState(
             ? std::abs(observedLog2 - state.targetLog2) * 1200.0
             : 0.0;
         const double currentIdentityRadius = 0.48 * scaleStep;
-        const double liveIdentityBreakRadius = 0.72 * scaleStep;
         const bool insideCurrentMusicalIdentity = !state.targetValid
             || observedDistanceFromCurrentTarget < currentIdentityRadius;
 
-        // SCALE_OWNS_VOICE_V2: raw dry pitch measures error; it does not
-        // own note identity. Ordinary degree changes require the continuity
-        // centre itself to cross the existing half-cell identity boundary in
-        // the same direction. This preserves dense/microtonal scale ownership
-        // without letting instantaneous vibrato choose a neighbouring degree.
-        const double obviousRegisterBreakCents = std::max(700.0, liveIdentityBreakRadius);
-        const bool obviousRegisterBreak = observedDistanceFromCurrentTarget
-            >= obviousRegisterBreakCents;
-
-        // OSCILLATION_IS_NEGATIVE_EVIDENCE_V1: crossing the half-cell boundary
-        // is not positive proof of a new note because a wide vibrato can do it
-        // every cycle. A fast switch requires the measured F0 to be clearly
-        // inside the challenger cell (72% of the local scale step). Otherwise
-        // the confidence-independent continuity centre decides in finite time.
-        const bool decisiveCellExit = observedDistanceFromCurrentTarget
-            >= liveIdentityBreakRadius;
-        liveIdentityBreak = observation.audioPresent
-            && state.targetValid
-            && (obviousRegisterBreak || decisiveCellExit);
-        forceTargetSwitch = observation.audioPresent
-            && state.targetValid
-            && (obviousRegisterBreak || decisiveCellExit);
-        if (liveIdentityBreak)
+        if (state.noteBodyLatched
+            && insideCurrentMusicalIdentity
+            && distanceCents <= withinNoteTolerance)
         {
-            state.pitchCentreLog2 = observedLog2;
-            state.stableObservations = 0;
+            baseAlpha = 0.018 + 0.035 * static_cast<double>(1.0f - humanize);
         }
-        else
+
+        // SCALE_OWNS_IDENTITY_V1: continuity is geometric and bounded per hop.
+        // No confidence/consensus gate exists, but neither can one arbitrary
+        // detector coordinate jump the centre across a scale cell.
+        constexpr double continuityRate = 0.90;
+        const double requestedCentreStepCents = baseAlpha * continuityRate
+            * (observedLog2 - state.pitchCentreLog2) * 1200.0;
+        const double maximumCentreStepCents = std::clamp(
+            0.12 * scaleStep, 2.0, 12.0);
+        const double boundedCentreStepCents = std::clamp(
+            requestedCentreStepCents,
+            -maximumCentreStepCents,
+             maximumCentreStepCents);
+        state.pitchCentreLog2 += boundedCentreStepCents / 1200.0;
+        ++state.stableObservations;
+
+        // SCALE_OWNS_IDENTITY_V2: crossing half a cell is only a nomination,
+        // never an immediate target change. Wide vibrato can cross that line on
+        // every cycle. Accumulate only same-side excess beyond the half-cell;
+        // returning inside or changing direction cancels the nomination.
+        if (state.targetValid)
         {
-            if (state.noteBodyLatched
-                && insideCurrentMusicalIdentity
-                && distanceCents <= withinNoteTolerance)
+            const double signedObservedCents =
+                (observedLog2 - state.targetLog2) * 1200.0;
+            const double normalizedDistance = signedObservedCents / scaleStep;
+            const int challengerDirection = normalizedDistance > 0.0 ? 1
+                : normalizedDistance < 0.0 ? -1 : 0;
+            const double boundaryExcess = std::max(
+                0.0, std::abs(normalizedDistance) - 0.50);
+
+            if (boundaryExcess <= 0.0 || challengerDirection == 0)
             {
-                baseAlpha = 0.018 + 0.035 * static_cast<double>(1.0f - humanize);
+                state.identityChallengerDirection = 0;
+                state.identityChallengerEvidence = 0.0;
             }
-            // CONTINUITY_VETO_NOT_CONFIDENCE_V1: centre motion is purely
-            // geometric. The fixed 0.90 factor is an anti-vibrato time scale,
-            // not detector permission: confidence/consensus cannot slow it,
-            // strengthen it or freeze a real sustained note change.
-            constexpr double continuityRate = 0.90;
-            state.pitchCentreLog2 += baseAlpha * continuityRate
-                * (observedLog2 - state.pitchCentreLog2);
-            ++state.stableObservations;
+            else
+            {
+                if (state.identityChallengerDirection != challengerDirection)
+                {
+                    state.identityChallengerDirection = challengerDirection;
+                    state.identityChallengerEvidence = 0.0;
+                }
+
+                const double densityGain = std::clamp(100.0 / scaleStep, 1.0, 4.0);
+                state.identityChallengerEvidence += std::min(
+                    1.0, boundaryExcess * densityGain);
+            }
+
+            const double centreDistanceFromTarget =
+                std::abs(state.pitchCentreLog2 - state.targetLog2) * 1200.0;
+            const double deepExitRatio = scaleStep <= 50.0 ? 0.52 : 0.72;
+            const bool deepCentreExit = centreDistanceFromTarget
+                >= deepExitRatio * scaleStep;
+            constexpr double persistentEvidenceRequired = 6.0;
+            const bool persistentBoundaryExit =
+                state.identityChallengerEvidence >= persistentEvidenceRequired;
+
+            liveIdentityBreak = deepCentreExit || persistentBoundaryExit;
+            forceTargetSwitch = liveIdentityBreak;
         }
     }
 
     const float hysteresis = adaptiveHysteresis(parameters, quantizer, observation);
     int pending = 0;
-    // CONTINUITY_VETO_NOT_PERMISSION_V1: target identity is read from the
-    // deterministic continuity centre, not from detector confidence. This is
-    // a bounded anti-vibrato falsification stage; it cannot remain stuck merely
-    // because confidence/consensus are low. User Hold remains the only target
-    // retention control inside ScaleQuantizer.
-    const double targetSelectionLog2 = state.pitchCentreLog2;
+    // SCALE_OWNS_IDENTITY_V1: ordinary selection follows the persistent
+    // musical centre. Only after that centre has proven a cell exit may the
+    // current observation choose the nearest exact destination degree.
+    const double targetSelectionLog2 = forceTargetSwitch
+        ? observedLog2 : state.pitchCentreLog2;
     const float targetStrictness = zeroPrudence
         ? 0.0f : parameters.lockStrictness;
     const float targetConfidence = zeroPrudence
         ? 1.0f : observation.confidence;
-    double newTarget = quantizer.chooseTargetLog2(
-        targetSelectionLog2,
-        hysteresis,
-        targetStrictness,
-        targetConfidence,
-        parameters.scaleLock && parameters.hardLockActive,
-        musicalOnset || forceTargetSwitch,
-        pending);
-    newTarget += std::round(state.pitchCentreLog2 - newTarget);
+    double newTarget = state.targetLog2;
+    if (!state.targetValid || musicalOnset || forceTargetSwitch)
+    {
+        newTarget = quantizer.chooseTargetLog2(
+            targetSelectionLog2,
+            hysteresis,
+            targetStrictness,
+            targetConfidence,
+            parameters.scaleLock && parameters.hardLockActive,
+            // USER_HOLD_REMAINS_AUTHORITY_V1: supervisor confirmation only
+            // presents a challenger. It never receives onset semantics merely
+            // to bypass the Hold explicitly selected by the user.
+            musicalOnset,
+            pending);
+        newTarget += std::round(state.pitchCentreLog2 - newTarget);
+    }
 
     const bool firstOwnedTarget = !state.targetValid;
     const bool targetChanged = firstOwnedTarget
@@ -2414,6 +2456,8 @@ void ModernPitchEngine::updateCorrectionState(
             state.pitchCentreLog2 = observedLog2;
             state.pitchCentreValid = true;
             state.stableObservations = 0;
+            state.identityChallengerDirection = 0;
+            state.identityChallengerEvidence = 0.0;
         }
         state.recentRealPitchCount = rescueBodyFrame ? 1 : 0;
         if (rescueBodyFrame)
@@ -2433,31 +2477,53 @@ void ModernPitchEngine::updateCorrectionState(
     state.targetLog2 = newTarget;
     state.targetValid = true;
 
-    // The period model follows musical identity, not vibrato-rate detector
-    // motion. A real target identity change is acquired while period guidance
-    // is frozen; within a stable note the central period moves on a long time
-    // constant so vibrato cannot become delay modulation.
+    // SCALE_OWNS_TRANSPORT_V1: the audible source coordinate is persistent
+    // supervisor state. Detector F0 is an observation of it, never a direct
+    // renderer command. Far challengers are frozen until musical identity has
+    // actually changed; accepted motion is bandwidth/slew bounded.
     if (state.noteBodyLatched && bodyPresent)
     {
-        const double observedHz = static_cast<double>(observation.frequencyHz);
+        const double observedSourceLog2 = observedLog2;
         if (!(state.transportPeriodHz > 0.0)
             || !std::isfinite(state.transportPeriodHz)
-            || musicalOnset || liveIdentityBreak || targetIdentityChanged)
+            || firstOwnedTarget)
         {
-            state.transportPeriodHz = observedHz;
+            state.transportPeriodHz = std::exp2(observedSourceLog2);
         }
         else
         {
-            const double periodTauSeconds = 0.28
-                + 0.55 * static_cast<double>(humanize);
-            const double alpha = std::clamp(
-                1.0 - std::exp(-hopSeconds / periodTauSeconds),
-                0.0002, 0.05);
-            const double currentLog = safeLog2(state.transportPeriodHz);
-            state.transportPeriodHz = std::exp2(currentLog + alpha
-                * (safeLog2(observedHz) - currentLog));
+            const double currentSourceLog2 = safeLog2(state.transportPeriodHz);
+            const double localScaleStep = std::max(0.1,
+                static_cast<double>(quantizer.minimumStepCents()));
+            const double observedDistanceFromOwnedTarget = state.targetValid
+                ? std::abs(observedSourceLog2 - state.targetLog2) * 1200.0
+                : 0.0;
+            const bool unconfirmedFarChallenger = state.targetValid
+                && !targetIdentityChanged
+                && !liveIdentityBreak
+                && observedDistanceFromOwnedTarget >= 0.72 * localScaleStep;
+
+            if (!unconfirmedFarChallenger)
+            {
+                const double sourceDeltaCents =
+                    (observedSourceLog2 - currentSourceLog2) * 1200.0;
+                constexpr double sourceFollow = 0.35;
+                const double maximumSourceStepCents = targetIdentityChanged
+                    ? 8.0 : 4.0;
+                const double boundedSourceStepCents = std::clamp(
+                    sourceFollow * sourceDeltaCents,
+                    -maximumSourceStepCents,
+                     maximumSourceStepCents);
+                state.transportPeriodHz = std::exp2(
+                    currentSourceLog2 + boundedSourceStepCents / 1200.0);
+            }
         }
     }
+
+    const double audibleSourceLog2 = state.transportPeriodHz > 0.0
+        && std::isfinite(state.transportPeriodHz)
+        ? safeLog2(state.transportPeriodHz)
+        : correctionObservedLog2;
 
     const double vibratoComponent = observedLog2 - state.pitchCentreLog2;
     const float stable = clamp01(0.45f * observation.confidence
@@ -2499,7 +2565,7 @@ void ModernPitchEngine::updateCorrectionState(
     // transport is measured. The latest accepted live F0 is used in every mode;
     // no softer branch is allowed to fall back to a dry-owned reference.
     const double sourceOffsetCents =
-        (correctionObservedLog2 - state.targetLog2) * 1200.0;
+        (audibleSourceLog2 - state.targetLog2) * 1200.0;
     const double targetOwnedSourceResidual = residualBudgetCents > 1.0e-9
         ? residualBudgetCents
             * std::tanh(sourceOffsetCents / residualBudgetCents)
@@ -2519,7 +2585,7 @@ void ModernPitchEngine::updateCorrectionState(
     const double correctedLog2 = state.targetLog2
         + targetOwnedOffsetCents / 1200.0;
 
-    double errorCents = (correctedLog2 - correctionObservedLog2) * 1200.0;
+    double errorCents = (correctedLog2 - audibleSourceLog2) * 1200.0;
     const double maximumCents = 100.0 * std::clamp(
         static_cast<double>(finiteOr(parameters.maximumCorrectionSemitones, 12.0f)),
         0.0, 48.0);
