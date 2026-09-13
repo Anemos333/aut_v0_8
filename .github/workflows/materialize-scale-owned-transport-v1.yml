@@ -1,0 +1,75 @@
+name: Materialize Scale-Owned Transport V1
+
+on:
+  push:
+    branches: [scale-owned-transport-v1]
+    paths:
+      - 'Tests/MaterializeScaleOwnedTransportV1.py'
+      - '.github/workflows/materialize-scale-owned-transport-v1.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  validate-and-materialize:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: scale-owned-transport-v1
+          fetch-depth: 0
+
+      - name: Guard frozen renderer
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "7eae364fc8974c10980c21fea739ed66b69b0e56"
+
+      - name: Materialize scale-owned transport
+        run: python3 Tests/MaterializeScaleOwnedTransportV1.py
+
+      - name: Verify semantic contract
+        run: |
+          set -euo pipefail
+          git diff --check
+          grep -Fq 'SCALE_OWNS_TRANSPORT_V1' Source/ModernPitchEngine.cpp
+          grep -Fq 'PHONETIC_VETO_HOLDS_TRANSPORT_V1' Source/ModernPitchEngine.cpp
+          grep -Fq 'SCALE_OWNS_IDENTITY_V1' Source/ModernPitchEngine.cpp
+          grep -Fq 'single_far_f0_outlier_has_zero_audible_authority' Tests/SupervisorContinuityTest.cpp
+          grep -Fq 'detector_hole_holds_target_transport_and_correction_exactly' Tests/SupervisorContinuityTest.cpp
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "7eae364fc8974c10980c21fea739ed66b69b0e56"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libjack-jackd2-dev ladspa-sdk libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev
+
+      - name: Configure focused tests
+        run: cmake -S . -B build-scale-owned -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Build focused tests
+        run: cmake --build build-scale-owned --config Release --target CleanModernPitchEngineTest SupervisorContinuityTest SingleWetSpectralRendererTest GuiAudioControlContractTest GuiAudibilityTest --parallel 2
+
+      - name: Run focused tests
+        run: |
+          set -euo pipefail
+          ./build-scale-owned/clean-engine-tests/CleanModernPitchEngineTest
+          ./build-scale-owned/clean-engine-tests/SupervisorContinuityTest
+          ./build-scale-owned/clean-engine-tests/SingleWetSpectralRendererTest
+          ./build-scale-owned/clean-engine-tests/GuiAudioControlContractTest
+          ./build-scale-owned/clean-engine-tests/GuiAudibilityTest
+
+      - name: Build VST3
+        run: cmake --build build-scale-owned --config Release --target Neumaton_VST3 --parallel 2
+
+      - name: Commit validated scale-owned transport
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- Source/ModernPitchEngine.cpp Tests/SupervisorContinuityTest.cpp; then
+            echo 'No materialized changes to commit'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Source/ModernPitchEngine.cpp Tests/SupervisorContinuityTest.cpp
+          git commit -m 'Make scale own audible transport [skip ci]'
+          git push origin HEAD:scale-owned-transport-v1
