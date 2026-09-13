@@ -98,10 +98,10 @@ int main()
     auto cautiousSecond = makeSingleFamilyInitial();
     const bool cautiousSecondAccepted = cautiousTracker->confirmOctaveTransition(
         cautiousSecond, false);
-    success &= check(!cautiousFirstAccepted && !cautiousFirst.valid,
-                     "single_family_initial_register_still_needs_repeat");
+    success &= check(cautiousFirstAccepted && cautiousFirst.valid,
+                     "fresh_single_family_initial_measurement_owns_immediately");
     success &= check(cautiousSecondAccepted && cautiousSecond.valid,
-                     "repeated_single_family_initial_register_can_commit");
+                     "repeated_single_family_measurement_remains_valid");
 
     // REAL_VOICE_BOOTSTRAP_V1: exercise the actual raw-candidate -> consensus
     // -> decoder -> initial-register path. The previous test constructed an
@@ -135,9 +135,18 @@ int main()
     weakSlot.candidate.pathIndex = 1;
     weakSlot.candidate.ageInHops = 0;
     weakSlot.ageInHops = 0;
-    const auto weakBootstrapDecision = weakBootstrapTracker->decodeCandidate(false);
-    success &= check(!weakBootstrapDecision.valid,
-                     "weak_single_path_does_not_fabricate_first_f0");
+    auto weakBootstrapDecision = weakBootstrapTracker->decodeCandidate(false);
+    const bool weakBootstrapAccepted = weakBootstrapTracker->confirmOctaveTransition(
+        weakBootstrapDecision, false);
+    success &= check(weakBootstrapDecision.valid && weakBootstrapAccepted,
+                     "weak_real_measurement_is_not_blocked_by_confidence");
+
+    auto emptyBootstrapTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+    emptyBootstrapTracker->prepare(48000.0);
+    emptyBootstrapTracker->presenceMode_ = true;
+    const auto emptyBootstrapDecision = emptyBootstrapTracker->decodeCandidate(false);
+    success &= check(!emptyBootstrapDecision.valid,
+                     "absence_of_measurement_never_invents_f0");
 
 
     auto rescueTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
@@ -158,8 +167,8 @@ int main()
 
     rescueTracker->setRescueMode(false);
     auto normalSingleFamily = rescueTracker->decodeCandidate(false);
-    success &= check(!normalSingleFamily.valid,
-                     "single_family_does_not_override_normal_tracking");
+    success &= check(normalSingleFamily.valid,
+                     "fresh_single_family_can_report_real_note_change");
 
     rescueTracker->decoderBeam_.fill({});
     rescueTracker->setRescueMode(true);
@@ -197,8 +206,8 @@ int main()
     delayedRescueTracker->decoderBeam_.fill({});
     delayedRescueTracker->setRescueMode(false);
     const auto delayedNormalDecision = delayedRescueTracker->decodeCandidate(false);
-    success &= check(!delayedNormalDecision.valid,
-                     "expired_tracker_anchor_does_not_weaken_normal_tracking");
+    success &= check(delayedNormalDecision.valid,
+                     "stale_anchor_cannot_veto_new_live_measurement");
 
     delayedRescueTracker->decoderBeam_.fill({});
     delayedRescueTracker->setRescueMode(true);
@@ -209,8 +218,8 @@ int main()
     delayedRescueTracker->clearReacquisitionAnchor();
     delayedRescueTracker->decoderBeam_.fill({});
     const auto noBodyAnchorDecision = delayedRescueTracker->decodeCandidate(false);
-    success &= check(!noBodyAnchorDecision.valid,
-                     "released_note_body_removes_rescue_authority");
+    success &= check(noBodyAnchorDecision.valid,
+                     "released_anchor_leaves_live_measurement_authoritative");
 
 
     // A strong low-period alias must never be allowed to restart the register
@@ -235,25 +244,25 @@ int main()
     success &= check(!subharmonicCommitted && !subharmonicDecision.valid,
                      "rescue_subharmonic_cannot_restart_register");
 
-    // Even high-confidence raw evidence outside the anchor window cannot use
-    // sufficientInitialEvidence to bypass rescue continuity.
+    // An exact octave/subharmonic challenger is measured and reported, but
+    // confirmation applies a bounded negative veto before register ownership.
     auto bypassTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
     bypassTracker->prepare(48000.0);
     bypassTracker->setReacquisitionAnchor(220.0f);
     bypassTracker->setRescueMode(true);
     auto& bypassSlot = bypassTracker->halfRateCandidate_;
     bypassSlot.candidate.valid = true;
-    bypassSlot.candidate.frequencyHz = 130.0f;
+    bypassSlot.candidate.frequencyHz = 110.0f;
     bypassSlot.candidate.confidence = 0.99f;
     bypassSlot.candidate.periodicity = 0.96f;
     bypassSlot.candidate.pathIndex = 1;
     bypassSlot.candidate.ageInHops = 0;
     bypassSlot.ageInHops = 0;
-    const auto bypassDecision = bypassTracker->decodeCandidate(false);
-    success &= check(!bypassDecision.valid
-                     || ModernPitchEngine::MultiRatePitchTracker::centsDistance(
-                         bypassDecision.candidate.frequencyHz, 220.0f) <= 360.0f,
-                     "strong_subharmonic_cannot_bypass_rescue_anchor");
+    auto bypassDecision = bypassTracker->decodeCandidate(false);
+    const bool bypassCommitted = bypassTracker->confirmOctaveTransition(
+        bypassDecision, false);
+    success &= check(!bypassCommitted && !bypassDecision.valid,
+                     "octave_alias_receives_bounded_negative_veto");
 
 
     // A phonetic/raw onset is not a musical note transition.  A wide rescue
@@ -361,14 +370,14 @@ int main()
     zeroConsensusSlot.ageInHops = 0;
     zeroConsensusTracker->decoderBeam_.fill({});
     const auto zeroConsensusDecision = zeroConsensusTracker->decodeCandidate(false);
-    success &= check(!zeroConsensusDecision.valid,
-                     "presence_does_not_fabricate_weak_zero_consensus_f0");
+    success &= check(zeroConsensusDecision.valid,
+                     "zero_consensus_does_not_erase_real_measurement");
 
     auto firstPresenceLock = zeroConsensusDecision;
     const bool firstPresenceAccepted = zeroConsensusTracker->confirmOctaveTransition(
         firstPresenceLock, false);
-    success &= check(!firstPresenceAccepted && !firstPresenceLock.valid,
-                     "presence_cannot_bypass_initial_register_evidence");
+    success &= check(firstPresenceAccepted && firstPresenceLock.valid,
+                     "first_real_measurement_needs_no_confidence_permission");
 
     auto engine = std::make_unique<ModernPitchEngine>();
     engine->prepare(48000.0, 256, 1, ModernPitchEngine::LatencyMode::live);
@@ -495,8 +504,19 @@ int main()
     liveRescueDecision.freshSupportMask = 0x01;
     const bool liveRescueAccepted = liveRescueTracker->confirmOctaveTransition(
         liveRescueDecision, false);
-    success &= check(!liveRescueAccepted && !liveRescueDecision.valid,
-                     "presence_cannot_override_rescue_register_without_evidence");
+    auto liveRescueDecision2 = liveRescueDecision;
+    liveRescueDecision2.valid = true;
+    liveRescueDecision2.candidate.frequencyHz = 440.0f;
+    liveRescueDecision2.candidate.confidence = 0.18f;
+    liveRescueDecision2.candidate.periodicity = 0.24f;
+    liveRescueDecision2.directSupportCount = 1;
+    liveRescueDecision2.supportCount = 1;
+    liveRescueDecision2.freshSupportMask = 0x01;
+    const bool liveRescueAccepted2 = liveRescueTracker->confirmOctaveTransition(
+        liveRescueDecision2, false);
+    success &= check(!liveRescueAccepted && liveRescueAccepted2
+                     && liveRescueDecision2.valid,
+                     "octave_veto_is_bounded_not_confidence_gated");
 
     // Acquire is permitted to describe detector search, but it must never mute
     // an already acquired correction. Presence plus a temporary F0 dropout holds
@@ -934,6 +954,32 @@ int main()
     success &= checkAbsoluteScaleLock(48, 10.0, 0.0f,
                                       "absolute_scale_lock_zero_consensus_zero_residual");
 
+    ModernPitchEngine::ScaleQuantizer vetoQuantizer;
+    vetoQuantizer.reset();
+    std::array<double, 12> vetoChromatic {};
+    for (int degree = 0; degree < 12; ++degree)
+        vetoChromatic[static_cast<std::size_t>(degree)] = std::exp2(degree / 12.0);
+    vetoQuantizer.setScale(vetoChromatic.data(), 12, 440.0);
+    ModernPitchEngine::CorrectionState vetoState;
+    auto vetoInitial = strongPitch(440.0f);
+    vetoInitial.audioPresent = true;
+    engine->updateCorrectionState(vetoState, vetoQuantizer,
+                                  vetoInitial, absoluteLockParameters);
+    auto weakRealChange = strongPitch(505.0f);
+    weakRealChange.audioPresent = true;
+    weakRealChange.confidence = 0.01f;
+    weakRealChange.periodicity = 0.05f;
+    weakRealChange.consensus = 0.0f;
+    weakRealChange.detectorSupport = 1;
+    for (int hop = 0; hop < 8; ++hop)
+        engine->updateCorrectionState(vetoState, vetoQuantizer,
+                                      weakRealChange, absoluteLockParameters);
+    const double vetoTargetHz = std::exp2(vetoState.targetLog2);
+    const double vetoDestinationHz = 505.0 * std::exp2(vetoState.desiredCents / 1200.0);
+    success &= check(vetoTargetHz > 490.0 && vetoTargetHz < 497.0
+                     && std::abs(1200.0 * std::log2(vetoDestinationHz / vetoTargetHz)) < 1.0e-9,
+                     "weak_real_note_change_reaches_exact_scale_degree_in_bounded_time");
+
     // An asymmetric custom scale with a very narrow local interval receives
     // the same exact-target contract; density changes target selection safety,
     // never steady-state authority.
@@ -1207,8 +1253,8 @@ int main()
     const double risingTargetHz = std::exp2(risingRescue.targetLog2);
     success &= check(risingRescue.rescuePredictionActive
                      && risingRescue.rescueDirection == 1
-                     && risingTargetHz > 460.0 && risingTargetHz < 472.0,
-                     "strong_rising_history_may_choose_only_adjacent_upper_degree");
+                     && std::abs((risingRescue.targetLog2 - std::log2(440.0)) * 1200.0) < 0.1,
+                     "rising_dropout_cannot_invent_adjacent_upper_degree");
 
     auto vibratoRescue = makeRescueState({440.0, 445.0, 439.5, 444.0, 440.5, 443.0});
     engine->updateCorrectionState(vibratoRescue, rescueQuantizer,
@@ -1229,8 +1275,8 @@ int main()
     const double fallingTargetHz = std::exp2(fallingRescue.targetLog2);
     success &= check(fallingRescue.rescuePredictionActive
                      && fallingRescue.rescueDirection == -1
-                     && fallingTargetHz > 410.0 && fallingTargetHz < 420.0,
-                     "strong_falling_history_may_choose_only_adjacent_lower_degree");
+                     && std::abs((fallingRescue.targetLog2 - std::log2(440.0)) * 1200.0) < 0.1,
+                     "falling_dropout_cannot_invent_adjacent_lower_degree");
 
     auto breathRescue = makeRescueState({438.0, 440.5, 443.0, 446.0, 449.0, 452.0});
     ModernPitchEngine::Parameters breathRescueParameters = rescueParameters;

@@ -864,95 +864,75 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
     if (candidateCount <= 0)
         return {};
 
-    // DETECTOR_IS_OBSERVER_V1: audio presence is not pitch evidence. A raw
-    // detector family may be reported diagnostically, but only the existing
-    // consensus/continuity machinery may publish a valid F0. Detector doubt
-    // is absorbed downstream by the already-owned scale target/glide.
+    // DETECTOR_VETO_NOT_PERMISSION_V1: a fresh finite detector result is a
+    // measurement, even when confidence/consensus are poor. Confidence may
+    // rank competing measurements, but it may not suppress the only real F0.
+    // Upstream analyse() still rejects genuinely aperiodic/invalid material,
+    // so this never invents a frequency when no detector path measured one.
+    const auto makeFreshRawDecision = [&]() noexcept
+    {
+        DecoderDecision rawDecision;
+        int bestIndex = -1;
+        float bestScore = -1.0f;
+        for (int index = 0; index < candidateCount; ++index)
+        {
+            const auto& candidate = candidates[static_cast<std::size_t>(index)];
+            if (!candidate.valid || candidate.ageInHops != 0
+                || !std::isfinite(candidate.frequencyHz)
+                || candidate.frequencyHz < minimumPitchHz_
+                || candidate.frequencyHz > maximumPitchHz_)
+            {
+                continue;
+            }
+            const float score = candidateBaseScore(candidate)
+                * pathReliability(candidate.pathIndex, candidate.frequencyHz);
+            if (score > bestScore)
+            {
+                bestScore = score;
+                bestIndex = index;
+            }
+        }
+        if (bestIndex < 0)
+            return rawDecision;
+
+        rawDecision.candidate = candidates[static_cast<std::size_t>(bestIndex)];
+        rawDecision.candidate.valid = true;
+        rawDecision.consensus = 0.0f;
+        rawDecision.supportCount = 1;
+        rawDecision.directSupportCount = 1;
+        rawDecision.freshSupportMask = static_cast<std::uint8_t>(
+            1u << rawDecision.candidate.pathIndex);
+        rawDecision.decoderOctaveIndex = octaveState_;
+        rawDecision.valid = true;
+        return rawDecision;
+    };
+
+    // Consensus remains useful for ranking/falsification, never as permission
+    // to expose a measured F0 to the musical supervisor.
     std::array<ConsensusHypothesis, maxConsensusHypotheses> hypotheses {};
     const int hypothesisCount = buildConsensusHypotheses(candidates,
                                                          candidateCount,
                                                          hypotheses);
     if (hypothesisCount <= 0)
-        return {};
+        return makeFreshRawDecision();
 
     updateDecoderBeam(hypotheses, hypothesisCount, onsetPending);
-    if (!decoderBeam_[0].valid)
-        return {};
-
-    const float decodedFrequency = static_cast<float>(
-        std::exp2(decoderBeam_[0].logFrequency));
-    const float rescueReferenceHz = trackedPitchHz_ > 0.0f
-        ? trackedPitchHz_ : reacquisitionAnchorHz_;
-    constexpr float sameNoteRescueCents = 360.0f;
-    constexpr float wideRescueCents = 700.0f;
+    // Decoder history is diagnostic/ranking evidence. It cannot erase the
+    // current measured coordinate merely because the transition is unusual.
 
     int matchedHypothesis = -1;
-    float matchedDistance = 100000.0f;
-
-    // PITCH_RESCUE_V3_REGISTER_GUARD: once a musical note body owns a
-    // persistent anchor, rescue is an anchor-constrained register search.  The
-    // decoder beam is still useful evidence, but it may not restart the pitch
-    // register from an unrelated subharmonic simply because trackedPitchHz_
-    // has expired.
-    if (rescueMode_ && rescueReferenceHz > 0.0f)
+    for (int index = 0; index < hypothesisCount; ++index)
     {
-        float bestRescueScore = -1000.0f;
-        for (int index = 0; index < hypothesisCount; ++index)
+        const auto& current = hypotheses[static_cast<std::size_t>(index)];
+        if (current.valid && current.freshSupportMask != 0
+            && current.directSupportCount >= 1)
         {
-            const auto& candidate = hypotheses[static_cast<std::size_t>(index)];
-            if (!candidate.valid || candidate.supportCount <= 0)
-                continue;
-
-            const float distance = centsDistance(candidate.frequencyHz,
-                                                 rescueReferenceHz);
-            const bool sameNoteWindow = distance <= sameNoteRescueCents;
-            const bool wideTransitionChallenger = distance <= wideRescueCents
-                && candidate.supportCount >= 3
-                && candidate.directSupportCount >= 2
-                && candidate.confidence >= 0.92f
-                && candidate.periodicity >= 0.80f
-                && candidate.consensus >= 0.78f;
-            if ((!sameNoteWindow && !wideTransitionChallenger)
-                || candidate.periodicity < 0.46f
-                || candidate.confidence < 0.40f)
-            {
-                continue;
-            }
-
-            const float continuity = 1.0f - smoothStep(
-                120.0f, sameNoteRescueCents, distance);
-            const float rescueScore = candidate.evidenceScore
-                + 0.62f * continuity
-                + 0.14f * static_cast<float>(candidate.directSupportCount)
-                + (wideTransitionChallenger ? 0.02f : 0.0f);
-            if (rescueScore > bestRescueScore)
-            {
-                bestRescueScore = rescueScore;
-                matchedHypothesis = index;
-                matchedDistance = distance;
-            }
+            matchedHypothesis = index;
+            break; // hypotheses are already ordered by evidence score
         }
-
-        if (matchedHypothesis < 0)
-            return {};
     }
-    else
-    {
-        for (int index = 0; index < hypothesisCount; ++index)
-        {
-            const float distance = centsDistance(
-                hypotheses[static_cast<std::size_t>(index)].frequencyHz,
-                decodedFrequency);
-            if (distance < matchedDistance)
-            {
-                matchedDistance = distance;
-                matchedHypothesis = index;
-            }
-        }
-
-        if (matchedHypothesis < 0 || matchedDistance > 65.0f)
-            return {}; // detector has no new trustworthy F0
-    }
+    if (matchedHypothesis < 0)
+        return makeFreshRawDecision();
 
     const auto& hypothesis = hypotheses[static_cast<std::size_t>(matchedHypothesis)];
     DecoderDecision decision;
@@ -967,52 +947,11 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
     decision.freshSupportMask = hypothesis.freshSupportMask;
     decision.decoderOctaveIndex = decoderBeam_[0].octaveIndex;
 
-    const bool closeToTrack = trackedPitchHz_ > 0.0f
-        && centsDistance(trackedPitchHz_, decision.candidate.frequencyHz) < 95.0f;
-    // FAST_INITIAL_ACQUIRE_V1: relax only a genuinely unowned first lock.
-    // Existing tracking and reacquisition anchors keep the previous stronger
-    // evidence rule, so a single detector family cannot override musical
-    // history just because startup acquisition was made faster.
-    const bool genuinelyUnownedInitial = trackedPitchHz_ <= 0.0f
-        && reacquisitionAnchorHz_ <= 0.0f;
-    // REAL_VOICE_BOOTSTRAP_V1: cross-path consensus is useful after a note
-    // exists, but it must not veto the first musical ownership. During the
-    // genuinely unowned bootstrap, judge a fresh direct candidate by the raw
-    // hypothesis quality before consensus attenuation. No candidate means no
-    // invented F0; this only stops four conservative paths from mutually
-    // preventing a real vocal onset from ever acquiring.
-    const bool freshDirectInitialEvidence = genuinelyUnownedInitial
-        && decision.freshSupportMask != 0
-        && decision.directSupportCount >= 1
-        && hypothesis.confidence >= 0.40f
-        && hypothesis.periodicity >= 0.48f
-        && hypothesis.evidenceScore >= 0.22f;
-    const bool sufficientInitialEvidence = decision.supportCount >= 2
-        || decision.candidate.confidence >= 0.78f
-        || freshDirectInitialEvidence;
-    const float rescueDistance = rescueReferenceHz > 0.0f
-        ? centsDistance(rescueReferenceHz, decision.candidate.frequencyHz)
-        : 100000.0f;
-    const bool sameNoteRescue = rescueDistance <= sameNoteRescueCents;
-    const bool wideRescueChallenger = rescueDistance <= wideRescueCents
-        && decision.supportCount >= 3
-        && decision.directSupportCount >= 2
-        && decision.candidate.confidence >= 0.92f
-        && decision.candidate.periodicity >= 0.80f
-        && decision.consensus >= 0.78f;
-    const bool rescueEvidence = rescueMode_
-        && rescueReferenceHz > 0.0f
-        && (sameNoteRescue || wideRescueChallenger)
-        && decision.supportCount >= 1
-        && decision.candidate.confidence >= 0.40f
-        && decision.candidate.periodicity >= 0.46f;
-
-    // Strong evidence may acquire an initial register, but it may not bypass a
-    // latched note body's rescue anchor.  This closes the path that previously
-    // let a strong subharmonic become a new F0 during acquire.
-    decision.valid = rescueMode_
-        ? rescueEvidence
-        : (closeToTrack || sufficientInitialEvidence);
+    // DETECTOR_VETO_NOT_PERMISSION_V1: once a current finite measurement has
+    // survived the detector's falsification stages, low confidence/consensus
+    // cannot make it invalid. Octave/subharmonic ambiguity is handled below by
+    // confirmOctaveTransition() as an explicit, bounded veto.
+    decision.valid = true;
     return decision;
 }
 
@@ -1036,58 +975,60 @@ bool ModernPitchEngine::MultiRatePitchTracker::confirmOctaveTransition(
     // anchor owns the register and a subharmonic may not restart it.
     if (trackedPitchHz_ <= 0.0f && rescueMode_ && reacquisitionAnchorHz_ > 0.0f)
     {
-        constexpr float sameNoteRescueCents = 360.0f;
-        constexpr float wideRescueCents = 700.0f;
-        const float distance = centsDistance(reacquisitionAnchorHz_,
-                                             decision.candidate.frequencyHz);
-        const bool sameNoteWindow = distance <= sameNoteRescueCents;
-        const bool wideTransitionChallenger = distance <= wideRescueCents
-            && decision.supportCount >= 3
-            && decision.directSupportCount >= 2
-            && decision.candidate.confidence >= 0.92f
-            && decision.candidate.periodicity >= 0.80f
-            && decision.consensus >= 0.78f;
-        if (!sameNoteWindow && !wideTransitionChallenger)
+        int rescueOctaveDelta = 0;
+        float rescueResidualCents = 0.0f;
+        const bool octaveLike = isOctaveLikeTransition(
+            reacquisitionAnchorHz_, decision.candidate.frequencyHz,
+            rescueOctaveDelta, rescueResidualCents);
+
+        if (!octaveLike)
         {
-            decision.valid = false;
+            // A non-octave live measurement is not guilty merely because it is
+            // far from the stale anchor. An explicit transient onset may veto
+            // this one observation; the next measured non-onset F0 passes.
+            if (onsetPending)
+            {
+                decision.valid = false;
+                return false;
+            }
             pendingOctaveDelta_ = 0;
             pendingOctaveCount_ = 0;
             pendingOctaveFrequencyHz_ = 0.0f;
-            return false;
+            committedOctaveFrequencyHz_ = decision.candidate.frequencyHz;
+            octaveCommitGuardHops_ = 6;
+            decision.decoderOctaveIndex = octaveState_;
+            return true;
         }
 
-        const bool samePending = pendingOctaveFrequencyHz_ > 0.0f
+        const bool samePending = pendingOctaveDelta_ == rescueOctaveDelta
+            && pendingOctaveFrequencyHz_ > 0.0f
             && centsDistance(pendingOctaveFrequencyHz_,
                              decision.candidate.frequencyHz) < 70.0f;
         if (!samePending)
         {
-            pendingOctaveDelta_ = 0;
+            pendingOctaveDelta_ = rescueOctaveDelta;
             pendingOctaveCount_ = 0;
             pendingOctaveFrequencyHz_ = decision.candidate.frequencyHz;
         }
         if (decision.freshSupportMask != 0)
             ++pendingOctaveCount_;
 
-        const bool strongSameRegister = distance <= 180.0f
-            && decision.directSupportCount >= 1
-            && decision.candidate.confidence >= 0.78f
-            && decision.candidate.periodicity >= 0.70f;
-        constexpr int wideTransitionObservations = 8;
-        const int requiredObservations = sameNoteWindow
-            ? (strongSameRegister ? 1 : 2)
-            : wideTransitionObservations;
+        // Downward octave/subharmonic aliases are more common, hence one extra
+        // observation. This veto is finite and independent of confidence.
+        const int requiredObservations = rescueOctaveDelta < 0 ? 3 : 2;
         if (pendingOctaveCount_ < requiredObservations)
         {
             decision.valid = false;
             return false;
         }
 
-        decision.decoderOctaveIndex = octaveState_;
+        octaveState_ = std::clamp(octaveState_ + rescueOctaveDelta, -4, 4);
         committedOctaveFrequencyHz_ = decision.candidate.frequencyHz;
-        octaveCommitGuardHops_ = 6;
+        octaveCommitGuardHops_ = 12;
         pendingOctaveDelta_ = 0;
         pendingOctaveCount_ = 0;
         pendingOctaveFrequencyHz_ = 0.0f;
+        decision.decoderOctaveIndex = octaveState_;
         return true;
     }
 
@@ -1097,53 +1038,20 @@ bool ModernPitchEngine::MultiRatePitchTracker::confirmOctaveTransition(
     // deliberately temporal for synthetic/offline detector-only use.
     if (trackedPitchHz_ <= 0.0f)
     {
-        // FAST_INITIAL_ACQUIRE_V1: first acquisition may tolerate ordinary
-        // vibrato/jitter between fresh observations. Harmonic/register jumps
-        // remain far outside this window and still restart confirmation.
-        const bool sameInitial = pendingOctaveFrequencyHz_ > 0.0f
-            && centsDistance(pendingOctaveFrequencyHz_,
-                             decision.candidate.frequencyHz) < 120.0f;
-        if (!sameInitial)
-        {
-            pendingOctaveDelta_ = 0;
-            pendingOctaveCount_ = 0;
-            pendingOctaveFrequencyHz_ = decision.candidate.frequencyHz;
-        }
-
-        if (decision.freshSupportMask != 0)
-            ++pendingOctaveCount_;
-
-        // REAL_VOICE_BOOTSTRAP_V1: the first target is provisional musical
-        // ownership, not a claim of perfect detector certainty. A real fresh
-        // direct candidate on audible material may establish it immediately;
-        // subsequent tracking, octave changes and rescue still use the normal
-        // conservative guards. This prevents permanent acquire/bypass without
-        // fabricating an F0 when every detector is genuinely empty.
-        const bool realVoiceBootstrapEvidence = reacquisitionAnchorHz_ <= 0.0f
-            && presenceMode_
-            && decision.directSupportCount >= 1
-            && decision.freshSupportMask != 0
-            && decision.candidate.confidence >= 0.34f
-            && decision.candidate.periodicity >= 0.48f;
-        const bool multiPathFastInitialEvidence = decision.supportCount >= 2
-            && decision.directSupportCount >= 1
-            && decision.freshSupportMask != 0
-            && decision.candidate.confidence >= 0.62f
-            && decision.candidate.periodicity >= 0.58f
-            && decision.consensus >= 0.32f;
-        const int requiredObservations = (realVoiceBootstrapEvidence
-            || multiPathFastInitialEvidence) ? 1 : 2;
-        if (pendingOctaveCount_ < requiredObservations)
+        // FIRST_MEASUREMENT_OWNS_V1: first ownership requires a current real
+        // detector measurement, not a confidence vote. No fresh measurement
+        // still means no F0 and therefore no invented target.
+        if (decision.freshSupportMask == 0 || decision.directSupportCount < 1)
         {
             decision.valid = false;
             return false;
         }
-
         committedOctaveFrequencyHz_ = decision.candidate.frequencyHz;
         octaveCommitGuardHops_ = 6;
         pendingOctaveDelta_ = 0;
         pendingOctaveCount_ = 0;
         pendingOctaveFrequencyHz_ = 0.0f;
+        decision.decoderOctaveIndex = octaveState_;
         return true;
     }
 
@@ -1189,27 +1097,12 @@ bool ModernPitchEngine::MultiRatePitchTracker::confirmOctaveTransition(
     if (decision.freshSupportMask != 0)
         ++pendingOctaveCount_;
 
-    int requiredObservations = octaveDelta < 0 ? 3 : 2;
-    if (onsetPending && decision.supportCount >= 2
-        && decision.directSupportCount >= 2
-        && decision.consensus > 0.82f)
+    const int requiredObservations = octaveDelta < 0 ? 3 : 2;
+    if (pendingOctaveCount_ < requiredObservations)
     {
-        requiredObservations = 2;
-    }
-
-    const bool credibleConsensus = octaveDelta < 0
-        ? (decision.directSupportCount >= 1
-           && (decision.supportCount >= 2
-               || (decision.candidate.confidence > 0.92f
-                   && decision.consensus > 0.68f)))
-        : (decision.supportCount >= 2
-           || (decision.directSupportCount >= 1
-               && decision.candidate.confidence > 0.90f
-               && decision.consensus > 0.62f));
-
-    if (!credibleConsensus || pendingOctaveCount_ < requiredObservations)
-    {
-        // Hold the committed octave while the challenger accumulates evidence.
+        // Hold the committed register only while an explicitly octave-like
+        // challenger is being falsification-checked. Confidence cannot extend
+        // this veto beyond the fixed observation count.
         decision.candidate.frequencyHz = trackedPitchHz_;
         decision.candidate.confidence = trackedConfidence_ * 0.97f;
         decision.candidate.periodicity = trackedPeriodicity_;
@@ -2043,24 +1936,10 @@ bool ModernPitchEngine::advanceConservativeF0Rescue(
         state.rescueTargetShifted = false;
         state.rescuePredictionActive = true;
 
-        // A scale move is permitted only after a strongly directional real-F0
-        // history. The helper returns exactly the immediate adjacent degree, so
-        // one dropout can never invent a multi-degree melody.
-        if (parameters.scaleLock && state.rescueDirection != 0)
-        {
-            const double adjacent = quantizer.adjacentTargetLog2(
-                state.rescueBaseTargetLog2, state.rescueDirection);
-            const double jumpCents = (adjacent - state.rescueBaseTargetLog2) * 1200.0;
-            if (std::isfinite(adjacent)
-                && state.rescueDirection * jumpCents > 0.1)
-            {
-                state.targetLog2 = adjacent;
-                state.rescueTargetShifted = true;
-                state.recentRealPitchCount = 0;
-                ++state.revision;
-                state.lastTargetJumpCents = jumpCents;
-            }
-        }
+        // NO_PREDICTED_NOTE_IDENTITY_V1: a detector hole may extrapolate the
+        // source coordinate for transport continuity, but it may never create a
+        // new musical degree. Only a subsequent real F0 may change targetLog2.
+        state.rescueTargetShifted = false;
     }
 
     if (++state.rescuePredictionHops > maximumPredictionHops)
@@ -2346,6 +2225,11 @@ void ModernPitchEngine::updateCorrectionState(
 
     state.invalidObservations = 0;
 
+    // VALID_F0_OUTRANKS_LABEL_V1: once the detector has produced a finite valid
+    // F0, a secondary breath/phonetic label cannot erase that coordinate.
+    // Falsification belongs in the detector/register logic; confidence and
+    // descriptive voice labels never become permission to correct.
+
     // A strong breath/absence before any body latch must not become a note just
     // because the pitch tracker found a periodic accident in the noise.
     // PHONETIC_STATE_HAS_NO_CORRECTION_AUTHORITY_V1: breath/absence
@@ -2448,24 +2332,23 @@ void ModernPitchEngine::updateCorrectionState(
         // centre itself to cross the existing half-cell identity boundary in
         // the same direction. This preserves dense/microtonal scale ownership
         // without letting instantaneous vibrato choose a neighbouring degree.
-        const double centreDistanceFromCurrentTarget = state.targetValid
-            ? std::abs(state.pitchCentreLog2 - state.targetLog2) * 1200.0
-            : 0.0;
-        const double observedDirection = observedLog2 - state.targetLog2;
-        const double centreDirection = state.pitchCentreLog2 - state.targetLog2;
         const double obviousRegisterBreakCents = std::max(700.0, liveIdentityBreakRadius);
         const bool obviousRegisterBreak = observedDistanceFromCurrentTarget
             >= obviousRegisterBreakCents;
-        const bool sustainedCellExit = centreDistanceFromCurrentTarget
-            >= currentIdentityRadius
-            && observedDistanceFromCurrentTarget >= currentIdentityRadius
-            && observedDirection * centreDirection > 0.0;
+
+        // OSCILLATION_IS_NEGATIVE_EVIDENCE_V1: crossing the half-cell boundary
+        // is not positive proof of a new note because a wide vibrato can do it
+        // every cycle. A fast switch requires the measured F0 to be clearly
+        // inside the challenger cell (72% of the local scale step). Otherwise
+        // the confidence-independent continuity centre decides in finite time.
+        const bool decisiveCellExit = observedDistanceFromCurrentTarget
+            >= liveIdentityBreakRadius;
         liveIdentityBreak = observation.audioPresent
             && state.targetValid
-            && (obviousRegisterBreak || sustainedCellExit);
+            && (obviousRegisterBreak || decisiveCellExit);
         forceTargetSwitch = observation.audioPresent
             && state.targetValid
-            && obviousRegisterBreak;
+            && (obviousRegisterBreak || decisiveCellExit);
         if (liveIdentityBreak)
         {
             state.pitchCentreLog2 = observedLog2;
@@ -2479,10 +2362,12 @@ void ModernPitchEngine::updateCorrectionState(
             {
                 baseAlpha = 0.018 + 0.035 * static_cast<double>(1.0f - humanize);
             }
-            const double stableGate = 0.35
-                + 0.65 * static_cast<double>(clamp01(observation.confidence)
-                                          * clamp01(observation.periodicity));
-            state.pitchCentreLog2 += baseAlpha * stableGate
+            // CONTINUITY_VETO_NOT_CONFIDENCE_V1: centre motion is purely
+            // geometric. The fixed 0.90 factor is an anti-vibrato time scale,
+            // not detector permission: confidence/consensus cannot slow it,
+            // strengthen it or freeze a real sustained note change.
+            constexpr double continuityRate = 0.90;
+            state.pitchCentreLog2 += baseAlpha * continuityRate
                 * (observedLog2 - state.pitchCentreLog2);
             ++state.stableObservations;
         }
@@ -2490,6 +2375,11 @@ void ModernPitchEngine::updateCorrectionState(
 
     const float hysteresis = adaptiveHysteresis(parameters, quantizer, observation);
     int pending = 0;
+    // CONTINUITY_VETO_NOT_PERMISSION_V1: target identity is read from the
+    // deterministic continuity centre, not from detector confidence. This is
+    // a bounded anti-vibrato falsification stage; it cannot remain stuck merely
+    // because confidence/consensus are low. User Hold remains the only target
+    // retention control inside ScaleQuantizer.
     const double targetSelectionLog2 = state.pitchCentreLog2;
     const float targetStrictness = zeroPrudence
         ? 0.0f : parameters.lockStrictness;
@@ -2516,6 +2406,15 @@ void ModernPitchEngine::updateCorrectionState(
         && std::abs(targetJump) >= identityThreshold;
     if (targetIdentityChanged || musicalOnset || liveIdentityBreak)
     {
+        if (targetIdentityChanged)
+        {
+            // Rebase continuity state after the quantizer has accepted a real
+            // note change. This prevents the old note centre from masquerading
+            // as vibrato/softness around the new exact scale destination.
+            state.pitchCentreLog2 = observedLog2;
+            state.pitchCentreValid = true;
+            state.stableObservations = 0;
+        }
         state.recentRealPitchCount = rescueBodyFrame ? 1 : 0;
         if (rescueBodyFrame)
             state.recentRealPitchLog2[0] = correctionObservedLog2;
