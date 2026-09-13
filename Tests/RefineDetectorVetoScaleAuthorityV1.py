@@ -46,9 +46,8 @@ cpp = one(cpp,
 
 # Restore scale-cell selection through the continuity centre, but remove the
 # confidence/periodicity multiplier that made this centre a permission gate.
-# The centre is now a deterministic geometric anti-vibrato filter: sustained
-# motion crosses in finite time regardless of detector certainty, while a
-# periodic excursion can be rejected as a false note-identity change.
+# A fixed geometric rate deliberately stays close to the old high-confidence
+# response while making low-confidence and zero-consensus motion identical.
 cpp = one(cpp,
 '''            const double stableGate = 0.35
                 + 0.65 * static_cast<double>(clamp01(observation.confidence)
@@ -57,13 +56,14 @@ cpp = one(cpp,
                 * (observedLog2 - state.pitchCentreLog2);
 ''',
 '''            // CONTINUITY_VETO_NOT_CONFIDENCE_V1: centre motion is purely
-            // geometric. Confidence/consensus cannot slow or freeze a real
-            // note change; the centre exists only to reject oscillatory
-            // vibrato as a false adjacent-note identity change.
-            state.pitchCentreLog2 += baseAlpha
+            // geometric. The fixed 0.90 factor is an anti-vibrato time scale,
+            // not detector permission: confidence/consensus cannot slow it,
+            // strengthen it or freeze a real sustained note change.
+            constexpr double continuityRate = 0.90;
+            state.pitchCentreLog2 += baseAlpha * continuityRate
                 * (observedLog2 - state.pitchCentreLog2);
 ''',
-'confidence independent continuity centre')
+'confidence independent bounded continuity centre')
 
 cpp = one(cpp,
 '''    // LIVE_F0_SELECTS_SCALE_CELL_V1: pitchCentre is continuity/vibrato state,
