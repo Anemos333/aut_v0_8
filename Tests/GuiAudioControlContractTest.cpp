@@ -146,7 +146,8 @@ int main()
                      "dry_exists_only_as_explicit_host_bypass");
 
     success &= check(has(engine, "NO_AUDIO_DROPOUT_ON_UNCERTAINTY_V1")
-                         && has(engine, "FAST_INITIAL_ACQUIRE_V1")
+                         && has(engine, "DETECTOR_VETO_NOT_PERMISSION_V1")
+                         && has(engine, "FIRST_MEASUREMENT_OWNS_V1")
                          && has(engine, "SCALE_CHANGE_PRESERVES_AUDIO_CONTINUITY_V1")
                          && !has(engine, "UNOWNED_AUDIO_FAILS_CLOSED_V1")
                          && !has(engine, "correction.targetValid ? rendered : 0.0f")
