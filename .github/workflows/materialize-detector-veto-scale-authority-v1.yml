@@ -26,7 +26,9 @@ jobs:
           test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "7eae364fc8974c10980c21fea739ed66b69b0e56"
 
       - name: Materialize detector veto authority patch
-        run: python3 Tests/MaterializeDetectorVetoScaleAuthorityV1.py
+        run: |
+          python3 Tests/MaterializeDetectorVetoScaleAuthorityV1.py
+          python3 Tests/RefineDetectorVetoScaleAuthorityV1.py
 
       - name: Verify semantic contract
         run: |
@@ -35,9 +37,12 @@ jobs:
           grep -Fq 'DETECTOR_VETO_NOT_PERMISSION_V1' Source/ModernPitchEngine.cpp
           grep -Fq 'FIRST_MEASUREMENT_OWNS_V1' Source/ModernPitchEngine.cpp
           grep -Fq 'NO_PREDICTED_NOTE_IDENTITY_V1' Source/ModernPitchEngine.cpp
-          grep -Fq 'POSITIVE_VETO_ONLY_V1' Source/ModernPitchEngine.cpp
-          grep -Fq 'LIVE_F0_SELECTS_SCALE_CELL_V1' Source/ModernPitchEngine.cpp
-          grep -Fq 'weak_real_note_change_reaches_exact_scale_degree_immediately' Tests/SupervisorContinuityTest.cpp
+          grep -Fq 'VALID_F0_OUTRANKS_LABEL_V1' Source/ModernPitchEngine.cpp
+          grep -Fq 'CONTINUITY_VETO_NOT_CONFIDENCE_V1' Source/ModernPitchEngine.cpp
+          grep -Fq 'CONTINUITY_VETO_NOT_PERMISSION_V1' Source/ModernPitchEngine.cpp
+          grep -Fq 'weak_real_note_change_reaches_exact_scale_degree_in_bounded_time' Tests/SupervisorContinuityTest.cpp
+          ! grep -Fq 'POSITIVE_VETO_ONLY_V1' Source/ModernPitchEngine.cpp
+          ! grep -Fq 'LIVE_F0_SELECTS_SCALE_CELL_V1' Source/ModernPitchEngine.cpp
           test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "7eae364fc8974c10980c21fea739ed66b69b0e56"
 
       - name: Install build dependencies
@@ -67,6 +72,7 @@ jobs:
         run: |
           set -euo pipefail
           rm -f Tests/MaterializeDetectorVetoScaleAuthorityV1.py
+          rm -f Tests/RefineDetectorVetoScaleAuthorityV1.py
           rm -f .github/workflows/materialize-detector-veto-scale-authority-v1.yml
           git add -A
           git config user.name 'github-actions[bot]'
