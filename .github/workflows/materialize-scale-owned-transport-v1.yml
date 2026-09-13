@@ -6,6 +6,7 @@ on:
     paths:
       - 'Tests/MaterializeScaleOwnedTransportV1.py'
       - 'Tests/RefineScaleOwnedTransportV1.py'
+      - 'Tests/RefineScaleOwnedTransportPersistenceV1.py'
       - '.github/workflows/materialize-scale-owned-transport-v1.yml'
 
 permissions:
@@ -29,6 +30,7 @@ jobs:
         run: |
           python3 Tests/MaterializeScaleOwnedTransportV1.py
           python3 Tests/RefineScaleOwnedTransportV1.py
+          python3 Tests/RefineScaleOwnedTransportPersistenceV1.py
 
       - name: Verify semantic contract
         run: |
@@ -38,6 +40,7 @@ jobs:
           grep -Fq 'PHONETIC_VETO_HOLDS_TRANSPORT_V1' Source/ModernPitchEngine.cpp
           grep -Fq 'SCALE_OWNS_IDENTITY_V2' Source/ModernPitchEngine.cpp
           grep -Fq 'SCALE_OWNS_IDENTITY_V2' Source/ModernPitchEngine.h
+          grep -Fq 'CONSECUTIVE_CHALLENGER_EVIDENCE_V1' Source/ModernPitchEngine.cpp
           grep -Fq 'USER_HOLD_REMAINS_AUTHORITY_V1' Source/ModernPitchEngine.cpp
           grep -Fq 'single_far_f0_outlier_has_zero_audible_authority' Tests/SupervisorContinuityTest.cpp
           grep -Fq 'detector_hole_holds_target_transport_and_correction_exactly' Tests/SupervisorContinuityTest.cpp
