@@ -36,10 +36,12 @@ jobs:
           git diff --check
           grep -Fq 'SCALE_OWNS_TRANSPORT_V1' Source/ModernPitchEngine.cpp
           grep -Fq 'PHONETIC_VETO_HOLDS_TRANSPORT_V1' Source/ModernPitchEngine.cpp
-          grep -Fq 'SCALE_OWNS_IDENTITY_V1' Source/ModernPitchEngine.cpp
+          grep -Fq 'SCALE_OWNS_IDENTITY_V2' Source/ModernPitchEngine.cpp
+          grep -Fq 'SCALE_OWNS_IDENTITY_V2' Source/ModernPitchEngine.h
           grep -Fq 'USER_HOLD_REMAINS_AUTHORITY_V1' Source/ModernPitchEngine.cpp
           grep -Fq 'single_far_f0_outlier_has_zero_audible_authority' Tests/SupervisorContinuityTest.cpp
           grep -Fq 'detector_hole_holds_target_transport_and_correction_exactly' Tests/SupervisorContinuityTest.cpp
+          grep -Fq 'single_zero_consensus_register_hop_has_zero_audible_authority' Tests/SupervisorContinuityTest.cpp
           test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "7eae364fc8974c10980c21fea739ed66b69b0e56"
 
       - name: Install build dependencies
@@ -68,12 +70,12 @@ jobs:
       - name: Commit validated scale-owned transport
         run: |
           set -euo pipefail
-          if git diff --quiet -- Source/ModernPitchEngine.cpp Tests/SupervisorContinuityTest.cpp; then
+          if git diff --quiet -- Source/ModernPitchEngine.cpp Source/ModernPitchEngine.h Tests/SupervisorContinuityTest.cpp; then
             echo 'No materialized changes to commit'
             exit 0
           fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add Source/ModernPitchEngine.cpp Tests/SupervisorContinuityTest.cpp
+          git add Source/ModernPitchEngine.cpp Source/ModernPitchEngine.h Tests/SupervisorContinuityTest.cpp
           git commit -m 'Make scale own audible transport [skip ci]'
           git push origin HEAD:scale-owned-transport-v1
