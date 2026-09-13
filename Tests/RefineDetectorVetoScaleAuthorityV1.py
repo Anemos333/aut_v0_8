@@ -44,6 +44,51 @@ cpp = one(cpp,
 ''',
 'valid f0 outranks secondary label')
 
+# The previous sustainedCellExit snapped the continuity centre to an
+# instantaneous excursion as soon as both centre and observation crossed about
+# half a cell. That positively promoted wide vibrato into a neighbouring note.
+# Fast switching is now reserved for a measurement clearly inside the next
+# cell; ambiguous boundary motion stays in the deterministic continuity filter.
+cpp = one(cpp,
+'''        const double centreDistanceFromCurrentTarget = state.targetValid
+            ? std::abs(state.pitchCentreLog2 - state.targetLog2) * 1200.0
+            : 0.0;
+        const double observedDirection = observedLog2 - state.targetLog2;
+        const double centreDirection = state.pitchCentreLog2 - state.targetLog2;
+        const double obviousRegisterBreakCents = std::max(700.0, liveIdentityBreakRadius);
+        const bool obviousRegisterBreak = observedDistanceFromCurrentTarget
+            >= obviousRegisterBreakCents;
+        const bool sustainedCellExit = centreDistanceFromCurrentTarget
+            >= currentIdentityRadius
+            && observedDistanceFromCurrentTarget >= currentIdentityRadius
+            && observedDirection * centreDirection > 0.0;
+        liveIdentityBreak = observation.audioPresent
+            && state.targetValid
+            && (obviousRegisterBreak || sustainedCellExit);
+        forceTargetSwitch = observation.audioPresent
+            && state.targetValid
+            && obviousRegisterBreak;
+''',
+'''        const double obviousRegisterBreakCents = std::max(700.0, liveIdentityBreakRadius);
+        const bool obviousRegisterBreak = observedDistanceFromCurrentTarget
+            >= obviousRegisterBreakCents;
+
+        // OSCILLATION_IS_NEGATIVE_EVIDENCE_V1: crossing the half-cell boundary
+        // is not positive proof of a new note because a wide vibrato can do it
+        // every cycle. A fast switch requires the measured F0 to be clearly
+        // inside the challenger cell (72% of the local scale step). Otherwise
+        // the confidence-independent continuity centre decides in finite time.
+        const bool decisiveCellExit = observedDistanceFromCurrentTarget
+            >= liveIdentityBreakRadius;
+        liveIdentityBreak = observation.audioPresent
+            && state.targetValid
+            && (obviousRegisterBreak || decisiveCellExit);
+        forceTargetSwitch = observation.audioPresent
+            && state.targetValid
+            && (obviousRegisterBreak || decisiveCellExit);
+''',
+'vibrato is negative evidence not target promotion')
+
 # Restore scale-cell selection through the continuity centre, but remove the
 # confidence/periodicity multiplier that made this centre a permission gate.
 # A fixed geometric rate deliberately stays close to the old high-confidence
