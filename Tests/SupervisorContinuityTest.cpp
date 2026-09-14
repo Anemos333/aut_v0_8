@@ -2015,6 +2015,96 @@ int main()
                      && softAmountResidual < 34.1,
                      "amount_softens_inside_target_cell_never_restores_dry_authority");
 
+    // TERMINAL_TAIL_KEEPS_OWNED_DEGREE_V1: a degrading falling tail is
+    // still part of the previously owned note. Its physical F0 may continue to
+    // move so correction can cancel that motion, but it may not nominate lower
+    // scale degrees until positive structured note evidence returns.
+    ModernPitchEngine::Parameters fallingTailParameters = explicitAuthorityParameters;
+    fallingTailParameters.voiceEvidenceValid = true;
+    fallingTailParameters.voiceBodyEnergy = 0.34f;
+    fallingTailParameters.voiceHarmonicity = 0.32f;
+    fallingTailParameters.voiceSpectralReliability = 0.34f;
+    fallingTailParameters.voiceBreathiness = 0.48f;
+    fallingTailParameters.voiceEventStrength = 0.08f;
+    ModernPitchEngine::ScaleQuantizer fallingTailQuantizer;
+    fallingTailQuantizer.reset();
+    fallingTailQuantizer.setScale(authorityChromatic.data(),
+                                  static_cast<int>(authorityChromatic.size()), 440.0);
+    ModernPitchEngine::CorrectionState fallingTailState;
+    for (int hop = 0; hop < 12; ++hop)
+        engine->updateCorrectionState(fallingTailState, fallingTailQuantizer,
+                                      latentC, explicitAuthorityParameters);
+    const double fallingTailOwnedTarget = fallingTailState.targetLog2;
+    const double fallingTailStartTransport = fallingTailState.transportPeriodHz;
+    double fallingTailRawHz = 440.0;
+    for (int cents = -10; cents >= -110; cents -= 10)
+    {
+        fallingTailRawHz = 440.0 * std::exp2(static_cast<double>(cents) / 1200.0);
+        auto tailHop = strongPitch(static_cast<float>(fallingTailRawHz));
+        tailHop.audioPresent = true;
+        tailHop.correctionFrequencyHz = tailHop.frequencyHz;
+        engine->updateCorrectionState(fallingTailState, fallingTailQuantizer,
+                                      tailHop, fallingTailParameters);
+    }
+    const double fallingTailTargetHz = std::exp2(fallingTailState.targetLog2);
+    const double fallingTailOutputHz = fallingTailRawHz * std::exp2(
+        fallingTailState.desiredCents / 1200.0);
+    const double fallingTailResidual = std::abs(1200.0 * std::log2(
+        fallingTailOutputHz / fallingTailTargetHz));
+    success &= check(std::abs(fallingTailState.targetLog2
+                              - fallingTailOwnedTarget) < 1.0e-12
+                     && fallingTailState.transportPeriodHz
+                        < fallingTailStartTransport * std::exp2(-45.0 / 1200.0)
+                     && fallingTailResidual < 3.0,
+                     "falling_terminal_tail_stays_on_previous_degree_and_remains_corrected");
+
+    // The rule is direction symmetric: a weakening rising tail also belongs to
+    // the previous degree instead of earning an upward target revision.
+    ModernPitchEngine::ScaleQuantizer risingTailQuantizer;
+    risingTailQuantizer.reset();
+    risingTailQuantizer.setScale(authorityChromatic.data(),
+                                 static_cast<int>(authorityChromatic.size()), 440.0);
+    ModernPitchEngine::CorrectionState risingTailState;
+    for (int hop = 0; hop < 12; ++hop)
+        engine->updateCorrectionState(risingTailState, risingTailQuantizer,
+                                      latentC, explicitAuthorityParameters);
+    const double risingTailOwnedTarget = risingTailState.targetLog2;
+    double risingTailRawHz = 440.0;
+    for (int cents = 10; cents <= 110; cents += 10)
+    {
+        risingTailRawHz = 440.0 * std::exp2(static_cast<double>(cents) / 1200.0);
+        auto tailHop = strongPitch(static_cast<float>(risingTailRawHz));
+        tailHop.audioPresent = true;
+        tailHop.correctionFrequencyHz = tailHop.frequencyHz;
+        engine->updateCorrectionState(risingTailState, risingTailQuantizer,
+                                      tailHop, fallingTailParameters);
+    }
+    const double risingTailTargetHz = std::exp2(risingTailState.targetLog2);
+    const double risingTailOutputHz = risingTailRawHz * std::exp2(
+        risingTailState.desiredCents / 1200.0);
+    const double risingTailResidual = std::abs(1200.0 * std::log2(
+        risingTailOutputHz / risingTailTargetHz));
+    success &= check(std::abs(risingTailState.targetLog2
+                              - risingTailOwnedTarget) < 1.0e-12
+                     && risingTailResidual < 3.0,
+                     "rising_terminal_tail_stays_on_previous_degree_and_remains_corrected");
+
+    // Tail ownership is not a permanent lock. As soon as a genuinely structured
+    // new note appears, ordinary scale nomination/commit resumes and the next
+    // exact degree may own the output.
+    ModernPitchEngine::Parameters recoveredNoteParameters = explicitAuthorityParameters;
+    setBodyEvidence(recoveredNoteParameters);
+    const double lowerChromaticHz = 440.0 * std::exp2(-100.0 / 1200.0);
+    auto recoveredLowerNote = strongPitch(static_cast<float>(lowerChromaticHz));
+    recoveredLowerNote.audioPresent = true;
+    recoveredLowerNote.correctionFrequencyHz = recoveredLowerNote.frequencyHz;
+    for (int hop = 0; hop < 8; ++hop)
+        engine->updateCorrectionState(fallingTailState, fallingTailQuantizer,
+                                      recoveredLowerNote, recoveredNoteParameters);
+    const double recoveredTargetHz = std::exp2(fallingTailState.targetLog2);
+    success &= check(recoveredTargetHz > 414.0 && recoveredTargetHz < 417.0,
+                     "strong_new_note_after_terminal_tail_can_commit_normally");
+
     ModernPitchEngine::CorrectionState zeroResponseTransition;
     zeroResponseTransition.targetValid = true;
     zeroResponseTransition.noteBodyLatched = true;

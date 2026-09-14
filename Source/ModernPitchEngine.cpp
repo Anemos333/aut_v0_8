@@ -2497,6 +2497,57 @@ void ModernPitchEngine::updateCorrectionState(
         return std::max(0.1, static_cast<double>(quantizer.minimumStepCents()));
     };
 
+    // TERMINAL_TAIL_KEEPS_OWNED_DEGREE_V1: a weakening terminal trajectory
+    // may describe where the physical source is moving, but it is not positive
+    // evidence for a new musical note. Keep transport live so the falling/rising
+    // source can still be corrected to the already-owned scale degree; remove
+    // only note-identity authority. This is symmetric for falling and rising
+    // tails and is measured in the actual adjacent-degree geometry.
+    bool terminalTailIdentityVeto = false;
+    if (state.targetValid
+        && state.noteBodyLatched
+        && richEvidence
+        && !observation.onset)
+    {
+        const double localTailStep = localDegreeStepCents(
+            state.targetLog2, observedLog2);
+        const double signedTailDistanceCents =
+            (observedLog2 - state.targetLog2) * 1200.0;
+        const double priorSourceLog2 = state.transportPeriodHz > 0.0
+            && std::isfinite(state.transportPeriodHz)
+            ? safeLog2(state.transportPeriodHz)
+            : (state.pitchCentreValid ? state.pitchCentreLog2 : state.targetLog2);
+        const double signedPriorDistanceCents =
+            (priorSourceLog2 - state.targetLog2) * 1200.0;
+        const bool sameTailSide = std::abs(signedPriorDistanceCents)
+                < 0.12 * localTailStep
+            || signedTailDistanceCents * signedPriorDistanceCents > 0.0;
+
+        int degradationVotes = 0;
+        degradationVotes += parameters.voiceBodyEnergy < 0.52f ? 1 : 0;
+        degradationVotes += parameters.voiceHarmonicity < 0.48f ? 1 : 0;
+        degradationVotes += parameters.voiceSpectralReliability < 0.50f ? 1 : 0;
+        degradationVotes += parameters.voiceBreathiness > 0.42f ? 1 : 0;
+        const bool terminalStructure = parameters.voiceEventStrength < 0.55f
+            && degradationVotes >= 2;
+        const bool outsideStableCore =
+            std::abs(signedTailDistanceCents) >= 0.32 * localTailStep;
+
+        if (terminalStructure && sameTailSide && outsideStableCore)
+        {
+            terminalTailIdentityVeto = true;
+            identityOnlyVeto = true;
+            // A tail cannot accumulate hidden note-change credit while weak.
+            // Once strong structured evidence returns, normal target nomination
+            // resumes immediately; no invented F0 and no dry release are used.
+            state.latentTargetValid = false;
+            state.latentTargetLog2 = 0.0;
+            state.latentTargetHops = 0;
+            state.identityChallengerDirection = 0;
+            state.identityChallengerEvidence = 0.0;
+        }
+    }
+
     bool detectorScaleCommit = false;
     bool provisionalOctaveIdentityVeto = false;
     if (state.targetValid && !identityOnlyVeto)
