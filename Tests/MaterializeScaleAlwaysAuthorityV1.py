@@ -225,15 +225,34 @@ live = one(live,
 'synchronize visible vibrato field')
 
 plugin = one(plugin,
-'''        35.0f,   // transitionMs
+'''    const float humanizeVal = apvts.getRawParameterValue ("humanize")->load() / 100.0f;
+    livePitchProcessor.setAdvancedParameters (
+        35.0f,   // transitionMs
         0.70f,   // preserveVibrato
         humanizeVal,
 ''',
-'''        35.0f,   // transitionMs
+'''    const float humanizeVal = apvts.getRawParameterValue ("humanize")->load() / 100.0f;
+    const float vibratoPreserve = juce::jlimit (0.0f, 1.0f,
+        apvts.getRawParameterValue ("vibratoPreserve")->load() / 100.0f);
+    livePitchProcessor.setAdvancedParameters (
+        35.0f,   // transitionMs
         vibratoPreserve, // preserveVibrato: same visible authority in every mode
         humanizeVal,
 ''',
-'remove hard-coded hidden vibrato')
+'prepare path uses visible vibrato')
+
+plugin = one(plugin,
+'''    livePitchProcessor.setAdvancedParameters (
+        35.0f,   // transitionMs
+        0.70f,   // preserveVibrato
+        humanizeVal,
+''',
+'''    livePitchProcessor.setAdvancedParameters (
+        35.0f,   // transitionMs
+        vibratoPreserve, // preserveVibrato: same visible authority in every mode
+        humanizeVal,
+''',
+'process path uses visible vibrato')
 
 # ---------------------------------------------------------------------------
 # Regressions for the exact user contract.
