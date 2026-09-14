@@ -1,0 +1,77 @@
+name: Materialize Voice Transition Continuum V1
+
+on:
+  push:
+    branches: [voice-transition-continuum-v1]
+    paths:
+      - 'Tests/MaterializeVoiceTransitionContinuumV1.py'
+      - '.github/workflows/materialize-voice-transition-continuum-v1.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  validate-and-materialize:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: voice-transition-continuum-v1
+          fetch-depth: 0
+
+      - name: Guard single wet renderer
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "7eae364fc8974c10980c21fea739ed66b69b0e56"
+
+      - name: Materialize voice transition continuum
+        run: python3 Tests/MaterializeVoiceTransitionContinuumV1.py
+
+      - name: Verify semantic contract
+        run: |
+          set -euo pipefail
+          git diff --check
+          grep -Fq 'MEASUREMENT_CONTINUUM_V1' Source/ModernPitchEngine.cpp
+          grep -Fq 'OCTAVE_AMBIGUITY_V2' Source/ModernPitchEngine.cpp
+          grep -Fq 'LOCAL_TRAJECTORY_V1' Source/ModernPitchEngine.cpp
+          grep -Fq 'TRANSITION_IS_TRANSPORT_V1' Source/ModernPitchEngine.cpp
+          grep -Fq 'provisional_voice_measurement_cannot_stall_in_acquire' Tests/SupervisorContinuityTest.cpp
+          grep -Fq 'zero_vibrato_lock_tracks_continuous_source_without_target_chatter' Tests/SupervisorContinuityTest.cpp
+          grep -Fq 'transition_controller_is_monotonic_without_ratio_bounce' Tests/SupervisorContinuityTest.cpp
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "7eae364fc8974c10980c21fea739ed66b69b0e56"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libjack-jackd2-dev ladspa-sdk libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev
+
+      - name: Configure focused tests
+        run: cmake -S . -B build-transition-continuum -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Build focused tests
+        run: cmake --build build-transition-continuum --config Release --target CleanModernPitchEngineTest SupervisorContinuityTest SingleWetSpectralRendererTest GuiAudioControlContractTest GuiAudibilityTest --parallel 2
+
+      - name: Run focused tests
+        run: |
+          set -euo pipefail
+          ./build-transition-continuum/clean-engine-tests/CleanModernPitchEngineTest
+          ./build-transition-continuum/clean-engine-tests/SupervisorContinuityTest
+          ./build-transition-continuum/clean-engine-tests/SingleWetSpectralRendererTest
+          ./build-transition-continuum/clean-engine-tests/GuiAudioControlContractTest
+          ./build-transition-continuum/clean-engine-tests/GuiAudibilityTest
+
+      - name: Build VST3
+        run: cmake --build build-transition-continuum --config Release --target Neumaton_VST3 --parallel 2
+
+      - name: Commit validated continuum
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- Source/ModernPitchEngine.cpp Source/ModernPitchEngine.h Tests/SupervisorContinuityTest.cpp; then
+            echo 'No materialized changes to commit'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Source/ModernPitchEngine.cpp Source/ModernPitchEngine.h Tests/SupervisorContinuityTest.cpp
+          git commit -m 'Make transition scale-owned continuous transport [skip ci]'
+          git push origin HEAD:voice-transition-continuum-v1
