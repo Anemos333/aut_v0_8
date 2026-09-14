@@ -8,6 +8,7 @@ on:
       - 'Tests/RefineVoiceTransitionContinuumMaterializer.py'
       - 'Tests/FixVoiceTransitionRefinementAnchors.py'
       - 'Tests/FixVoiceTransitionRefinementAnchors2.py'
+      - 'Tests/FixVoiceTransitionRefinementAnchors3.py'
       - 'Tests/RefineVoiceTransitionContinuumV1.py'
       - '.github/workflows/materialize-voice-transition-continuum-v1.yml'
 
@@ -34,6 +35,7 @@ jobs:
           python3 Tests/MaterializeVoiceTransitionContinuumV1.py
           python3 Tests/FixVoiceTransitionRefinementAnchors.py
           python3 Tests/FixVoiceTransitionRefinementAnchors2.py
+          python3 Tests/FixVoiceTransitionRefinementAnchors3.py
           python3 Tests/RefineVoiceTransitionContinuumV1.py
 
       - name: Verify semantic contract
