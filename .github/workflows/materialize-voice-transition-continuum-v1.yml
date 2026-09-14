@@ -6,6 +6,7 @@ on:
     paths:
       - 'Tests/MaterializeVoiceTransitionContinuumV1.py'
       - 'Tests/RefineVoiceTransitionContinuumMaterializer.py'
+      - 'Tests/FixVoiceTransitionRefinementAnchors.py'
       - 'Tests/RefineVoiceTransitionContinuumV1.py'
       - '.github/workflows/materialize-voice-transition-continuum-v1.yml'
 
@@ -30,6 +31,7 @@ jobs:
         run: |
           python3 Tests/RefineVoiceTransitionContinuumMaterializer.py
           python3 Tests/MaterializeVoiceTransitionContinuumV1.py
+          python3 Tests/FixVoiceTransitionRefinementAnchors.py
           python3 Tests/RefineVoiceTransitionContinuumV1.py
 
       - name: Verify semantic contract
