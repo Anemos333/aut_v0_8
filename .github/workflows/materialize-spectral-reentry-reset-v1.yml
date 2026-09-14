@@ -1,0 +1,117 @@
+name: Materialize Spectral Reentry Reset V1
+
+on:
+  push:
+    branches:
+      - spectral-reentry-reset-v1
+
+permissions:
+  contents: write
+
+concurrency:
+  group: spectral-reentry-reset-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-and-materialize:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Guard definitive musical architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/ModernPitchEngine.cpp)" = "59eb1598d1c79bdf2e74beb844258deb14d300b3"
+          test "$(git hash-object Source/ModernPitchEngine.h)" = "e069a3283e5e144f2d540145b3b4c13889c9c532"
+          test "$(git hash-object Source/LivePitchProcessor.h)" = "6e7a050978d8fefd187f3649d198ec6efd2abc6d"
+          test "$(git hash-object Source/PluginProcessor.cpp)" = "e2ba6b826f8e3cd9b292a4f98748240d6a581a12"
+          test "$(git hash-object Source/PluginProcessor.h)" = "ddf47fe649734c7f0e9729e063d207a7c0fbe009"
+          test "$(git hash-object Source/Tempo.cpp)" = "53558aa5dd3d573e50f5fdd39384d06fb0217191"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "7eae364fc8974c10980c21fea739ed66b69b0e56"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+          echo "Definitive target/transport architecture unchanged before renderer bugfix."
+
+      - name: Materialize spectral reentry reset
+        run: python3 Tests/MaterializeSpectralReentryResetV1.py
+
+      - name: Verify narrow semantic contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'SILENCE_REENTRY_RESEEDS_PHASE_AND_ENVELOPE_V1' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'periodic_reentry_respects_commanded_lock_ratio' Tests/SingleWetSpectralRendererTest.cpp
+          grep -q 'pure_noise_does_not_acquire_periodic_copy' Tests/SingleWetSpectralRendererTest.cpp
+          grep -q 'filtered_noise_does_not_acquire_periodic_copy' Tests/SingleWetSpectralRendererTest.cpp
+          test "$(grep -c 'SynthesisLayer layer_' Source/SingleWetSpectralRenderer.h)" = "1"
+          ! grep -Eq 'dryMix|wetMix|crossfade|noiseLayer|periodicLayer|secondLayer' Source/SingleWetSpectralRenderer.cpp
+          test "$(git hash-object Source/ModernPitchEngine.cpp)" = "59eb1598d1c79bdf2e74beb844258deb14d300b3"
+          test "$(git hash-object Source/ModernPitchEngine.h)" = "e069a3283e5e144f2d540145b3b4c13889c9c532"
+          test "$(git hash-object Source/Tempo.cpp)" = "53558aa5dd3d573e50f5fdd39384d06fb0217191"
+          python3 Tests/release_readiness_contract.py
+          allowed='^(Source/SingleWetSpectralRenderer.cpp|Tests/SingleWetSpectralRendererTest.cpp|Tests/release_readiness_contract.py|\.github/workflows/release-readiness.yml|Tests/MaterializeSpectralReentryResetV1.py|\.github/workflows/materialize-spectral-reentry-reset-v1.yml)$'
+          bad="$(git status --short | awk '{print $2}' | grep -Ev "$allowed" || true)"
+          test -z "$bad" || { echo "Unexpected changed paths:"; echo "$bad"; exit 1; }
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build pkg-config \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig1-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev
+
+      - name: Configure focused invariant build
+        run: |
+          cmake -S . -B build-reentry -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Build focused tests
+        run: |
+          cmake --build build-reentry --parallel 2 --target \
+            CleanModernPitchEngineTest \
+            VoiceEvidenceAnalyzerTest \
+            SupervisorContinuityTest \
+            SingleWetSpectralRendererTest \
+            GuiAudibilityTest \
+            GuiAudioControlContractTest
+
+      - name: Run focused tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./build-reentry/clean-engine-tests/CleanModernPitchEngineTest
+          ./build-reentry/clean-engine-tests/VoiceEvidenceAnalyzerTest
+          ./build-reentry/clean-engine-tests/SupervisorContinuityTest
+          ./build-reentry/clean-engine-tests/SingleWetSpectralRendererTest
+          ./build-reentry/clean-engine-tests/GuiAudibilityTest
+          ./build-reentry/clean-engine-tests/GuiAudioControlContractTest
+
+      - name: Build VST3
+        run: cmake --build build-reentry --parallel 2 --target Neumaton_VST3
+
+      - name: Commit validated reentry bugfix
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm Tests/MaterializeSpectralReentryResetV1.py
+          rm .github/workflows/materialize-spectral-reentry-reset-v1.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            Source/SingleWetSpectralRenderer.cpp \
+            Tests/SingleWetSpectralRendererTest.cpp \
+            Tests/release_readiness_contract.py \
+            .github/workflows/release-readiness.yml \
+            Tests/MaterializeSpectralReentryResetV1.py \
+            .github/workflows/materialize-spectral-reentry-reset-v1.yml
+          git diff --cached --check
+          git commit -m 'Reset spectral history on true signal reentry [skip ci]'
+          git push origin HEAD:spectral-reentry-reset-v1
