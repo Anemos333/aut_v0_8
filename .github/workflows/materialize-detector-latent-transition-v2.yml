@@ -5,6 +5,7 @@ on:
     branches: [detector-latent-transition-v2]
     paths:
       - 'Tests/MaterializeDetectorLatentTransitionV2.py'
+      - 'Tests/RefineDetectorLatentTransitionV2.py'
       - '.github/workflows/materialize-detector-latent-transition-v2.yml'
 
 permissions:
@@ -25,7 +26,9 @@ jobs:
           test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "7eae364fc8974c10980c21fea739ed66b69b0e56"
 
       - name: Materialize detector refinement
-        run: python3 Tests/MaterializeDetectorLatentTransitionV2.py
+        run: |
+          python3 Tests/MaterializeDetectorLatentTransitionV2.py
+          python3 Tests/RefineDetectorLatentTransitionV2.py
 
       - name: Verify semantic contract
         run: |
@@ -34,6 +37,7 @@ jobs:
           grep -Fq 'BEAM_RANKS_CURRENT_MEASUREMENT_V2' Source/ModernPitchEngine.cpp
           grep -Fq 'OCTAVE_AMBIGUITY_V3' Source/ModernPitchEngine.cpp
           grep -Fq 'LATENT_SCALE_CANDIDATE_V2' Source/ModernPitchEngine.cpp
+          grep -Fq 'AMBIGUOUS_BOUNDARY_IS_LOCAL_MOTION_V2' Source/ModernPitchEngine.cpp
           grep -Fq 'TRANSITION_DESTINATION_FROZEN_V2' Source/ModernPitchEngine.cpp
           grep -Fq 'uncertain_new_degree_has_zero_audible_authority' Tests/SupervisorContinuityTest.cpp
           grep -Fq 'single_family_provisional_octave_never_owns_register' Tests/SupervisorContinuityTest.cpp
@@ -69,7 +73,8 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           rm -f Tests/MaterializeDetectorLatentTransitionV2.py
+          rm -f Tests/RefineDetectorLatentTransitionV2.py
           rm -f .github/workflows/materialize-detector-latent-transition-v2.yml
-          git add -A Source/ModernPitchEngine.cpp Source/ModernPitchEngine.h Tests/SupervisorContinuityTest.cpp Tests/MaterializeDetectorLatentTransitionV2.py .github/workflows/materialize-detector-latent-transition-v2.yml
+          git add -A Source/ModernPitchEngine.cpp Source/ModernPitchEngine.h Tests/SupervisorContinuityTest.cpp Tests/MaterializeDetectorLatentTransitionV2.py Tests/RefineDetectorLatentTransitionV2.py .github/workflows/materialize-detector-latent-transition-v2.yml
           git commit -m 'Make detector uncertainty latent and transition destination fixed [skip ci]'
           git push origin HEAD:detector-latent-transition-v2
