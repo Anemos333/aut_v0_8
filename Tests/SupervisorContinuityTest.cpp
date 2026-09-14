@@ -502,20 +502,21 @@ int main()
     liveRescueDecision.supportCount = 1;
     liveRescueDecision.directSupportCount = 1;
     liveRescueDecision.freshSupportMask = 0x01;
-    const bool liveRescueAccepted = liveRescueTracker->confirmOctaveTransition(
-        liveRescueDecision, false);
-    auto liveRescueDecision2 = liveRescueDecision;
-    liveRescueDecision2.valid = true;
-    liveRescueDecision2.candidate.frequencyHz = 440.0f;
-    liveRescueDecision2.candidate.confidence = 0.18f;
-    liveRescueDecision2.candidate.periodicity = 0.24f;
-    liveRescueDecision2.directSupportCount = 1;
-    liveRescueDecision2.supportCount = 1;
-    liveRescueDecision2.freshSupportMask = 0x01;
-    const bool liveRescueAccepted2 = liveRescueTracker->confirmOctaveTransition(
-        liveRescueDecision2, false);
-    success &= check(!liveRescueAccepted && liveRescueAccepted2
-                     && liveRescueDecision2.valid,
+    bool octaveCommittedTooEarly = false;
+    bool octaveCommittedInFiniteTime = false;
+    for (int hop = 0; hop < 8; ++hop)
+    {
+        auto decision = liveRescueDecision;
+        decision.valid = true;
+        decision.candidate.valid = true;
+        const bool accepted = liveRescueTracker->confirmOctaveTransition(
+            decision, false);
+        if (hop < 7)
+            octaveCommittedTooEarly = octaveCommittedTooEarly || accepted;
+        else
+            octaveCommittedInFiniteTime = accepted && decision.valid;
+    }
+    success &= check(!octaveCommittedTooEarly && octaveCommittedInFiniteTime,
                      "octave_veto_is_bounded_not_confidence_gated");
 
     // Acquire is permitted to describe detector search, but it must never mute
@@ -534,7 +535,7 @@ int main()
     engine->updateCorrectionState(heldCorrectionState, presenceQuantizer,
                                   presentDropout, presenceParameters);
     success &= check(heldCorrectionState.trackingState
-                         == ModernPitchEngine::TrackingState::unvoiced
+                         == ModernPitchEngine::TrackingState::stable
                      && heldCorrectionState.targetValid
                      && std::abs(heldCorrectionState.desiredCents + 42.0) < 1.0e-9,
                      "explicit_unvoiced_label_never_mutes_scale_correction");
@@ -669,7 +670,10 @@ int main()
                      && recoveryState.noteBodyLatched
                      && recoveryState.trackingState != ModernPitchEngine::TrackingState::acquire,
                      "rescued_f0_refreshes_anchor_and_exits_acquire");
+    const double recoveredTransportMove = std::abs(1200.0 * std::log2(
+        recoveryState.transportPeriodHz / 220.0));
     success &= check(recoveredCentreMove > 80.0
+                     && recoveredTransportMove > 80.0
                      && std::abs(recoveryState.desiredCents - staleDesired) > 40.0,
                      "rescued_f0_retargets_instead_of_freezing_old_correction");
 
@@ -740,8 +744,10 @@ int main()
               << boundedTransition.velocityCentsPerSecond << '\n';
     success &= check(boundedTransition.trackingState == ModernPitchEngine::TrackingState::stable,
                      "transition_has_hard_musical_time_bound");
-    success &= check(std::abs(boundedTransition.velocityCentsPerSecond) > 0.02,
-                     "stable_state_does_not_require_zero_controller_velocity");
+    success &= check(std::abs(boundedTransition.velocityCentsPerSecond) < 1.0e-12
+                     && std::abs(boundedTransition.currentCents
+                                 - boundedTransition.desiredCents) < 1.0e-9,
+                     "transition_hard_bound_finishes_without_controller_momentum");
 
     // A long vibrato around one quantized note is stable musical content, not
     // an endless note transition.
@@ -1046,20 +1052,16 @@ int main()
         liveCoordinateState.targetLog2);
     const double transportExpectedCorrection = 1200.0 * std::log2(
         liveCoordinateTargetHz / liveCoordinateState.transportPeriodHz);
-    const double rawDetectorCorrection = 1200.0 * std::log2(
-        liveCoordinateTargetHz
-        / static_cast<double>(liveCoordinateObservation.correctionFrequencyHz));
     const double transportResidual = std::abs(1200.0 * std::log2(
         liveCoordinateState.transportPeriodHz
         * std::exp2(liveCoordinateState.desiredCents / 1200.0)
         / liveCoordinateTargetHz));
     success &= check(liveCoordinateState.targetValid
+                     && std::abs(liveCoordinateTargetHz - 440.0) < 0.1
                      && std::abs(liveCoordinateState.desiredCents
                                  - transportExpectedCorrection) < 1.0e-6
-                     && std::abs(liveCoordinateState.desiredCents
-                                 - rawDetectorCorrection) > 20.0
                      && transportResidual < 1.0e-6,
-                     "raw_detector_coordinate_cannot_command_transport");
+                     "continuous_local_measurement_updates_transport_without_owning_target");
 
     // Existing softness remains target-owned, but it is now measured from the
     // same persistent transport coordinate rather than the raw detector hop.
@@ -1305,6 +1307,192 @@ int main()
                      && std::abs(noPredictionState.transportPeriodHz - noPredictionTransport) < 1.0e-12
                      && std::abs(noPredictionState.desiredCents - noPredictionDesired) < 1.0e-12,
                      "detector_hole_holds_target_transport_and_correction_exactly");
+
+
+    // MEASUREMENT_CONTINUUM_V1: weak-but-physical period evidence is usable for
+    // sung body when independent voice evidence supports it. It may not remain
+    // forever in Acquire merely because detector confidence is low.
+    ModernPitchEngine::ScaleQuantizer provisionalQuantizer;
+    provisionalQuantizer.reset();
+    provisionalQuantizer.setScale(authorityChromatic.data(),
+                                   static_cast<int>(authorityChromatic.size()), 440.0);
+    ModernPitchEngine::CorrectionState provisionalVoiceState;
+    ModernPitchEngine::Parameters provisionalVoiceParameters = explicitAuthorityParameters;
+    setBodyEvidence(provisionalVoiceParameters);
+    ModernPitchEngine::PitchObservation provisionalVoice;
+    provisionalVoice.audioPresent = true;
+    provisionalVoice.valid = false;
+    provisionalVoice.measurementAvailable = true;
+    provisionalVoice.correctionFrequencyHz = 452.0f;
+    provisionalVoice.confidence = 0.08f;
+    provisionalVoice.periodicity = 0.22f;
+    for (int hop = 0; hop < 24; ++hop)
+    {
+        engine->updateCorrectionState(provisionalVoiceState, provisionalQuantizer,
+                                      provisionalVoice, provisionalVoiceParameters);
+        for (int sample = 0;
+             sample < ModernPitchEngine::MultiRatePitchTracker::hopSize(); ++sample)
+        {
+            static_cast<void>(engine->advanceCorrection(provisionalVoiceState));
+        }
+    }
+    success &= check(provisionalVoiceState.targetValid
+                     && provisionalVoiceState.noteBodyLatched
+                     && provisionalVoiceState.trackingState != ModernPitchEngine::TrackingState::acquire
+                     && std::abs(provisionalVoiceState.desiredCents) > 5.0,
+                     "provisional_voice_measurement_cannot_stall_in_acquire");
+
+    // The same provisional period on breath/sibilant evidence is not a note.
+    ModernPitchEngine::CorrectionState provisionalSibilantState;
+    ModernPitchEngine::Parameters provisionalSibilantParameters = explicitAuthorityParameters;
+    setBreathEvidence(provisionalSibilantParameters);
+    provisionalSibilantParameters.voiceEventStrength = 0.94f;
+    engine->updateCorrectionState(provisionalSibilantState, provisionalQuantizer,
+                                  provisionalVoice, provisionalSibilantParameters);
+    success &= check(!provisionalSibilantState.targetValid,
+                     "provisional_sibilant_measurement_cannot_invent_target");
+
+    // TRANSITION_IS_TRANSPORT_V1: an invalid/phonetic frame cannot turn an
+    // already-owned transition into unvoiced/stable or modify its destination.
+    ModernPitchEngine::CorrectionState gluedTransition;
+    gluedTransition.targetValid = true;
+    gluedTransition.targetLog2 = std::log2(493.8833012561241);
+    gluedTransition.transportPeriodHz = 500.0;
+    gluedTransition.desiredCents = -21.318f;
+    gluedTransition.currentCents = -10.0;
+    gluedTransition.noteBodyLatched = true;
+    gluedTransition.trackingState = ModernPitchEngine::TrackingState::transition;
+    const double gluedTarget = gluedTransition.targetLog2;
+    const double gluedTransport = gluedTransition.transportPeriodHz;
+    const double gluedDesired = gluedTransition.desiredCents;
+    ModernPitchEngine::PitchObservation gluedPhonetic;
+    gluedPhonetic.audioPresent = true;
+    gluedPhonetic.valid = false;
+    ModernPitchEngine::Parameters gluedParameters = explicitAuthorityParameters;
+    setBodyEvidence(gluedParameters);
+    gluedParameters.voiceEventStrength = 0.96f;
+    engine->updateCorrectionState(gluedTransition, provisionalQuantizer,
+                                  gluedPhonetic, gluedParameters);
+    success &= check(gluedTransition.trackingState == ModernPitchEngine::TrackingState::transition
+                     && std::abs(gluedTransition.targetLog2 - gluedTarget) < 1.0e-12
+                     && std::abs(gluedTransition.transportPeriodHz - gluedTransport) < 1.0e-12
+                     && std::abs(gluedTransition.desiredCents - gluedDesired) < 1.0e-12,
+                     "phonetic_frame_is_glued_to_owned_transition");
+
+    // LOCAL_TRAJECTORY_V1: correctionFrequencyHz may be faster than the
+    // continuity/identity coordinate, but only continuous small innovations may
+    // move transport. At zero Vibrato this keeps the physical source estimate
+    // within a few cents so the requested output remains nailed to the target.
+    ModernPitchEngine::ScaleQuantizer localTrajectoryQuantizer;
+    localTrajectoryQuantizer.reset();
+    localTrajectoryQuantizer.setScale(authorityChromatic.data(),
+                                       static_cast<int>(authorityChromatic.size()), 440.0);
+    ModernPitchEngine::CorrectionState localTrajectoryState;
+    auto localBase = strongPitch(440.0f);
+    localBase.audioPresent = true;
+    localBase.correctionFrequencyHz = 440.0f;
+    for (int hop = 0; hop < 12; ++hop)
+        engine->updateCorrectionState(localTrajectoryState, localTrajectoryQuantizer,
+                                      localBase, explicitAuthorityParameters);
+    double maximumLocalResidual = 0.0;
+    bool localTargetChanged = false;
+    const double localTargetReference = localTrajectoryState.targetLog2;
+    for (int hop = 0; hop < 900; ++hop)
+    {
+        const double phase = 2.0 * 3.14159265358979323846
+            * static_cast<double>(hop) / 150.0;
+        const double cents = 70.0 * std::sin(phase);
+        const double rawHz = 440.0 * std::exp2(cents / 1200.0);
+        auto localObservation = strongPitch(440.0f); // deliberately lagged identity coordinate
+        localObservation.audioPresent = true;
+        localObservation.correctionFrequencyHz = static_cast<float>(rawHz);
+        engine->updateCorrectionState(localTrajectoryState, localTrajectoryQuantizer,
+                                      localObservation, explicitAuthorityParameters);
+        const double transportResidual = std::abs(1200.0 * std::log2(
+            rawHz / localTrajectoryState.transportPeriodHz));
+        if (hop > 50)
+            maximumLocalResidual = std::max(maximumLocalResidual, transportResidual);
+        if (std::abs(localTrajectoryState.targetLog2 - localTargetReference) * 1200.0 > 0.5)
+            localTargetChanged = true;
+    }
+    std::cerr << "local_trajectory_max_residual_cents=" << maximumLocalResidual << '\n';
+    success &= check(!localTargetChanged && maximumLocalResidual < 4.0,
+                     "zero_vibrato_lock_tracks_continuous_source_without_target_chatter");
+
+    // A discontinuous local measurement still has zero transport authority.
+    const double localTransportBeforeOutlier = localTrajectoryState.transportPeriodHz;
+    auto localOutlier = strongPitch(440.0f);
+    localOutlier.audioPresent = true;
+    localOutlier.correctionFrequencyHz = 880.0f;
+    engine->updateCorrectionState(localTrajectoryState, localTrajectoryQuantizer,
+                                  localOutlier, explicitAuthorityParameters);
+    success &= check(std::abs(localTrajectoryState.transportPeriodHz
+                              - localTransportBeforeOutlier) < 1.0e-12,
+                     "single_octave_innovation_has_zero_transport_authority");
+
+    // OCTAVE_AMBIGUITY_V2: a single-family octave challenger must persist for a
+    // fixed short window. It is neither immediately hallucinated nor blocked by
+    // confidence forever.
+    auto octavePersistenceTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+    octavePersistenceTracker->prepare(48000.0);
+    octavePersistenceTracker->trackedPitchHz_ = 440.0f;
+    octavePersistenceTracker->trackedConfidence_ = 0.9f;
+    octavePersistenceTracker->trackedPeriodicity_ = 0.9f;
+    octavePersistenceTracker->trackedConsensus_ = 0.0f;
+    octavePersistenceTracker->trackedSupportCount_ = 1;
+    octavePersistenceTracker->committedOctaveFrequencyHz_ = 440.0f;
+    octavePersistenceTracker->octaveCommitGuardHops_ = 0;
+    const auto makeOctaveChallenger = []
+    {
+        ModernPitchEngine::MultiRatePitchTracker::DecoderDecision d;
+        d.valid = true;
+        d.candidate.valid = true;
+        d.candidate.frequencyHz = 880.0f;
+        d.candidate.confidence = 0.01f;
+        d.candidate.periodicity = 0.10f;
+        d.consensus = 0.0f;
+        d.supportCount = 1;
+        d.directSupportCount = 1;
+        d.freshSupportMask = 0x01;
+        return d;
+    };
+    bool prematureOctaveCommit = false;
+    for (int hop = 0; hop < 7; ++hop)
+    {
+        auto d = makeOctaveChallenger();
+        prematureOctaveCommit = octavePersistenceTracker->confirmOctaveTransition(d, false)
+            || prematureOctaveCommit;
+    }
+    auto finalOctave = makeOctaveChallenger();
+    const bool finiteOctaveCommit = octavePersistenceTracker->confirmOctaveTransition(
+        finalOctave, false);
+    success &= check(!prematureOctaveCommit && finiteOctaveCommit,
+                     "octave_ambiguity_has_short_finite_persistence_not_confidence_gate");
+
+    // TRANSITION_IS_TRANSPORT_V1: controller motion is strictly monotonic and
+    // cannot overshoot/bounce while a transient is being carried to the new
+    // destination. This removes one upstream source of long-vowel pumping.
+    ModernPitchEngine::CorrectionState monotonicTransition;
+    monotonicTransition.targetValid = true;
+    monotonicTransition.noteBodyLatched = true;
+    monotonicTransition.trackingState = ModernPitchEngine::TrackingState::transition;
+    monotonicTransition.currentCents = -80.0;
+    monotonicTransition.desiredCents = 25.0;
+    monotonicTransition.responseMs = 5.0;
+    double previousMonotonic = monotonicTransition.currentCents;
+    bool monotonic = true;
+    bool overshot = false;
+    for (int sample = 0; sample < 400; ++sample)
+    {
+        const double value = engine->advanceCorrection(monotonicTransition);
+        if (value + 1.0e-12 < previousMonotonic)
+            monotonic = false;
+        if (value > monotonicTransition.desiredCents + 1.0e-9)
+            overshot = true;
+        previousMonotonic = value;
+    }
+    success &= check(monotonic && !overshot,
+                     "transition_controller_is_monotonic_without_ratio_bounce");
 
     return success ? 0 : 1;
 }

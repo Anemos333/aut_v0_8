@@ -199,6 +199,10 @@ private:
         int octaveState = 0;
         int pendingOctaveObservations = 0;
         bool valid = false;
+        // MEASUREMENT_CONTINUUM_V1: a finite period was physically measured,
+        // but detector evidence may still be too weak to call it a trusted F0.
+        // This is analysis information only and never direct renderer authority.
+        bool measurementAvailable = false;
         bool onset = false;
         bool audioPresent = false;
     };
@@ -450,6 +454,12 @@ private:
         bool noteBodyLatched = false;
         float noteBodyConfidence = 0.0f;
         double transportPeriodHz = 0.0;
+        // LOCAL_TRAJECTORY_V1: cents per detector hop, used only to predict
+        // continuous within-note vocal motion. Large innovations are frozen;
+        // confirmed target changes rebase transport explicitly.
+        double transportVelocityCentsPerHop = 0.0;
+        double transportChallengerLog2 = 0.0;
+        int transportChallengerHops = 0;
 
         // SCALE_OWNS_IDENTITY_V2: detector observations may nominate a new
         // cell, but only bounded same-side geometric persistence may present

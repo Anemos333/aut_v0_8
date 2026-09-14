@@ -343,8 +343,14 @@ ModernPitchEngine::MultiRatePitchTracker::analyse(
         }
     }
 
-    if (thresholdTau < 0 && globalValue > fallbackThreshold)
-        return result;
+    // MEASUREMENT_CONTINUUM_V1: do not collapse a weak period estimate into
+    // the same state as "no measurement".  A poor YIN shape stays provisional:
+    // frequency/confidence/periodicity are retained, while valid remains false
+    // unless the normal structural threshold is met.  The supervisor may use
+    // that grey-zone measurement only when independent voice-body evidence says
+    // it belongs to a sung body rather than a consonant/noise event.
+    const bool structurallyTrusted = thresholdTau >= 0
+        || globalValue <= fallbackThreshold;
 
     // Alternative periods are deliberately retained because a weak fundamental
     // can be recovered from its harmonics.  They are not equally trusted:
@@ -414,8 +420,12 @@ ModernPitchEngine::MultiRatePitchTracker::analyse(
 
     const float minimumCandidateScore = presenceMode_
         ? 0.0f : (rescueMode_ ? 0.34f : 0.45f);
-    if (bestTau < 2 || bestScore < minimumCandidateScore)
+    if (bestTau < 2
+        || (!presenceMode_
+            && (!structurallyTrusted || bestScore < minimumCandidateScore)))
+    {
         return result;
+    }
 
     double refinedTau = static_cast<double>(bestTau);
     if (bestTau > tauMinimum && bestTau < tauMaximum)
@@ -443,7 +453,7 @@ ModernPitchEngine::MultiRatePitchTracker::analyse(
     result.frequencyHz = frequency;
     result.confidence = clamp01(bestScore);
     result.periodicity = bestPeriodicity;
-    result.valid = true;
+    result.valid = structurallyTrusted && bestScore >= minimumCandidateScore;
     return result;
 }
 
@@ -1013,9 +1023,17 @@ bool ModernPitchEngine::MultiRatePitchTracker::confirmOctaveTransition(
         if (decision.freshSupportMask != 0)
             ++pendingOctaveCount_;
 
-        // Downward octave/subharmonic aliases are more common, hence one extra
-        // observation. This veto is finite and independent of confidence.
-        const int requiredObservations = rescueOctaveDelta < 0 ? 3 : 2;
+        // OCTAVE_AMBIGUITY_V2: octave/subharmonic aliases are common on real
+        // vocals.  Keep this a finite negative veto, but require enough fresh
+        // geometric persistence that one consonant/harmonic burst cannot own a
+        // register. A real onset remains fast; multi-path direct support is the
+        // only reason to shorten the non-onset count.
+        const bool multiPathDirect = decision.directSupportCount >= 2;
+        const int requiredObservations = onsetPending
+            ? (rescueOctaveDelta < 0 ? 3 : 2)
+            : multiPathDirect
+                ? (rescueOctaveDelta < 0 ? 7 : 6)
+                : (rescueOctaveDelta < 0 ? 10 : 8);
         if (pendingOctaveCount_ < requiredObservations)
         {
             decision.valid = false;
@@ -1097,7 +1115,16 @@ bool ModernPitchEngine::MultiRatePitchTracker::confirmOctaveTransition(
     if (decision.freshSupportMask != 0)
         ++pendingOctaveCount_;
 
-    const int requiredObservations = octaveDelta < 0 ? 3 : 2;
+    // OCTAVE_AMBIGUITY_V2: normal tracking uses the same finite veto.
+    // Eight single-family fresh hops are only ~5.3 ms at the 32-sample hop:
+    // fast enough for sung note changes, long enough to reject most one-frame
+    // register hallucinations. Downward aliases receive two extra hops.
+    const bool multiPathDirect = decision.directSupportCount >= 2;
+    const int requiredObservations = onsetPending
+        ? (octaveDelta < 0 ? 3 : 2)
+        : multiPathDirect
+            ? (octaveDelta < 0 ? 7 : 6)
+            : (octaveDelta < 0 ? 10 : 8);
     if (pendingOctaveCount_ < requiredObservations)
     {
         // Hold the committed register only while an explicitly octave-like
@@ -1268,6 +1295,39 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
         }
     }
 
+    const auto chooseProvisionalMeasurement = [this]() noexcept
+    {
+        PitchCandidate best {};
+        float bestScore = -1.0f;
+        const auto consider = [&best, &bestScore](const CandidateSlot& slot,
+                                                  int maximumAge) noexcept
+        {
+            const auto& candidate = slot.candidate;
+            if (slot.ageInHops > maximumAge
+                || !std::isfinite(candidate.frequencyHz)
+                || candidate.frequencyHz <= 0.0f)
+            {
+                return;
+            }
+            const float ageWeight = std::exp(-0.22f
+                * static_cast<float>(std::max(0, slot.ageInHops)));
+            const float score = ageWeight
+                * (0.62f * clamp01(candidate.confidence)
+                 + 0.38f * clamp01(candidate.periodicity));
+            if (score > bestScore)
+            {
+                bestScore = score;
+                best = candidate;
+            }
+        };
+        consider(fullRateCandidate_, 2);
+        consider(halfRateCandidate_, 3);
+        consider(quarterRateCandidate_, 5);
+        consider(eighthRateCandidate_, 9);
+        return best;
+    };
+
+    const PitchCandidate provisionalMeasurement = chooseProvisionalMeasurement();
     std::array<PitchCandidate, detectorPathCount> rawCandidates {};
     const int rawDetectorSupport = collectFreshCandidates(rawCandidates);
     DecoderDecision decision = decodeCandidate(onsetPending_);
@@ -1333,6 +1393,7 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
              + 0.22f * consensusGate));
         observation.audioPresent = presenceMode_;
         observation.voicing = detectorVoicing;
+        observation.measurementAvailable = true;
         observation.valid = true; // this branch contains a confirmed F0
     }
     else
@@ -1355,10 +1416,17 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
             pendingOctaveFrequencyHz_ = 0.0f;
         }
 
+        const bool provisionalAvailable =
+            std::isfinite(provisionalMeasurement.frequencyHz)
+            && provisionalMeasurement.frequencyHz > 0.0f;
         observation.frequencyHz = trackedPitchHz_;
-        observation.correctionFrequencyHz = trackedPitchHz_;
-        observation.confidence = trackedConfidence_;
-        observation.periodicity = trackedPeriodicity_;
+        observation.correctionFrequencyHz = provisionalAvailable
+            ? provisionalMeasurement.frequencyHz : trackedPitchHz_;
+        observation.measurementAvailable = provisionalAvailable;
+        observation.confidence = provisionalAvailable
+            ? provisionalMeasurement.confidence : trackedConfidence_;
+        observation.periodicity = provisionalAvailable
+            ? provisionalMeasurement.periodicity : trackedPeriodicity_;
         observation.consensus = trackedConsensus_;
         observation.detectorSupport = rawDetectorSupport;
         observation.octaveState = octaveState_;
@@ -1994,7 +2062,21 @@ void ModernPitchEngine::updateCorrectionState(
     const float humanize = clamp01(parameters.humanize);
     const bool zeroPrudence = zeroPrudenceAuthority(parameters); // AUTHORITY_CONTROLS_EXPLICIT_V1
     const bool richEvidence = parameters.voiceEvidenceValid;
-    const bool validPitch = observation.valid && observation.frequencyHz > 0.0f;
+    const bool trustedPitch = observation.valid
+        && std::isfinite(observation.frequencyHz)
+        && observation.frequencyHz > 0.0f;
+    const bool provisionalMeasurement = !trustedPitch
+        && observation.measurementAvailable
+        && std::isfinite(observation.correctionFrequencyHz)
+        && observation.correctionFrequencyHz > 0.0f;
+    const bool provisionalVoicePitch = provisionalMeasurement
+        && richEvidence
+        && parameters.voiceBodyEnergy >= 0.30f
+        && parameters.voiceHarmonicity >= 0.24f
+        && parameters.voiceSpectralReliability >= 0.34f
+        && parameters.voiceBreathiness <= 0.72f
+        && parameters.voiceEventStrength <= 0.74f;
+    const bool validPitch = trustedPitch || provisionalVoicePitch;
     if (validPitch)
     {
         state.pitchStaleSamples = 0;
@@ -2085,6 +2167,11 @@ void ModernPitchEngine::updateCorrectionState(
     {
         if (state.trackingState != next)
         {
+            if (state.trackingState == TrackingState::transition
+                && next == TrackingState::stable)
+            {
+                state.velocityCentsPerSecond = 0.0;
+            }
             state.trackingState = next;
             state.stateAgeSamples = 0;
         }
@@ -2153,6 +2240,8 @@ void ModernPitchEngine::updateCorrectionState(
         // breaks musical-change persistence but never changes audible state.
         state.identityChallengerDirection = 0;
         state.identityChallengerEvidence = 0.0;
+        state.transportChallengerHops = 0;
+        state.transportChallengerLog2 = 0.0;
         state.stableBodyObservations = 0;
         if (confirmedAbsence
             || confirmedAbsenceFrame
@@ -2170,6 +2259,8 @@ void ModernPitchEngine::updateCorrectionState(
         state.identityChallengerDirection = 0;
         state.identityChallengerEvidence = 0.0;
         ++state.invalidObservations;
+        state.transportChallengerHops = 0;
+        state.transportChallengerLog2 = 0.0;
 
         // SCALE_OWNS_TRANSPORT_V1: an F0 hole never invents an audible
         // source coordinate. Detector search/reacquisition may continue, but
@@ -2193,9 +2284,10 @@ void ModernPitchEngine::updateCorrectionState(
             state.breathEvidenceSamples = 0;
             state.uncertainSamples = 0;
             if (state.targetValid)
-                setState(explicitPhoneticFrame
-                    ? TrackingState::unvoiced
-                    : TrackingState::stable);
+            {
+                if (state.trackingState != TrackingState::transition)
+                    setState(TrackingState::stable);
+            }
             else
                 setState(TrackingState::acquire);
             return;
@@ -2208,9 +2300,8 @@ void ModernPitchEngine::updateCorrectionState(
         {
             if (state.targetValid)
             {
-                setState(explicitPhoneticFrame
-                    ? TrackingState::unvoiced
-                    : TrackingState::stable);
+                if (state.trackingState != TrackingState::transition)
+                    setState(TrackingState::stable);
                 return;
             }
             const int reacquireSamples = static_cast<int>(std::lround(0.070 * sampleRate_));
@@ -2242,6 +2333,8 @@ void ModernPitchEngine::updateCorrectionState(
         state.identityChallengerDirection = 0;
         state.identityChallengerEvidence = 0.0;
         state.stableBodyObservations = 0;
+        state.transportChallengerHops = 0;
+        state.transportChallengerLog2 = 0.0;
         return;
     }
 
@@ -2291,13 +2384,17 @@ void ModernPitchEngine::updateCorrectionState(
         state.stableObservations = 0;
     }
 
-    const double observedLog2 = safeLog2(observation.frequencyHz);
     const float correctionFrequencyHz =
         std::isfinite(observation.correctionFrequencyHz)
         && observation.correctionFrequencyHz > 0.0f
         ? observation.correctionFrequencyHz
         : observation.frequencyHz;
-    const double correctionObservedLog2 = safeLog2(correctionFrequencyHz);
+    // LOCAL_TRAJECTORY_V1: target nomination uses the fastest accepted physical
+    // coordinate. It still cannot command the renderer directly: challenger
+    // persistence, octave veto and the transport innovation gate remain between
+    // this measurement and audible correction.
+    const double observedLog2 = safeLog2(correctionFrequencyHz);
+    const double correctionObservedLog2 = observedLog2;
 
     if (rescueBodyFrame && !observation.onset)
     {
@@ -2395,12 +2492,20 @@ void ModernPitchEngine::updateCorrectionState(
                     1.0, boundaryExcess * densityGain);
             }
 
+            const double absoluteObservedDistance = std::abs(signedObservedCents);
+            const int nearestOctaveMultiple = static_cast<int>(std::lround(
+                absoluteObservedDistance / 1200.0));
+            const bool octaveAmbiguous = nearestOctaveMultiple >= 1
+                && nearestOctaveMultiple <= 2
+                && std::abs(absoluteObservedDistance
+                    - 1200.0 * static_cast<double>(nearestOctaveMultiple)) <= 95.0;
+
             const double centreDistanceFromTarget =
                 std::abs(state.pitchCentreLog2 - state.targetLog2) * 1200.0;
             const double deepExitRatio = scaleStep <= 50.0 ? 0.52 : 0.72;
-            const bool deepCentreExit = centreDistanceFromTarget
-                >= deepExitRatio * scaleStep;
-            constexpr double persistentEvidenceRequired = 6.0;
+            const bool deepCentreExit = !octaveAmbiguous
+                && centreDistanceFromTarget >= deepExitRatio * scaleStep;
+            const double persistentEvidenceRequired = octaveAmbiguous ? 12.0 : 6.0;
             const bool persistentBoundaryExit =
                 state.identityChallengerEvidence >= persistentEvidenceRequired;
 
@@ -2470,6 +2575,7 @@ void ModernPitchEngine::updateCorrectionState(
         if (targetIdentityChanged && state.trackingState != TrackingState::transition)
         {
             setState(TrackingState::transition);
+            state.velocityCentsPerSecond = 0.0;
             state.stableObservations = 0;
             state.stableBodyObservations = bodyPresent ? 1 : 0;
         }
@@ -2477,45 +2583,124 @@ void ModernPitchEngine::updateCorrectionState(
     state.targetLog2 = newTarget;
     state.targetValid = true;
 
-    // SCALE_OWNS_TRANSPORT_V1: the audible source coordinate is persistent
-    // supervisor state. Detector F0 is an observation of it, never a direct
-    // renderer command. Far challengers are frozen until musical identity has
-    // actually changed; accepted motion is bandwidth/slew bounded.
+    // LOCAL_TRAJECTORY_V1: the audible source coordinate is a persistent
+    // local trajectory, not raw F0 and not a slow detector average. Continuous
+    // within-note motion (including real vibrato that must be removed at zero
+    // Vibrato) is followed rapidly when the innovation is physically small.
+    // Large jumps have exactly zero transport authority until scale identity has
+    // committed; a committed note change then rebases to the accepted live F0
+    // in one supervisor event so target and source jump coherently.
     if (state.noteBodyLatched && bodyPresent)
     {
-        const double observedSourceLog2 = observedLog2;
+        const double observedSourceLog2 = correctionObservedLog2;
         if (!(state.transportPeriodHz > 0.0)
             || !std::isfinite(state.transportPeriodHz)
             || firstOwnedTarget)
         {
             state.transportPeriodHz = std::exp2(observedSourceLog2);
+            state.transportVelocityCentsPerHop = 0.0;
+            state.transportChallengerHops = 0;
+            state.transportChallengerLog2 = 0.0;
+        }
+        else if (targetIdentityChanged)
+        {
+            // The challenger has already passed persistence + quantizer Hold.
+            // Rebase source and target together; do not spend transition time
+            // dragging an obsolete old-note source coordinate toward the new F0.
+            state.transportPeriodHz = std::exp2(observedSourceLog2);
+            state.transportVelocityCentsPerHop = 0.0;
+            state.transportChallengerHops = 0;
+            state.transportChallengerLog2 = 0.0;
         }
         else
         {
             const double currentSourceLog2 = safeLog2(state.transportPeriodHz);
+            const double predictedSourceLog2 = currentSourceLog2
+                + state.transportVelocityCentsPerHop / 1200.0;
+            const double innovationCents =
+                (observedSourceLog2 - predictedSourceLog2) * 1200.0;
             const double localScaleStep = std::max(0.1,
                 static_cast<double>(quantizer.minimumStepCents()));
-            const double observedDistanceFromOwnedTarget = state.targetValid
-                ? std::abs(observedSourceLog2 - state.targetLog2) * 1200.0
-                : 0.0;
-            const bool unconfirmedFarChallenger = state.targetValid
-                && !targetIdentityChanged
-                && !liveIdentityBreak
-                && observedDistanceFromOwnedTarget >= 0.72 * localScaleStep;
+            const double innovationGateCents = std::clamp(
+                0.28 * localScaleStep, 8.0, 28.0);
 
-            if (!unconfirmedFarChallenger)
+            if (std::abs(innovationCents) <= innovationGateCents)
             {
-                const double sourceDeltaCents =
-                    (observedSourceLog2 - currentSourceLog2) * 1200.0;
-                constexpr double sourceFollow = 0.35;
-                const double maximumSourceStepCents = targetIdentityChanged
-                    ? 8.0 : 4.0;
-                const double boundedSourceStepCents = std::clamp(
-                    sourceFollow * sourceDeltaCents,
-                    -maximumSourceStepCents,
-                     maximumSourceStepCents);
-                state.transportPeriodHz = std::exp2(
-                    currentSourceLog2 + boundedSourceStepCents / 1200.0);
+                state.transportChallengerHops = 0;
+                state.transportChallengerLog2 = 0.0;
+                constexpr double innovationFollow = 0.88;
+                double nextSourceLog2 = predictedSourceLog2
+                    + innovationFollow * innovationCents / 1200.0;
+                double stepCents =
+                    (nextSourceLog2 - currentSourceLog2) * 1200.0;
+                const double maximumContinuousStep = std::clamp(
+                    0.16 * localScaleStep, 5.0, 16.0);
+                stepCents = std::clamp(stepCents,
+                                       -maximumContinuousStep,
+                                        maximumContinuousStep);
+                nextSourceLog2 = currentSourceLog2 + stepCents / 1200.0;
+                state.transportPeriodHz = std::exp2(nextSourceLog2);
+                state.transportVelocityCentsPerHop = std::clamp(
+                    0.52 * state.transportVelocityCentsPerHop
+                        + 0.48 * stepCents,
+                    -maximumContinuousStep, maximumContinuousStep);
+            }
+            else
+            {
+                const double absoluteInnovation = std::abs(innovationCents);
+                const int nearestOctave = static_cast<int>(std::lround(
+                    absoluteInnovation / 1200.0));
+                const bool octaveLikeInnovation = nearestOctave >= 1
+                    && nearestOctave <= 2
+                    && std::abs(absoluteInnovation
+                        - 1200.0 * static_cast<double>(nearestOctave)) <= 95.0;
+
+                if (octaveLikeInnovation)
+                {
+                    state.transportChallengerHops = 0;
+                    state.transportChallengerLog2 = 0.0;
+                    state.transportVelocityCentsPerHop *= 0.35;
+                }
+                else
+                {
+                    const bool sameChallenger = state.transportChallengerHops > 0
+                        && std::abs(observedSourceLog2
+                            - state.transportChallengerLog2) * 1200.0 <= 24.0;
+                    if (sameChallenger)
+                    {
+                        state.transportChallengerLog2 = 0.70
+                            * state.transportChallengerLog2
+                            + 0.30 * observedSourceLog2;
+                        state.transportChallengerHops = std::min(
+                            12, state.transportChallengerHops + 1);
+                    }
+                    else
+                    {
+                        state.transportChallengerLog2 = observedSourceLog2;
+                        state.transportChallengerHops = 1;
+                    }
+
+                    if (state.transportChallengerHops >= 3)
+                    {
+                        const double challengerDeltaCents =
+                            (state.transportChallengerLog2 - currentSourceLog2) * 1200.0;
+                        const double maximumCatchupStep = std::clamp(
+                            0.32 * localScaleStep, 18.0, 36.0);
+                        const double catchupStep = std::clamp(
+                            challengerDeltaCents,
+                            -maximumCatchupStep,
+                             maximumCatchupStep);
+                        state.transportPeriodHz = std::exp2(
+                            currentSourceLog2 + catchupStep / 1200.0);
+                        state.transportVelocityCentsPerHop = catchupStep;
+                    }
+                    else
+                    {
+                        // First/second large observation has zero audible
+                        // authority. This is the consonant/outlier safety wall.
+                        state.transportVelocityCentsPerHop *= 0.35;
+                    }
+                }
             }
         }
     }
@@ -2608,7 +2793,8 @@ void ModernPitchEngine::updateCorrectionState(
         {
             if (!targetIdentityChanged && bodyPresent
                 && state.stableBodyObservations >= 4
-                && state.stateAgeSamples >= minimumStableSamples)
+                && state.stateAgeSamples >= minimumStableSamples
+                && std::abs(state.desiredCents - state.currentCents) < 0.5)
             {
                 setState(TrackingState::stable);
             }
@@ -2655,12 +2841,36 @@ double ModernPitchEngine::advanceCorrection(CorrectionState& state) noexcept
         && state.noteBodyLatched
         && state.stateAgeSamples >= maximumTransitionSamples)
     {
+        state.currentCents = state.desiredCents;
+        state.velocityCentsPerSecond = 0.0;
         state.trackingState = TrackingState::stable;
         state.stateAgeSamples = 0;
     }
 
     const double dt = 1.0 / sampleRate_;
     const double responseSeconds = std::max(0.00035, state.responseMs * 0.001);
+
+    if (state.trackingState == TrackingState::transition)
+    {
+        // TRANSITION_IS_TRANSPORT_V1: one monotonic trajectory owns voiced,
+        // aperiodic and transient material alike. Detector holes only stop new
+        // observations; they never interrupt this glide or expose unity/dry.
+        const double delta = state.desiredCents - state.currentCents;
+        const double alpha = std::clamp(
+            1.0 - std::exp(-4.6 * dt / responseSeconds), 0.0, 1.0);
+        double step = alpha * delta;
+        if (std::abs(step) > std::abs(delta))
+            step = delta;
+        state.currentCents += step;
+        state.velocityCentsPerSecond = step / dt;
+        if (std::abs(state.desiredCents - state.currentCents) < 0.001)
+        {
+            state.currentCents = state.desiredCents;
+            state.velocityCentsPerSecond = 0.0;
+        }
+        return state.currentCents;
+    }
+
     const double omega = std::min(0.22 / dt, 4.6 / responseSeconds);
     double acceleration = omega * omega
         * (state.desiredCents - state.currentCents)
