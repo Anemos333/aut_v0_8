@@ -1,5 +1,6 @@
 from pathlib import Path
 
+# CI pre-pass: narrow one ambiguous source-rewrite anchor before materialization.
 p = Path('Tests/MaterializeVoiceTransitionContinuumV1.py')
 text = p.read_text()
 old = '''cpp = one(cpp,
