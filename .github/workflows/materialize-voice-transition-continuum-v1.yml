@@ -5,6 +5,7 @@ on:
     branches: [voice-transition-continuum-v1]
     paths:
       - 'Tests/MaterializeVoiceTransitionContinuumV1.py'
+      - 'Tests/RefineVoiceTransitionContinuumMaterializer.py'
       - '.github/workflows/materialize-voice-transition-continuum-v1.yml'
 
 permissions:
@@ -25,7 +26,9 @@ jobs:
           test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "7eae364fc8974c10980c21fea739ed66b69b0e56"
 
       - name: Materialize voice transition continuum
-        run: python3 Tests/MaterializeVoiceTransitionContinuumV1.py
+        run: |
+          python3 Tests/RefineVoiceTransitionContinuumMaterializer.py
+          python3 Tests/MaterializeVoiceTransitionContinuumV1.py
 
       - name: Verify semantic contract
         run: |
