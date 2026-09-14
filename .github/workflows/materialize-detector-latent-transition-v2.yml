@@ -1,0 +1,75 @@
+name: Materialize Detector Latent Transition V2
+
+on:
+  push:
+    branches: [detector-latent-transition-v2]
+    paths:
+      - 'Tests/MaterializeDetectorLatentTransitionV2.py'
+      - '.github/workflows/materialize-detector-latent-transition-v2.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  validate-and-materialize:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: detector-latent-transition-v2
+          fetch-depth: 0
+
+      - name: Guard timbre and single wet renderer
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "7eae364fc8974c10980c21fea739ed66b69b0e56"
+
+      - name: Materialize detector refinement
+        run: python3 Tests/MaterializeDetectorLatentTransitionV2.py
+
+      - name: Verify semantic contract
+        run: |
+          set -euo pipefail
+          git diff --check
+          grep -Fq 'BEAM_RANKS_CURRENT_MEASUREMENT_V2' Source/ModernPitchEngine.cpp
+          grep -Fq 'OCTAVE_AMBIGUITY_V3' Source/ModernPitchEngine.cpp
+          grep -Fq 'LATENT_SCALE_CANDIDATE_V2' Source/ModernPitchEngine.cpp
+          grep -Fq 'TRANSITION_DESTINATION_FROZEN_V2' Source/ModernPitchEngine.cpp
+          grep -Fq 'uncertain_new_degree_has_zero_audible_authority' Tests/SupervisorContinuityTest.cpp
+          grep -Fq 'single_family_provisional_octave_never_owns_register' Tests/SupervisorContinuityTest.cpp
+          grep -Fq 'transition_detector_wobble_cannot_move_destination' Tests/SupervisorContinuityTest.cpp
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "7eae364fc8974c10980c21fea739ed66b69b0e56"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libjack-jackd2-dev ladspa-sdk libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev
+
+      - name: Configure focused tests
+        run: cmake -S . -B build-detector-latent -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Build focused tests
+        run: cmake --build build-detector-latent --config Release --target CleanModernPitchEngineTest SupervisorContinuityTest SingleWetSpectralRendererTest GuiAudioControlContractTest GuiAudibilityTest --parallel 2
+
+      - name: Run focused tests
+        run: |
+          set -euo pipefail
+          ./build-detector-latent/clean-engine-tests/CleanModernPitchEngineTest
+          ./build-detector-latent/clean-engine-tests/SupervisorContinuityTest
+          ./build-detector-latent/clean-engine-tests/SingleWetSpectralRendererTest
+          ./build-detector-latent/clean-engine-tests/GuiAudioControlContractTest
+          ./build-detector-latent/clean-engine-tests/GuiAudibilityTest
+
+      - name: Build VST3
+        run: cmake --build build-detector-latent --config Release --target Neumaton_VST3 --parallel 2
+
+      - name: Commit validated detector refinement
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm -f Tests/MaterializeDetectorLatentTransitionV2.py
+          rm -f .github/workflows/materialize-detector-latent-transition-v2.yml
+          git add -A Source/ModernPitchEngine.cpp Source/ModernPitchEngine.h Tests/SupervisorContinuityTest.cpp Tests/MaterializeDetectorLatentTransitionV2.py .github/workflows/materialize-detector-latent-transition-v2.yml
+          git commit -m 'Make detector uncertainty latent and transition destination fixed [skip ci]'
+          git push origin HEAD:detector-latent-transition-v2
