@@ -6,6 +6,7 @@ on:
     paths:
       - 'Tests/MaterializeVoiceTransitionContinuumV1.py'
       - 'Tests/RefineVoiceTransitionContinuumMaterializer.py'
+      - 'Tests/RefineVoiceTransitionContinuumV1.py'
       - '.github/workflows/materialize-voice-transition-continuum-v1.yml'
 
 permissions:
@@ -29,6 +30,7 @@ jobs:
         run: |
           python3 Tests/RefineVoiceTransitionContinuumMaterializer.py
           python3 Tests/MaterializeVoiceTransitionContinuumV1.py
+          python3 Tests/RefineVoiceTransitionContinuumV1.py
 
       - name: Verify semantic contract
         run: |
@@ -40,7 +42,8 @@ jobs:
           grep -Fq 'TRANSITION_IS_TRANSPORT_V1' Source/ModernPitchEngine.cpp
           grep -Fq 'provisional_voice_measurement_cannot_stall_in_acquire' Tests/SupervisorContinuityTest.cpp
           grep -Fq 'zero_vibrato_lock_tracks_continuous_source_without_target_chatter' Tests/SupervisorContinuityTest.cpp
-          grep -Fq 'transition_controller_is_monotonic_without_ratio_bounce' Tests/SupervisorContinuityTest.cpp
+          grep -Fq 'single_octave_innovation_has_zero_transport_authority' Tests/SupervisorContinuityTest.cpp
+          grep -Fq 'transition_hard_bound_finishes_without_controller_momentum' Tests/SupervisorContinuityTest.cpp
           test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "7eae364fc8974c10980c21fea739ed66b69b0e56"
 
       - name: Install build dependencies
