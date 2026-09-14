@@ -36,7 +36,13 @@ jobs:
           echo "Definitive target/transport architecture unchanged before renderer bugfix."
 
       - name: Materialize spectral reentry reset
-        run: python3 Tests/MaterializeSpectralReentryResetV1.py
+        run: |
+          python3 Tests/MaterializeSpectralReentryResetV1.py
+          # The connected GitHub App deliberately has no workflows permission.
+          # Release workflow scheduling is packaging metadata, not DSP; restore it
+          # before validation/commit so the materialized beta baseline contains
+          # only ordinary source/test files.
+          git checkout -- .github/workflows/release-readiness.yml
 
       - name: Verify narrow semantic contract
         shell: bash
@@ -52,7 +58,7 @@ jobs:
           test "$(git hash-object Source/ModernPitchEngine.h)" = "e069a3283e5e144f2d540145b3b4c13889c9c532"
           test "$(git hash-object Source/Tempo.cpp)" = "53558aa5dd3d573e50f5fdd39384d06fb0217191"
           python3 Tests/release_readiness_contract.py
-          allowed='^(Source/SingleWetSpectralRenderer.cpp|Tests/SingleWetSpectralRendererTest.cpp|Tests/release_readiness_contract.py|\.github/workflows/release-readiness.yml|Tests/MaterializeSpectralReentryResetV1.py|\.github/workflows/materialize-spectral-reentry-reset-v1.yml)$'
+          allowed='^(Source/SingleWetSpectralRenderer.cpp|Tests/SingleWetSpectralRendererTest.cpp|Tests/release_readiness_contract.py|Tests/MaterializeSpectralReentryResetV1.py|\.github/workflows/materialize-spectral-reentry-reset-v1.yml)$'
           bad="$(git status --short | awk '{print $2}' | grep -Ev "$allowed" || true)"
           test -z "$bad" || { echo "Unexpected changed paths:"; echo "$bad"; exit 1; }
 
@@ -109,7 +115,6 @@ jobs:
             Source/SingleWetSpectralRenderer.cpp \
             Tests/SingleWetSpectralRendererTest.cpp \
             Tests/release_readiness_contract.py \
-            .github/workflows/release-readiness.yml \
             Tests/MaterializeSpectralReentryResetV1.py \
             .github/workflows/materialize-spectral-reentry-reset-v1.yml
           git diff --cached --check
