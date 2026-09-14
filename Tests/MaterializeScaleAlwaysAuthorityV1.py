@@ -201,9 +201,11 @@ engine = one(engine,
 ''',
 '''    // SCALE_LOCK_NEVER_OWNS_DEPTH_V1: Scale Lock may alter target retention
     // and trajectory timing, never correction depth. Amount/Humanize/Vibrato
-    // soften one common target-owned cage in every mode.
-    constexpr double cageFraction = 0.26;
-    constexpr double cageLimit = 18.0;
+    // soften one common target-owned cage in every mode. The common budget is
+    // the former normal-mode budget so visible Humanize keeps its full range;
+    // at Amount=1, Humanize=0, Vibrato=0 the residual is still exactly zero.
+    constexpr double cageFraction = 0.34;
+    constexpr double cageLimit = 42.0;
     const double residualBudgetCents = std::clamp(
         minimumStep * cageFraction, 0.25, cageLimit);
 ''',
