@@ -5,6 +5,7 @@ on:
     branches: [scale-always-authority-v1]
     paths:
       - 'Tests/MaterializeScaleAlwaysAuthorityV1.py'
+      - 'Tests/RefineScaleAlwaysAuthorityV1.py'
       - '.github/workflows/materialize-scale-always-authority-v1.yml'
 
 permissions:
@@ -26,7 +27,9 @@ jobs:
           test "$(git hash-object Source/Tempo.cpp)" = "53558aa5dd3d573e50f5fdd39384d06fb0217191"
 
       - name: Materialize scale authority fix
-        run: python3 Tests/MaterializeScaleAlwaysAuthorityV1.py
+        run: |
+          python3 Tests/MaterializeScaleAlwaysAuthorityV1.py
+          python3 Tests/RefineScaleAlwaysAuthorityV1.py
 
       - name: Verify narrow semantic contract
         run: |
@@ -38,9 +41,11 @@ jobs:
           grep -Fq 'LATENT_IDENTITY_NEVER_FREEZES_WET_V1' Source/ModernPitchEngine.cpp
           grep -Fq 'SINGLE_VISIBLE_VIBRATO_AUTHORITY_V1' Source/ModernPitchEngine.cpp
           grep -Fq 'SCALE_LOCK_NEVER_OWNS_DEPTH_V1' Source/ModernPitchEngine.cpp
+          grep -Fq 'PROVISIONAL_OCTAVE_CANNOT_BYPASS_IDENTITY_VETO_V1' Source/ModernPitchEngine.cpp
           grep -Fq 'visible_vibrato_zero_removes_hidden_nonlock_preserve' Tests/SupervisorContinuityTest.cpp
           grep -Fq 'breathy_valid_f0_stays_on_owned_scale_target' Tests/SupervisorContinuityTest.cpp
           grep -Fq 'pending_identity_never_freezes_owned_wet_transport' Tests/SupervisorContinuityTest.cpp
+          grep -Fq 'uncertain_new_degree_keeps_owned_scale_authority' Tests/SupervisorContinuityTest.cpp
           ! grep -Fq '0.70f,   // preserveVibrato' Source/PluginProcessor.cpp
           test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "7eae364fc8974c10980c21fea739ed66b69b0e56"
           test "$(git hash-object Source/Tempo.cpp)" = "53558aa5dd3d573e50f5fdd39384d06fb0217191"
@@ -92,7 +97,8 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           rm -f Tests/MaterializeScaleAlwaysAuthorityV1.py
+          rm -f Tests/RefineScaleAlwaysAuthorityV1.py
           rm -f .github/workflows/materialize-scale-always-authority-v1.yml
-          git add -A Source/ModernPitchEngine.cpp Source/LivePitchProcessor.h Source/PluginProcessor.cpp Tests/SupervisorContinuityTest.cpp Tests/MaterializeScaleAlwaysAuthorityV1.py .github/workflows/materialize-scale-always-authority-v1.yml
+          git add -A Source/ModernPitchEngine.cpp Source/LivePitchProcessor.h Source/PluginProcessor.cpp Tests/SupervisorContinuityTest.cpp Tests/MaterializeScaleAlwaysAuthorityV1.py Tests/RefineScaleAlwaysAuthorityV1.py .github/workflows/materialize-scale-always-authority-v1.yml
           git commit -m 'Make scale authority universal and explicit [skip ci]'
           git push origin HEAD:scale-always-authority-v1
