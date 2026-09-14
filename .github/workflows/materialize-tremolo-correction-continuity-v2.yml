@@ -1,0 +1,89 @@
+name: Materialize Tremolo Correction Continuity V2
+
+on:
+  push:
+    branches: [correction-authority-no-label-freeze-v1]
+    paths:
+      - 'Tests/RefineTremoloCorrectionContinuityV2.py'
+      - '.github/workflows/materialize-tremolo-correction-continuity-v2.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  validate-and-materialize:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: correction-authority-no-label-freeze-v1
+          fetch-depth: 0
+
+      - name: Guard detector renderer and unrelated audio path
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "7eae364fc8974c10980c21fea739ed66b69b0e56"
+          test "$(git hash-object Source/Tempo.cpp)" = "53558aa5dd3d573e50f5fdd39384d06fb0217191"
+
+      - name: Materialize tremolo correction refinement
+        run: python3 Tests/RefineTremoloCorrectionContinuityV2.py
+
+      - name: Verify narrow semantic contract
+        run: |
+          set -euo pipefail
+          git diff --check
+          grep -Fq 'VOICE_LABELS_CANNOT_FREEZE_CORRECTION_V1' Source/ModernPitchEngine.cpp
+          grep -Fq 'TREMolo_LOCAL_CONTINUITY_OWNS_TRANSPORT_V2' Source/ModernPitchEngine.cpp
+          grep -Fq 'labelMayTransport' Source/ModernPitchEngine.cpp
+          grep -Fq 'tremolo_presence_blink_cannot_create_dry_like_escape' Tests/SupervisorContinuityTest.cpp
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "7eae364fc8974c10980c21fea739ed66b69b0e56"
+          test "$(git hash-object Source/Tempo.cpp)" = "53558aa5dd3d573e50f5fdd39384d06fb0217191"
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          before = subprocess.check_output(
+              ['git', 'show', 'HEAD:Source/ModernPitchEngine.cpp'], text=True)
+          after = Path('Source/ModernPitchEngine.cpp').read_text()
+          marker = 'void ModernPitchEngine::updateCorrectionState('
+          assert marker in before and marker in after
+          assert before.split(marker, 1)[0] == after.split(marker, 1)[0], \
+              'detector/prefix changed: forbidden for this intervention'
+          changed = set(subprocess.check_output(
+              ['git', 'diff', '--name-only'], text=True).splitlines())
+          allowed = {'Source/ModernPitchEngine.cpp', 'Tests/SupervisorContinuityTest.cpp'}
+          assert changed <= allowed, f'unexpected materialized files: {sorted(changed - allowed)}'
+          PY
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libjack-jackd2-dev ladspa-sdk libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev
+
+      - name: Configure focused tests
+        run: cmake -S . -B build-tremolo-continuity -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Build focused tests
+        run: cmake --build build-tremolo-continuity --config Release --target CleanModernPitchEngineTest SupervisorContinuityTest SingleWetSpectralRendererTest GuiAudioControlContractTest GuiAudibilityTest --parallel 2
+
+      - name: Run focused tests
+        run: |
+          set -euo pipefail
+          ./build-tremolo-continuity/clean-engine-tests/CleanModernPitchEngineTest
+          ./build-tremolo-continuity/clean-engine-tests/SupervisorContinuityTest
+          ./build-tremolo-continuity/clean-engine-tests/SingleWetSpectralRendererTest
+          ./build-tremolo-continuity/clean-engine-tests/GuiAudioControlContractTest
+          ./build-tremolo-continuity/clean-engine-tests/GuiAudibilityTest
+
+      - name: Build VST3
+        run: cmake --build build-tremolo-continuity --config Release --target Neumaton_VST3 --parallel 2
+
+      - name: Commit validated tremolo correction refinement
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm -f Tests/RefineTremoloCorrectionContinuityV2.py
+          rm -f .github/workflows/materialize-tremolo-correction-continuity-v2.yml
+          git add -A Source/ModernPitchEngine.cpp Tests/SupervisorContinuityTest.cpp Tests/RefineTremoloCorrectionContinuityV2.py .github/workflows/materialize-tremolo-correction-continuity-v2.yml
+          git commit -m 'Keep owned correction live through tremolo troughs [skip ci]'
+          git push origin HEAD:correction-authority-no-label-freeze-v1
