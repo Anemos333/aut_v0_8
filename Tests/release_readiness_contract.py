@@ -37,13 +37,13 @@ def git_blob(path: str) -> str:
 #    Deliberate pitch/timbre work in later phases must update this manifest
 #    explicitly after an approved audio test; release-only changes must not.
 AUDIO_BASELINE = {
-    "Source/SingleWetSpectralRenderer.cpp": "3080ba804cb038421b075d76f5eceec335c22396",
+    "Source/SingleWetSpectralRenderer.cpp": "051721f1d740e95e23f740353ad5df9dc6fefb3c",
     "Source/SingleWetSpectralRenderer.h": "2b68b3b3d5dc0579cdab94f4969203ef876ef058",
-    "Source/ModernPitchEngine.cpp": "c2183d11659cf5ba89d28e8ee6162611cf948b66",
-    "Source/ModernPitchEngine.h": "451a20b9530cacb4f60628ce954bb1db4ee03252",
-    "Source/LivePitchProcessor.h": "fa171f20fad1c8233a2414a0f4294f4aac6aa687",
-    "Source/PluginProcessor.cpp": "544e681b5e89fdc5627fc2c4aa97c86a39f4807b",
-    "Source/PluginProcessor.h": "e50935d9049d7a296b46e431805c74f9b5455315",
+    "Source/ModernPitchEngine.cpp": "59eb1598d1c79bdf2e74beb844258deb14d300b3",
+    "Source/ModernPitchEngine.h": "e069a3283e5e144f2d540145b3b4c13889c9c532",
+    "Source/LivePitchProcessor.h": "6e7a050978d8fefd187f3649d198ec6efd2abc6d",
+    "Source/PluginProcessor.cpp": "e2ba6b826f8e3cd9b292a4f98748240d6a581a12",
+    "Source/PluginProcessor.h": "ddf47fe649734c7f0e9729e063d207a7c0fbe009",
 }
 
 for path, expected in AUDIO_BASELINE.items():

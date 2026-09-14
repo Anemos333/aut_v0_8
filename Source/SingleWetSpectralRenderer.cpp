@@ -533,13 +533,32 @@ void SingleWetSpectralRenderer::processFrame(
     float formantPreservation) noexcept
 {
     const std::int64_t frameStartSample = frameEndSample - frameSize_ + 1;
+    double frameEnergy = 0.0;
     for (int index = 0; index < frameSize_; ++index)
     {
         const float input = readInputSample(frameStartSample + index);
+        frameEnergy += static_cast<double>(input) * static_cast<double>(input);
         fftBuffer_[static_cast<std::size_t>(index)] = Complex(
             input * window_[static_cast<std::size_t>(index)], 0.0f);
     }
     fft(fftBuffer_, false);
+
+    // SILENCE_REENTRY_RESEEDS_PHASE_AND_ENVELOPE_V1: silence is not a second
+    // audio path and never changes correction authority. It only invalidates
+    // phase/envelope history that cannot meaningfully describe the next physical
+    // emission. Keep OLA/output state intact: no mute, no dry crossfade, no gap.
+    // The threshold is deliberately below normal recorded noise so an ordinary
+    // weak vowel or breath is never itself declared silence.
+    const double frameRms = std::sqrt(frameEnergy
+        / static_cast<double>(std::max(1, frameSize_)));
+    constexpr double reentrySilenceRms = 2.0e-5;
+    const bool reentrySilenceFrame = frameRms <= reentrySilenceRms;
+    if (reentrySilenceFrame)
+    {
+        phaseResetPending_ = true;
+        envelopeInitialised_ = false;
+        envelopeFrameCounter_ = 0;
+    }
 
     const int positiveBins = frameSize_ / 2;
     for (int bin = 0; bin <= positiveBins; ++bin)
@@ -550,15 +569,23 @@ void SingleWetSpectralRenderer::processFrame(
             std::atan2(value.imag(), value.real());
     }
 
-    if (!envelopeInitialised_
-        || ++envelopeFrameCounter_ >= envelopeUpdateInterval_)
+    // Do not learn a spectral envelope from silence. The first energetic
+    // frame after the gap becomes the fresh envelope reference instead of being
+    // warped through the previous vowel/formant history.
+    if (!reentrySilenceFrame
+        && (!envelopeInitialised_
+            || ++envelopeFrameCounter_ >= envelopeUpdateInterval_))
     {
         envelopeFrameCounter_ = 0;
         calculateEnvelope(positiveBins);
     }
 
     const bool resetAnalysis = phaseResetPending_ || !analysisPhaseInitialised_;
-    phaseResetPending_ = false;
+    // Keep the reset armed for the complete silent interval. It is consumed only
+    // by the first energetic frame, where analysis and synthesis phases are both
+    // seeded from that frame. No accumulation ring is cleared.
+    if (!reentrySilenceFrame)
+        phaseResetPending_ = false;
     const double expectedPhaseScale = twoPi * static_cast<double>(hopSize_)
                                     / static_cast<double>(frameSize_);
     const double binFromPhaseScale = static_cast<double>(frameSize_)
