@@ -504,14 +504,14 @@ int main()
     liveRescueDecision.freshSupportMask = 0x01;
     bool octaveCommittedTooEarly = false;
     bool octaveCommittedInFiniteTime = false;
-    for (int hop = 0; hop < 8; ++hop)
+    for (int hop = 0; hop < 24; ++hop)
     {
         auto decision = liveRescueDecision;
         decision.valid = true;
         decision.candidate.valid = true;
         const bool accepted = liveRescueTracker->confirmOctaveTransition(
             decision, false);
-        if (hop < 7)
+        if (hop < 23)
             octaveCommittedTooEarly = octaveCommittedTooEarly || accepted;
         else
             octaveCommittedInFiniteTime = accepted && decision.valid;
@@ -1457,7 +1457,7 @@ int main()
         return d;
     };
     bool prematureOctaveCommit = false;
-    for (int hop = 0; hop < 7; ++hop)
+    for (int hop = 0; hop < 23; ++hop)
     {
         auto d = makeOctaveChallenger();
         prematureOctaveCommit = octavePersistenceTracker->confirmOctaveTransition(d, false)
@@ -1467,7 +1467,7 @@ int main()
     const bool finiteOctaveCommit = octavePersistenceTracker->confirmOctaveTransition(
         finalOctave, false);
     success &= check(!prematureOctaveCommit && finiteOctaveCommit,
-                     "octave_ambiguity_has_short_finite_persistence_not_confidence_gate");
+                     "single_family_octave_requires_strict_finite_persistence");
 
     // TRANSITION_IS_TRANSPORT_V1: controller motion is strictly monotonic and
     // cannot overshoot/bounce while a transient is being carried to the new
@@ -1493,6 +1493,149 @@ int main()
     }
     success &= check(monotonic && !overshot,
                      "transition_controller_is_monotonic_without_ratio_bounce");
+
+
+    // LATENT_SCALE_CANDIDATE_V2: a grey-zone measurement may help identify the
+    // next note, but until it persists the audible note is exactly the previous
+    // owned degree. This is the C -> uncertain C -> stable D contract.
+    ModernPitchEngine::ScaleQuantizer latentQuantizer;
+    latentQuantizer.reset();
+    latentQuantizer.setScale(authorityChromatic.data(),
+                             static_cast<int>(authorityChromatic.size()), 440.0);
+    ModernPitchEngine::CorrectionState latentState;
+    auto latentC = strongPitch(440.0f);
+    latentC.audioPresent = true;
+    for (int hop = 0; hop < 12; ++hop)
+        engine->updateCorrectionState(latentState, latentQuantizer,
+                                      latentC, explicitAuthorityParameters);
+    const double latentCTarget = latentState.targetLog2;
+    const double latentCTransport = latentState.transportPeriodHz;
+    const double latentCDesired = latentState.desiredCents;
+
+    ModernPitchEngine::PitchObservation greyD;
+    greyD.audioPresent = true;
+    greyD.valid = false;
+    greyD.measurementAvailable = true;
+    greyD.correctionFrequencyHz = 493.8833f;
+    greyD.confidence = 0.06f;
+    greyD.periodicity = 0.20f;
+    greyD.detectorSupport = 1;
+    for (int hop = 0; hop < 5; ++hop)
+    {
+        engine->updateCorrectionState(latentState, latentQuantizer,
+                                      greyD, explicitAuthorityParameters);
+    }
+    success &= check(std::abs(latentState.targetLog2 - latentCTarget) < 1.0e-12
+                     && std::abs(latentState.transportPeriodHz - latentCTransport) < 1.0e-12
+                     && std::abs(latentState.desiredCents - latentCDesired) < 1.0e-12,
+                     "uncertain_new_degree_has_zero_audible_authority");
+
+    engine->updateCorrectionState(latentState, latentQuantizer,
+                                  greyD, explicitAuthorityParameters);
+    const double latentDHz = std::exp2(latentState.targetLog2);
+    success &= check(latentDHz > 492.0 && latentDHz < 496.0,
+                     "persistent_grey_voice_can_commit_new_scale_degree");
+
+    // A single provisional octave family can persist indefinitely without
+    // stealing the register. It must become trusted/corroborated first.
+    ModernPitchEngine::ScaleQuantizer provisionalOctaveQuantizer;
+    provisionalOctaveQuantizer.reset();
+    provisionalOctaveQuantizer.setScale(authorityChromatic.data(),
+                                         static_cast<int>(authorityChromatic.size()), 440.0);
+    ModernPitchEngine::CorrectionState provisionalOctaveState;
+    for (int hop = 0; hop < 12; ++hop)
+        engine->updateCorrectionState(provisionalOctaveState,
+                                      provisionalOctaveQuantizer,
+                                      latentC, explicitAuthorityParameters);
+    const double provisionalOctaveTarget = provisionalOctaveState.targetLog2;
+    const double provisionalOctaveTransport = provisionalOctaveState.transportPeriodHz;
+    const double provisionalOctaveDesired = provisionalOctaveState.desiredCents;
+    ModernPitchEngine::PitchObservation greyOctave = greyD;
+    greyOctave.correctionFrequencyHz = 880.0f;
+    greyOctave.detectorSupport = 1;
+    for (int hop = 0; hop < 80; ++hop)
+        engine->updateCorrectionState(provisionalOctaveState,
+                                      provisionalOctaveQuantizer,
+                                      greyOctave, explicitAuthorityParameters);
+    success &= check(std::abs(provisionalOctaveState.targetLog2
+                              - provisionalOctaveTarget) < 1.0e-12
+                     && std::abs(provisionalOctaveState.transportPeriodHz
+                                 - provisionalOctaveTransport) < 1.0e-12
+                     && std::abs(provisionalOctaveState.desiredCents
+                                 - provisionalOctaveDesired) < 1.0e-12,
+                     "single_family_provisional_octave_never_owns_register");
+
+    // Grey-zone motion inside the already owned scale cell is allowed to refine
+    // only the local source coordinate. This removes vibrato residual without
+    // giving uncertainty permission to change note identity.
+    ModernPitchEngine::ScaleQuantizer greyLocalQuantizer;
+    greyLocalQuantizer.reset();
+    greyLocalQuantizer.setScale(authorityChromatic.data(),
+                                static_cast<int>(authorityChromatic.size()), 440.0);
+    ModernPitchEngine::CorrectionState greyLocalState;
+    for (int hop = 0; hop < 12; ++hop)
+        engine->updateCorrectionState(greyLocalState, greyLocalQuantizer,
+                                      latentC, explicitAuthorityParameters);
+    const double greyLocalTarget = greyLocalState.targetLog2;
+    const double greyLocalBefore = greyLocalState.transportPeriodHz;
+    ModernPitchEngine::PitchObservation greySameCell;
+    greySameCell.audioPresent = true;
+    greySameCell.valid = false;
+    greySameCell.measurementAvailable = true;
+    greySameCell.correctionFrequencyHz = static_cast<float>(
+        440.0 * std::exp2(18.0 / 1200.0));
+    greySameCell.confidence = 0.05f;
+    greySameCell.periodicity = 0.18f;
+    greySameCell.detectorSupport = 1;
+    for (int hop = 0; hop < 8; ++hop)
+        engine->updateCorrectionState(greyLocalState, greyLocalQuantizer,
+                                      greySameCell, explicitAuthorityParameters);
+    success &= check(std::abs(greyLocalState.targetLog2 - greyLocalTarget) < 1.0e-12
+                     && std::abs(greyLocalState.transportPeriodHz - greyLocalBefore) > 0.1,
+                     "grey_same_cell_measurement_refines_transport_not_identity");
+
+    // TRANSITION_DESTINATION_FROZEN_V2: once D is committed, detector wobble on
+    // the way there cannot rewrite source coordinate or desired correction.
+    ModernPitchEngine::ScaleQuantizer frozenTransitionQuantizer;
+    frozenTransitionQuantizer.reset();
+    frozenTransitionQuantizer.setScale(authorityChromatic.data(),
+                                        static_cast<int>(authorityChromatic.size()), 440.0);
+    ModernPitchEngine::CorrectionState frozenTransitionState;
+    auto frozenD = strongPitch(493.8833f);
+    frozenD.audioPresent = true;
+    for (int hop = 0; hop < 12; ++hop)
+        engine->updateCorrectionState(frozenTransitionState,
+                                      frozenTransitionQuantizer,
+                                      frozenD, explicitAuthorityParameters);
+    frozenTransitionState.trackingState = ModernPitchEngine::TrackingState::transition;
+    frozenTransitionState.responseMs = 8.0;
+    frozenTransitionState.currentCents = frozenTransitionState.desiredCents - 40.0;
+    const double frozenTarget = frozenTransitionState.targetLog2;
+    const double frozenTransport = frozenTransitionState.transportPeriodHz;
+    const double frozenDesired = frozenTransitionState.desiredCents;
+    auto frozenWobble = frozenD;
+    frozenWobble.frequencyHz = 500.0f;
+    frozenWobble.correctionFrequencyHz = 500.0f;
+    engine->updateCorrectionState(frozenTransitionState,
+                                  frozenTransitionQuantizer,
+                                  frozenWobble, explicitAuthorityParameters);
+    success &= check(std::abs(frozenTransitionState.targetLog2 - frozenTarget) < 1.0e-12
+                     && std::abs(frozenTransitionState.transportPeriodHz - frozenTransport) < 1.0e-12
+                     && std::abs(frozenTransitionState.desiredCents - frozenDesired) < 1.0e-12,
+                     "transition_detector_wobble_cannot_move_destination");
+
+    ModernPitchEngine::CorrectionState zeroResponseTransition;
+    zeroResponseTransition.targetValid = true;
+    zeroResponseTransition.noteBodyLatched = true;
+    zeroResponseTransition.trackingState = ModernPitchEngine::TrackingState::transition;
+    zeroResponseTransition.currentCents = -90.0;
+    zeroResponseTransition.desiredCents = 35.0;
+    zeroResponseTransition.responseMs = 0.0;
+    const double zeroResponseValue = engine->advanceCorrection(zeroResponseTransition);
+    success &= check(std::abs(zeroResponseValue - 35.0) < 1.0e-12
+                     && zeroResponseTransition.trackingState
+                        == ModernPitchEngine::TrackingState::stable,
+                     "zero_response_has_no_hidden_transition_window");
 
     return success ? 0 : 1;
 }

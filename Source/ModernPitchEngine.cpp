@@ -930,15 +930,46 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
     // Decoder history is diagnostic/ranking evidence. It cannot erase the
     // current measured coordinate merely because the transition is unusual.
 
+    // BEAM_RANKS_CURRENT_MEASUREMENT_V2: current evidence is still required,
+    // but temporal continuity now ranks competing current hypotheses instead of
+    // being computed and then ignored. This is especially important when a
+    // harmonic one octave away briefly has the strongest instantaneous score.
     int matchedHypothesis = -1;
+    float bestCurrentScore = -1000.0f;
+    const bool beamValid = decoderBeam_[0].valid;
+    const float beamFrequencyHz = beamValid
+        ? static_cast<float>(std::exp2(decoderBeam_[0].logFrequency)) : 0.0f;
     for (int index = 0; index < hypothesisCount; ++index)
     {
         const auto& current = hypotheses[static_cast<std::size_t>(index)];
-        if (current.valid && current.freshSupportMask != 0
-            && current.directSupportCount >= 1)
+        if (!current.valid || current.freshSupportMask == 0
+            || current.directSupportCount < 1)
         {
+            continue;
+        }
+
+        float score = current.evidenceScore + 0.20f * current.consensus;
+        if (beamValid && beamFrequencyHz > 0.0f)
+        {
+            const float distance = centsDistance(beamFrequencyHz,
+                                                 current.frequencyHz);
+            score += 0.46f * std::exp(-distance / 95.0f);
+
+            int octaveDelta = 0;
+            float octaveResidual = 0.0f;
+            if (isOctaveLikeTransition(beamFrequencyHz, current.frequencyHz,
+                                       octaveDelta, octaveResidual))
+            {
+                const float singleFamilyPenalty =
+                    current.directSupportCount >= 2 ? 0.20f : 0.46f;
+                score -= singleFamilyPenalty;
+            }
+        }
+
+        if (score > bestCurrentScore)
+        {
+            bestCurrentScore = score;
             matchedHypothesis = index;
-            break; // hypotheses are already ordered by evidence score
         }
     }
     if (matchedHypothesis < 0)
@@ -1013,7 +1044,7 @@ bool ModernPitchEngine::MultiRatePitchTracker::confirmOctaveTransition(
         const bool samePending = pendingOctaveDelta_ == rescueOctaveDelta
             && pendingOctaveFrequencyHz_ > 0.0f
             && centsDistance(pendingOctaveFrequencyHz_,
-                             decision.candidate.frequencyHz) < 70.0f;
+                             decision.candidate.frequencyHz) < 42.0f;
         if (!samePending)
         {
             pendingOctaveDelta_ = rescueOctaveDelta;
@@ -1028,12 +1059,15 @@ bool ModernPitchEngine::MultiRatePitchTracker::confirmOctaveTransition(
         // geometric persistence that one consonant/harmonic burst cannot own a
         // register. A real onset remains fast; multi-path direct support is the
         // only reason to shorten the non-onset count.
-        const bool multiPathDirect = decision.directSupportCount >= 2;
-        const int requiredObservations = onsetPending
-            ? (rescueOctaveDelta < 0 ? 3 : 2)
-            : multiPathDirect
-                ? (rescueOctaveDelta < 0 ? 7 : 6)
-                : (rescueOctaveDelta < 0 ? 10 : 8);
+        // OCTAVE_AMBIGUITY_V3: a sung octave is allowed, but a consonant or
+        // strong harmonic may remain octave-like for several milliseconds.
+        // Onset cannot shortcut this guard. Independent direct paths shorten
+        // the fixed window; confidence never lengthens or shortens it.
+        const bool multiPathDirect = decision.directSupportCount >= 2
+            && decision.consensus >= 0.24f;
+        const int requiredObservations = multiPathDirect
+            ? (rescueOctaveDelta < 0 ? 12 : 10)
+            : (rescueOctaveDelta < 0 ? 28 : 24);
         if (pendingOctaveCount_ < requiredObservations)
         {
             decision.valid = false;
@@ -1101,7 +1135,7 @@ bool ModernPitchEngine::MultiRatePitchTracker::confirmOctaveTransition(
     const bool samePending = pendingOctaveDelta_ == octaveDelta
         && pendingOctaveFrequencyHz_ > 0.0f
         && centsDistance(pendingOctaveFrequencyHz_,
-                         decision.candidate.frequencyHz) < 70.0f;
+                         decision.candidate.frequencyHz) < 42.0f;
 
     if (!samePending)
     {
@@ -1119,12 +1153,11 @@ bool ModernPitchEngine::MultiRatePitchTracker::confirmOctaveTransition(
     // Eight single-family fresh hops are only ~5.3 ms at the 32-sample hop:
     // fast enough for sung note changes, long enough to reject most one-frame
     // register hallucinations. Downward aliases receive two extra hops.
-    const bool multiPathDirect = decision.directSupportCount >= 2;
-    const int requiredObservations = onsetPending
-        ? (octaveDelta < 0 ? 3 : 2)
-        : multiPathDirect
-            ? (octaveDelta < 0 ? 7 : 6)
-            : (octaveDelta < 0 ? 10 : 8);
+    const bool multiPathDirect = decision.directSupportCount >= 2
+        && decision.consensus >= 0.24f;
+    const int requiredObservations = multiPathDirect
+        ? (octaveDelta < 0 ? 12 : 10)
+        : (octaveDelta < 0 ? 28 : 24);
     if (pendingOctaveCount_ < requiredObservations)
     {
         // Hold the committed register only while an explicitly octave-like
@@ -1562,6 +1595,35 @@ bool ModernPitchEngine::ScaleQuantizer::setScale(
     pendingValid_ = false;
     pendingCount_ = 0;
     return true;
+}
+
+double ModernPitchEngine::ScaleQuantizer::nearestTargetLog2(
+    double inputLog2) const noexcept
+{
+    if (!std::isfinite(inputLog2) || ratioCount_ <= 0)
+        return inputLog2;
+
+    const double relative = inputLog2 - rootLog2_;
+    const double octave = std::floor(relative);
+    double nearest = inputLog2;
+    double nearestDistance = std::numeric_limits<double>::infinity();
+
+    for (int i = 0; i < ratioCount_; ++i)
+    {
+        const double degree = logRatios_[static_cast<std::size_t>(i)];
+        for (int octaveOffset = -1; octaveOffset <= 1; ++octaveOffset)
+        {
+            const double candidate = rootLog2_ + octave
+                + static_cast<double>(octaveOffset) + degree;
+            const double distance = std::abs(candidate - inputLog2);
+            if (distance < nearestDistance)
+            {
+                nearestDistance = distance;
+                nearest = candidate;
+            }
+        }
+    }
+    return nearest;
 }
 
 double ModernPitchEngine::ScaleQuantizer::chooseTargetLog2(
@@ -2396,6 +2458,118 @@ void ModernPitchEngine::updateCorrectionState(
     const double observedLog2 = safeLog2(correctionFrequencyHz);
     const double correctionObservedLog2 = observedLog2;
 
+    bool detectorScaleCommit = false;
+    if (state.targetValid)
+    {
+        // LATENT_SCALE_CANDIDATE_V2: detector uncertainty is represented in a
+        // separate analysis state. The currently owned scale degree is never
+        // revised merely because an instantaneous F0 crosses a Voronoi boundary.
+        const double nominatedTarget = quantizer.nearestTargetLog2(observedLog2);
+        const double targetDeltaCents =
+            (nominatedTarget - state.targetLog2) * 1200.0;
+        const bool nominatesOwnedTarget = std::abs(targetDeltaCents) < 0.5;
+
+        if (nominatesOwnedTarget)
+        {
+            state.latentTargetValid = false;
+            state.latentTargetLog2 = 0.0;
+            state.latentTargetHops = 0;
+        }
+        else
+        {
+            const double scaleStep = std::max(0.1,
+                static_cast<double>(quantizer.minimumStepCents()));
+            const double observedDistanceFromOwnedTarget =
+                std::abs(observedLog2 - state.targetLog2) * 1200.0;
+            const double deepExitRatio = scaleStep <= 50.0 ? 0.52 : 0.72;
+
+            const double absoluteJump = std::abs(targetDeltaCents);
+            const int nearestOctave = static_cast<int>(std::lround(
+                absoluteJump / 1200.0));
+            const bool octaveLikeTarget = nearestOctave >= 1
+                && nearestOctave <= 2
+                && std::abs(absoluteJump
+                    - 1200.0 * static_cast<double>(nearestOctave)) <= 35.0;
+
+            // AMBIGUOUS_BOUNDARY_IS_LOCAL_MOTION_V2: on a wide scale a sung
+            // vibrato may live beyond the half-cell boundary for many hops.
+            // Until it penetrates the challenger cell deeply enough, it is not
+            // even a note-change candidate. Let the pre-existing continuity and
+            // local-transport tracker see it so zero Vibrato can remove the
+            // physical modulation, but do not grant this latent gate any target
+            // authority. Octave-like observations are always treated as deep
+            // ambiguity because their error cost is catastrophic.
+            const bool deepCandidate = octaveLikeTarget
+                || observedDistanceFromOwnedTarget >= deepExitRatio * scaleStep;
+
+            if (!deepCandidate)
+            {
+                state.latentTargetValid = false;
+                state.latentTargetLog2 = 0.0;
+                state.latentTargetHops = 0;
+                // Deliberately continue: target identity remains governed by the
+                // old bounded continuity logic, which already rejects ±70-cent
+                // long vibrato, while transport may still track local motion.
+            }
+            else
+            {
+                const bool sameLatent = state.latentTargetValid
+                    && std::abs(nominatedTarget - state.latentTargetLog2)
+                        * 1200.0 < 0.5;
+                if (sameLatent)
+                {
+                    state.latentTargetHops = std::min(64,
+                        state.latentTargetHops + 1);
+                }
+                else
+                {
+                    state.latentTargetValid = true;
+                    state.latentTargetLog2 = nominatedTarget;
+                    state.latentTargetHops = 1;
+                }
+
+                int requiredHops = 0;
+                if (octaveLikeTarget)
+                {
+                    // A provisional single detector family may describe an
+                    // octave candidate forever but can never own the register.
+                    // Trusted/corroborated octave evidence remains possible and
+                    // bounded, just deliberately slower than ordinary notes.
+                    if (!trustedPitch && observation.detectorSupport < 2)
+                        requiredHops = 1000000;
+                    else if (trustedPitch && observation.detectorSupport >= 2)
+                        requiredHops = 8;
+                    else if (trustedPitch)
+                        requiredHops = 14;
+                    else
+                        requiredHops = 18;
+                }
+                else
+                {
+                    // Precision is concentrated at the boundary, not paid for
+                    // by normal note speed. A real coordinate deep in the next
+                    // cell changes quickly once it repeats geometrically.
+                    requiredHops = trustedPitch
+                        ? (observation.detectorSupport >= 2 ? 2 : 3)
+                        : 6;
+                }
+
+                if (state.latentTargetHops < requiredHops)
+                {
+                    // Stable C -> uncertain material => exactly stable C.
+                    // Freeze all audible coordinates until this deep challenger
+                    // has actually earned a scale-domain commit.
+                    return;
+                }
+
+                detectorScaleCommit = true;
+                state.latentTargetValid = false;
+                state.latentTargetLog2 = 0.0;
+                state.latentTargetHops = 0;
+            }
+        }
+    }
+
     if (rescueBodyFrame && !observation.onset)
     {
         if (state.recentRealPitchCount
@@ -2414,7 +2588,18 @@ void ModernPitchEngine::updateCorrectionState(
 
     bool liveIdentityBreak = false;
     bool forceTargetSwitch = false;
-    if (!state.pitchCentreValid || musicalOnset)
+    if (detectorScaleCommit)
+    {
+        // The destination degree has already passed the detector-domain
+        // persistence test. Rebase the analysis centre and present exactly one
+        // challenger to the user-owned quantizer/Hold logic.
+        state.pitchCentreLog2 = observedLog2;
+        state.pitchCentreValid = true;
+        state.stableObservations = 0;
+        liveIdentityBreak = true;
+        forceTargetSwitch = true;
+    }
+    else if (!state.pitchCentreValid || musicalOnset)
     {
         state.pitchCentreLog2 = observedLog2;
         state.pitchCentreValid = true;
@@ -2572,9 +2757,13 @@ void ModernPitchEngine::updateCorrectionState(
     {
         ++state.revision;
         state.lastTargetJumpCents = targetJump;
-        if (targetIdentityChanged && state.trackingState != TrackingState::transition)
+        if (targetIdentityChanged)
         {
-            setState(TrackingState::transition);
+            // TRANSITION_DESTINATION_FROZEN_V2: every committed note boundary
+            // starts one clean monotonic trajectory. A later detector candidate
+            // may be analysed, but cannot continuously rewrite this destination.
+            state.trackingState = TrackingState::transition;
+            state.stateAgeSamples = 0;
             state.velocityCentsPerSecond = 0.0;
             state.stableObservations = 0;
             state.stableBodyObservations = bodyPresent ? 1 : 0;
@@ -2590,7 +2779,9 @@ void ModernPitchEngine::updateCorrectionState(
     // Large jumps have exactly zero transport authority until scale identity has
     // committed; a committed note change then rebases to the accepted live F0
     // in one supervisor event so target and source jump coherently.
-    if (state.noteBodyLatched && bodyPresent)
+    const bool freezeCommittedTransition =
+        state.trackingState == TrackingState::transition && !targetIdentityChanged;
+    if (state.noteBodyLatched && bodyPresent && !freezeCommittedTransition)
     {
         const double observedSourceLog2 = correctionObservedLog2;
         if (!(state.transportPeriodHz > 0.0)
@@ -2830,6 +3021,11 @@ double ModernPitchEngine::advanceCorrection(CorrectionState& state) noexcept
     {
         state.currentCents = state.desiredCents;
         state.velocityCentsPerSecond = 0.0;
+        if (state.trackingState == TrackingState::transition)
+        {
+            state.trackingState = TrackingState::stable;
+            state.stateAgeSamples = 0;
+        }
         return state.currentCents;
     }
 
@@ -2867,6 +3063,8 @@ double ModernPitchEngine::advanceCorrection(CorrectionState& state) noexcept
         {
             state.currentCents = state.desiredCents;
             state.velocityCentsPerSecond = 0.0;
+            state.trackingState = TrackingState::stable;
+            state.stateAgeSamples = 0;
         }
         return state.currentCents;
     }

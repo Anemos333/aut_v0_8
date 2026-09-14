@@ -412,6 +412,7 @@ private:
                                               int& pendingObservations) noexcept;
         [[nodiscard]] float minimumStepCents() const noexcept { return minStepCents_; }
         [[nodiscard]] float asymmetry() const noexcept { return asymmetry_; }
+        [[nodiscard]] double nearestTargetLog2(double inputLog2) const noexcept;
         [[nodiscard]] double adjacentTargetLog2(double currentTargetLog2,
                                                 int direction) const noexcept;
 
@@ -460,6 +461,14 @@ private:
         double transportVelocityCentsPerHop = 0.0;
         double transportChallengerLog2 = 0.0;
         int transportChallengerHops = 0;
+
+        // LATENT_SCALE_CANDIDATE_V2: a detector coordinate that points outside
+        // the currently owned scale cell is analysis only until the same exact
+        // destination degree persists.  While pending it has zero audible
+        // authority over target, transport and correction.
+        bool latentTargetValid = false;
+        double latentTargetLog2 = 0.0;
+        int latentTargetHops = 0;
 
         // SCALE_OWNS_IDENTITY_V2: detector observations may nominate a new
         // cell, but only bounded same-side geometric persistence may present
