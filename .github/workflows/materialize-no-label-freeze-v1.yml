@@ -5,6 +5,7 @@ on:
     branches: [correction-authority-no-label-freeze-v1]
     paths:
       - 'Tests/MaterializeNoLabelFreezeV1.py'
+      - 'Tests/RefineNoLabelFreezeV1.py'
       - '.github/workflows/materialize-no-label-freeze-v1.yml'
 
 permissions:
@@ -26,7 +27,9 @@ jobs:
           test "$(git hash-object Source/Tempo.cpp)" = "53558aa5dd3d573e50f5fdd39384d06fb0217191"
 
       - name: Materialize correction authority fix
-        run: python3 Tests/MaterializeNoLabelFreezeV1.py
+        run: |
+          python3 Tests/MaterializeNoLabelFreezeV1.py
+          python3 Tests/RefineNoLabelFreezeV1.py
 
       - name: Verify narrow semantic contract
         run: |
@@ -35,6 +38,7 @@ jobs:
           grep -Fq 'VOICE_LABELS_CANNOT_FREEZE_CORRECTION_V1' Source/ModernPitchEngine.cpp
           grep -Fq 'VALID_F0_TRANSPORT_SURVIVES_LABEL_V1' Source/ModernPitchEngine.cpp
           grep -Fq 'IDENTITY_VETO_TRANSPORT_CONTINUES_V1' Source/ModernPitchEngine.cpp
+          grep -Fq 'PRESENT_AUDIO_OWNS_CORRECTION_CONTINUITY_V1' Source/ModernPitchEngine.cpp
           grep -Fq 'phonetic_label_cannot_freeze_owned_correction' Tests/SupervisorContinuityTest.cpp
           grep -Fq 'absence_label_cannot_freeze_owned_correction' Tests/SupervisorContinuityTest.cpp
           test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "7eae364fc8974c10980c21fea739ed66b69b0e56"
@@ -84,7 +88,8 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           rm -f Tests/MaterializeNoLabelFreezeV1.py
+          rm -f Tests/RefineNoLabelFreezeV1.py
           rm -f .github/workflows/materialize-no-label-freeze-v1.yml
-          git add -A Source/ModernPitchEngine.cpp Tests/SupervisorContinuityTest.cpp Tests/MaterializeNoLabelFreezeV1.py .github/workflows/materialize-no-label-freeze-v1.yml
+          git add -A Source/ModernPitchEngine.cpp Tests/SupervisorContinuityTest.cpp Tests/MaterializeNoLabelFreezeV1.py Tests/RefineNoLabelFreezeV1.py .github/workflows/materialize-no-label-freeze-v1.yml
           git commit -m 'Prevent voice labels from freezing owned correction [skip ci]'
           git push origin HEAD:correction-authority-no-label-freeze-v1
