@@ -1750,10 +1750,10 @@ double ModernPitchEngine::wrapToNearestOctave(double cents) noexcept
 // identity safety, but they are not permission to weaken the requested lock.
 bool ModernPitchEngine::zeroPrudenceAuthority(const Parameters& parameters) noexcept
 {
-    // SCALE_CELL_OWNS_SOFTNESS_V1: Hold alone owns target-retention prudence.
-    // Amount/Humanize/Vibrato never select a source-authoritative regime.
-    return parameters.scaleLock
-        && std::clamp(static_cast<double>(finiteOr(parameters.lockHysteresis, 24.0f)),
+    // HOLD_IS_EXPLICIT_EVERYWHERE_V1: Hold alone owns target-retention
+    // prudence. Scale Lock may change trajectory timing, never secretly create
+    // or remove hysteresis. Hold=0 therefore means exactly zero in every mode.
+    return std::clamp(static_cast<double>(finiteOr(parameters.lockHysteresis, 24.0f)),
                       0.0, 80.0) <= 0.00001;
 }
 
@@ -1852,13 +1852,9 @@ float ModernPitchEngine::adaptiveHysteresis(
     if (zeroPrudenceAuthority(parameters))
         return 0.0f; // AUTHORITY_CONTROLS_EXPLICIT_V1: Hold=0 means exactly no target hold.
 
-    if (!parameters.scaleLock)
-    {
-        return static_cast<float>(std::clamp(
-            2.0 + 0.22 * static_cast<double>(quantizer.minimumStepCents())
-                * static_cast<double>(clamp01(parameters.humanize)),
-            1.0, 80.0));
-    }
+    // NO_HIDDEN_PRUDENCE_OUTSIDE_LOCK_V1: there is no alternate automatic
+    // hysteresis law when Scale Lock is off. The same visible Hold value owns
+    // target retention everywhere.
 
     // No mode, tempo, confidence or detector-derived multiplier may add Hold.
     const float lockStrictness = clamp01(parameters.lockStrictness);
@@ -2290,27 +2286,10 @@ void ModernPitchEngine::updateCorrectionState(
     // moving voice drift away from its still-owned scale target.
     bool identityOnlyVeto = false;
 
-    // TREMolo_LOCAL_CONTINUITY_OWNS_TRANSPORT_V2: an amplitude trough can make
-    // the presence classifier blink false even while the physical F0 remains a
-    // continuous coordinate of the already-owned voice.  Do not turn that
-    // telemetry blink into a stale correction.  Conversely, a periodic accident
-    // far from the owned source transport during true breath/noise still has no
-    // audible authority.  36 cents matches the existing maximum bounded catchup
-    // step and is intentionally far below a scale-degree or octave decision.
-    const float labelCoordinateHz =
-        std::isfinite(observation.correctionFrequencyHz)
-        && observation.correctionFrequencyHz > 0.0f
-        ? observation.correctionFrequencyHz
-        : observation.frequencyHz;
-    const bool localOwnedCoordinate = validPitch
-        && std::isfinite(labelCoordinateHz)
-        && labelCoordinateHz > 0.0f
-        && std::isfinite(state.transportPeriodHz)
-        && state.transportPeriodHz > 0.0
-        && std::abs(1200.0 * std::log2(
-            static_cast<double>(labelCoordinateHz) / state.transportPeriodHz)) <= 36.0;
-    const bool labelMayTransport = validPitch
-        && (observation.audioPresent || localOwnedCoordinate);
+    // BREATH_IS_TARGETED_NOT_DRY_V1: voice labels may veto note identity,
+    // never correction authority. If a real F0 exists it continues through the
+    // ordinary transport outlier wall and is corrected toward the already-owned
+    // scale degree. If no F0 exists, the previous correction is held exactly.
 
     // Breath/absence is positive evidence and therefore wins even if a noisy
     // frame happens to yield a formally valid F0. This prevents breaths from
@@ -2334,12 +2313,10 @@ void ModernPitchEngine::updateCorrectionState(
         state.transportChallengerLog2 = 0.0;
         state.stableBodyObservations = 0;
 
-        if (!labelMayTransport)
+        if (!validPitch)
         {
-            // PRESENT_AUDIO_OWNS_CORRECTION_CONTINUITY_V1: a formally valid
-            // periodic accident inside true breath/absence still has zero
-            // transport authority unless it is locally continuous with the
-            // already-owned source coordinate. Hold exact correction otherwise.
+            // No measured source coordinate exists. Keep the current target,
+            // transport and non-zero correction exactly; never manufacture F0.
             if (confirmedAbsence
                 || confirmedAbsenceFrame
                 || state.breathEvidenceSamples > static_cast<int>(0.12 * sampleRate_))
@@ -2441,7 +2418,7 @@ void ModernPitchEngine::updateCorrectionState(
         state.stableBodyObservations = 0;
         state.transportChallengerHops = 0;
         state.transportChallengerLog2 = 0.0;
-        if (!labelMayTransport)
+        if (!validPitch)
             return;
         identityOnlyVeto = true;
     }
@@ -2505,6 +2482,7 @@ void ModernPitchEngine::updateCorrectionState(
     const double correctionObservedLog2 = observedLog2;
 
     bool detectorScaleCommit = false;
+    bool provisionalOctaveIdentityVeto = false;
     if (state.targetValid && !identityOnlyVeto)
     {
         // LATENT_SCALE_CANDIDATE_V2: detector uncertainty is represented in a
@@ -2582,7 +2560,14 @@ void ModernPitchEngine::updateCorrectionState(
                     // Trusted/corroborated octave evidence remains possible and
                     // bounded, just deliberately slower than ordinary notes.
                     if (!trustedPitch && observation.detectorSupport < 2)
+                    {
                         requiredHops = 1000000;
+                        // PROVISIONAL_OCTAVE_CANNOT_BYPASS_IDENTITY_VETO_V1:
+                        // the latent gate owns this negative decision. Later
+                        // centre/boundary logic may not promote the same
+                        // uncorroborated octave by accumulating time alone.
+                        provisionalOctaveIdentityVeto = true;
+                    }
                     else if (trustedPitch && observation.detectorSupport >= 2)
                         requiredHops = 8;
                     else if (trustedPitch)
@@ -2600,18 +2585,17 @@ void ModernPitchEngine::updateCorrectionState(
                         : 6;
                 }
 
-                if (state.latentTargetHops < requiredHops)
+                if (state.latentTargetHops >= requiredHops)
                 {
-                    // Stable C -> uncertain material => exactly stable C.
-                    // Freeze all audible coordinates until this deep challenger
-                    // has actually earned a scale-domain commit.
-                    return;
+                    detectorScaleCommit = true;
+                    state.latentTargetValid = false;
+                    state.latentTargetLog2 = 0.0;
+                    state.latentTargetHops = 0;
                 }
-
-                detectorScaleCommit = true;
-                state.latentTargetValid = false;
-                state.latentTargetLog2 = 0.0;
-                state.latentTargetHops = 0;
+                // LATENT_IDENTITY_NEVER_FREEZES_WET_V1: while identity is still
+                // pending, continue through centre/transport/correction. The
+                // challenger has zero target authority, but it may not create a
+                // dry-like/stale correction discontinuity on a long note.
             }
         }
     }
@@ -2634,7 +2618,7 @@ void ModernPitchEngine::updateCorrectionState(
 
     bool liveIdentityBreak = false;
     bool forceTargetSwitch = false;
-    if (identityOnlyVeto)
+    if (identityOnlyVeto || provisionalOctaveIdentityVeto)
     {
         // IDENTITY_VETO_TRANSPORT_CONTINUES_V1: hold musical identity and its
         // continuity centre, but continue below into local transport/correction.
@@ -2971,9 +2955,9 @@ void ModernPitchEngine::updateCorrectionState(
         static_cast<float>(0.92 * halfStep),
         static_cast<float>(centreError));
 
-    const float requestedVibrato = parameters.scaleLock
-        ? clamp01(parameters.vibratoPreserve)
-        : clamp01(parameters.preserveVibrato);
+    // SINGLE_VISIBLE_VIBRATO_AUTHORITY_V1: the visible Vibrato Preserve
+    // control is authoritative in every mode. No hidden non-lock preserve path.
+    const float requestedVibrato = clamp01(parameters.vibratoPreserve);
     const float preserve = requestedVibrato * stable * periodic * boundarySafety;
 
     // SCALE_CELL_OWNS_SOFTNESS_V1: every setting uses the same target-owned
@@ -2983,12 +2967,13 @@ void ModernPitchEngine::updateCorrectionState(
     const double softness = std::clamp(
         0.72 * (1.0 - amount) + 0.20 * static_cast<double>(humanize),
         0.0, 0.88);
-    const double lockStrictness = parameters.scaleLock
-        ? static_cast<double>(clamp01(parameters.lockStrictness)) : 0.0;
-    const double cageFraction = parameters.scaleLock
-        ? (0.16 + 0.10 * (1.0 - lockStrictness))
-        : 0.34;
-    const double cageLimit = parameters.scaleLock ? 18.0 : 42.0;
+    // SCALE_LOCK_NEVER_OWNS_DEPTH_V1: Scale Lock may alter target retention
+    // and trajectory timing, never correction depth. Amount/Humanize/Vibrato
+    // soften one common target-owned cage in every mode. The common budget is
+    // the former normal-mode budget so visible Humanize keeps its full range;
+    // at Amount=1, Humanize=0, Vibrato=0 the residual is still exactly zero.
+    constexpr double cageFraction = 0.34;
+    constexpr double cageLimit = 42.0;
     const double residualBudgetCents = std::clamp(
         minimumStep * cageFraction, 0.25, cageLimit);
 

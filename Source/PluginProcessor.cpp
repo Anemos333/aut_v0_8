@@ -210,9 +210,11 @@ void MicrotonalAutotuneAudioProcessor::prepareToPlay (double sampleRate, int sam
                                 std::max (1, getTotalNumOutputChannels()),
                                 modeToLatency (mode));
     const float humanizeVal = apvts.getRawParameterValue ("humanize")->load() / 100.0f;
+    const float vibratoPreserve = juce::jlimit (0.0f, 1.0f,
+        apvts.getRawParameterValue ("vibratoPreserve")->load() / 100.0f);
     livePitchProcessor.setAdvancedParameters (
         35.0f,   // transitionMs
-        0.70f,   // preserveVibrato
+        vibratoPreserve, // preserveVibrato: same visible authority in every mode
         humanizeVal,
         0.90f,   // formantPreservation
         0.85f,   // transientProtection
@@ -615,7 +617,7 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
 
     livePitchProcessor.setAdvancedParameters (
         35.0f,   // transitionMs
-        0.70f,   // preserveVibrato
+        vibratoPreserve, // preserveVibrato: same visible authority in every mode
         humanizeVal,
         0.90f,   // formantPreservation
         0.85f,   // transientProtection

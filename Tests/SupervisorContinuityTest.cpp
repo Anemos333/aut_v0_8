@@ -694,19 +694,24 @@ int main()
                      && std::abs(acquireState.desiredCents - 100.0) < 1.0e-9,
                      "body_signal_cannot_be_stuck_in_acquire");
 
-    // TARGET_AUTHORITY_TAIL_HOLD_V1: once a target exists, breath/noise is
-    // allowed to remove confidence in the current F0 but never to undo the
-    // requested pitch displacement. A spurious periodic accident in breath
-    // must therefore be ignored rather than retargeting or releasing to source.
+    // BREATH_IS_TARGETED_NOT_DRY_V1: once a target exists, breath/noise may
+    // not nominate another degree. A sustained measured breath F0 may refine
+    // source transport, but the correction remains non-zero and scale-owned.
     ModernPitchEngine::CorrectionState spuriousBreath = dropoutState;
+    const double breathHoldTargetHz = 220.0 * std::exp2(100.0 / 1200.0);
+    spuriousBreath.targetLog2 = std::log2(breathHoldTargetHz);
     setBreathEvidence(parameters);
-    const auto falsePitchOnBreath = strongPitch(231.0f);
+    auto falsePitchOnBreath = strongPitch(231.0f);
+    falsePitchOnBreath.audioPresent = false;
+    falsePitchOnBreath.correctionFrequencyHz = 231.0f;
+    const double breathTargetBefore = spuriousBreath.targetLog2;
     for (int i = 0; i < 100; ++i)
         engine->updateCorrectionState(spuriousBreath, quantizer,
                                       falsePitchOnBreath, parameters);
     success &= check(spuriousBreath.trackingState != ModernPitchEngine::TrackingState::release
                      && spuriousBreath.targetValid
-                     && std::abs(spuriousBreath.desiredCents - 100.0) < 1.0e-9,
+                     && std::abs(spuriousBreath.targetLog2 - breathTargetBefore) < 1.0e-12
+                     && std::abs(spuriousBreath.desiredCents) > 1.0,
                      "breath_cannot_release_existing_target_to_source");
 
     // The same invariant holds when the detector correctly reports no F0.
@@ -1130,6 +1135,120 @@ int main()
                                                  explicitAuthorityObservation) == 0.0f,
                      "hold_zero_means_exactly_zero_hysteresis");
 
+    // HOLD_IS_EXPLICIT_EVERYWHERE_V1: Hold=0 means zero hysteresis even
+    // when Scale Lock is disabled. There is no hidden Humanize-based prudence.
+    ModernPitchEngine::Parameters unlockedZeroHold = explicitAuthorityParameters;
+    unlockedZeroHold.scaleLock = false;
+    unlockedZeroHold.lockHysteresis = 0.0f;
+    success &= check(engine->adaptiveHysteresis(unlockedZeroHold,
+                                                 explicitAuthorityQuantizer,
+                                                 explicitAuthorityObservation) == 0.0f,
+                     "hold_zero_has_no_hidden_unlocked_hysteresis");
+
+    // SINGLE_VISIBLE_VIBRATO_AUTHORITY_V1: legacy preserveVibrato may contain
+    // an old non-zero value, but visible Vibrato Preserve=0 must remove all
+    // deliberate vibrato residual even with Scale Lock off.
+    ModernPitchEngine::Parameters unlockedVibrato = explicitAuthorityParameters;
+    unlockedVibrato.scaleLock = false;
+    unlockedVibrato.lockHysteresis = 0.0f;
+    unlockedVibrato.vibratoPreserve = 0.0f;
+    unlockedVibrato.preserveVibrato = 0.70f; // deliberately hostile legacy value
+    ModernPitchEngine::ScaleQuantizer unlockedVibratoQuantizer;
+    unlockedVibratoQuantizer.reset();
+    unlockedVibratoQuantizer.setScale(&liveCoordinateUnison, 1, 440.0);
+    ModernPitchEngine::CorrectionState unlockedVibratoState;
+    double maximumUnlockedResidual = 0.0;
+    for (int hop = 0; hop < 500; ++hop)
+    {
+        const double cents = 38.0 * std::sin(2.0 * 3.14159265358979323846
+            * static_cast<double>(hop) / 150.0);
+        auto vibratoHop = strongPitch(static_cast<float>(
+            440.0 * std::exp2(cents / 1200.0)));
+        vibratoHop.audioPresent = true;
+        vibratoHop.correctionFrequencyHz = vibratoHop.frequencyHz;
+        engine->updateCorrectionState(unlockedVibratoState,
+                                      unlockedVibratoQuantizer,
+                                      vibratoHop,
+                                      unlockedVibrato);
+        if (hop > 40 && unlockedVibratoState.targetValid)
+        {
+            const double actualOutputHz = static_cast<double>(vibratoHop.frequencyHz)
+                * std::exp2(unlockedVibratoState.desiredCents / 1200.0);
+            const double targetHz = std::exp2(unlockedVibratoState.targetLog2);
+            maximumUnlockedResidual = std::max(maximumUnlockedResidual,
+                std::abs(1200.0 * std::log2(actualOutputHz / targetHz)));
+        }
+    }
+    success &= check(maximumUnlockedResidual < 0.15,
+                     "visible_vibrato_zero_removes_hidden_nonlock_preserve");
+
+    // SCALE_LOCK_NEVER_OWNS_DEPTH_V1: at equal visible softness controls, the
+    // steady-state target-owned residual budget is identical with Scale Lock on
+    // or off. Scale Lock is not a secret correction-depth switch.
+    ModernPitchEngine::Parameters commonSoftness = explicitAuthorityParameters;
+    commonSoftness.amount = 0.55f;
+    commonSoftness.humanize = 0.45f;
+    commonSoftness.vibratoPreserve = 0.0f;
+    commonSoftness.preserveVibrato = 0.0f;
+    commonSoftness.lockHysteresis = 0.0f;
+    auto softInput = strongPitch(450.0f);
+    softInput.audioPresent = true;
+    softInput.correctionFrequencyHz = 450.0f;
+    ModernPitchEngine::ScaleQuantizer lockOffDepthQuantizer;
+    ModernPitchEngine::ScaleQuantizer lockOnDepthQuantizer;
+    lockOffDepthQuantizer.reset();
+    lockOnDepthQuantizer.reset();
+    lockOffDepthQuantizer.setScale(&liveCoordinateUnison, 1, 440.0);
+    lockOnDepthQuantizer.setScale(&liveCoordinateUnison, 1, 440.0);
+    ModernPitchEngine::CorrectionState lockOffDepthState;
+    ModernPitchEngine::CorrectionState lockOnDepthState;
+    auto lockOffSoftness = commonSoftness;
+    auto lockOnSoftness = commonSoftness;
+    lockOffSoftness.scaleLock = false;
+    lockOnSoftness.scaleLock = true;
+    engine->updateCorrectionState(lockOffDepthState, lockOffDepthQuantizer,
+                                  softInput, lockOffSoftness);
+    engine->updateCorrectionState(lockOnDepthState, lockOnDepthQuantizer,
+                                  softInput, lockOnSoftness);
+    const double lockOffResidual = std::abs(1200.0 * std::log2(
+        lockOffDepthState.transportPeriodHz
+        * std::exp2(lockOffDepthState.desiredCents / 1200.0) / 440.0));
+    const double lockOnResidual = std::abs(1200.0 * std::log2(
+        lockOnDepthState.transportPeriodHz
+        * std::exp2(lockOnDepthState.desiredCents / 1200.0) / 440.0));
+    success &= check(std::abs(lockOffResidual - lockOnResidual) < 1.0e-9,
+                     "scale_lock_never_changes_correction_depth");
+
+    // BREATH_IS_TARGETED_NOT_DRY_V1: a breathy note with a valid F0 cannot
+    // nominate another degree, but it must continue being corrected to the
+    // already-owned degree even when audioPresent telemetry is false.
+    ModernPitchEngine::ScaleQuantizer breathTargetQuantizer;
+    breathTargetQuantizer.reset();
+    breathTargetQuantizer.setScale(&liveCoordinateUnison, 1, 440.0);
+    ModernPitchEngine::CorrectionState breathTargetState;
+    auto breathBase = strongPitch(450.0f);
+    breathBase.audioPresent = true;
+    breathBase.correctionFrequencyHz = 450.0f;
+    for (int hop = 0; hop < 12; ++hop)
+        engine->updateCorrectionState(breathTargetState, breathTargetQuantizer,
+                                      breathBase, explicitAuthorityParameters);
+    const double breathOwnedTarget = breathTargetState.targetLog2;
+    auto breathParameters = explicitAuthorityParameters;
+    setBreathEvidence(breathParameters);
+    auto breathF0 = strongPitch(454.0f);
+    breathF0.audioPresent = false;
+    breathF0.correctionFrequencyHz = 454.0f;
+    for (int hop = 0; hop < 16; ++hop)
+        engine->updateCorrectionState(breathTargetState, breathTargetQuantizer,
+                                      breathF0, breathParameters);
+    const double breathActualOutputHz = 454.0
+        * std::exp2(breathTargetState.desiredCents / 1200.0);
+    const double breathTargetHz = std::exp2(breathTargetState.targetLog2);
+    success &= check(std::abs(breathTargetState.targetLog2 - breathOwnedTarget) < 1.0e-12
+                     && std::abs(1200.0 * std::log2(
+                         breathActualOutputHz / breathTargetHz)) < 0.15,
+                     "breathy_valid_f0_stays_on_owned_scale_target");
+
     // DETECTOR_IS_OBSERVER_V1: rigid correction settings do not alter the
     // detector decoder. Static CI below forbids that API from returning.
 
@@ -1430,6 +1549,37 @@ int main()
                               - localTransportBeforeOutlier) < 1.0e-12,
                      "single_octave_innovation_has_zero_transport_authority");
 
+    // LATENT_IDENTITY_NEVER_FREEZES_WET_V1: when a smooth long-note
+    // trajectory enters the next cell but has not yet earned identity, target
+    // stays put while transport/correction continue. No brief stale/dry notch.
+    ModernPitchEngine::ScaleQuantizer pendingIdentityQuantizer;
+    pendingIdentityQuantizer.reset();
+    pendingIdentityQuantizer.setScale(authorityChromatic.data(),
+                                       static_cast<int>(authorityChromatic.size()), 440.0);
+    ModernPitchEngine::CorrectionState pendingIdentityState;
+    for (int cents = 0; cents <= 70; cents += 5)
+    {
+        auto ramp = strongPitch(static_cast<float>(
+            440.0 * std::exp2(static_cast<double>(cents) / 1200.0)));
+        ramp.audioPresent = true;
+        ramp.correctionFrequencyHz = ramp.frequencyHz;
+        engine->updateCorrectionState(pendingIdentityState,
+                                      pendingIdentityQuantizer,
+                                      ramp, explicitAuthorityParameters);
+    }
+    const double pendingTargetBefore = pendingIdentityState.targetLog2;
+    const double pendingTransportBefore = pendingIdentityState.transportPeriodHz;
+    auto firstDeepPending = strongPitch(static_cast<float>(
+        440.0 * std::exp2(75.0 / 1200.0)));
+    firstDeepPending.audioPresent = true;
+    firstDeepPending.correctionFrequencyHz = firstDeepPending.frequencyHz;
+    engine->updateCorrectionState(pendingIdentityState,
+                                  pendingIdentityQuantizer,
+                                  firstDeepPending, explicitAuthorityParameters);
+    success &= check(std::abs(pendingIdentityState.targetLog2 - pendingTargetBefore) < 1.0e-12
+                     && pendingIdentityState.transportPeriodHz > pendingTransportBefore,
+                     "pending_identity_never_freezes_owned_wet_transport");
+
     // OCTAVE_AMBIGUITY_V2: a single-family octave challenger must persist for a
     // fixed short window. It is neither immediately hallucinated nor blocked by
     // confidence forever.
@@ -1510,7 +1660,6 @@ int main()
                                       latentC, explicitAuthorityParameters);
     const double latentCTarget = latentState.targetLog2;
     const double latentCTransport = latentState.transportPeriodHz;
-    const double latentCDesired = latentState.desiredCents;
 
     ModernPitchEngine::PitchObservation greyD;
     greyD.audioPresent = true;
@@ -1525,10 +1674,14 @@ int main()
         engine->updateCorrectionState(latentState, latentQuantizer,
                                       greyD, explicitAuthorityParameters);
     }
+    const double latentPendingTargetHz = std::exp2(latentState.targetLog2);
+    const double latentPendingOutputHz = latentState.transportPeriodHz
+        * std::exp2(latentState.desiredCents / 1200.0);
     success &= check(std::abs(latentState.targetLog2 - latentCTarget) < 1.0e-12
-                     && std::abs(latentState.transportPeriodHz - latentCTransport) < 1.0e-12
-                     && std::abs(latentState.desiredCents - latentCDesired) < 1.0e-12,
-                     "uncertain_new_degree_has_zero_audible_authority");
+                     && std::abs(latentState.transportPeriodHz - latentCTransport) > 0.1
+                     && std::abs(1200.0 * std::log2(
+                         latentPendingOutputHz / latentPendingTargetHz)) < 1.0e-6,
+                     "uncertain_new_degree_keeps_owned_scale_authority");
 
     engine->updateCorrectionState(latentState, latentQuantizer,
                                   greyD, explicitAuthorityParameters);

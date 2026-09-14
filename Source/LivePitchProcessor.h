@@ -128,6 +128,7 @@ public:
         parameters_.scaleLock = scaleLock;
         parameters_.lockHysteresis = std::clamp(lockHysteresis, 0.0f, 80.0f);
         parameters_.vibratoPreserve = std::clamp(vibratoPreserve, 0.0f, 1.0f);
+        parameters_.preserveVibrato = parameters_.vibratoPreserve;
 
         const float h = parameters_.lockHysteresis / 80.0f;
         const float hysteresisStrictness = h * h * (3.0f - 2.0f * h); // smoothstep
