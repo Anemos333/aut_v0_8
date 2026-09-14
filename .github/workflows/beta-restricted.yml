@@ -29,7 +29,7 @@ jobs:
           set -euo pipefail
           grep -q 'SILENCE_REENTRY_RESEEDS_PHASE_AND_ENVELOPE_V1' Source/SingleWetSpectralRenderer.cpp
           test "$(grep -c 'SynthesisLayer layer_' Source/SingleWetSpectralRenderer.h)" = "1"
-          ! grep -Eq 'dryMix|wetMix|crossfade|noiseLayer|periodicLayer|secondLayer' Source/SingleWetSpectralRenderer.cpp
+          ! grep -Eq 'dryMix|wetMix|noiseLayer|periodicLayer|secondLayer|dryLayer|wetLayer' Source/SingleWetSpectralRenderer.cpp
 
   linux-beta:
     name: Linux beta VST3 + invariants
