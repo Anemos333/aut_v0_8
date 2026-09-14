@@ -5,6 +5,7 @@ on:
     branches: [local-degree-transport-authority-v1]
     paths:
       - 'Tests/MaterializeLocalDegreeTransportAuthorityV1.py'
+      - 'Tests/RefineLocalDegreeTransportAuthorityV1.py'
       - '.github/workflows/materialize-local-degree-transport-authority-v1.yml'
 
 permissions:
@@ -36,7 +37,9 @@ jobs:
           PY
 
       - name: Materialize narrow transport fix
-        run: python3 Tests/MaterializeLocalDegreeTransportAuthorityV1.py
+        run: |
+          python3 Tests/MaterializeLocalDegreeTransportAuthorityV1.py
+          python3 Tests/RefineLocalDegreeTransportAuthorityV1.py
 
       - name: Verify narrow semantic contract
         run: |
@@ -47,6 +50,7 @@ jobs:
           grep -Fq 'UNCOMMITTED_LARGE_INNOVATION_ZERO_TRANSPORT_AUTHORITY_V1' Source/ModernPitchEngine.cpp
           grep -Fq 'TARGET_LOCAL_SOFTNESS_GEOMETRY_V1' Source/ModernPitchEngine.cpp
           grep -Fq 'uncommitted_large_innovation_has_zero_transport_authority' Tests/SupervisorContinuityTest.cpp
+          grep -Fq 'uncertain_new_degree_cannot_move_owned_transport_before_commit' Tests/SupervisorContinuityTest.cpp
           grep -Fq 'transport_gate_scales_with_actual_adjacent_degree_width' Tests/SupervisorContinuityTest.cpp
           grep -Fq 'response_changes_time_not_target_authority' Tests/SupervisorContinuityTest.cpp
           grep -Fq 'amount_softens_inside_target_cell_never_restores_dry_authority' Tests/SupervisorContinuityTest.cpp
@@ -96,7 +100,8 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           rm -f Tests/MaterializeLocalDegreeTransportAuthorityV1.py
+          rm -f Tests/RefineLocalDegreeTransportAuthorityV1.py
           rm -f .github/workflows/materialize-local-degree-transport-authority-v1.yml
-          git add -A Source/ModernPitchEngine.cpp Tests/SupervisorContinuityTest.cpp Tests/MaterializeLocalDegreeTransportAuthorityV1.py .github/workflows/materialize-local-degree-transport-authority-v1.yml
+          git add -A Source/ModernPitchEngine.cpp Tests/SupervisorContinuityTest.cpp Tests/MaterializeLocalDegreeTransportAuthorityV1.py Tests/RefineLocalDegreeTransportAuthorityV1.py .github/workflows/materialize-local-degree-transport-authority-v1.yml
           git commit -m 'Make transport authority local-degree owned [skip ci]'
           git push origin HEAD:local-degree-transport-authority-v1
