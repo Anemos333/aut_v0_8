@@ -1691,9 +1691,10 @@ int main()
     absenceTransportParameters.voiceBreathiness = 0.88f;
     absenceTransportParameters.voiceEventStrength = 0.10f;
     auto absenceMovingF0 = strongPitch(446.0f);
-    // The rich classifier says "absence" while the input-presence path still
-    // sees real signal, matching a tremolo trough rather than actual silence.
-    absenceMovingF0.audioPresent = true;
+    // Reproduce the pathological trough directly: the presence bit blinks off,
+    // the rich classifier says absence, but the measured F0 is still a small
+    // continuous movement of the already-owned source coordinate.
+    absenceMovingF0.audioPresent = false;
     absenceMovingF0.correctionFrequencyHz = 446.0f;
     for (int hop = 0; hop < 12; ++hop)
         engine->updateCorrectionState(absenceTransportState,
@@ -1709,6 +1710,8 @@ int main()
                               - absenceOwnedTarget) < 1.0e-12
                      && absenceResidual < 2.0,
                      "absence_label_cannot_freeze_owned_correction");
+    success &= check(absenceResidual < 2.0,
+                     "tremolo_presence_blink_cannot_create_dry_like_escape");
 
     ModernPitchEngine::CorrectionState zeroResponseTransition;
     zeroResponseTransition.targetValid = true;

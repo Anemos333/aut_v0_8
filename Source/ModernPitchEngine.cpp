@@ -2290,6 +2290,28 @@ void ModernPitchEngine::updateCorrectionState(
     // moving voice drift away from its still-owned scale target.
     bool identityOnlyVeto = false;
 
+    // TREMolo_LOCAL_CONTINUITY_OWNS_TRANSPORT_V2: an amplitude trough can make
+    // the presence classifier blink false even while the physical F0 remains a
+    // continuous coordinate of the already-owned voice.  Do not turn that
+    // telemetry blink into a stale correction.  Conversely, a periodic accident
+    // far from the owned source transport during true breath/noise still has no
+    // audible authority.  36 cents matches the existing maximum bounded catchup
+    // step and is intentionally far below a scale-degree or octave decision.
+    const float labelCoordinateHz =
+        std::isfinite(observation.correctionFrequencyHz)
+        && observation.correctionFrequencyHz > 0.0f
+        ? observation.correctionFrequencyHz
+        : observation.frequencyHz;
+    const bool localOwnedCoordinate = validPitch
+        && std::isfinite(labelCoordinateHz)
+        && labelCoordinateHz > 0.0f
+        && std::isfinite(state.transportPeriodHz)
+        && state.transportPeriodHz > 0.0
+        && std::abs(1200.0 * std::log2(
+            static_cast<double>(labelCoordinateHz) / state.transportPeriodHz)) <= 36.0;
+    const bool labelMayTransport = validPitch
+        && (observation.audioPresent || localOwnedCoordinate);
+
     // Breath/absence is positive evidence and therefore wins even if a noisy
     // frame happens to yield a formally valid F0. This prevents breaths from
     // keeping the pitch engine latched through a spurious detector result.
@@ -2312,13 +2334,12 @@ void ModernPitchEngine::updateCorrectionState(
         state.transportChallengerLog2 = 0.0;
         state.stableBodyObservations = 0;
 
-        if (!validPitch || !observation.audioPresent)
+        if (!labelMayTransport)
         {
             // PRESENT_AUDIO_OWNS_CORRECTION_CONTINUITY_V1: a formally valid
             // periodic accident inside true breath/absence still has zero
-            // transport authority. Only actual present signal may override a
-            // mistaken breath/absence label and keep the owned correction live.
-            // Hold the existing target and correction exactly, as before.
+            // transport authority unless it is locally continuous with the
+            // already-owned source coordinate. Hold exact correction otherwise.
             if (confirmedAbsence
                 || confirmedAbsenceFrame
                 || state.breathEvidenceSamples > static_cast<int>(0.12 * sampleRate_))
@@ -2420,7 +2441,7 @@ void ModernPitchEngine::updateCorrectionState(
         state.stableBodyObservations = 0;
         state.transportChallengerHops = 0;
         state.transportChallengerLog2 = 0.0;
-        if (!validPitch || !observation.audioPresent)
+        if (!labelMayTransport)
             return;
         identityOnlyVeto = true;
     }
