@@ -2284,6 +2284,12 @@ void ModernPitchEngine::updateCorrectionState(
     const bool confirmedAbsence = state.noteBodyLatched
         && state.uncertainSamples >= ambiguousReleaseSamples;
 
+    // VOICE_LABELS_CANNOT_FREEZE_CORRECTION_V1: breath/phonetic/absence labels
+    // are identity vetoes only. If a finite real F0 already exists, they cannot
+    // freeze the owned transport/correction coordinate and thereby make a
+    // moving voice drift away from its still-owned scale target.
+    bool identityOnlyVeto = false;
+
     // Breath/absence is positive evidence and therefore wins even if a noisy
     // frame happens to yield a formally valid F0. This prevents breaths from
     // keeping the pitch engine latched through a spurious detector result.
@@ -2305,13 +2311,28 @@ void ModernPitchEngine::updateCorrectionState(
         state.transportChallengerHops = 0;
         state.transportChallengerLog2 = 0.0;
         state.stableBodyObservations = 0;
-        if (confirmedAbsence
-            || confirmedAbsenceFrame
-            || state.breathEvidenceSamples > static_cast<int>(0.12 * sampleRate_))
+
+        if (!validPitch || !observation.audioPresent)
         {
-            state.pitchCentreValid = false;
+            // PRESENT_AUDIO_OWNS_CORRECTION_CONTINUITY_V1: a formally valid
+            // periodic accident inside true breath/absence still has zero
+            // transport authority. Only actual present signal may override a
+            // mistaken breath/absence label and keep the owned correction live.
+            // Hold the existing target and correction exactly, as before.
+            if (confirmedAbsence
+                || confirmedAbsenceFrame
+                || state.breathEvidenceSamples > static_cast<int>(0.12 * sampleRate_))
+            {
+                state.pitchCentreValid = false;
+            }
+            return;
         }
-        return;
+
+        // VALID_F0_TRANSPORT_SURVIVES_LABEL_V1: the classifier can say
+        // "uncertain/breath/phonetic", but a real coordinate must still keep
+        // the already-owned correction aligned with the moving source. It gets
+        // no authority to nominate a different musical degree.
+        identityOnlyVeto = true;
     }
 
     if (!validPitch)
@@ -2390,14 +2411,18 @@ void ModernPitchEngine::updateCorrectionState(
     // attenuate, release or otherwise modify an already-owned correction.
     if (explicitPhoneticFrame && state.targetValid)
     {
-        // A consonant can veto this observation, but cannot contribute stale
-        // evidence to a later note change or touch target/transport/correction.
+        // A consonant/event label may veto note identity, but it cannot freeze
+        // source transport when the detector has already supplied a real F0.
+        // Far/outlier coordinates remain protected by the existing transport
+        // innovation and octave safety walls below.
         state.identityChallengerDirection = 0;
         state.identityChallengerEvidence = 0.0;
         state.stableBodyObservations = 0;
         state.transportChallengerHops = 0;
         state.transportChallengerLog2 = 0.0;
-        return;
+        if (!validPitch || !observation.audioPresent)
+            return;
+        identityOnlyVeto = true;
     }
 
     // A strong breath/absence before any body latch must not become a note just
@@ -2459,7 +2484,7 @@ void ModernPitchEngine::updateCorrectionState(
     const double correctionObservedLog2 = observedLog2;
 
     bool detectorScaleCommit = false;
-    if (state.targetValid)
+    if (state.targetValid && !identityOnlyVeto)
     {
         // LATENT_SCALE_CANDIDATE_V2: detector uncertainty is represented in a
         // separate analysis state. The currently owned scale degree is never
@@ -2588,7 +2613,15 @@ void ModernPitchEngine::updateCorrectionState(
 
     bool liveIdentityBreak = false;
     bool forceTargetSwitch = false;
-    if (detectorScaleCommit)
+    if (identityOnlyVeto)
+    {
+        // IDENTITY_VETO_TRANSPORT_CONTINUES_V1: hold musical identity and its
+        // continuity centre, but continue below into local transport/correction.
+        // This is the exact opposite of the old early-return freeze.
+        liveIdentityBreak = false;
+        forceTargetSwitch = false;
+    }
+    else if (detectorScaleCommit)
     {
         // The destination degree has already passed the detector-domain
         // persistence test. Rebase the analysis centre and present exactly one
@@ -2781,7 +2814,8 @@ void ModernPitchEngine::updateCorrectionState(
     // in one supervisor event so target and source jump coherently.
     const bool freezeCommittedTransition =
         state.trackingState == TrackingState::transition && !targetIdentityChanged;
-    if (state.noteBodyLatched && bodyPresent && !freezeCommittedTransition)
+    const bool transportBodyPresent = bodyPresent || (identityOnlyVeto && validPitch);
+    if (state.noteBodyLatched && transportBodyPresent && !freezeCommittedTransition)
     {
         const double observedSourceLog2 = correctionObservedLog2;
         if (!(state.transportPeriodHz > 0.0)

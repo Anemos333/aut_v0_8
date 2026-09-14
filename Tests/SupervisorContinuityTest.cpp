@@ -1624,6 +1624,92 @@ int main()
                      && std::abs(frozenTransitionState.desiredCents - frozenDesired) < 1.0e-12,
                      "transition_detector_wobble_cannot_move_destination");
 
+    // VOICE_LABELS_CANNOT_FREEZE_CORRECTION_V1: rich voice labels are
+    // allowed to veto note identity, never correction transport for a real F0.
+    ModernPitchEngine::Parameters labelTransportParameters = explicitAuthorityParameters;
+    labelTransportParameters.amount = 1.0f;
+    labelTransportParameters.humanize = 0.0f;
+    labelTransportParameters.preserveVibrato = 0.0f;
+    labelTransportParameters.vibratoPreserve = 0.0f;
+    labelTransportParameters.voiceEvidenceValid = true;
+
+    ModernPitchEngine::ScaleQuantizer phoneticTransportQuantizer;
+    phoneticTransportQuantizer.reset();
+    phoneticTransportQuantizer.setScale(authorityChromatic.data(),
+                                         static_cast<int>(authorityChromatic.size()), 440.0);
+    ModernPitchEngine::CorrectionState phoneticTransportState;
+    auto transportBase = strongPitch(450.0f);
+    transportBase.audioPresent = true;
+    transportBase.correctionFrequencyHz = 450.0f;
+    for (int hop = 0; hop < 12; ++hop)
+        engine->updateCorrectionState(phoneticTransportState,
+                                      phoneticTransportQuantizer,
+                                      transportBase,
+                                      labelTransportParameters);
+    const double phoneticOwnedTarget = phoneticTransportState.targetLog2;
+
+    ModernPitchEngine::Parameters phoneticTransportParameters = labelTransportParameters;
+    phoneticTransportParameters.voiceBodyEnergy = 0.66f;
+    phoneticTransportParameters.voiceHarmonicity = 0.68f;
+    phoneticTransportParameters.voiceSpectralReliability = 0.72f;
+    phoneticTransportParameters.voiceBreathiness = 0.24f;
+    phoneticTransportParameters.voiceEventStrength = 0.95f;
+    auto phoneticMovingF0 = strongPitch(454.0f);
+    phoneticMovingF0.audioPresent = true;
+    phoneticMovingF0.correctionFrequencyHz = 454.0f;
+    for (int hop = 0; hop < 12; ++hop)
+        engine->updateCorrectionState(phoneticTransportState,
+                                      phoneticTransportQuantizer,
+                                      phoneticMovingF0,
+                                      phoneticTransportParameters);
+    const double phoneticTargetHz = std::exp2(phoneticTransportState.targetLog2);
+    const double phoneticCorrectedHz = 454.0 * std::exp2(
+        phoneticTransportState.desiredCents / 1200.0);
+    const double phoneticResidual = std::abs(1200.0 * std::log2(
+        phoneticCorrectedHz / phoneticTargetHz));
+    success &= check(std::abs(phoneticTransportState.targetLog2
+                              - phoneticOwnedTarget) < 1.0e-12
+                     && phoneticResidual < 2.0,
+                     "phonetic_label_cannot_freeze_owned_correction");
+
+    ModernPitchEngine::ScaleQuantizer absenceTransportQuantizer;
+    absenceTransportQuantizer.reset();
+    absenceTransportQuantizer.setScale(authorityChromatic.data(),
+                                        static_cast<int>(authorityChromatic.size()), 440.0);
+    ModernPitchEngine::CorrectionState absenceTransportState;
+    for (int hop = 0; hop < 12; ++hop)
+        engine->updateCorrectionState(absenceTransportState,
+                                      absenceTransportQuantizer,
+                                      transportBase,
+                                      labelTransportParameters);
+    const double absenceOwnedTarget = absenceTransportState.targetLog2;
+
+    ModernPitchEngine::Parameters absenceTransportParameters = labelTransportParameters;
+    absenceTransportParameters.voiceBodyEnergy = 0.10f;
+    absenceTransportParameters.voiceHarmonicity = 0.10f;
+    absenceTransportParameters.voiceSpectralReliability = 0.10f;
+    absenceTransportParameters.voiceBreathiness = 0.88f;
+    absenceTransportParameters.voiceEventStrength = 0.10f;
+    auto absenceMovingF0 = strongPitch(446.0f);
+    // The rich classifier says "absence" while the input-presence path still
+    // sees real signal, matching a tremolo trough rather than actual silence.
+    absenceMovingF0.audioPresent = true;
+    absenceMovingF0.correctionFrequencyHz = 446.0f;
+    for (int hop = 0; hop < 12; ++hop)
+        engine->updateCorrectionState(absenceTransportState,
+                                      absenceTransportQuantizer,
+                                      absenceMovingF0,
+                                      absenceTransportParameters);
+    const double absenceTargetHz = std::exp2(absenceTransportState.targetLog2);
+    const double absenceCorrectedHz = 446.0 * std::exp2(
+        absenceTransportState.desiredCents / 1200.0);
+    const double absenceResidual = std::abs(1200.0 * std::log2(
+        absenceCorrectedHz / absenceTargetHz));
+    success &= check(std::abs(absenceTransportState.targetLog2
+                              - absenceOwnedTarget) < 1.0e-12
+                     && absenceResidual < 2.0,
+                     "absence_label_cannot_freeze_owned_correction");
+
     ModernPitchEngine::CorrectionState zeroResponseTransition;
     zeroResponseTransition.targetValid = true;
     zeroResponseTransition.noteBodyLatched = true;
