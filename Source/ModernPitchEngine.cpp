@@ -2481,6 +2481,22 @@ void ModernPitchEngine::updateCorrectionState(
     const double observedLog2 = safeLog2(correctionFrequencyHz);
     const double correctionObservedLog2 = observedLog2;
 
+    // LOCAL_DEGREE_GEOMETRY_V1: every within-note authority threshold is
+    // measured against the actual adjacent scale degree in the direction of
+    // motion. A 70-cent motion therefore has a completely different meaning
+    // in 75-EDO than inside a 200-cent diatonic gap. The minimum global step is
+    // only a numerical fallback, never the musical geometry when a target exists.
+    const auto localDegreeStepCents = [&quantizer](double targetLog2,
+                                                   double probeLog2) noexcept
+    {
+        const int direction = probeLog2 >= targetLog2 ? 1 : -1;
+        const double adjacent = quantizer.adjacentTargetLog2(targetLog2, direction);
+        const double stepCents = std::abs(adjacent - targetLog2) * 1200.0;
+        if (std::isfinite(stepCents) && stepCents >= 0.1)
+            return stepCents;
+        return std::max(0.1, static_cast<double>(quantizer.minimumStepCents()));
+    };
+
     bool detectorScaleCommit = false;
     bool provisionalOctaveIdentityVeto = false;
     if (state.targetValid && !identityOnlyVeto)
@@ -2501,8 +2517,8 @@ void ModernPitchEngine::updateCorrectionState(
         }
         else
         {
-            const double scaleStep = std::max(0.1,
-                static_cast<double>(quantizer.minimumStepCents()));
+            const double scaleStep = localDegreeStepCents(
+                state.targetLog2, observedLog2);
             const double observedDistanceFromOwnedTarget =
                 std::abs(observedLog2 - state.targetLog2) * 1200.0;
             const double deepExitRatio = scaleStep <= 50.0 ? 0.52 : 0.72;
@@ -2646,8 +2662,8 @@ void ModernPitchEngine::updateCorrectionState(
     else
     {
         const double distanceCents = std::abs(observedLog2 - state.pitchCentreLog2) * 1200.0;
-        const double scaleStep = std::max(0.1,
-            static_cast<double>(quantizer.minimumStepCents()));
+        const double scaleStep = localDegreeStepCents(
+            state.targetLog2, observedLog2);
         const double maximumWithinNoteTolerance = std::clamp(
             0.42 * scaleStep, 0.5, 60.0);
         const double withinNoteTolerance = std::min(
@@ -2849,10 +2865,13 @@ void ModernPitchEngine::updateCorrectionState(
                 + state.transportVelocityCentsPerHop / 1200.0;
             const double innovationCents =
                 (observedSourceLog2 - predictedSourceLog2) * 1200.0;
-            const double localScaleStep = std::max(0.1,
-                static_cast<double>(quantizer.minimumStepCents()));
-            const double innovationGateCents = std::clamp(
-                0.28 * localScaleStep, 8.0, 28.0);
+            const double localScaleStep = localDegreeStepCents(
+                state.targetLog2, observedSourceLog2);
+            // DEGREE_RELATIVE_TRANSPORT_GATE_V1: no fixed 8-cent floor. Dense
+            // scales must see a correspondingly small local-motion gate, while
+            // wide diatonic gaps may follow ordinary sung vibrato continuously.
+            const double innovationGateCents = std::max(
+                0.5, 0.28 * localScaleStep);
 
             if (std::abs(innovationCents) <= innovationGateCents)
             {
@@ -2910,26 +2929,14 @@ void ModernPitchEngine::updateCorrectionState(
                         state.transportChallengerHops = 1;
                     }
 
-                    if (state.transportChallengerHops >= 3)
-                    {
-                        const double challengerDeltaCents =
-                            (state.transportChallengerLog2 - currentSourceLog2) * 1200.0;
-                        const double maximumCatchupStep = std::clamp(
-                            0.32 * localScaleStep, 18.0, 36.0);
-                        const double catchupStep = std::clamp(
-                            challengerDeltaCents,
-                            -maximumCatchupStep,
-                             maximumCatchupStep);
-                        state.transportPeriodHz = std::exp2(
-                            currentSourceLog2 + catchupStep / 1200.0);
-                        state.transportVelocityCentsPerHop = catchupStep;
-                    }
-                    else
-                    {
-                        // First/second large observation has zero audible
-                        // authority. This is the consonant/outlier safety wall.
-                        state.transportVelocityCentsPerHop *= 0.35;
-                    }
+                    // UNCOMMITTED_LARGE_INNOVATION_ZERO_TRANSPORT_AUTHORITY_V1:
+                    // persistence may inform analysis, but it cannot move the
+                    // audible source coordinate. A real new note is handled by
+                    // the target-identity commit above, which rebases target and
+                    // transport atomically. This removes the old 3-hop catch-up
+                    // path that could turn a repeated detector error into a
+                    // 100-300 cent audible excursion on a sustained vowel.
+                    state.transportVelocityCentsPerHop *= 0.35;
                 }
             }
         }
@@ -2946,8 +2953,12 @@ void ModernPitchEngine::updateCorrectionState(
                                + 0.20f * std::min(1.0f,
                                    static_cast<float>(state.stableObservations) / 5.0f));
     const float periodic = clamp01(observation.periodicity);
-    const double minimumStep = std::max(0.1,
-        static_cast<double>(quantizer.minimumStepCents()));
+    // TARGET_LOCAL_SOFTNESS_GEOMETRY_V1: explicit Amount/Humanize/
+    // Vibrato softness is bounded inside the actual local target cell. Response
+    // is intentionally absent here: it controls convergence time only and can
+    // never weaken the destination.
+    const double minimumStep = localDegreeStepCents(
+        state.targetLog2, audibleSourceLog2);
     const double halfStep = 0.5 * minimumStep;
     const double centreError = std::abs((state.targetLog2 - state.pitchCentreLog2) * 1200.0);
     const float boundarySafety = 1.0f - smoothStep(

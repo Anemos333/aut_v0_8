@@ -1674,14 +1674,12 @@ int main()
         engine->updateCorrectionState(latentState, latentQuantizer,
                                       greyD, explicitAuthorityParameters);
     }
-    const double latentPendingTargetHz = std::exp2(latentState.targetLog2);
-    const double latentPendingOutputHz = latentState.transportPeriodHz
-        * std::exp2(latentState.desiredCents / 1200.0);
+    // A deep provisional degree is analysis-only until its identity commits.
+    // The scale target and audible source transport both remain owned by the
+    // current degree; there is no 3-hop catch-up toward an uncommitted F0.
     success &= check(std::abs(latentState.targetLog2 - latentCTarget) < 1.0e-12
-                     && std::abs(latentState.transportPeriodHz - latentCTransport) > 0.1
-                     && std::abs(1200.0 * std::log2(
-                         latentPendingOutputHz / latentPendingTargetHz)) < 1.0e-6,
-                     "uncertain_new_degree_keeps_owned_scale_authority");
+                     && std::abs(latentState.transportPeriodHz - latentCTransport) < 1.0e-12,
+                     "uncertain_new_degree_cannot_move_owned_transport_before_commit");
 
     engine->updateCorrectionState(latentState, latentQuantizer,
                                   greyD, explicitAuthorityParameters);
@@ -1865,6 +1863,157 @@ int main()
                      "absence_label_cannot_freeze_owned_correction");
     success &= check(absenceResidual < 2.0,
                      "tremolo_presence_blink_cannot_create_dry_like_escape");
+
+    // UNCOMMITTED_LARGE_INNOVATION_ZERO_TRANSPORT_AUTHORITY_V1: a repeated
+    // grey-zone jump may accumulate identity evidence, but before commit it may
+    // not drag the audible source coordinate. This directly covers the measured
+    // long-vowel failure where 3 repeated bad F0 frames produced 100-300 cent
+    // output excursions.
+    ModernPitchEngine::ScaleQuantizer largeInnovationQuantizer;
+    largeInnovationQuantizer.reset();
+    largeInnovationQuantizer.setScale(authorityChromatic.data(),
+                                       static_cast<int>(authorityChromatic.size()), 440.0);
+    ModernPitchEngine::CorrectionState largeInnovationState;
+    for (int hop = 0; hop < 12; ++hop)
+        engine->updateCorrectionState(largeInnovationState,
+                                      largeInnovationQuantizer,
+                                      latentC, explicitAuthorityParameters);
+    const double largeInnovationTarget = largeInnovationState.targetLog2;
+    const double largeInnovationTransport = largeInnovationState.transportPeriodHz;
+    ModernPitchEngine::PitchObservation greyLargeInnovation = greyD;
+    greyLargeInnovation.correctionFrequencyHz = static_cast<float>(
+        440.0 * std::exp2(240.0 / 1200.0));
+    for (int hop = 0; hop < 5; ++hop)
+        engine->updateCorrectionState(largeInnovationState,
+                                      largeInnovationQuantizer,
+                                      greyLargeInnovation,
+                                      explicitAuthorityParameters);
+    success &= check(std::abs(largeInnovationState.targetLog2
+                              - largeInnovationTarget) < 1.0e-12
+                     && std::abs(largeInnovationState.transportPeriodHz
+                                 - largeInnovationTransport) < 1.0e-12,
+                     "uncommitted_large_innovation_has_zero_transport_authority");
+
+    // DEGREE_RELATIVE_TRANSPORT_GATE_V1: the exact same 12-cent-per-hop source
+    // movement is local motion inside a 200-cent diatonic gap, but is already a
+    // cross-degree event in 75-EDO (~16 cents/degree). Geometry, not an absolute
+    // cents threshold, decides which path is allowed to refine transport.
+    std::array<double, 75> edo75Scale {};
+    for (int degree = 0; degree < 75; ++degree)
+        edo75Scale[static_cast<std::size_t>(degree)] = std::exp2(
+            static_cast<double>(degree) / 75.0);
+    const std::array<double, 7> diatonicScale {
+        1.0,
+        std::exp2(2.0 / 12.0),
+        std::exp2(4.0 / 12.0),
+        std::exp2(5.0 / 12.0),
+        std::exp2(7.0 / 12.0),
+        std::exp2(9.0 / 12.0),
+        std::exp2(11.0 / 12.0)
+    };
+    ModernPitchEngine::ScaleQuantizer edo75Quantizer;
+    ModernPitchEngine::ScaleQuantizer diatonicQuantizer;
+    edo75Quantizer.reset();
+    diatonicQuantizer.reset();
+    edo75Quantizer.setScale(edo75Scale.data(), static_cast<int>(edo75Scale.size()), 440.0);
+    diatonicQuantizer.setScale(diatonicScale.data(), static_cast<int>(diatonicScale.size()), 440.0);
+    ModernPitchEngine::CorrectionState edo75State;
+    ModernPitchEngine::CorrectionState diatonicState;
+    for (int hop = 0; hop < 12; ++hop)
+    {
+        engine->updateCorrectionState(edo75State, edo75Quantizer,
+                                      latentC, explicitAuthorityParameters);
+        engine->updateCorrectionState(diatonicState, diatonicQuantizer,
+                                      latentC, explicitAuthorityParameters);
+    }
+    const double edo75TransportBefore = edo75State.transportPeriodHz;
+    const double diatonicTransportBefore = diatonicState.transportPeriodHz;
+    auto twelveCentTrajectory = strongPitch(440.0f);
+    twelveCentTrajectory.audioPresent = true;
+    twelveCentTrajectory.correctionFrequencyHz = static_cast<float>(
+        440.0 * std::exp2(12.0 / 1200.0));
+    engine->updateCorrectionState(edo75State, edo75Quantizer,
+                                  twelveCentTrajectory, explicitAuthorityParameters);
+    engine->updateCorrectionState(diatonicState, diatonicQuantizer,
+                                  twelveCentTrajectory, explicitAuthorityParameters);
+    success &= check(std::abs(edo75State.transportPeriodHz - edo75TransportBefore) < 1.0e-12
+                     && diatonicState.transportPeriodHz > diatonicTransportBefore,
+                     "transport_gate_scales_with_actual_adjacent_degree_width");
+
+    // TARGET_REMAINS_DESTINATION_V1: Response changes only convergence speed.
+    // It may never change target identity or desired correction depth. Amount is
+    // the explicit depth control, and even when softened it remains inside the
+    // target-owned local cell rather than restoring dry authority.
+    ModernPitchEngine::Parameters fastAuthority = explicitAuthorityParameters;
+    ModernPitchEngine::Parameters slowAuthority = explicitAuthorityParameters;
+    fastAuthority.amount = 1.0f;
+    slowAuthority.amount = 1.0f;
+    fastAuthority.humanize = 0.0f;
+    slowAuthority.humanize = 0.0f;
+    fastAuthority.vibratoPreserve = 0.0f;
+    slowAuthority.vibratoPreserve = 0.0f;
+    fastAuthority.retuneTimeMs = 0.0f;
+    slowAuthority.retuneTimeMs = 250.0f;
+    ModernPitchEngine::ScaleQuantizer fastAuthorityQuantizer;
+    ModernPitchEngine::ScaleQuantizer slowAuthorityQuantizer;
+    fastAuthorityQuantizer.reset();
+    slowAuthorityQuantizer.reset();
+    fastAuthorityQuantizer.setScale(authorityChromatic.data(),
+                                     static_cast<int>(authorityChromatic.size()), 440.0);
+    slowAuthorityQuantizer.setScale(authorityChromatic.data(),
+                                     static_cast<int>(authorityChromatic.size()), 440.0);
+    ModernPitchEngine::CorrectionState fastAuthorityState;
+    ModernPitchEngine::CorrectionState slowAuthorityState;
+    for (int hop = 0; hop < 12; ++hop)
+    {
+        engine->updateCorrectionState(fastAuthorityState, fastAuthorityQuantizer,
+                                      latentC, fastAuthority);
+        engine->updateCorrectionState(slowAuthorityState, slowAuthorityQuantizer,
+                                      latentC, slowAuthority);
+    }
+    auto authorityMove = strongPitch(452.0f);
+    authorityMove.audioPresent = true;
+    authorityMove.correctionFrequencyHz = 452.0f;
+    engine->updateCorrectionState(fastAuthorityState, fastAuthorityQuantizer,
+                                  authorityMove, fastAuthority);
+    engine->updateCorrectionState(slowAuthorityState, slowAuthorityQuantizer,
+                                  authorityMove, slowAuthority);
+    success &= check(std::abs(fastAuthorityState.targetLog2
+                              - slowAuthorityState.targetLog2) < 1.0e-12
+                     && std::abs(fastAuthorityState.desiredCents
+                                 - slowAuthorityState.desiredCents) < 1.0e-9
+                     && slowAuthorityState.responseMs > fastAuthorityState.responseMs,
+                     "response_changes_time_not_target_authority");
+
+    ModernPitchEngine::Parameters softAmountAuthority = fastAuthority;
+    softAmountAuthority.amount = 0.0f;
+    ModernPitchEngine::ScaleQuantizer softAmountQuantizer;
+    softAmountQuantizer.reset();
+    softAmountQuantizer.setScale(authorityChromatic.data(),
+                                 static_cast<int>(authorityChromatic.size()), 440.0);
+    ModernPitchEngine::CorrectionState softAmountState;
+    for (int hop = 0; hop < 12; ++hop)
+        engine->updateCorrectionState(softAmountState, softAmountQuantizer,
+                                      latentC, softAmountAuthority);
+    // Test Amount on a genuinely local source movement. A single 47-cent
+    // jump is intentionally a large uncommitted innovation now, so it would
+    // test transport veto rather than Amount. About +20 cents remains inside
+    // the chromatic local-motion gate and therefore exposes only depth control.
+    auto softAmountMove = strongPitch(445.0f);
+    softAmountMove.audioPresent = true;
+    softAmountMove.correctionFrequencyHz = 445.0f;
+    engine->updateCorrectionState(softAmountState, softAmountQuantizer,
+                                  softAmountMove, softAmountAuthority);
+    const double softAmountTargetHz = std::exp2(softAmountState.targetLog2);
+    const double softAmountOutputHz = softAmountState.transportPeriodHz
+        * std::exp2(softAmountState.desiredCents / 1200.0);
+    const double softAmountResidual = std::abs(1200.0 * std::log2(
+        softAmountOutputHz / softAmountTargetHz));
+    success &= check(std::abs(softAmountState.targetLog2
+                              - fastAuthorityState.targetLog2) < 1.0e-12
+                     && std::abs(softAmountState.desiredCents) > 0.1
+                     && softAmountResidual < 34.1,
+                     "amount_softens_inside_target_cell_never_restores_dry_authority");
 
     ModernPitchEngine::CorrectionState zeroResponseTransition;
     zeroResponseTransition.targetValid = true;
