@@ -1,0 +1,97 @@
+name: Materialize Terminal Tail Scale Anchor V1
+
+on:
+  push:
+    branches: [terminal-tail-scale-anchor-v1]
+    paths:
+      - 'Tests/MaterializeTerminalTailScaleAnchorV1.py'
+      - '.github/workflows/materialize-terminal-tail-scale-anchor-v1.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  validate-and-materialize:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: terminal-tail-scale-anchor-v1
+          fetch-depth: 0
+
+      - name: Guard detector renderer and unrelated code
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "7eae364fc8974c10980c21fea739ed66b69b0e56"
+          test "$(git hash-object Source/Tempo.cpp)" = "53558aa5dd3d573e50f5fdd39384d06fb0217191"
+          python3 - <<'PY'
+          import subprocess
+          from pathlib import Path
+          base = subprocess.check_output(
+              ['git','show','76e5acd1893f3e3c44fc01830a3dda5fe4e78b47:Source/ModernPitchEngine.cpp'],
+              text=True)
+          current = Path('Source/ModernPitchEngine.cpp').read_text()
+          marker = '// ModernPitchEngine control and processing'
+          assert base.split(marker, 1)[0] == current.split(marker, 1)[0], 'detector/tracker changed before materialization'
+          PY
+
+      - name: Materialize terminal tail rule
+        run: python3 Tests/MaterializeTerminalTailScaleAnchorV1.py
+
+      - name: Verify narrow semantic contract
+        run: |
+          set -euo pipefail
+          git diff --check
+          grep -Fq 'TERMINAL_TAIL_KEEPS_OWNED_DEGREE_V1' Source/ModernPitchEngine.cpp
+          grep -Fq 'falling_terminal_tail_stays_on_previous_degree_and_remains_corrected' Tests/SupervisorContinuityTest.cpp
+          grep -Fq 'rising_terminal_tail_stays_on_previous_degree_and_remains_corrected' Tests/SupervisorContinuityTest.cpp
+          grep -Fq 'strong_new_note_after_terminal_tail_can_commit_normally' Tests/SupervisorContinuityTest.cpp
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "7eae364fc8974c10980c21fea739ed66b69b0e56"
+          test "$(git hash-object Source/Tempo.cpp)" = "53558aa5dd3d573e50f5fdd39384d06fb0217191"
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          base = subprocess.check_output(
+              ['git','show','76e5acd1893f3e3c44fc01830a3dda5fe4e78b47:Source/ModernPitchEngine.cpp'],
+              text=True)
+          after = Path('Source/ModernPitchEngine.cpp').read_text()
+          marker = '// ModernPitchEngine control and processing'
+          assert base.split(marker, 1)[0] == after.split(marker, 1)[0], 'detector/tracker changed: forbidden'
+          changed = set(subprocess.check_output(['git','diff','--name-only'], text=True).splitlines())
+          allowed = {'Source/ModernPitchEngine.cpp', 'Tests/SupervisorContinuityTest.cpp'}
+          assert changed <= allowed, f'unexpected materialized files: {sorted(changed - allowed)}'
+          PY
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libjack-jackd2-dev ladspa-sdk libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev
+
+      - name: Configure focused tests
+        run: cmake -S . -B build-terminal-tail -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Build focused tests
+        run: cmake --build build-terminal-tail --config Release --target CleanModernPitchEngineTest SupervisorContinuityTest SingleWetSpectralRendererTest GuiAudioControlContractTest GuiAudibilityTest --parallel 2
+
+      - name: Run focused tests
+        run: |
+          set -euo pipefail
+          ./build-terminal-tail/clean-engine-tests/CleanModernPitchEngineTest
+          ./build-terminal-tail/clean-engine-tests/SupervisorContinuityTest
+          ./build-terminal-tail/clean-engine-tests/SingleWetSpectralRendererTest
+          ./build-terminal-tail/clean-engine-tests/GuiAudioControlContractTest
+          ./build-terminal-tail/clean-engine-tests/GuiAudibilityTest
+
+      - name: Build VST3
+        run: cmake --build build-terminal-tail --config Release --target Neumaton_VST3 --parallel 2
+
+      - name: Commit validated terminal tail rule
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm -f Tests/MaterializeTerminalTailScaleAnchorV1.py
+          rm -f .github/workflows/materialize-terminal-tail-scale-anchor-v1.yml
+          git add -A Source/ModernPitchEngine.cpp Tests/SupervisorContinuityTest.cpp Tests/MaterializeTerminalTailScaleAnchorV1.py .github/workflows/materialize-terminal-tail-scale-anchor-v1.yml
+          git commit -m 'Anchor terminal tails to owned scale degree [skip ci]'
+          git push origin HEAD:terminal-tail-scale-anchor-v1
