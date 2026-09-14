@@ -1,0 +1,102 @@
+name: Materialize Local Degree Transport Authority V1
+
+on:
+  push:
+    branches: [local-degree-transport-authority-v1]
+    paths:
+      - 'Tests/MaterializeLocalDegreeTransportAuthorityV1.py'
+      - '.github/workflows/materialize-local-degree-transport-authority-v1.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  validate-and-materialize:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: local-degree-transport-authority-v1
+          fetch-depth: 0
+
+      - name: Guard detector renderer and unrelated code
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "7eae364fc8974c10980c21fea739ed66b69b0e56"
+          test "$(git hash-object Source/Tempo.cpp)" = "53558aa5dd3d573e50f5fdd39384d06fb0217191"
+          python3 - <<'PY'
+          import subprocess
+          from pathlib import Path
+          base = subprocess.check_output(
+              ['git','show','95b3818d07fb9601ade8a6eadab34b1ab2f7488f:Source/ModernPitchEngine.cpp'],
+              text=True)
+          current = Path('Source/ModernPitchEngine.cpp').read_text()
+          marker = '// ModernPitchEngine control and processing'
+          assert base.split(marker, 1)[0] == current.split(marker, 1)[0], 'detector/tracker changed before materialization'
+          PY
+
+      - name: Materialize narrow transport fix
+        run: python3 Tests/MaterializeLocalDegreeTransportAuthorityV1.py
+
+      - name: Verify narrow semantic contract
+        run: |
+          set -euo pipefail
+          git diff --check
+          grep -Fq 'LOCAL_DEGREE_GEOMETRY_V1' Source/ModernPitchEngine.cpp
+          grep -Fq 'DEGREE_RELATIVE_TRANSPORT_GATE_V1' Source/ModernPitchEngine.cpp
+          grep -Fq 'UNCOMMITTED_LARGE_INNOVATION_ZERO_TRANSPORT_AUTHORITY_V1' Source/ModernPitchEngine.cpp
+          grep -Fq 'TARGET_LOCAL_SOFTNESS_GEOMETRY_V1' Source/ModernPitchEngine.cpp
+          grep -Fq 'uncommitted_large_innovation_has_zero_transport_authority' Tests/SupervisorContinuityTest.cpp
+          grep -Fq 'transport_gate_scales_with_actual_adjacent_degree_width' Tests/SupervisorContinuityTest.cpp
+          grep -Fq 'response_changes_time_not_target_authority' Tests/SupervisorContinuityTest.cpp
+          grep -Fq 'amount_softens_inside_target_cell_never_restores_dry_authority' Tests/SupervisorContinuityTest.cpp
+          ! grep -Fq 'maximumCatchupStep' Source/ModernPitchEngine.cpp
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "7eae364fc8974c10980c21fea739ed66b69b0e56"
+          test "$(git hash-object Source/Tempo.cpp)" = "53558aa5dd3d573e50f5fdd39384d06fb0217191"
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          base = subprocess.check_output(
+              ['git','show','95b3818d07fb9601ade8a6eadab34b1ab2f7488f:Source/ModernPitchEngine.cpp'],
+              text=True)
+          after = Path('Source/ModernPitchEngine.cpp').read_text()
+          marker = '// ModernPitchEngine control and processing'
+          assert base.split(marker, 1)[0] == after.split(marker, 1)[0], 'detector/tracker changed: forbidden'
+          changed = set(subprocess.check_output(['git','diff','--name-only'], text=True).splitlines())
+          allowed = {'Source/ModernPitchEngine.cpp', 'Tests/SupervisorContinuityTest.cpp'}
+          assert changed <= allowed, f'unexpected materialized files: {sorted(changed - allowed)}'
+          PY
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libjack-jackd2-dev ladspa-sdk libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev
+
+      - name: Configure focused tests
+        run: cmake -S . -B build-local-degree-transport -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Build focused tests
+        run: cmake --build build-local-degree-transport --config Release --target CleanModernPitchEngineTest SupervisorContinuityTest SingleWetSpectralRendererTest GuiAudioControlContractTest GuiAudibilityTest --parallel 2
+
+      - name: Run focused tests
+        run: |
+          set -euo pipefail
+          ./build-local-degree-transport/clean-engine-tests/CleanModernPitchEngineTest
+          ./build-local-degree-transport/clean-engine-tests/SupervisorContinuityTest
+          ./build-local-degree-transport/clean-engine-tests/SingleWetSpectralRendererTest
+          ./build-local-degree-transport/clean-engine-tests/GuiAudioControlContractTest
+          ./build-local-degree-transport/clean-engine-tests/GuiAudibilityTest
+
+      - name: Build VST3
+        run: cmake --build build-local-degree-transport --config Release --target Neumaton_VST3 --parallel 2
+
+      - name: Commit validated local-degree transport fix
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm -f Tests/MaterializeLocalDegreeTransportAuthorityV1.py
+          rm -f .github/workflows/materialize-local-degree-transport-authority-v1.yml
+          git add -A Source/ModernPitchEngine.cpp Tests/SupervisorContinuityTest.cpp Tests/MaterializeLocalDegreeTransportAuthorityV1.py .github/workflows/materialize-local-degree-transport-authority-v1.yml
+          git commit -m 'Make transport authority local-degree owned [skip ci]'
+          git push origin HEAD:local-degree-transport-authority-v1
