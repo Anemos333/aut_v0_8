@@ -41,6 +41,7 @@ jobs:
           python3 Tests/ProbeRapidF0DetectorV1.py
           python3 Tests/DiagnoseVoiceAwareFailuresV1.py
           python3 Tests/RefineVoiceInputMeasurementV2.py
+          python3 Tests/RefineSolitaryVoiceStructureV3.py
           python3 Tests/RefineLowRateVoiceValidityV1.py
           python3 Tests/DiagnoseFormantFalseValidsV2.py
           python3 Tests/RefineDetectorObservationSemanticsV1.py
@@ -111,6 +112,7 @@ jobs:
               'GLOTTAL_EVIDENCE_FUSION_V2',
               'SINGLE_PATH_RESONANCE_IS_NOT_VOICE_V1',
               'PROVISIONAL_PATH_CLEANLINESS_V1',
+              'SOLITARY_VOICE_STRUCTURE_V3',
               'LOW_RATE_RESONANCE_VETO_V1',
               'OBSERVATION_MEMORY_SEPARATION_V1',
               'ZERO_INPUT_CLEARS_OBSERVER_NOT_MUSIC_V1',
