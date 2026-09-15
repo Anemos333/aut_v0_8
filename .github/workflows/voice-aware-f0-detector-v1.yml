@@ -42,6 +42,7 @@ jobs:
           python3 Tests/DiagnoseVoiceAwareFailuresV1.py
           python3 Tests/RefineVoiceInputMeasurementV2.py
           python3 Tests/RefineDetectorObservationSemanticsV1.py
+          python3 Tests/UpdateObservationMemoryRegressionsV1.py
 
       - name: Verify narrow detector-only contract
         shell: bash
@@ -71,9 +72,6 @@ jobs:
           bp = base_cpp.index(process_marker)
           tail = cpp.index(tail_marker)
           btail = base_cpp.index(tail_marker)
-          # Quantizer, updateCorrectionState and correction controller remain
-          # byte-identical. Transition may only send a detector wake control from
-          # process(); all code after process() is frozen again.
           assert cpp[q:p] == base_cpp[bq:bp], 'quantizer/supervisor/controller changed'
           assert cpp[tail:] == base_cpp[btail:], 'post-process engine code changed'
 
@@ -110,6 +108,7 @@ jobs:
               'SUBFRAME_GLOTTAL_STABILITY_V1',
               'GLOTTAL_EVIDENCE_FUSION_V2',
               'SINGLE_PATH_RESONANCE_IS_NOT_VOICE_V1',
+              'PROVISIONAL_PATH_CLEANLINESS_V1',
               'OBSERVATION_MEMORY_SEPARATION_V1',
               'ZERO_INPUT_CLEARS_OBSERVER_NOT_MUSIC_V1',
               'TRANSITION_WAKES_DETECTOR_NOT_OUTPUT_V1'
