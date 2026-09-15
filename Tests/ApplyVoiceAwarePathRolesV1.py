@@ -44,5 +44,21 @@ if source.count(old_test_anchor) != 1:
     raise RuntimeError('path-role wrapper could not find regression anchor declaration')
 source = source.replace(old_test_anchor, new_test_anchor, 1)
 
+# QUARTER_PATH_UPPER_COORDINATE_ROLLOFF_V1
+# The boundary-bias diagnostic shows that around a true 456 Hz the half-rate
+# path is essentially unbiased while the quarter-rate path is about +20 cents
+# high. Quarter remains valuable for low/mid F0 and for the ~366 Hz 1/3-family
+# evidence used by the direct-high resolver, so retain full pitch authority
+# through 390 Hz and roll only its upper coordinate ownership down by 450 Hz.
+# This changes detector coordinate weighting only: cleanliness authority,
+# validity, observation cadence and all musical/audio authority stay unchanged.
+old_quarter_authority = "        case 2: return bandWeight(frequencyHz,  28.0f,  42.0f,  360.0f,  520.0f);"
+new_quarter_authority = """        // QUARTER_PATH_UPPER_COORDINATE_ROLLOFF_V1
+        case 2: return bandWeight(frequencyHz,  28.0f,  42.0f,  390.0f,  450.0f);"""
+if source.count(old_quarter_authority) != 1:
+    raise RuntimeError(
+        f'quarter pitch-authority anchor: expected one, found {source.count(old_quarter_authority)}')
+source = source.replace(old_quarter_authority, new_quarter_authority, 1)
+
 namespace = {'__file__': str(script_path), '__name__': '__main__'}
 exec(compile(source, str(script_path), 'exec'), namespace)
