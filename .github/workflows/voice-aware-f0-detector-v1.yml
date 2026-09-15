@@ -47,7 +47,7 @@ jobs:
           python3 Tests/DiagnoseFormantFalseValidsV2.py
           python3 Tests/RefineDetectorObservationSemanticsV1.py
           python3 Tests/UpdateObservationMemoryRegressionsV1.py
-          python3 Tests/RefineScaleOwnedHoldSemanticsV1.py
+          python3 Tests/RefineScaleOwnedHoldSemanticsV2.py
 
       - name: Verify detector and scale-owned Hold contract
         shell: bash
@@ -77,7 +77,6 @@ jobs:
           btail = base_cpp.index(tail_marker)
           assert cpp[tail:] == base_cpp[btail:], 'post-process engine code changed'
 
-          # process() may differ from main only by detector-wake wiring.
           process = cpp[p:tail]
           base_process = base_cpp[bp:btail]
           allowed = [
@@ -122,7 +121,8 @@ jobs:
               'SCALE_OWNED_HOLD_SEMANTICS_V1',
               'HOLD_IS_CENT_RADIUS_V2',
               'HOLD_IS_LITERAL_USER_CENTS_V2',
-              'QUALIFIED_NOTE_BYPASSES_HOLD_V2'
+              'QUALIFIED_NOTE_BYPASSES_HOLD_V2',
+              'HOLD_DOES_NOT_CREATE_NOTE_IDENTITY_V2'
           ]:
               assert marker in cpp, marker
           assert 'PATH_ROLE_SPLIT_V1' in cpp or 'PATH_ROLE_SPLIT_V1' in hpp
