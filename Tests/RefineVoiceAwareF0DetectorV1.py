@@ -278,6 +278,55 @@ test = replace_one(test,
                      "low_snr_vocal_family_isolated_from_colored_noise");
 ''', 'voice metrics')
 
+# Scale-boundary accuracy: detector bias must not erase the audible meaning of
+# Hold/hysteresis. Measure the tracker directly so a failure cannot be blamed on
+# quantizer logic, which is frozen.
+test = replace_one(test,
+'''    // OBSERVATION_MEMORY_IS_FALSIFIABLE_V1: emulate a stale wrong register
+''',
+'''    const auto measureSteadyDetectorHz = [](float sourceHz)
+    {
+        auto tracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+        tracker->prepare(48000.0);
+        tracker->setRange(70.0f, 900.0f);
+        double sumHz = 0.0;
+        int count = 0;
+        for (int sample = 0; sample < 24000; ++sample)
+        {
+            const double phase = 2.0 * 3.14159265358979323846
+                * static_cast<double>(sourceHz) * static_cast<double>(sample) / 48000.0;
+            ModernPitchEngine::PitchObservation observed;
+            if (tracker->processSample(0.08f * static_cast<float>(std::sin(phase)), observed)
+                && sample > 8000 && observed.valid)
+            {
+                sumHz += observed.correctionFrequencyHz;
+                ++count;
+            }
+        }
+        return std::pair<float, int> {
+            count > 0 ? static_cast<float>(sumHz / static_cast<double>(count)) : 0.0f,
+            count
+        };
+    };
+    const auto [boundary450Hz, boundary450Count] = measureSteadyDetectorHz(450.0f);
+    const auto [boundary456Hz, boundary456Count] = measureSteadyDetectorHz(456.0f);
+    const float boundary450Cents = boundary450Hz > 0.0f
+        ? 1200.0f * std::log2(boundary450Hz / 450.0f) : 9999.0f;
+    const float boundary456Cents = boundary456Hz > 0.0f
+        ? 1200.0f * std::log2(boundary456Hz / 456.0f) : 9999.0f;
+    std::cerr << "voice_aware_boundary_450_hz=" << boundary450Hz
+              << " cents=" << boundary450Cents
+              << " decisions=" << boundary450Count
+              << " boundary_456_hz=" << boundary456Hz
+              << " cents=" << boundary456Cents
+              << " decisions=" << boundary456Count << '\\n';
+    success &= check(boundary450Count > 20 && std::abs(boundary450Cents) < 18.0f
+                     && boundary456Count > 20 && std::abs(boundary456Cents) < 18.0f,
+                     "voice_detector_preserves_scale_boundary_accuracy");
+
+    // OBSERVATION_MEMORY_IS_FALSIFIABLE_V1: emulate a stale wrong register
+''', 'boundary detector diagnostics')
+
 cpp_path.write_text(cpp)
 test_path.write_text(test)
 print('VOICE_AWARE_F0_DETECTOR_V1 residual harmonic contrast refined')
