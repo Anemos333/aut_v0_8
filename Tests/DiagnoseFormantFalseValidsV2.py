@@ -21,43 +21,7 @@ one(
             if (observed.measurementAvailable)
                 ++formantNoiseMeasurements;
             if (observed.valid)
-            {
                 ++formantNoiseValid;
-                const auto dump = [](const auto& slot)
-                {
-                    const auto& c = slot.candidate;
-                    return std::array<float, 7> {
-                        c.frequencyHz,
-                        c.confidence,
-                        c.periodicity,
-                        c.harmonicFamily,
-                        c.tonalCleanliness,
-                        static_cast<float>(slot.ageInHops),
-                        c.valid ? 1.0f : 0.0f
-                    };
-                };
-                const auto full = dump(formantNoiseTracker->fullRateCandidate_);
-                const auto half = dump(formantNoiseTracker->halfRateCandidate_);
-                const auto quarter = dump(formantNoiseTracker->quarterRateCandidate_);
-                const auto eighth = dump(formantNoiseTracker->eighthRateCandidate_);
-                std::cerr << "FORMANT_FALSE_VALID sample=" << sample
-                          << " out_hz=" << observed.correctionFrequencyHz
-                          << " support=" << observed.detectorSupport
-                          << " consensus=" << observed.consensus
-                          << " confidence=" << observed.confidence
-                          << " periodicity=" << observed.periodicity
-                          << " tracked=" << formantNoiseTracker->trackedPitchHz_
-                          << " invalid_hops=" << formantNoiseTracker->invalidHopCount_
-                          << " full=" << full[0] << ',' << full[1] << ',' << full[2]
-                          << ',' << full[3] << ',' << full[4] << ',' << full[5] << ',' << full[6]
-                          << " half=" << half[0] << ',' << half[1] << ',' << half[2]
-                          << ',' << half[3] << ',' << half[4] << ',' << half[5] << ',' << half[6]
-                          << " quarter=" << quarter[0] << ',' << quarter[1] << ',' << quarter[2]
-                          << ',' << quarter[3] << ',' << quarter[4] << ',' << quarter[5] << ',' << quarter[6]
-                          << " eighth=" << eighth[0] << ',' << eighth[1] << ',' << eighth[2]
-                          << ',' << eighth[3] << ',' << eighth[4] << ',' << eighth[5] << ',' << eighth[6]
-                          << '\\n';
-            }
         }
 ''',
 '''        if (formantNoiseTracker->processSample(shaped, observed))
