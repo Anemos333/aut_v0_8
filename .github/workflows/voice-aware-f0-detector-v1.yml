@@ -39,6 +39,7 @@ jobs:
           python3 Tests/ApplyVoiceAwarePathRolesV1.py
           python3 Tests/RefineVoiceAwareSourceGeometryV1.py
           python3 Tests/ProbeRapidF0DetectorV1.py
+          python3 Tests/DiagnoseVoiceAwareFailuresV1.py
 
       - name: Verify narrow detector-only contract
         shell: bash
