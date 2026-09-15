@@ -106,4 +106,11 @@ one(
 'formant telemetry')
 
 p.write_text(t)
+
+# Keep the boundary-bias probe isolated in its own diagnostic materializer while
+# reusing this already-scheduled workflow stage. It modifies tests only.
+boundary_script = Path(__file__).resolve().parent / 'DiagnoseBoundaryPathBiasV1.py'
+namespace = {'__file__': str(boundary_script), '__name__': '__main__'}
+exec(compile(boundary_script.read_text(), str(boundary_script), 'exec'), namespace)
+
 print('VOICE_AWARE_FAILURE_DIAGNOSTICS_V1 materialized')
