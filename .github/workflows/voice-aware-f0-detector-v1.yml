@@ -37,6 +37,7 @@ jobs:
           python3 Tests/MaterializeVoiceAwareF0DetectorV1.py
           python3 Tests/RefineVoiceAwareF0DetectorV1.py
           python3 Tests/ApplyVoiceAwarePathRolesV1.py
+          python3 Tests/RefineVoiceAwareSourceGeometryV1.py
           python3 Tests/ProbeRapidF0DetectorV1.py
 
       - name: Verify narrow detector-only contract
@@ -62,11 +63,16 @@ jobs:
           assert hpp_marker in hpp and hpp_marker in base_hpp
           assert hpp[hpp.index(hpp_marker):] == base_hpp[base_hpp.index(hpp_marker):], 'quantizer/header suffix changed'
 
-          assert 'VOICE_AWARE_F0_FRONTEND_V1' in cpp
-          assert 'RESIDUAL_HARMONIC_CONTRAST_V1' in cpp
-          assert 'OBSERVATION_MEMORY_IS_FALSIFIABLE_V1' in cpp
+          for marker in [
+              'VOICE_AWARE_F0_FRONTEND_V1',
+              'RESIDUAL_HARMONIC_CONTRAST_V1',
+              'OBSERVATION_MEMORY_IS_FALSIFIABLE_V1',
+              'STALE_PATH_VERIFIES_NOT_STEERS_V1',
+              'CLEAN_RESIDUAL_DISCOVERS_SOURCE_GEOMETRY_REFINES_V1',
+              'SUBFRAME_GLOTTAL_STABILITY_V1'
+          ]:
+              assert marker in cpp, marker
           assert 'PATH_ROLE_SPLIT_V1' in cpp or 'PATH_ROLE_SPLIT_V1' in hpp
-          assert 'STALE_PATH_VERIFIES_NOT_STEERS_V1' in cpp
           assert 'pathPitchAuthority' in cpp
           assert 'pathCleanlinessAuthority' in cpp
           assert 'tonalCleanliness' in cpp
