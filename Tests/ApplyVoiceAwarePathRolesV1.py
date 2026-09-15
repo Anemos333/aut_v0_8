@@ -34,5 +34,15 @@ if source.count(anchor) != 1:
     raise RuntimeError('path-role wrapper could not find final sweep anchor')
 source = source.replace(anchor, insert, 1)
 
+# The rapid-F0 probe is applied after the path-role refinement. Insert these
+# regressions at the stable stale-memory anchor that already exists after the
+# base/refine materializers; ProbeRapidF0DetectorV1 will then insert its own
+# rapid tests immediately before the same anchor.
+old_test_anchor = "anchor = '''    // RAPID_F0_OBSERVATION_MUST_PRECEDE_HOLD_V1\\n'''"
+new_test_anchor = "anchor = '''    // OBSERVATION_MEMORY_IS_FALSIFIABLE_V1: emulate a stale wrong register\\n'''"
+if source.count(old_test_anchor) != 1:
+    raise RuntimeError('path-role wrapper could not find regression anchor declaration')
+source = source.replace(old_test_anchor, new_test_anchor, 1)
+
 namespace = {'__file__': str(script_path), '__name__': '__main__'}
 exec(compile(source, str(script_path), 'exec'), namespace)
