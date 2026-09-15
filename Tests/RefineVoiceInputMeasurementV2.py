@@ -85,6 +85,8 @@ cpp = one(cpp,
 ''',
 '''            const float candidateCleanliness = candidate.tonalCleanliness >= 0.0f
                 ? clamp01(candidate.tonalCleanliness) : 1.0f;
+            // PROVISIONAL_PATH_CLEANLINESS_V1: low-rate geometry alone cannot
+            // publish a vocal coordinate when source cleanliness is weak.
             const float provisionalPathFloor = candidate.pathIndex <= 0 ? 0.22f
                 : (candidate.pathIndex == 1 ? 0.24f
                    : (candidate.pathIndex == 2 ? 0.46f : 0.54f));
