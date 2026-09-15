@@ -1,0 +1,116 @@
+name: Voice-aware F0 detector v1
+
+on:
+  push:
+    branches:
+      - voice-aware-f0-detector-v1
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: voice-aware-f0-detector-v1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-and-materialize:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Guard definitive architecture baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "a68122181f9fd629ca18ecb4e17ca82ec06e54d3"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+          git diff --exit-code origin/main -- Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h Source/LivePitchProcessor.h Source/VoiceEvidenceAnalyzer.h
+
+      - name: Materialize voice-aware detector
+        run: python3 Tests/MaterializeVoiceAwareF0DetectorV1.py
+
+      - name: Verify narrow detector-only contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import subprocess
+          from pathlib import Path
+
+          def from_main(path):
+              return subprocess.check_output(['git','show',f'origin/main:{path}'], text=True)
+
+          cpp = Path('Source/ModernPitchEngine.cpp').read_text()
+          base_cpp = from_main('Source/ModernPitchEngine.cpp')
+          cpp_marker = '//==============================================================================\n// ScaleQuantizer\n'
+          assert cpp_marker in cpp and cpp_marker in base_cpp
+          assert cpp[cpp.index(cpp_marker):] == base_cpp[base_cpp.index(cpp_marker):], 'quantizer/supervisor suffix changed'
+
+          hpp = Path('Source/ModernPitchEngine.h').read_text()
+          base_hpp = from_main('Source/ModernPitchEngine.h')
+          hpp_marker = '    class ScaleQuantizer\n'
+          assert hpp_marker in hpp and hpp_marker in base_hpp
+          assert hpp[hpp.index(hpp_marker):] == base_hpp[base_hpp.index(hpp_marker):], 'quantizer/header suffix changed'
+
+          assert 'VOICE_AWARE_F0_FRONTEND_V1' in cpp
+          assert 'OBSERVATION_MEMORY_IS_FALSIFIABLE_V1' in cpp
+          assert 'presenceMode_\n        ? 0.0f' not in cpp
+          assert '0.5f * (normalisedCorrelation + 1.0f)' not in cpp
+          PY
+          changed="$(git diff --name-only | sort)"
+          expected=$'Source/ModernPitchEngine.cpp\nSource/ModernPitchEngine.h\nTests/SupervisorContinuityTest.cpp'
+          test "$changed" = "$expected"
+          git diff --exit-code -- Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h Source/LivePitchProcessor.h Source/VoiceEvidenceAnalyzer.h
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev
+
+      - name: Configure focused invariant build
+        run: cmake -S . -B build-voice-aware -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Build focused tests
+        run: >-
+          cmake --build build-voice-aware --config Release --parallel 2
+          --target SupervisorContinuityTest SingleWetSpectralRendererTest
+          VoiceEvidenceAnalyzerTest CleanModernPitchEngineTest
+          GuiAudioControlContractTest
+
+      - name: Run focused tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./build-voice-aware/clean-engine-tests/SupervisorContinuityTest
+          ./build-voice-aware/clean-engine-tests/SingleWetSpectralRendererTest
+          ./build-voice-aware/clean-engine-tests/VoiceEvidenceAnalyzerTest
+          ./build-voice-aware/clean-engine-tests/CleanModernPitchEngineTest
+          ./build-voice-aware/clean-engine-tests/GuiAudioControlContractTest
+
+      - name: Build VST3
+        run: cmake --build build-voice-aware --config Release --target Neumaton_VST3 --parallel 2
+
+      - name: Commit validated detector implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Source/ModernPitchEngine.cpp Source/ModernPitchEngine.h Tests/SupervisorContinuityTest.cpp
+          if git diff --cached --quiet; then
+            echo 'No materialized changes to commit.'
+            exit 0
+          fi
+          git commit -m 'Make F0 detector voice-aware and memory-falsifiable [skip ci]'
+          git push origin HEAD:voice-aware-f0-detector-v1
