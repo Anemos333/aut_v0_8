@@ -54,16 +54,16 @@ one(
             }
         }
     }
-    const auto dumpSlot = [](const auto& slot)
+    const auto staleDumpSlot = [](const auto& slot)
     {
         const auto& c = slot.candidate;
         return std::array<float, 5> { c.frequencyHz, c.confidence, c.periodicity,
                                      c.harmonicFamily, c.tonalCleanliness };
     };
-    const auto staleFull = dumpSlot(staleAnchorTracker->fullRateCandidate_);
-    const auto staleHalf = dumpSlot(staleAnchorTracker->halfRateCandidate_);
-    const auto staleQuarter = dumpSlot(staleAnchorTracker->quarterRateCandidate_);
-    const auto staleEighth = dumpSlot(staleAnchorTracker->eighthRateCandidate_);
+    const auto staleFull = staleDumpSlot(staleAnchorTracker->fullRateCandidate_);
+    const auto staleHalf = staleDumpSlot(staleAnchorTracker->halfRateCandidate_);
+    const auto staleQuarter = staleDumpSlot(staleAnchorTracker->quarterRateCandidate_);
+    const auto staleEighth = staleDumpSlot(staleAnchorTracker->eighthRateCandidate_);
     std::cerr << "stale_recovery_at=" << recoveredAtSample
               << " near110=" << staleNear110
               << " near220=" << staleNear220
@@ -85,10 +85,16 @@ one(
 '''    std::cerr << "voice_aware_formant_noise_valid=" << formantNoiseValid
               << " provisional=" << formantNoiseMeasurements << '\\n';
 ''',
-'''    const auto formantFull = dumpSlot(formantNoiseTracker->fullRateCandidate_);
-    const auto formantHalf = dumpSlot(formantNoiseTracker->halfRateCandidate_);
-    const auto formantQuarter = dumpSlot(formantNoiseTracker->quarterRateCandidate_);
-    const auto formantEighth = dumpSlot(formantNoiseTracker->eighthRateCandidate_);
+'''    const auto formantDumpSlot = [](const auto& slot)
+    {
+        const auto& c = slot.candidate;
+        return std::array<float, 5> { c.frequencyHz, c.confidence, c.periodicity,
+                                     c.harmonicFamily, c.tonalCleanliness };
+    };
+    const auto formantFull = formantDumpSlot(formantNoiseTracker->fullRateCandidate_);
+    const auto formantHalf = formantDumpSlot(formantNoiseTracker->halfRateCandidate_);
+    const auto formantQuarter = formantDumpSlot(formantNoiseTracker->quarterRateCandidate_);
+    const auto formantEighth = formantDumpSlot(formantNoiseTracker->eighthRateCandidate_);
     std::cerr << "voice_aware_formant_noise_valid=" << formantNoiseValid
               << " provisional=" << formantNoiseMeasurements
               << " full=" << formantFull[0] << ',' << formantFull[3] << ',' << formantFull[4]
