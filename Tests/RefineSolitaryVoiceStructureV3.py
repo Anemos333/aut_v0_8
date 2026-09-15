@@ -62,17 +62,23 @@ cpp = one(cpp,
 # but it is not a plausible physical F0 and must not escape as measurementAvailable.
 # This is stricter semantics, not a confidence threshold: a path-valid candidate
 # can still be provisional when consensus/decoder evidence is insufficient.
-cpp = one(cpp,
-'''            if (slot.ageInHops > maximumAge
-                || !std::isfinite(candidate.frequencyHz)
-                || candidate.frequencyHz <= 0.0f)
-''',
-'''            if (slot.ageInHops > maximumAge
-                || !candidate.valid
-                || !std::isfinite(candidate.frequencyHz)
-                || candidate.frequencyHz <= 0.0f)
-''',
-'path-invalid provisional veto')
+provisional_start = cpp.find('    const auto chooseProvisionalMeasurement = [this]() noexcept\n')
+provisional_end = cpp.find('    const PitchCandidate provisionalMeasurement = chooseProvisionalMeasurement();\n',
+                           provisional_start)
+if provisional_start < 0 or provisional_end < 0:
+    raise RuntimeError('path-invalid provisional veto: provisional block not found')
+provisional_block = cpp[provisional_start:provisional_end]
+provisional_candidate_anchor = '            const auto& candidate = slot.candidate;\n'
+if provisional_block.count(provisional_candidate_anchor) != 1:
+    raise RuntimeError('path-invalid provisional veto: candidate anchor is not unique')
+provisional_block = provisional_block.replace(
+    provisional_candidate_anchor,
+    provisional_candidate_anchor
+    + '            // PATH_REJECTED_CANDIDATE_IS_NOT_PROVISIONAL_V1\n'
+    + '            if (!candidate.valid)\n'
+    + '                return;\n',
+    1)
+cpp = cpp[:provisional_start] + provisional_block + cpp[provisional_end:]
 
 # DIRECT_HIGH_PATH_OWNS_OCTAVE_CONFLICT_V1
 # Above the half-rate direct-F0 ceiling, a fresh qualified full-rate coordinate
