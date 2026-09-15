@@ -42,6 +42,7 @@ jobs:
           python3 Tests/DiagnoseVoiceAwareFailuresV1.py
           python3 Tests/RefineVoiceInputMeasurementV2.py
           python3 Tests/RefineLowRateVoiceValidityV1.py
+          python3 Tests/DiagnoseFormantFalseValidsV2.py
           python3 Tests/RefineDetectorObservationSemanticsV1.py
           python3 Tests/UpdateObservationMemoryRegressionsV1.py
 
