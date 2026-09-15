@@ -60,29 +60,5 @@ if source.count(old_quarter_authority) != 1:
         f'quarter pitch-authority anchor: expected one, found {source.count(old_quarter_authority)}')
 source = source.replace(old_quarter_authority, new_quarter_authority, 1)
 
-# HALF_PRIMARY_NORMAL_VOICE_COORDINATE_V1
-# After the quarter rolloff, every remaining 456-Hz output excursion above the
-# musical Hold boundary tracks the full-rate path almost one-for-one, while the
-# half-rate path stays within -0.15 cent on average and never crosses the
-# boundary. The original role contract already names half-rate as the primary
-# normal singing-F0 path. Make that hierarchy explicit for coordinate steering:
-# full-rate retains broadband/cleanliness evidence, but contributes only 35% of
-# normal-band coordinate authority, smoothly regaining full ownership from
-# 720 to 900 Hz and remaining fully authoritative for the >900-Hz direct-F0 case.
-old_full_authority = "        case 0: return bandWeight(frequencyHz, 135.0f, 185.0f, 1250.0f, 2400.0f);"
-new_full_authority = """        case 0:
-        {
-            // HALF_PRIMARY_NORMAL_VOICE_COORDINATE_V1
-            const float broadbandAuthority = bandWeight(
-                frequencyHz, 135.0f, 185.0f, 1250.0f, 2400.0f);
-            const float normalVoiceDeference = 0.35f
-                + 0.65f * smoothStep(720.0f, 900.0f, frequencyHz);
-            return broadbandAuthority * normalVoiceDeference;
-        }"""
-if source.count(old_full_authority) != 1:
-    raise RuntimeError(
-        f'full normal-voice authority anchor: expected one, found {source.count(old_full_authority)}')
-source = source.replace(old_full_authority, new_full_authority, 1)
-
 namespace = {'__file__': str(script_path), '__name__': '__main__'}
 exec(compile(source, str(script_path), 'exec'), namespace)
