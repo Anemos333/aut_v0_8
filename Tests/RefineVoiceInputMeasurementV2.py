@@ -70,5 +70,32 @@ cpp = one(cpp,
 ''',
 'consensus single-resonance veto')
 
+# PROVISIONAL_PATH_CLEANLINESS_V1
+# Low-rate paths deliberately trade spectral detail for period geometry.  They
+# therefore need stronger source-cleanliness evidence before their coordinate is
+# even published as a provisional F0. This does not raise the detector-wide
+# threshold: full/half rate remain sensitive, while quarter/eighth rate can
+# still contribute strongly once corroborated in consensus.
+cpp = one(cpp,
+'''            const float candidateCleanliness = candidate.tonalCleanliness >= 0.0f
+                ? clamp01(candidate.tonalCleanliness) : 1.0f;
+            if (candidate.tonalCleanliness >= 0.0f && candidateCleanliness < 0.22f)
+                return;
+            const float score = ageWeight
+''',
+'''            const float candidateCleanliness = candidate.tonalCleanliness >= 0.0f
+                ? clamp01(candidate.tonalCleanliness) : 1.0f;
+            const float provisionalPathFloor = candidate.pathIndex <= 0 ? 0.22f
+                : (candidate.pathIndex == 1 ? 0.24f
+                   : (candidate.pathIndex == 2 ? 0.46f : 0.54f));
+            if (candidate.tonalCleanliness >= 0.0f
+                && candidateCleanliness < provisionalPathFloor)
+            {
+                return;
+            }
+            const float score = ageWeight
+''',
+'path-specific provisional cleanliness')
+
 cpp_path.write_text(cpp)
 print('GLOTTAL_EVIDENCE_FUSION_V2 materialized')
