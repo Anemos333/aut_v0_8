@@ -32,7 +32,7 @@ jobs:
           test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
           git diff --exit-code origin/main -- Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h Source/LivePitchProcessor.h Source/VoiceEvidenceAnalyzer.h
 
-      - name: Materialize voice-aware detector
+      - name: Materialize voice-aware detector and scale-owned Hold
         run: |
           python3 Tests/MaterializeVoiceAwareF0DetectorV1.py
           python3 Tests/RefineVoiceAwareF0DetectorV1.py
@@ -47,8 +47,9 @@ jobs:
           python3 Tests/DiagnoseFormantFalseValidsV2.py
           python3 Tests/RefineDetectorObservationSemanticsV1.py
           python3 Tests/UpdateObservationMemoryRegressionsV1.py
+          python3 Tests/RefineScaleOwnedHoldSemanticsV1.py
 
-      - name: Verify narrow detector-only contract
+      - name: Verify detector and scale-owned Hold contract
         shell: bash
         run: |
           set -euo pipefail
@@ -70,15 +71,13 @@ jobs:
           assert quantizer_marker in cpp and quantizer_marker in base_cpp
           assert process_marker in cpp and process_marker in base_cpp
           assert tail_marker in cpp and tail_marker in base_cpp
-          q = cpp.index(quantizer_marker)
-          bq = base_cpp.index(quantizer_marker)
           p = cpp.index(process_marker)
           bp = base_cpp.index(process_marker)
           tail = cpp.index(tail_marker)
           btail = base_cpp.index(tail_marker)
-          assert cpp[q:p] == base_cpp[bq:bp], 'quantizer/supervisor/controller changed'
           assert cpp[tail:] == base_cpp[btail:], 'post-process engine code changed'
 
+          # process() may differ from main only by detector-wake wiring.
           process = cpp[p:tail]
           base_process = base_cpp[bp:btail]
           allowed = [
@@ -119,7 +118,11 @@ jobs:
               'LOW_RATE_RESONANCE_VETO_V1',
               'OBSERVATION_MEMORY_SEPARATION_V1',
               'ZERO_INPUT_CLEARS_OBSERVER_NOT_MUSIC_V1',
-              'TRANSITION_WAKES_DETECTOR_NOT_OUTPUT_V1'
+              'TRANSITION_WAKES_DETECTOR_NOT_OUTPUT_V1',
+              'SCALE_OWNED_HOLD_SEMANTICS_V1',
+              'HOLD_IS_CENT_RADIUS_V2',
+              'HOLD_IS_LITERAL_USER_CENTS_V2',
+              'QUALIFIED_NOTE_BYPASSES_HOLD_V2'
           ]:
               assert marker in cpp, marker
           assert 'PATH_ROLE_SPLIT_V1' in cpp or 'PATH_ROLE_SPLIT_V1' in hpp
@@ -128,9 +131,10 @@ jobs:
           assert 'tonalCleanliness' in cpp
           assert 'presenceMode_\n        ? 0.0f' not in cpp
           assert '0.5f * (normalisedCorrelation + 1.0f)' not in cpp
+          assert 'USER_HOLD_REMAINS_AUTHORITY_V1' not in cpp
           PY
           changed="$(git diff --name-only | sort)"
-          expected=$'Source/ModernPitchEngine.cpp\nSource/ModernPitchEngine.h\nTests/SupervisorContinuityTest.cpp'
+          expected=$'Source/ModernPitchEngine.cpp\nSource/ModernPitchEngine.h\nTests/CleanModernPitchEngineTest.cpp\nTests/GuiAudibilityTest.cpp\nTests/SupervisorContinuityTest.cpp'
           test "$changed" = "$expected"
           git diff --exit-code -- Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h Source/LivePitchProcessor.h Source/VoiceEvidenceAnalyzer.h
 
@@ -153,13 +157,13 @@ jobs:
       - name: Run detector supervisor test
         run: ./build-voice-aware/clean-engine-tests/SupervisorContinuityTest
 
-      - name: Build remaining frozen invariants
+      - name: Build remaining invariants
         run: >-
           cmake --build build-voice-aware --config Release --parallel 2
           --target SingleWetSpectralRendererTest VoiceEvidenceAnalyzerTest
-          CleanModernPitchEngineTest GuiAudioControlContractTest
+          CleanModernPitchEngineTest GuiAudioControlContractTest GuiAudibilityTest
 
-      - name: Run remaining frozen invariants
+      - name: Run remaining invariants
         shell: bash
         run: |
           set -euo pipefail
@@ -167,6 +171,7 @@ jobs:
           ./build-voice-aware/clean-engine-tests/VoiceEvidenceAnalyzerTest
           ./build-voice-aware/clean-engine-tests/CleanModernPitchEngineTest
           ./build-voice-aware/clean-engine-tests/GuiAudioControlContractTest
+          ./build-voice-aware/clean-engine-tests/GuiAudibilityTest
 
       - name: Build VST3
         run: cmake --build build-voice-aware --config Release --target Neumaton_VST3 --parallel 2
@@ -177,10 +182,12 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add Source/ModernPitchEngine.cpp Source/ModernPitchEngine.h Tests/SupervisorContinuityTest.cpp
+          git add Source/ModernPitchEngine.cpp Source/ModernPitchEngine.h \
+            Tests/SupervisorContinuityTest.cpp Tests/CleanModernPitchEngineTest.cpp \
+            Tests/GuiAudibilityTest.cpp
           if git diff --cached --quiet; then
             echo 'No materialized changes to commit.'
             exit 0
           fi
-          git commit -m 'Make F0 detector voice-aware and observation-bounded [skip ci]'
+          git commit -m 'Make Hold scale-owned and detector voice-aware [skip ci]'
           git push origin HEAD:voice-aware-f0-detector-v1
