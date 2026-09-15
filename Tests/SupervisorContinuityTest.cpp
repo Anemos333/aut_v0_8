@@ -189,11 +189,19 @@ int main()
     delayedRescueTracker->setReacquisitionAnchor(220.0f);
     ModernPitchEngine::PitchObservation expiredObservation;
     const int dropoutSamples = static_cast<int>(0.075 * 48000.0);
+    std::uint32_t aperiodicGapRng = 0x7f4a7c15u;
     for (int sample = 0; sample < dropoutSamples; ++sample)
-        static_cast<void>(delayedRescueTracker->processSample(0.0f, expiredObservation));
+    {
+        aperiodicGapRng ^= aperiodicGapRng << 13;
+        aperiodicGapRng ^= aperiodicGapRng >> 17;
+        aperiodicGapRng ^= aperiodicGapRng << 5;
+        const float noise = (static_cast<float>(aperiodicGapRng & 0xffffu)
+                           / 32767.5f - 1.0f) * 0.004f;
+        static_cast<void>(delayedRescueTracker->processSample(noise, expiredObservation));
+    }
     success &= check(delayedRescueTracker->trackedPitchHz_ == 0.0f
                      && std::abs(delayedRescueTracker->reacquisitionAnchorHz_ - 220.0f) < 0.01f,
-                     "current_f0_can_expire_without_erasing_note_body_anchor");
+                     "current_f0_can_expire_during_aperiodic_presence_without_erasing_physical_anchor");
 
     auto& delayedSlot = delayedRescueTracker->halfRateCandidate_;
     delayedSlot.candidate.valid = true;
@@ -214,7 +222,7 @@ int main()
     const auto delayedRescueDecision = delayedRescueTracker->decodeCandidate(false);
     success &= check(delayedRescueDecision.valid
                      && delayedRescueTracker->trackedPitchHz_ == 0.0f,
-                     "rescue_uses_persistent_anchor_after_sixty_ms_detector_hole");
+                     "rescue_uses_physical_anchor_after_aperiodic_detector_hole");
     delayedRescueTracker->clearReacquisitionAnchor();
     delayedRescueTracker->decoderBeam_.fill({});
     const auto noBodyAnchorDecision = delayedRescueTracker->decodeCandidate(false);
@@ -845,9 +853,10 @@ int main()
     success &= check(denseTargetMove > 20.0,
                      "humanize_respects_dense_microtonal_degree_spacing");
 
-    // MICROTONAL_HARD_LOCK_V3: even with the GUI hysteresis at its
-    // maximum, a 48-EDO target selector must not be allowed to hold the old
-    // degree by a musically significant portion of the 25-cent step.
+    // HOLD_IS_LITERAL_USER_CENTS_V2: Hold is a literal user radius, not a
+    // density-dependent hidden fraction of a scale degree. A wide Hold on a
+    // microtonal scale is therefore explicit user intent, while independently
+    // qualified new-note evidence can still override it.
     ModernPitchEngine::Parameters hardDenseParameters = denseParameters;
     hardDenseParameters.scaleLock = true;
     hardDenseParameters.hardLockActive = true;
@@ -858,10 +867,40 @@ int main()
     auto hardDenseObservation = strongPitch(440.0f);
     const float denseEffectiveHysteresis = engine->adaptiveHysteresis(
         hardDenseParameters, denseQuantizer, hardDenseObservation);
-    std::cerr << "dense_effective_hysteresis_cents="
+    std::cerr << "dense_effective_hold_radius_cents="
               << denseEffectiveHysteresis << '\n';
-    success &= check(denseEffectiveHysteresis <= 3.01f,
-                     "dense_scale_lock_hysteresis_is_degree_safe");
+    success &= check(std::abs(denseEffectiveHysteresis - 80.0f) < 1.0e-6f,
+                     "hold_radius_is_literal_on_dense_scales");
+
+    const double holdSemitone = std::exp2(1.0 / 12.0);
+    const std::array<double, 2> holdScale { 1.0, holdSemitone };
+    ModernPitchEngine::ScaleQuantizer holdGeometryQuantizer;
+    holdGeometryQuantizer.reset();
+    holdGeometryQuantizer.setScale(holdScale.data(), 2, 440.0);
+    int holdPending = 0;
+    const double owned440 = holdGeometryQuantizer.chooseTargetLog2(
+        std::log2(440.0), 80.0f, 0.0f, 1.0f, true, true, holdPending);
+    const double insideHold = holdGeometryQuantizer.chooseTargetLog2(
+        std::log2(440.0 * std::exp2(60.0 / 1200.0)),
+        80.0f, 0.0f, 1.0f, true, false, holdPending);
+    success &= check(std::abs((insideHold - owned440) * 1200.0) < 0.1,
+                     "hold_keeps_owned_degree_inside_user_cent_radius");
+    const double outsideHold = holdGeometryQuantizer.chooseTargetLog2(
+        std::log2(440.0 * std::exp2(81.0 / 1200.0)),
+        80.0f, 0.0f, 1.0f, true, false, holdPending);
+    success &= check(std::abs((outsideHold - owned440) * 1200.0) > 90.0,
+                     "hold_releases_identity_outside_user_cent_radius");
+
+    ModernPitchEngine::ScaleQuantizer zeroHoldGeometryQuantizer;
+    zeroHoldGeometryQuantizer.reset();
+    zeroHoldGeometryQuantizer.setScale(holdScale.data(), 2, 440.0);
+    static_cast<void>(zeroHoldGeometryQuantizer.chooseTargetLog2(
+        std::log2(440.0), 0.0f, 0.0f, 1.0f, true, true, holdPending));
+    const double zeroHoldNext = zeroHoldGeometryQuantizer.chooseTargetLog2(
+        std::log2(440.0 * std::exp2(51.0 / 1200.0)),
+        0.0f, 0.0f, 1.0f, true, false, holdPending);
+    success &= check(std::abs(1200.0 * (zeroHoldNext - std::log2(440.0))) > 90.0,
+                     "hold_zero_uses_normal_scale_cell_boundary");
 
     // At maximum Humanize + Vibrato Preserve, a 10-cent input deviation on
     // 48-EDO must still request enough correction to leave <=3 cents residual
@@ -2104,6 +2143,777 @@ int main()
     const double recoveredTargetHz = std::exp2(fallingTailState.targetLog2);
     success &= check(recoveredTargetHz > 414.0 && recoveredTargetHz < 417.0,
                      "strong_new_note_after_terminal_tail_can_commit_normally");
+
+    // VOICE_AWARE_F0_FRONTEND_V1: colored breath/noise is signal, but it is
+    // not an F0. Presence must never manufacture a pitch measurement.
+    auto breathNoiseTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+    breathNoiseTracker->prepare(48000.0);
+    breathNoiseTracker->setRange(70.0f, 700.0f);
+    std::uint32_t breathRng = 0x12345678u;
+    float breathFilter = 0.0f;
+    int breathValidF0 = 0;
+    int breathMeasurements = 0;
+    for (int sample = 0; sample < 24000; ++sample)
+    {
+        breathRng ^= breathRng << 13;
+        breathRng ^= breathRng >> 17;
+        breathRng ^= breathRng << 5;
+        const float white = (static_cast<float>(breathRng & 0xffffu) / 32767.5f) - 1.0f;
+        breathFilter = 0.91f * breathFilter + 0.09f * white;
+        const float breath = 0.030f * (0.62f * white + 0.38f * breathFilter);
+        ModernPitchEngine::PitchObservation observed;
+        if (breathNoiseTracker->processSample(breath, observed) && sample > 4096)
+        {
+            breathValidF0 += observed.valid ? 1 : 0;
+            breathMeasurements += observed.measurementAvailable ? 1 : 0;
+        }
+    }
+    std::cerr << "voice_aware_breath_valid_f0=" << breathValidF0
+              << " provisional=" << breathMeasurements << '\n';
+    success &= check(breathValidF0 == 0 && breathMeasurements <= 2,
+                     "colored_breath_is_not_promoted_to_f0");
+
+    // A real low-SNR vocal tone embedded in the same colored noise must remain
+    // measurable: the detector rejects noise, not difficult voices.
+    auto noisyVoiceTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+    noisyVoiceTracker->prepare(48000.0);
+    noisyVoiceTracker->setRange(70.0f, 700.0f);
+    std::uint32_t voiceRng = 0x9e3779b9u;
+    float voiceNoiseFilter = 0.0f;
+    int nearToneCount = 0;
+    int nearHalfToneCount = 0;
+    int nearDoubleToneCount = 0;
+    int voicedDecisionCount = 0;
+    for (int sample = 0; sample < 30000; ++sample)
+    {
+        voiceRng ^= voiceRng << 13;
+        voiceRng ^= voiceRng >> 17;
+        voiceRng ^= voiceRng << 5;
+        const float white = (static_cast<float>(voiceRng & 0xffffu) / 32767.5f) - 1.0f;
+        voiceNoiseFilter = 0.91f * voiceNoiseFilter + 0.09f * white;
+        const float noise = 0.024f * (0.60f * white + 0.40f * voiceNoiseFilter);
+        const float phase = static_cast<float>(2.0 * 3.14159265358979323846
+            * 220.0 * static_cast<double>(sample) / 48000.0);
+        // Fundamental + weak second/third harmonic approximates a real source
+        // family without making the test unrealistically clean.
+        const float voice = 0.050f * std::sin(phase)
+                          + 0.017f * std::sin(2.0f * phase + 0.31f)
+                          + 0.009f * std::sin(3.0f * phase + 0.73f);
+        ModernPitchEngine::PitchObservation observed;
+        if (noisyVoiceTracker->processSample(voice + noise, observed)
+            && sample > 8000 && observed.valid)
+        {
+            ++voicedDecisionCount;
+            const float cents = std::abs(1200.0f * std::log2(
+                std::max(1.0f, observed.correctionFrequencyHz) / 220.0f));
+            if (cents < 45.0f)
+                ++nearToneCount;
+            const float halfCents = std::abs(1200.0f * std::log2(
+                std::max(1.0f, observed.correctionFrequencyHz) / 110.0f));
+            const float doubleCents = std::abs(1200.0f * std::log2(
+                std::max(1.0f, observed.correctionFrequencyHz) / 440.0f));
+            if (halfCents < 45.0f)
+                ++nearHalfToneCount;
+            if (doubleCents < 45.0f)
+                ++nearDoubleToneCount;
+        }
+    }
+    std::cerr << "voice_aware_noisy_voice_decisions=" << voicedDecisionCount
+              << " near_220=" << nearToneCount
+              << " near_110=" << nearHalfToneCount
+              << " near_440=" << nearDoubleToneCount << '\n';
+    success &= check(voicedDecisionCount > 20
+                     && nearToneCount * 4 >= voicedDecisionCount * 3,
+                     "low_snr_vocal_family_isolated_from_colored_noise");
+
+    const auto measureSteadyDetectorHz = [](float sourceHz)
+    {
+        auto tracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+        tracker->prepare(48000.0);
+        tracker->setRange(70.0f, 900.0f);
+        double sumHz = 0.0;
+        int count = 0;
+        for (int sample = 0; sample < 24000; ++sample)
+        {
+            const double phase = 2.0 * 3.14159265358979323846
+                * static_cast<double>(sourceHz) * static_cast<double>(sample) / 48000.0;
+            ModernPitchEngine::PitchObservation observed;
+            if (tracker->processSample(0.08f * static_cast<float>(std::sin(phase)), observed)
+                && sample > 8000 && observed.valid)
+            {
+                sumHz += observed.correctionFrequencyHz;
+                ++count;
+            }
+        }
+        return std::pair<float, int> {
+            count > 0 ? static_cast<float>(sumHz / static_cast<double>(count)) : 0.0f,
+            count
+        };
+    };
+    const auto [boundary450Hz, boundary450Count] = measureSteadyDetectorHz(450.0f);
+    const auto [boundary456Hz, boundary456Count] = measureSteadyDetectorHz(456.0f);
+    const float boundary450Cents = boundary450Hz > 0.0f
+        ? 1200.0f * std::log2(boundary450Hz / 450.0f) : 9999.0f;
+    const float boundary456Cents = boundary456Hz > 0.0f
+        ? 1200.0f * std::log2(boundary456Hz / 456.0f) : 9999.0f;
+    std::cerr << "voice_aware_boundary_450_hz=" << boundary450Hz
+              << " cents=" << boundary450Cents
+              << " decisions=" << boundary450Count
+              << " boundary_456_hz=" << boundary456Hz
+              << " cents=" << boundary456Cents
+              << " decisions=" << boundary456Count << '\n';
+    success &= check(boundary450Count > 20 && std::abs(boundary450Cents) < 18.0f
+                     && boundary456Count > 20 && std::abs(boundary456Cents) < 18.0f,
+                     "voice_detector_preserves_scale_boundary_accuracy");
+
+    // PATH_ROLE_SPLIT_V1 regression: the low-rate path is useful for pitch
+    // geometry, but the full/half-rate observations carry more information about
+    // whether that geometry was extracted from clean tonal voice.
+    auto pathRoleTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+    pathRoleTracker->prepare(48000.0);
+    success &= check(pathRoleTracker->pathCleanlinessAuthority(0, 220.0f)
+                         > pathRoleTracker->pathCleanlinessAuthority(3, 220.0f)
+                     && pathRoleTracker->pathPitchAuthority(2, 90.0f)
+                         > pathRoleTracker->pathPitchAuthority(0, 90.0f),
+                     "multirate_paths_split_pitch_and_cleanliness_authority");
+
+    // Resonant/formant-shaped noise: two narrow resonances are deliberately
+    // capable of producing autocorrelation peaks, but there is no harmonic vocal
+    // family and therefore no trustworthy F0.
+    auto formantNoiseTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+    formantNoiseTracker->prepare(48000.0);
+    formantNoiseTracker->setRange(70.0f, 700.0f);
+    std::uint32_t formantRng = 0x9e3779b9u;
+    float f1y1 = 0.0f, f1y2 = 0.0f;
+    float f2y1 = 0.0f, f2y2 = 0.0f;
+    int formantNoiseValid = 0;
+    int formantNoiseMeasurements = 0;
+    const float r1 = 0.965f;
+    const float r2 = 0.955f;
+    const float c1 = 2.0f * r1 * std::cos(2.0f * 3.14159265358979323846f * 720.0f / 48000.0f);
+    const float c2 = 2.0f * r2 * std::cos(2.0f * 3.14159265358979323846f * 1280.0f / 48000.0f);
+    for (int sample = 0; sample < 32000; ++sample)
+    {
+        formantRng ^= formantRng << 13;
+        formantRng ^= formantRng >> 17;
+        formantRng ^= formantRng << 5;
+        const float noise = (static_cast<float>(formantRng & 0xffffu) / 32767.5f - 1.0f) * 0.006f;
+        const float y1 = noise + c1 * f1y1 - r1 * r1 * f1y2;
+        const float y2 = noise + c2 * f2y1 - r2 * r2 * f2y2;
+        f1y2 = f1y1; f1y1 = y1;
+        f2y2 = f2y1; f2y1 = y2;
+        const float shaped = std::clamp(0.020f * (y1 + 0.65f * y2), -0.20f, 0.20f);
+        ModernPitchEngine::PitchObservation observed;
+        if (formantNoiseTracker->processSample(shaped, observed))
+        {
+            const auto dump = [](const auto& slot)
+            {
+                const auto& c = slot.candidate;
+                return std::array<float, 7> {
+                    c.frequencyHz,
+                    c.confidence,
+                    c.periodicity,
+                    c.harmonicFamily,
+                    c.tonalCleanliness,
+                    static_cast<float>(slot.ageInHops),
+                    c.valid ? 1.0f : 0.0f
+                };
+            };
+            if (observed.measurementAvailable)
+            {
+                ++formantNoiseMeasurements;
+                const auto full = dump(formantNoiseTracker->fullRateCandidate_);
+                const auto half = dump(formantNoiseTracker->halfRateCandidate_);
+                const auto quarter = dump(formantNoiseTracker->quarterRateCandidate_);
+                const auto eighth = dump(formantNoiseTracker->eighthRateCandidate_);
+                std::cerr << "FORMANT_COORD sample=" << sample
+                          << " valid=" << (observed.valid ? 1 : 0)
+                          << " out_hz=" << observed.correctionFrequencyHz
+                          << " support=" << observed.detectorSupport
+                          << " consensus=" << observed.consensus
+                          << " confidence=" << observed.confidence
+                          << " periodicity=" << observed.periodicity
+                          << " tracked=" << formantNoiseTracker->trackedPitchHz_
+                          << " invalid_hops=" << formantNoiseTracker->invalidHopCount_
+                          << " full=" << full[0] << ',' << full[1] << ',' << full[2]
+                          << ',' << full[3] << ',' << full[4] << ',' << full[5] << ',' << full[6]
+                          << " half=" << half[0] << ',' << half[1] << ',' << half[2]
+                          << ',' << half[3] << ',' << half[4] << ',' << half[5] << ',' << half[6]
+                          << " quarter=" << quarter[0] << ',' << quarter[1] << ',' << quarter[2]
+                          << ',' << quarter[3] << ',' << quarter[4] << ',' << quarter[5] << ',' << quarter[6]
+                          << " eighth=" << eighth[0] << ',' << eighth[1] << ',' << eighth[2]
+                          << ',' << eighth[3] << ',' << eighth[4] << ',' << eighth[5] << ',' << eighth[6]
+                          << '\n';
+            }
+            if (observed.valid)
+                ++formantNoiseValid;
+        }
+    }
+    const auto formantDumpSlot = [](const auto& slot)
+    {
+        const auto& c = slot.candidate;
+        return std::array<float, 5> { c.frequencyHz, c.confidence, c.periodicity,
+                                     c.harmonicFamily, c.tonalCleanliness };
+    };
+    const auto formantFull = formantDumpSlot(formantNoiseTracker->fullRateCandidate_);
+    const auto formantHalf = formantDumpSlot(formantNoiseTracker->halfRateCandidate_);
+    const auto formantQuarter = formantDumpSlot(formantNoiseTracker->quarterRateCandidate_);
+    const auto formantEighth = formantDumpSlot(formantNoiseTracker->eighthRateCandidate_);
+    std::cerr << "voice_aware_formant_noise_valid=" << formantNoiseValid
+              << " provisional=" << formantNoiseMeasurements
+              << " full=" << formantFull[0] << ',' << formantFull[3] << ',' << formantFull[4]
+              << " half=" << formantHalf[0] << ',' << formantHalf[3] << ',' << formantHalf[4]
+              << " quarter=" << formantQuarter[0] << ',' << formantQuarter[3] << ',' << formantQuarter[4]
+              << " eighth=" << formantEighth[0] << ',' << formantEighth[3] << ',' << formantEighth[4]
+              << '\n';
+    success &= check(formantNoiseValid == 0 && formantNoiseMeasurements <= 4,
+                     "formant_shaped_noise_never_becomes_vocal_f0");
+
+    // RAPID_F0_OBSERVATION_MUST_PRECEDE_HOLD_V1
+    // Hold can only act after the detector has actually observed the new physical
+    // coordinate. Measure detector latency directly, before any quantizer logic.
+    struct RapidF0Metrics
+    {
+        int firstInitialLockSample = -1;
+        int firstNewLockSample = -1;
+        float lastInitialHz = 0.0f;
+        float firstNewHz = 0.0f;
+    };
+
+    const auto measureRapidStep = [](float initialHz, float newHz,
+                                     int stepSample, int totalSamples)
+    {
+        RapidF0Metrics metrics;
+        auto tracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+        tracker->prepare(48000.0);
+        tracker->setRange(70.0f, 900.0f);
+        double phase = 0.0;
+        for (int sample = 0; sample < totalSamples; ++sample)
+        {
+            const float sourceHz = sample < stepSample ? initialHz : newHz;
+            phase += 2.0 * 3.14159265358979323846
+                   * static_cast<double>(sourceHz) / 48000.0;
+            if (phase > 2.0 * 3.14159265358979323846)
+                phase -= 2.0 * 3.14159265358979323846;
+
+            ModernPitchEngine::PitchObservation observed;
+            if (!tracker->processSample(0.08f * static_cast<float>(std::sin(phase)), observed))
+                continue;
+
+            const auto near = [](float measured, float expected, float toleranceCents)
+            {
+                return measured > 0.0f && expected > 0.0f
+                    && std::abs(1200.0f * std::log2(measured / expected)) < toleranceCents;
+            };
+
+            if (sample < stepSample && observed.valid
+                && near(observed.correctionFrequencyHz, initialHz, 18.0f))
+            {
+                if (metrics.firstInitialLockSample < 0)
+                    metrics.firstInitialLockSample = sample;
+                metrics.lastInitialHz = observed.correctionFrequencyHz;
+            }
+            else if (sample >= stepSample && observed.valid
+                     && near(observed.correctionFrequencyHz, newHz, 18.0f))
+            {
+                if (metrics.firstNewLockSample < 0)
+                {
+                    metrics.firstNewLockSample = sample;
+                    metrics.firstNewHz = observed.correctionFrequencyHz;
+                }
+            }
+        }
+        return metrics;
+    };
+
+    const auto boundaryRapid = measureRapidStep(450.0f, 456.0f, 12000, 18000);
+    const auto noteRapid = measureRapidStep(220.0f, 246.94165f, 12000, 18000);
+    const int boundaryInitialLatency = boundaryRapid.firstInitialLockSample;
+    const int boundaryStepLatency = boundaryRapid.firstNewLockSample >= 0
+        ? boundaryRapid.firstNewLockSample - 12000 : 999999;
+    const int noteInitialLatency = noteRapid.firstInitialLockSample;
+    const int noteStepLatency = noteRapid.firstNewLockSample >= 0
+        ? noteRapid.firstNewLockSample - 12000 : 999999;
+
+    std::cerr << "voice_aware_rapid_boundary_first_lock_samples="
+              << boundaryInitialLatency
+              << " step_recognition_samples=" << boundaryStepLatency
+              << " initial_hz=" << boundaryRapid.lastInitialHz
+              << " new_hz=" << boundaryRapid.firstNewHz << '\\n';
+    std::cerr << "voice_aware_rapid_note_first_lock_samples="
+              << noteInitialLatency
+              << " step_recognition_samples=" << noteStepLatency
+              << " initial_hz=" << noteRapid.lastInitialHz
+              << " new_hz=" << noteRapid.firstNewHz << '\\n';
+
+    success &= check(boundaryInitialLatency >= 0 && boundaryInitialLatency <= 3000,
+                     "boundary_f0_acquires_before_hold_needs_it");
+    success &= check(boundaryStepLatency <= 1536,
+                     "small_boundary_f0_change_is_observed_without_prudence_stall");
+    success &= check(noteInitialLatency >= 0 && noteInitialLatency <= 3000,
+                     "sung_note_f0_acquires_promptly");
+    success &= check(noteStepLatency <= 1024,
+                     "rapid_real_note_change_is_observed_before_musical_hold");
+
+    // SOLITARY_VOICE_STRUCTURE_V3 positive control: at 1100 Hz the full-rate
+    // detector is the only direct F0 authority. Lower-rate paths may observe
+    // exact 1/2 and 1/3 aliases but may not drag a real 1100-Hz source downward.
+    auto highVoiceTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+    highVoiceTracker->prepare(48000.0);
+    highVoiceTracker->setRange(45.0f, 1500.0f);
+    std::uint32_t highVoiceRng = 0x31415926u;
+    float highNoiseLp = 0.0f;
+    int highVoiceValid = 0;
+    int highVoiceNear = 0;
+    int highVoiceNearTwoThirds = 0;
+    int highVoiceNearThreeQuarters = 0;
+    int highVoiceNearFourThirds = 0;
+    int highVoiceTraceCount = 0;
+    double highVoiceSumHz = 0.0;
+    float highVoiceMinHz = 100000.0f;
+    float highVoiceMaxHz = 0.0f;
+    constexpr float highVoiceHz = 1100.0f;
+    for (int sample = 0; sample < 24000; ++sample)
+    {
+        highVoiceRng ^= highVoiceRng << 13;
+        highVoiceRng ^= highVoiceRng >> 17;
+        highVoiceRng ^= highVoiceRng << 5;
+        const float white = static_cast<float>(highVoiceRng & 0xffffu) / 32767.5f - 1.0f;
+        highNoiseLp = 0.86f * highNoiseLp + 0.14f * white;
+        const float noise = 0.008f * (0.72f * white + 0.28f * highNoiseLp);
+        const float phase = static_cast<float>(2.0 * 3.14159265358979323846
+            * static_cast<double>(highVoiceHz) * static_cast<double>(sample) / 48000.0);
+        const float voice = 0.065f * std::sin(phase)
+                          + 0.020f * std::sin(2.0f * phase + 0.17f)
+                          + 0.010f * std::sin(3.0f * phase + 0.41f);
+        ModernPitchEngine::PitchObservation observed;
+        if (highVoiceTracker->processSample(voice + noise, observed)
+            && sample > 6000 && observed.valid)
+        {
+            ++highVoiceValid;
+            const float outHz = observed.correctionFrequencyHz;
+            highVoiceSumHz += outHz;
+            highVoiceMinHz = std::min(highVoiceMinHz, outHz);
+            highVoiceMaxHz = std::max(highVoiceMaxHz, outHz);
+            const auto nearHz = [outHz](float referenceHz)
+            {
+                return std::abs(1200.0f * std::log2(
+                    std::max(1.0f, outHz) / referenceHz)) < 45.0f;
+            };
+            if (nearHz(highVoiceHz))
+                ++highVoiceNear;
+            if (nearHz(highVoiceHz * (2.0f / 3.0f)))
+                ++highVoiceNearTwoThirds;
+            if (nearHz(highVoiceHz * 0.75f))
+                ++highVoiceNearThreeQuarters;
+            if (nearHz(highVoiceHz * (4.0f / 3.0f)))
+                ++highVoiceNearFourThirds;
+
+            if (highVoiceTraceCount < 8)
+            {
+                ++highVoiceTraceCount;
+                const auto& f = highVoiceTracker->fullRateCandidate_.candidate;
+                const auto& h = highVoiceTracker->halfRateCandidate_.candidate;
+                const auto& q = highVoiceTracker->quarterRateCandidate_.candidate;
+                const auto& e = highVoiceTracker->eighthRateCandidate_.candidate;
+                std::cerr << "HIGH1100_GEOMETRY sample=" << sample
+                          << " out_hz=" << outHz
+                          << " support=" << observed.detectorSupport
+                          << " consensus=" << observed.consensus
+                          << " full=" << f.frequencyHz << ',' << f.confidence << ','
+                          << f.periodicity << ',' << f.harmonicFamily << ','
+                          << f.tonalCleanliness << ',' << (f.valid ? 1 : 0)
+                          << " half=" << h.frequencyHz << ',' << h.confidence << ','
+                          << h.periodicity << ',' << h.harmonicFamily << ','
+                          << h.tonalCleanliness << ',' << (h.valid ? 1 : 0)
+                          << " quarter=" << q.frequencyHz << ',' << q.confidence << ','
+                          << q.periodicity << ',' << q.harmonicFamily << ','
+                          << q.tonalCleanliness << ',' << (q.valid ? 1 : 0)
+                          << " eighth=" << e.frequencyHz << ',' << e.confidence << ','
+                          << e.periodicity << ',' << e.harmonicFamily << ','
+                          << e.tonalCleanliness << ',' << (e.valid ? 1 : 0)
+                          << '\n';
+            }
+        }
+    }
+    std::cerr << "solitary_high_voice_valid=" << highVoiceValid
+              << " near_1100=" << highVoiceNear
+              << " near_733=" << highVoiceNearTwoThirds
+              << " near_825=" << highVoiceNearThreeQuarters
+              << " near_1467=" << highVoiceNearFourThirds
+              << " mean_hz=" << (highVoiceValid > 0
+                    ? highVoiceSumHz / static_cast<double>(highVoiceValid) : 0.0)
+              << " minmax_hz=" << (highVoiceValid > 0 ? highVoiceMinHz : 0.0f)
+              << ',' << highVoiceMaxHz << '\n';
+    success &= check(highVoiceValid > 20
+                     && highVoiceNear * 4 >= highVoiceValid * 3,
+                     "solitary_full_rate_real_voice_survives_structure_veto");
+
+    // DIRECT_HIGH_PATH_OWNS_RATIONAL_ALIAS_V2 negative control: the resolver
+    // must not double a genuine 550-Hz source merely because 1100 Hz is a strong
+    // harmonic. A real 550-Hz first YIN basin remains at 550 and is unaffected.
+    auto midHighVoiceTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+    midHighVoiceTracker->prepare(48000.0);
+    midHighVoiceTracker->setRange(45.0f, 1500.0f);
+    std::uint32_t midHighRng = 0x27182818u;
+    float midHighNoiseLp = 0.0f;
+    int midHighValid = 0;
+    int midHighNear = 0;
+    constexpr float midHighHz = 550.0f;
+    for (int sample = 0; sample < 24000; ++sample)
+    {
+        midHighRng ^= midHighRng << 13;
+        midHighRng ^= midHighRng >> 17;
+        midHighRng ^= midHighRng << 5;
+        const float white = static_cast<float>(midHighRng & 0xffffu) / 32767.5f - 1.0f;
+        midHighNoiseLp = 0.86f * midHighNoiseLp + 0.14f * white;
+        const float noise = 0.008f * (0.72f * white + 0.28f * midHighNoiseLp);
+        const float phase = static_cast<float>(2.0 * 3.14159265358979323846
+            * static_cast<double>(midHighHz) * static_cast<double>(sample) / 48000.0);
+        const float voice = 0.060f * std::sin(phase)
+                          + 0.026f * std::sin(2.0f * phase + 0.23f)
+                          + 0.011f * std::sin(3.0f * phase + 0.37f);
+        ModernPitchEngine::PitchObservation observed;
+        if (midHighVoiceTracker->processSample(voice + noise, observed)
+            && sample > 6000 && observed.valid)
+        {
+            ++midHighValid;
+            const float cents = std::abs(1200.0f * std::log2(
+                std::max(1.0f, observed.correctionFrequencyHz) / midHighHz));
+            if (cents < 45.0f)
+                ++midHighNear;
+        }
+    }
+    std::cerr << "mid_high_voice_valid=" << midHighValid
+              << " near_550=" << midHighNear << '\n';
+    success &= check(midHighValid > 20
+                     && midHighNear * 4 >= midHighValid * 3,
+                     "high_path_octave_resolver_does_not_double_real_550_hz_voice");
+
+    // LOW_RATE_RESONANCE_VETO_V1 positive control: true low F0 remains
+    // measurable even though quarter/eighth paths use a stricter cleanliness
+    // requirement than full/half rate.
+    auto lowVoiceTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+    lowVoiceTracker->prepare(48000.0);
+    lowVoiceTracker->setRange(45.0f, 320.0f);
+    constexpr float lowVoiceHz = 60.0f;
+    int lowVoiceValid = 0;
+    int lowVoiceNearFundamental = 0;
+    float lowVoiceQuarterMinClean = 2.0f;
+    float lowVoiceQuarterMaxClean = -1.0f;
+    float lowVoiceEighthMinClean = 2.0f;
+    float lowVoiceEighthMaxClean = -1.0f;
+    for (int sample = 0; sample < 36000; ++sample)
+    {
+        const float phase = static_cast<float>(2.0 * 3.14159265358979323846
+            * static_cast<double>(lowVoiceHz) * static_cast<double>(sample) / 48000.0);
+        const float voice = 0.075f * std::sin(phase)
+                          + 0.024f * std::sin(2.0f * phase + 0.19f)
+                          + 0.012f * std::sin(3.0f * phase + 0.43f)
+                          + 0.006f * std::sin(4.0f * phase + 0.71f);
+        ModernPitchEngine::PitchObservation observed;
+        if (lowVoiceTracker->processSample(voice, observed)
+            && sample > 12000 && observed.valid)
+        {
+            ++lowVoiceValid;
+            const auto& q = lowVoiceTracker->quarterRateCandidate_.candidate;
+            const auto& e = lowVoiceTracker->eighthRateCandidate_.candidate;
+            if (q.valid && q.tonalCleanliness >= 0.0f)
+            {
+                lowVoiceQuarterMinClean = std::min(lowVoiceQuarterMinClean, q.tonalCleanliness);
+                lowVoiceQuarterMaxClean = std::max(lowVoiceQuarterMaxClean, q.tonalCleanliness);
+            }
+            if (e.valid && e.tonalCleanliness >= 0.0f)
+            {
+                lowVoiceEighthMinClean = std::min(lowVoiceEighthMinClean, e.tonalCleanliness);
+                lowVoiceEighthMaxClean = std::max(lowVoiceEighthMaxClean, e.tonalCleanliness);
+            }
+            const float cents = std::abs(1200.0f * std::log2(
+                std::max(1.0f, observed.correctionFrequencyHz) / lowVoiceHz));
+            if (cents < 45.0f)
+                ++lowVoiceNearFundamental;
+        }
+    }
+    std::cerr << "low_rate_voice_valid=" << lowVoiceValid
+              << " near_60=" << lowVoiceNearFundamental
+              << " quarter_clean_minmax=" << lowVoiceQuarterMinClean << ',' << lowVoiceQuarterMaxClean
+              << " eighth_clean_minmax=" << lowVoiceEighthMinClean << ',' << lowVoiceEighthMaxClean
+              << '\n';
+    success &= check(lowVoiceValid > 20
+                     && lowVoiceNearFundamental * 4 >= lowVoiceValid * 3,
+                     "low_rate_real_voice_survives_resonance_veto");
+
+    // OBSERVATION_MEMORY_IS_FALSIFIABLE_V1: emulate a stale wrong register
+    // continuously supplied as a rescue anchor. Strong current vocal evidence
+    // must recover autonomously; changing preset/reset is never required.
+    auto staleAnchorTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+    staleAnchorTracker->prepare(48000.0);
+    staleAnchorTracker->setRange(70.0f, 700.0f);
+    staleAnchorTracker->setRescueMode(true);
+    staleAnchorTracker->setTransitionWake(true);
+    staleAnchorTracker->trackedPitchHz_ = 110.0f;
+    staleAnchorTracker->trackedConfidence_ = 0.88f;
+    staleAnchorTracker->trackedPeriodicity_ = 0.88f;
+    staleAnchorTracker->trackedConsensus_ = 0.70f;
+    staleAnchorTracker->decoderBeam_[0].valid = true;
+    staleAnchorTracker->decoderBeam_[0].logFrequency = std::log2(110.0);
+    staleAnchorTracker->decoderBeam_[0].score = 1.0f;
+    int recoveredAtSample = -1;
+    int staleNear110 = 0;
+    int staleNear220 = 0;
+    int staleOther = 0;
+    for (int sample = 0; sample < 12000; ++sample)
+    {
+        staleAnchorTracker->setReacquisitionAnchor(110.0f);
+        const float phase = static_cast<float>(2.0 * 3.14159265358979323846
+            * 220.0 * static_cast<double>(sample) / 48000.0);
+        const float voice = 0.070f * std::sin(phase)
+                          + 0.020f * std::sin(2.0f * phase + 0.2f)
+                          + 0.010f * std::sin(3.0f * phase + 0.5f);
+        ModernPitchEngine::PitchObservation observed;
+        if (staleAnchorTracker->processSample(voice, observed) && observed.valid)
+        {
+            const float hz = std::max(1.0f, observed.correctionFrequencyHz);
+            const float cents220 = std::abs(1200.0f * std::log2(hz / 220.0f));
+            const float cents110 = std::abs(1200.0f * std::log2(hz / 110.0f));
+            if (cents220 < 45.0f)
+                ++staleNear220;
+            else if (cents110 < 45.0f)
+                ++staleNear110;
+            else
+                ++staleOther;
+            if (cents220 < 45.0f)
+            {
+                recoveredAtSample = sample;
+                break;
+            }
+        }
+    }
+    const auto staleDumpSlot = [](const auto& slot)
+    {
+        const auto& c = slot.candidate;
+        return std::array<float, 5> { c.frequencyHz, c.confidence, c.periodicity,
+                                     c.harmonicFamily, c.tonalCleanliness };
+    };
+    const auto staleFull = staleDumpSlot(staleAnchorTracker->fullRateCandidate_);
+    const auto staleHalf = staleDumpSlot(staleAnchorTracker->halfRateCandidate_);
+    const auto staleQuarter = staleDumpSlot(staleAnchorTracker->quarterRateCandidate_);
+    const auto staleEighth = staleDumpSlot(staleAnchorTracker->eighthRateCandidate_);
+    std::cerr << "stale_recovery_at=" << recoveredAtSample
+              << " near110=" << staleNear110
+              << " near220=" << staleNear220
+              << " other=" << staleOther
+              << " tracked=" << staleAnchorTracker->trackedPitchHz_
+              << " pending_count=" << staleAnchorTracker->pendingOctaveCount_
+              << " pending_hz=" << staleAnchorTracker->pendingOctaveFrequencyHz_
+              << " full=" << staleFull[0] << ',' << staleFull[3] << ',' << staleFull[4]
+              << " half=" << staleHalf[0] << ',' << staleHalf[3] << ',' << staleHalf[4]
+              << " quarter=" << staleQuarter[0] << ',' << staleQuarter[3] << ',' << staleQuarter[4]
+              << " eighth=" << staleEighth[0] << ',' << staleEighth[3] << ',' << staleEighth[4]
+              << '\n';
+    success &= check(recoveredAtSample >= 0 && recoveredAtSample < 6000,
+                     "stale_wrong_f0_memory_is_falsified_without_preset_reset");
+
+    // BOUNDARY_PATH_BIAS_DIAGNOSTIC_V1
+    // Reproduce exactly the stronger linked input channel used by the frozen
+    // hysteresis regression: 450 Hz -> 456 Hz, with the same two harmonics.
+    // Measure only fresh path candidates so slower multirate paths are not
+    // over-counted through age reuse. Diagnostic only; no production behavior.
+    struct BoundaryPathStats
+    {
+        double sumHz = 0.0;
+        float minimumHz = 1.0e9f;
+        float maximumHz = 0.0f;
+        int freshValid = 0;
+        int near456 = 0;
+        int aboveHoldBoundary = 0;
+    };
+
+    auto boundaryPathTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+    boundaryPathTracker->prepare(48000.0);
+    boundaryPathTracker->setRange(70.0f, 1200.0f);
+    boundaryPathTracker->setSensitivity(0.85f);
+
+    BoundaryPathStats boundaryFull;
+    BoundaryPathStats boundaryHalf;
+    BoundaryPathStats boundaryQuarter;
+    BoundaryPathStats boundaryEighth;
+    BoundaryPathStats boundaryOutput;
+    const float holdBoundaryHz = static_cast<float>(440.0 * std::exp2(65.0 / 1200.0));
+    const auto addBoundaryPath = [holdBoundaryHz](BoundaryPathStats& stats,
+                                                   const auto& slot) noexcept
+    {
+        const auto& candidate = slot.candidate;
+        if (slot.ageInHops != 0 || !candidate.valid
+            || !std::isfinite(candidate.frequencyHz) || candidate.frequencyHz <= 0.0f)
+        {
+            return;
+        }
+        ++stats.freshValid;
+        const float cents456 = std::abs(1200.0f * std::log2(candidate.frequencyHz / 456.0f));
+        if (cents456 > 80.0f)
+            return;
+        ++stats.near456;
+        stats.sumHz += candidate.frequencyHz;
+        stats.minimumHz = std::min(stats.minimumHz, candidate.frequencyHz);
+        stats.maximumHz = std::max(stats.maximumHz, candidate.frequencyHz);
+        if (candidate.frequencyHz > holdBoundaryHz)
+            ++stats.aboveHoldBoundary;
+    };
+    const auto addBoundaryOutput = [holdBoundaryHz](BoundaryPathStats& stats,
+                                                     const ModernPitchEngine::PitchObservation& observed) noexcept
+    {
+        if (!observed.valid || !std::isfinite(observed.correctionFrequencyHz)
+            || observed.correctionFrequencyHz <= 0.0f)
+        {
+            return;
+        }
+        ++stats.freshValid;
+        const float cents456 = std::abs(1200.0f * std::log2(
+            observed.correctionFrequencyHz / 456.0f));
+        if (cents456 > 80.0f)
+            return;
+        ++stats.near456;
+        stats.sumHz += observed.correctionFrequencyHz;
+        stats.minimumHz = std::min(stats.minimumHz, observed.correctionFrequencyHz);
+        stats.maximumHz = std::max(stats.maximumHz, observed.correctionFrequencyHz);
+        if (observed.correctionFrequencyHz > holdBoundaryHz)
+            ++stats.aboveHoldBoundary;
+    };
+
+    constexpr int boundaryWarmSamples = 24000;
+    constexpr int boundaryMeasureSamples = 36000;
+    double boundaryPhase = 0.0;
+    for (int sample = 0; sample < boundaryWarmSamples + boundaryMeasureSamples; ++sample)
+    {
+        const double frequencyHz = sample < boundaryWarmSamples ? 450.0 : 456.0;
+        boundaryPhase += 2.0 * 3.14159265358979323846 * frequencyHz / 48000.0;
+        if (boundaryPhase >= 2.0 * 3.14159265358979323846)
+            boundaryPhase -= 2.0 * 3.14159265358979323846;
+        const float voice = static_cast<float>(
+            0.53 * std::sin(boundaryPhase) + 0.12 * std::sin(2.0 * boundaryPhase));
+        ModernPitchEngine::PitchObservation observed;
+        if (!boundaryPathTracker->processSample(voice, observed)
+            || sample < boundaryWarmSamples)
+        {
+            continue;
+        }
+        addBoundaryPath(boundaryFull, boundaryPathTracker->fullRateCandidate_);
+        addBoundaryPath(boundaryHalf, boundaryPathTracker->halfRateCandidate_);
+        addBoundaryPath(boundaryQuarter, boundaryPathTracker->quarterRateCandidate_);
+        addBoundaryPath(boundaryEighth, boundaryPathTracker->eighthRateCandidate_);
+        addBoundaryOutput(boundaryOutput, observed);
+    }
+
+    const auto printBoundaryStats = [holdBoundaryHz](const char* name,
+                                                      const BoundaryPathStats& stats)
+    {
+        const double meanHz = stats.near456 > 0
+            ? stats.sumHz / static_cast<double>(stats.near456) : 0.0;
+        const double meanCents = meanHz > 0.0
+            ? 1200.0 * std::log2(meanHz / 456.0) : 0.0;
+        const double minimumHz = stats.near456 > 0 ? stats.minimumHz : 0.0;
+        const double maximumHz = stats.near456 > 0 ? stats.maximumHz : 0.0;
+        std::cerr << "BOUNDARY_PATH_BIAS path=" << name
+                  << " fresh_valid=" << stats.freshValid
+                  << " near456=" << stats.near456
+                  << " mean_hz=" << meanHz
+                  << " mean_cents=" << meanCents
+                  << " minmax_hz=" << minimumHz << ',' << maximumHz
+                  << " above_hold_boundary=" << stats.aboveHoldBoundary
+                  << " hold_boundary_hz=" << holdBoundaryHz << '\n';
+    };
+    printBoundaryStats("full", boundaryFull);
+    printBoundaryStats("half", boundaryHalf);
+    printBoundaryStats("quarter", boundaryQuarter);
+    printBoundaryStats("eighth", boundaryEighth);
+    printBoundaryStats("output", boundaryOutput);
+
+    // OBSERVATION_MEMORY_SEPARATION_V1: exact digital absence clears detector
+    // history immediately, but downstream target-hold invariants remain separate.
+    auto zeroGapTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+    zeroGapTracker->prepare(48000.0);
+    zeroGapTracker->setRange(70.0f, 700.0f);
+    bool acquiredBeforeZero = false;
+    for (int sample = 0; sample < 12000; ++sample)
+    {
+        const float phase = static_cast<float>(2.0 * 3.14159265358979323846
+            * 220.0 * static_cast<double>(sample) / 48000.0);
+        ModernPitchEngine::PitchObservation observed;
+        if (zeroGapTracker->processSample(0.075f * std::sin(phase), observed)
+            && observed.valid)
+        {
+            acquiredBeforeZero = true;
+        }
+    }
+    zeroGapTracker->setRescueMode(true);
+    zeroGapTracker->setReacquisitionAnchor(220.0f);
+    ModernPitchEngine::PitchObservation zeroObserved;
+    for (int sample = 0; sample < 512; ++sample)
+        zeroGapTracker->processSample(0.0f, zeroObserved);
+    const bool beamClearedByZero = std::none_of(
+        zeroGapTracker->decoderBeam_.begin(), zeroGapTracker->decoderBeam_.end(),
+        [](const auto& state) { return state.valid; });
+    success &= check(acquiredBeforeZero
+                     && zeroGapTracker->trackedPitchHz_ == 0.0f
+                     && zeroGapTracker->reacquisitionAnchorHz_ == 0.0f
+                     && beamClearedByZero
+                     && zeroGapTracker->observationContinuityBroken_,
+                     "exact_zero_clears_detector_observation_memory");
+    zeroGapTracker->setReacquisitionAnchor(110.0f);
+    success &= check(zeroGapTracker->reacquisitionAnchorHz_ == 0.0f,
+                     "musical_anchor_cannot_reenter_detector_after_zero");
+
+    int postZeroReacquiredAt = -1;
+    constexpr float postZeroHz = 246.94165f;
+    for (int sample = 0; sample < 12000; ++sample)
+    {
+        const float phase = static_cast<float>(2.0 * 3.14159265358979323846
+            * static_cast<double>(postZeroHz) * static_cast<double>(sample) / 48000.0);
+        ModernPitchEngine::PitchObservation observed;
+        if (zeroGapTracker->processSample(0.075f * std::sin(phase), observed)
+            && observed.valid)
+        {
+            const float cents = std::abs(1200.0f * std::log2(
+                std::max(1.0f, observed.correctionFrequencyHz) / postZeroHz));
+            if (cents < 45.0f)
+            {
+                postZeroReacquiredAt = sample;
+                break;
+            }
+        }
+    }
+    success &= check(postZeroReacquiredAt >= 0 && postZeroReacquiredAt < 6000,
+                     "post_zero_tone_is_fresh_detector_acquisition");
+
+    auto watchdogNoiseTracker = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
+    watchdogNoiseTracker->prepare(48000.0);
+    watchdogNoiseTracker->setRange(70.0f, 700.0f);
+    watchdogNoiseTracker->trackedPitchHz_ = 110.0f;
+    watchdogNoiseTracker->trackedConfidence_ = 0.90f;
+    watchdogNoiseTracker->trackedPeriodicity_ = 0.90f;
+    watchdogNoiseTracker->setReacquisitionAnchor(110.0f);
+    watchdogNoiseTracker->setTransitionWake(true);
+    std::uint32_t watchdogRng = 0x4f1bbcdcu;
+    float watchdogColored = 0.0f;
+    int watchdogNoiseValid = 0;
+    for (int sample = 0; sample < 18000; ++sample)
+    {
+        watchdogRng ^= watchdogRng << 13;
+        watchdogRng ^= watchdogRng >> 17;
+        watchdogRng ^= watchdogRng << 5;
+        const float white = (static_cast<float>(watchdogRng & 0xffffu) / 32767.5f) - 1.0f;
+        watchdogColored = 0.94f * watchdogColored + 0.06f * white;
+        ModernPitchEngine::PitchObservation observed;
+        if (watchdogNoiseTracker->processSample(
+                0.03f * (0.45f * white + 0.55f * watchdogColored), observed)
+            && sample > 4096 && observed.valid)
+        {
+            ++watchdogNoiseValid;
+        }
+    }
+    success &= check(watchdogNoiseValid == 0,
+                     "transition_watchdog_never_invents_f0_on_noise");
 
     ModernPitchEngine::CorrectionState zeroResponseTransition;
     zeroResponseTransition.targetValid = true;

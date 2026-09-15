@@ -233,6 +233,8 @@ private:
         void setRange(float minimumPitchHz, float maximumPitchHz) noexcept;
         void setSensitivity(float sensitivity) noexcept;
         void setRescueMode(bool enabled) noexcept { rescueMode_ = enabled; }
+        // TRANSITION_WAKES_DETECTOR_NOT_OUTPUT_V1: analysis-only watchdog.
+        void setTransitionWake(bool enabled) noexcept { transitionWake_ = enabled; }
         void setReacquisitionAnchor(float frequencyHz) noexcept;
         void clearReacquisitionAnchor() noexcept { reacquisitionAnchorHz_ = 0.0f; }
         bool processSample(float inputSample, PitchObservation& observation) noexcept;
@@ -253,6 +255,15 @@ private:
             float frequencyHz = 0.0f;
             float confidence = 0.0f;
             float periodicity = 0.0f;
+            // VOICE_AWARE_F0_FRONTEND_V1: evidence about whether the measured
+            // period belongs to a coherent vocal source rather than breath,
+            // formant ringing or background noise. Analysis only.
+            float harmonicFamily = -1.0f;
+            float aperiodicity = -1.0f;
+            // PATH_ROLE_SPLIT_V1: orthogonal confidence that this period was
+            // measured from a coherent tonal vocal source rather than a formant,
+            // breath, hiss or background-noise structure. Analysis only.
+            float tonalCleanliness = -1.0f;
             int pathIndex = -1;
             int ageInHops = 1000;
             bool valid = false;
@@ -269,9 +280,12 @@ private:
             float frequencyHz = 0.0f;
             float confidence = 0.0f;
             float periodicity = 0.0f;
+            float harmonicFamily = 1.0f;
+            float tonalCleanliness = 1.0f;
             float consensus = 0.0f;
             float evidenceScore = -1000.0f;
             int supportCount = 0;
+            int cleanSupportCount = 0;
             int directSupportCount = 0;
             std::uint8_t supportMask = 0;
             std::uint8_t freshSupportMask = 0;
@@ -301,6 +315,9 @@ private:
         static_assert((ringSize & (ringSize - 1)) == 0,
                       "Pitch tracker ring size must be a power of two");
 
+        // OBSERVATION_MEMORY_SEPARATION_V1: clears detector hypotheses only.
+        // It never touches ScaleQuantizer, CorrectionState or renderer state.
+        void clearObservationMemory(bool clearAnalysisBuffers) noexcept;
         void push(std::array<float, ringSize>& ring,
                   int& writePosition,
                   int& availableSamples,
@@ -320,7 +337,12 @@ private:
             int candidateCount,
             std::array<ConsensusHypothesis, maxConsensusHypotheses>& hypotheses) const noexcept;
         [[nodiscard]] DecoderDecision decodeCandidate(bool onsetPending) noexcept;
-        [[nodiscard]] float pathReliability(int pathIndex, float frequencyHz) const noexcept;
+        // PATH_ROLE_SPLIT_V1: decimated paths no longer cast equivalent votes.
+        // Pitch authority says how useful a path is for locating F0; cleanliness
+        // authority says how useful it is for deciding whether that F0 belongs to
+        // tonal voice rather than aperiodic/formant/background material.
+        [[nodiscard]] float pathPitchAuthority(int pathIndex, float frequencyHz) const noexcept;
+        [[nodiscard]] float pathCleanlinessAuthority(int pathIndex, float frequencyHz) const noexcept;
         [[nodiscard]] float candidateBaseScore(const PitchCandidate& candidate) const noexcept;
         [[nodiscard]] static float centsDistance(float frequencyA,
                                                  float frequencyB) noexcept;
@@ -342,6 +364,11 @@ private:
         bool rescueMode_ = false;
         bool presenceMode_ = false;
         bool presenceSinceLastHop_ = false;
+        bool transitionWake_ = false;
+        // True after a physical input discontinuity or watchdog falsification.
+        // While true, musical note-body state may not be re-injected as an F0
+        // anchor. A fresh measured F0 clears it.
+        bool observationContinuityBroken_ = false;
 
         std::array<float, ringSize> fullRateRing_ {};
         std::array<float, ringSize> halfRateRing_ {};
@@ -369,6 +396,9 @@ private:
         float dcBlockCoefficient_ = 0.995f;
         float fastEnergy_ = 0.0f;
         float slowEnergy_ = 0.0f;
+        // Lower-envelope estimate used only to rank detector evidence in
+        // ordinary room/live noise. It never gates or attenuates audio.
+        float noiseFloorEnergy_ = 1.0e-6f;
         float fastEnergyCoefficient_ = 0.0f;
         float slowEnergyCoefficient_ = 0.0f;
         float onsetEnvelope_ = 0.0f;
@@ -380,6 +410,9 @@ private:
         CandidateSlot quarterRateCandidate_;
         CandidateSlot eighthRateCandidate_;
         std::array<float, maxAnalysisSize> frame_ {};
+        // Detector-only inverse-filtered residual. The audible signal never
+        // enters this buffer and the renderer never reads it.
+        std::array<float, maxAnalysisSize> voiceResidualFrame_ {};
         std::array<float, maxAnalysisSize> difference_ {};
         std::array<DecoderState, decoderBeamWidth> decoderBeam_ {};
         float trackedPitchHz_ = 0.0f;

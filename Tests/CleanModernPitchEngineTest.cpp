@@ -324,9 +324,17 @@ int main()
     const auto highHysteresisResult = render(
         ModernPitchEngine::LatencyMode::quality, highHysteresis,
         twoNoteScale, 440.0, 5.0, boundaryStep);
+    const double expectedUpperTargetHz = 440.0 * semitone;
     success &= check(std::abs(lowHysteresisResult.finalMeter.targetPitchHz
-                              - highHysteresisResult.finalMeter.targetPitchHz) > 15.0f,
-                     "lock_hysteresis_changes_target_identity");
+                              - expectedUpperTargetHz) < 0.5f
+                     && std::abs(highHysteresisResult.finalMeter.targetPitchHz
+                                 - expectedUpperTargetHz) < 0.5f
+                     && std::abs(lowHysteresisResult.finalMeter.targetPitchHz
+                                 - highHysteresisResult.finalMeter.targetPitchHz) < 0.5f,
+                     "qualified_new_note_is_not_blocked_by_hold");
+    success &= check(std::abs(lowHysteresisResult.finalMeter.correctionCents) > 0.5f
+                     && std::abs(highHysteresisResult.finalMeter.correctionCents) > 0.5f,
+                     "hold_never_returns_owned_note_to_dry");
 
     const auto vibratoInput = [](double seconds)
     {

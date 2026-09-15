@@ -115,6 +115,7 @@ void ModernPitchEngine::MultiRatePitchTracker::reset() noexcept
     quarterRateRing_.fill(0.0f);
     eighthRateRing_.fill(0.0f);
     frame_.fill(0.0f);
+    voiceResidualFrame_.fill(0.0f);
     difference_.fill(1.0f);
 
     fullRateWritePosition_ = 0;
@@ -139,6 +140,7 @@ void ModernPitchEngine::MultiRatePitchTracker::reset() noexcept
     previousDcOutput_ = 0.0f;
     fastEnergy_ = 0.0f;
     slowEnergy_ = 0.0f;
+    noiseFloorEnergy_ = minimumDetectorRms * minimumDetectorRms;
     onsetEnvelope_ = 0.0f;
     onsetCooldownSamples_ = 0;
     onsetPending_ = false;
@@ -159,6 +161,8 @@ void ModernPitchEngine::MultiRatePitchTracker::reset() noexcept
     rescueMode_ = false;
     presenceMode_ = false;
     presenceSinceLastHop_ = false;
+    transitionWake_ = false;
+    observationContinuityBroken_ = false;
 
     octaveState_ = 0;
     pendingOctaveDelta_ = 0;
@@ -185,12 +189,73 @@ void ModernPitchEngine::MultiRatePitchTracker::setSensitivity(float sensitivity)
 void ModernPitchEngine::MultiRatePitchTracker::setReacquisitionAnchor(
     float frequencyHz) noexcept
 {
-    // PITCH_RESCUE_V2_PERSISTENT_ANCHOR
-    // This is musical note-body memory supplied by the supervisor, not current
-    // detector state. It must survive trackedPitchHz_ invalidation.
+    // OBSERVATION_MEMORY_SEPARATION_V1
+    // This value is only a short physical-continuity prior. It is not musical
+    // memory. After a real input discontinuity the scale target may remain owned
+    // downstream, but that old target may not repopulate detector history.
+    if (observationContinuityBroken_)
+    {
+        reacquisitionAnchorHz_ = 0.0f;
+        return;
+    }
     reacquisitionAnchorHz_ = std::isfinite(frequencyHz) && frequencyHz > 0.0f
         ? std::clamp(frequencyHz, 20.0f, 4000.0f)
         : 0.0f;
+}
+
+void ModernPitchEngine::MultiRatePitchTracker::clearObservationMemory(
+    bool clearAnalysisBuffers) noexcept
+{
+    trackedPitchHz_ = 0.0f;
+    reacquisitionAnchorHz_ = 0.0f;
+    trackedConfidence_ = 0.0f;
+    trackedPeriodicity_ = 0.0f;
+    trackedConsensus_ = 0.0f;
+    trackedSupportCount_ = 0;
+    invalidHopCount_ = 0;
+    decoderBeam_.fill({});
+    octaveState_ = 0;
+    pendingOctaveDelta_ = 0;
+    pendingOctaveCount_ = 0;
+    pendingOctaveFrequencyHz_ = 0.0f;
+    committedOctaveFrequencyHz_ = 0.0f;
+    octaveCommitGuardHops_ = 0;
+    observationContinuityBroken_ = true;
+
+    if (!clearAnalysisBuffers)
+        return;
+
+    // A physical gap means samples on the two sides are not one analysis frame.
+    // Drop only detector buffers; the single wet renderer/OLA is untouched.
+    fullRateRing_.fill(0.0f);
+    halfRateRing_.fill(0.0f);
+    quarterRateRing_.fill(0.0f);
+    eighthRateRing_.fill(0.0f);
+    fullRateWritePosition_ = 0;
+    halfRateWritePosition_ = 0;
+    quarterRateWritePosition_ = 0;
+    eighthRateWritePosition_ = 0;
+    fullRateAvailableSamples_ = 0;
+    halfRateAvailableSamples_ = 0;
+    quarterRateAvailableSamples_ = 0;
+    eighthRateAvailableSamples_ = 0;
+    halfRateDecimationCounter_ = 0;
+    quarterRateDecimationCounter_ = 0;
+    eighthRateDecimationCounter_ = 0;
+    analysisHopCounter_ = 0;
+    fullRateCandidate_ = {};
+    halfRateCandidate_ = {};
+    quarterRateCandidate_ = {};
+    eighthRateCandidate_ = {};
+    halfRateAntiAlias_.reset();
+    quarterRateAntiAlias_.reset();
+    eighthRateAntiAlias_.reset();
+    previousInput_ = 0.0f;
+    previousDcOutput_ = 0.0f;
+    onsetEnvelope_ = 0.0f;
+    onsetCooldownSamples_ = 0;
+    onsetPending_ = false;
+    presenceSinceLastHop_ = false;
 }
 
 void ModernPitchEngine::MultiRatePitchTracker::push(
@@ -250,6 +315,34 @@ ModernPitchEngine::MultiRatePitchTracker::analyse(
     if (rms < minimumDetectorRms)
         return result;
 
+    // VOICE_AWARE_F0_FRONTEND_V1
+    // Estimate a first-order vocal-tract predictor from this analysis frame and
+    // run period estimation on the inverse-filtered residual. This is analysis
+    // only: no sample from voiceResidualFrame_ can reach the audio renderer.
+    double predictorNumerator = 0.0;
+    double predictorDenominator = 0.0;
+    for (int index = 1; index < analysisLength; ++index)
+    {
+        const double current = frame_[static_cast<std::size_t>(index)];
+        const double previous = frame_[static_cast<std::size_t>(index - 1)];
+        predictorNumerator += current * previous;
+        predictorDenominator += previous * previous;
+    }
+    const float predictor = static_cast<float>(std::clamp(
+        predictorNumerator / std::max(1.0e-20, predictorDenominator),
+        -0.92, 0.92));
+    voiceResidualFrame_[0] = frame_[0];
+    for (int index = 1; index < analysisLength; ++index)
+    {
+        voiceResidualFrame_[static_cast<std::size_t>(index)] =
+            frame_[static_cast<std::size_t>(index)]
+            - predictor * frame_[static_cast<std::size_t>(index - 1)];
+    }
+
+    const float noiseRms = std::sqrt(std::max(1.0e-12f, noiseFloorEnergy_));
+    const float snrRatio = rms / std::max(0.5f * minimumDetectorRms, noiseRms);
+    const float snrSupport = smoothStep(1.10f, 3.50f, snrRatio);
+
     const int tauMinimum = std::clamp(
         static_cast<int>(std::floor(effectiveSampleRate
                                     / static_cast<double>(maximumFrequency))),
@@ -277,14 +370,14 @@ ModernPitchEngine::MultiRatePitchTracker::analyse(
         const int vectorEnd = overlap & ~3;
         for (; index < vectorEnd; index += 4)
         {
-            const float delta0 = frame_[static_cast<std::size_t>(index)]
-                               - frame_[static_cast<std::size_t>(index + tau)];
-            const float delta1 = frame_[static_cast<std::size_t>(index + 1)]
-                               - frame_[static_cast<std::size_t>(index + tau + 1)];
-            const float delta2 = frame_[static_cast<std::size_t>(index + 2)]
-                               - frame_[static_cast<std::size_t>(index + tau + 2)];
-            const float delta3 = frame_[static_cast<std::size_t>(index + 3)]
-                               - frame_[static_cast<std::size_t>(index + tau + 3)];
+            const float delta0 = voiceResidualFrame_[static_cast<std::size_t>(index)]
+                               - voiceResidualFrame_[static_cast<std::size_t>(index + tau)];
+            const float delta1 = voiceResidualFrame_[static_cast<std::size_t>(index + 1)]
+                               - voiceResidualFrame_[static_cast<std::size_t>(index + tau + 1)];
+            const float delta2 = voiceResidualFrame_[static_cast<std::size_t>(index + 2)]
+                               - voiceResidualFrame_[static_cast<std::size_t>(index + tau + 2)];
+            const float delta3 = voiceResidualFrame_[static_cast<std::size_t>(index + 3)]
+                               - voiceResidualFrame_[static_cast<std::size_t>(index + tau + 3)];
             sum0 += delta0 * delta0;
             sum1 += delta1 * delta1;
             sum2 += delta2 * delta2;
@@ -294,8 +387,8 @@ ModernPitchEngine::MultiRatePitchTracker::analyse(
         float differenceSum = (sum0 + sum1) + (sum2 + sum3);
         for (; index < overlap; ++index)
         {
-            const float delta = frame_[static_cast<std::size_t>(index)]
-                              - frame_[static_cast<std::size_t>(index + tau)];
+            const float delta = voiceResidualFrame_[static_cast<std::size_t>(index)]
+                              - voiceResidualFrame_[static_cast<std::size_t>(index + tau)];
             differenceSum += delta * delta;
         }
 
@@ -367,9 +460,103 @@ ModernPitchEngine::MultiRatePitchTracker::analyse(
         1.00f, 0.98f, 0.88f, 0.70f, 0.78f
     };
 
+    const auto residualLagCorrelation = [&](int lag) noexcept
+    {
+        if (lag <= 0 || lag >= analysisLength - 8)
+            return 0.0f;
+        double correlation = 0.0;
+        double energyA = 0.0;
+        double energyB = 0.0;
+        const int overlap = analysisLength - lag;
+        for (int index = 0; index < overlap; ++index)
+        {
+            const double a = voiceResidualFrame_[static_cast<std::size_t>(index)];
+            const double b = voiceResidualFrame_[static_cast<std::size_t>(index + lag)];
+            correlation += a * b;
+            energyA += a * a;
+            energyB += b * b;
+        }
+        const double denominator = std::sqrt(std::max(1.0e-20, energyA * energyB));
+        return denominator > 0.0
+            ? clamp01(static_cast<float>(correlation / denominator)) : 0.0f;
+    };
+
+    // RESIDUAL_HARMONIC_CONTRAST_V1
+    // A real voiced source produces narrow coherent lines at F0 multiples after
+    // inverse filtering. Broadband breath/background produces comparable energy
+    // between those lines. The half-harmonic subtraction also suppresses the
+    // common 2F0 alias without requiring detector history to own the register.
+    const auto residualLineCoherence = [&](double cyclesPerSample) noexcept
+    {
+        if (!std::isfinite(cyclesPerSample)
+            || cyclesPerSample <= 0.0 || cyclesPerSample >= 0.48)
+        {
+            return 0.0f;
+        }
+        double real = 0.0;
+        double imag = 0.0;
+        double signalEnergy = 0.0;
+        double windowEnergy = 0.0;
+        const double denominatorN = static_cast<double>(std::max(1, analysisLength - 1));
+        for (int index = 0; index < analysisLength; ++index)
+        {
+            const double window = 0.5 - 0.5 * std::cos(
+                twoPi * static_cast<double>(index) / denominatorN);
+            const double sample = static_cast<double>(
+                voiceResidualFrame_[static_cast<std::size_t>(index)]) * window;
+            const double phase = twoPi * cyclesPerSample * static_cast<double>(index);
+            real += sample * std::cos(phase);
+            imag -= sample * std::sin(phase);
+            signalEnergy += sample * sample;
+            windowEnergy += window * window;
+        }
+        const double normaliser = std::max(1.0e-20, signalEnergy * windowEnergy);
+        return clamp01(static_cast<float>(std::sqrt(
+            2.0 * (real * real + imag * imag) / normaliser)));
+    };
+
+    const auto residualHarmonicContrast = [&](int tau) noexcept
+    {
+        if (tau <= 1)
+            return 0.0f;
+        const double fundamentalCycles = 1.0 / static_cast<double>(tau);
+        float harmonicScore = residualLineCoherence(fundamentalCycles);
+        float interHarmonicScore = 0.0f;
+        float harmonicWeight = 1.0f;
+        float interWeight = 0.0f;
+        for (int harmonic = 2; harmonic <= 6; ++harmonic)
+        {
+            const double harmonicCycles = fundamentalCycles
+                                        * static_cast<double>(harmonic);
+            if (harmonicCycles >= 0.45)
+                break;
+            const float weight = 1.0f / std::sqrt(static_cast<float>(harmonic));
+            harmonicScore += weight * residualLineCoherence(harmonicCycles);
+            harmonicWeight += weight;
+
+            const double interCycles = fundamentalCycles
+                                     * (static_cast<double>(harmonic) - 0.5);
+            if (interCycles < 0.45)
+            {
+                interHarmonicScore += weight * residualLineCoherence(interCycles);
+                interWeight += weight;
+            }
+        }
+        const float harmonicMean = harmonicScore / std::max(1.0e-6f, harmonicWeight);
+        const float interMean = interWeight > 1.0e-6f
+            ? interHarmonicScore / interWeight : 0.0f;
+        // Require harmonic lines to emerge above the local inter-harmonic floor,
+        // not merely above absolute amplitude. This remains useful at low SNR.
+        return smoothStep(0.025f, 0.30f,
+                          harmonicMean - 0.78f * interMean);
+    };
+
     float bestScore = -1.0f;
+    float bestSelectionScore = -1.0f;
     int bestTau = -1;
     float bestPeriodicity = 0.0f;
+    float bestHarmonicFamily = 0.0f;
+    float bestTonalCleanliness = 0.0f;
 
     for (std::size_t candidateIndex = 0;
          candidateIndex < candidateTaus.size();
@@ -386,8 +573,8 @@ ModernPitchEngine::MultiRatePitchTracker::analyse(
 
         for (int index = 0; index < overlap; ++index)
         {
-            const double a = frame_[static_cast<std::size_t>(index)];
-            const double b = frame_[static_cast<std::size_t>(index + tau)];
+            const double a = voiceResidualFrame_[static_cast<std::size_t>(index)];
+            const double b = voiceResidualFrame_[static_cast<std::size_t>(index + tau)];
             correlation += a * b;
             energyA += a * a;
             energyB += b * b;
@@ -397,46 +584,170 @@ ModernPitchEngine::MultiRatePitchTracker::analyse(
         const float normalisedCorrelation = denominator > 0.0
             ? static_cast<float>(correlation / denominator)
             : 0.0f;
-        const float periodicity = clamp01(0.5f * (normalisedCorrelation + 1.0f));
+        // Zero correlation is zero periodic evidence. The old affine mapping
+        // made uncorrelated noise start at 0.5 periodicity.
+        const float periodicity = clamp01(normalisedCorrelation);
         const float yinConfidence = clamp01(
             1.0f - difference_[static_cast<std::size_t>(tau)]);
+
+        float cycleFamilySum = periodicity;
+        float cycleFamilyWeight = 1.0f;
+        if (2 * tau < analysisLength - 8)
+        {
+            cycleFamilySum += 0.70f * residualLagCorrelation(2 * tau);
+            cycleFamilyWeight += 0.70f;
+        }
+        if (3 * tau < analysisLength - 8)
+        {
+            cycleFamilySum += 0.45f * residualLagCorrelation(3 * tau);
+            cycleFamilyWeight += 0.45f;
+        }
+        const float cycleFamily = clamp01(cycleFamilySum / cycleFamilyWeight);
+        const float harmonicContrast = residualHarmonicContrast(tau);
+        // Both time-domain repetition and a residual harmonic comb must agree.
+        // A weak value in either dimension cannot be hidden by the other one.
+        const float harmonicFamily = std::sqrt(std::max(
+            0.0f, cycleFamily * harmonicContrast));
+        const float repeatedTonalStructure = std::sqrt(std::max(
+            0.0f, periodicity * cycleFamily));
+
+        // SUBFRAME_GLOTTAL_STABILITY_V1
+        const auto subframeLagCorrelation = [&](int start, int length, int lag) noexcept
+        {
+            if (lag <= 0 || length <= lag + 8 || start < 0
+                || start + length > analysisLength)
+            {
+                return 0.0f;
+            }
+            double corr = 0.0;
+            double energyA = 0.0;
+            double energyB = 0.0;
+            const int stop = start + length - lag;
+            for (int index = start; index < stop; ++index)
+            {
+                const double a = voiceResidualFrame_[static_cast<std::size_t>(index)];
+                const double b = voiceResidualFrame_[static_cast<std::size_t>(index + lag)];
+                corr += a * b;
+                energyA += a * a;
+                energyB += b * b;
+            }
+            const double denominator = std::sqrt(std::max(1.0e-20,
+                                                          energyA * energyB));
+            return denominator > 0.0
+                ? clamp01(static_cast<float>(corr / denominator)) : 0.0f;
+        };
+
+        const int halfLength = analysisLength / 2;
+        const float firstHalfPeriodicity = subframeLagCorrelation(0,
+                                                                  halfLength,
+                                                                  tau);
+        const float secondHalfPeriodicity = subframeLagCorrelation(
+            analysisLength - halfLength, halfLength, tau);
+        const float subframeStability = std::sqrt(std::max(
+            0.0f, firstHalfPeriodicity * secondHalfPeriodicity));
+        const float stableRepeatedStructure = std::sqrt(std::max(
+            0.0f, repeatedTonalStructure * subframeStability));
+        const float tonalCleanliness = clamp01(std::sqrt(std::max(
+            0.0f, harmonicContrast * stableRepeatedStructure))
+            * (0.90f + 0.10f * snrSupport));
 
         // Prefer candidates containing at least two periods, but do not reject
         // low notes whose fundamental is mainly inferred from their harmonics.
         const float periodsInWindow = static_cast<float>(analysisLength)
                                     / static_cast<float>(std::max(1, tau));
         const float periodSupport = std::clamp(periodsInWindow / 2.2f, 0.55f, 1.0f);
-        const float score = (0.67f * yinConfidence + 0.33f * periodicity)
+        const float score = (0.44f * yinConfidence
+                           + 0.22f * periodicity
+                           + 0.17f * cycleFamily
+                           + 0.17f * harmonicContrast)
                           * periodSupport
-                          * candidatePriors[candidateIndex];
+                          * candidatePriors[candidateIndex]
+                          * (0.82f + 0.18f * snrSupport);
 
-        if (score > bestScore)
+        // DIRECT_HIGH_YIN_FIRST_MINIMUM_V1: selection-only preference.
+        // Never inflate the published confidence/evidence score.
+        const bool directHighThresholdCandidate = thresholdTau >= 0
+            && candidateIndex == 0
+            && effectiveSampleRate >= sampleRate_ * 0.75
+            && effectiveSampleRate / static_cast<double>(std::max(1, tau)) > 900.0
+            && harmonicFamily >= 0.60f
+            && tonalCleanliness >= 0.68f;
+        const float selectionScore = score
+            * (directHighThresholdCandidate ? 1.35f : 1.0f);
+
+        if (selectionScore > bestSelectionScore)
         {
+            bestSelectionScore = selectionScore;
             bestScore = score;
             bestTau = tau;
             bestPeriodicity = periodicity;
+            bestHarmonicFamily = harmonicFamily;
+            bestTonalCleanliness = tonalCleanliness;
         }
     }
 
-    const float minimumCandidateScore = presenceMode_
-        ? 0.0f : (rescueMode_ ? 0.34f : 0.45f);
+    const float minimumCandidateScore = rescueMode_ ? 0.34f : 0.45f;
+    const float provisionalFamilyFloor = rescueMode_ ? 0.16f : 0.19f;
+    const float provisionalScoreFloor = rescueMode_ ? 0.20f : 0.24f;
     if (bestTau < 2
-        || (!presenceMode_
-            && (!structurallyTrusted || bestScore < minimumCandidateScore)))
+        || bestHarmonicFamily < provisionalFamilyFloor
+        || bestScore < provisionalScoreFloor)
     {
         return result;
     }
 
-    double refinedTau = static_cast<double>(bestTau);
-    if (bestTau > tauMinimum && bestTau < tauMaximum)
+    // CLEAN_RESIDUAL_DISCOVERS_SOURCE_GEOMETRY_REFINES_V1
+    const auto sourceLagCorrelation = [&](int lag) noexcept
     {
-        const double left = difference_[static_cast<std::size_t>(bestTau - 1)];
-        const double centre = difference_[static_cast<std::size_t>(bestTau)];
-        const double right = difference_[static_cast<std::size_t>(bestTau + 1)];
-        const double denominator = left - 2.0 * centre + right;
+        if (lag <= 0 || lag >= analysisLength - 8)
+            return -1.0f;
+        double correlation = 0.0;
+        double energyA = 0.0;
+        double energyB = 0.0;
+        const int overlap = analysisLength - lag;
+        for (int index = 0; index < overlap; ++index)
+        {
+            const double a = frame_[static_cast<std::size_t>(index)];
+            const double b = frame_[static_cast<std::size_t>(index + lag)];
+            correlation += a * b;
+            energyA += a * a;
+            energyB += b * b;
+        }
+        const double denominator = std::sqrt(std::max(1.0e-20, energyA * energyB));
+        return denominator > 0.0
+            ? static_cast<float>(correlation / denominator) : -1.0f;
+    };
 
+    int sourceTau = bestTau;
+    float sourcePeak = sourceLagCorrelation(bestTau);
+    for (int offset = -2; offset <= 2; ++offset)
+    {
+        const int candidateTau = bestTau + offset;
+        if (candidateTau < tauMinimum || candidateTau > tauMaximum)
+            continue;
+        const float candidatePeak = sourceLagCorrelation(candidateTau);
+        if (candidatePeak > sourcePeak)
+        {
+            sourcePeak = candidatePeak;
+            sourceTau = candidateTau;
+        }
+    }
+
+    double refinedTau = static_cast<double>(sourceTau);
+    if (sourceTau > tauMinimum && sourceTau < tauMaximum)
+    {
+        const double left = sourceLagCorrelation(sourceTau - 1);
+        const double centre = sourceLagCorrelation(sourceTau);
+        const double right = sourceLagCorrelation(sourceTau + 1);
+        const double denominator = left - 2.0 * centre + right;
         if (std::abs(denominator) > 1.0e-12)
-            refinedTau += 0.5 * (left - right) / denominator;
+        {
+            // Parabolic peak interpolation. Clamp the fractional correction so
+            // source refinement cannot escape the already-qualified lag basin.
+            const double fractional = std::clamp(
+                0.5 * (left - right) / denominator, -0.75, 0.75);
+            refinedTau += fractional;
+        }
     }
 
     if (refinedTau <= 0.0)
@@ -453,7 +764,24 @@ ModernPitchEngine::MultiRatePitchTracker::analyse(
     result.frequencyHz = frequency;
     result.confidence = clamp01(bestScore);
     result.periodicity = bestPeriodicity;
-    result.valid = structurallyTrusted && bestScore >= minimumCandidateScore;
+    result.harmonicFamily = bestHarmonicFamily;
+    result.aperiodicity = 1.0f - bestHarmonicFamily;
+    result.tonalCleanliness = bestTonalCleanliness;
+    const float trustedFamilyFloor = rescueMode_ ? 0.27f : 0.32f;
+    // LOW_RATE_RESONANCE_VETO_V1: effectiveSampleRate identifies the analysis
+    // rate inside analyse(). Low-rate paths may locate periods with little
+    // remaining spectral evidence, so they need a cleaner source before they
+    // independently assert "vocal F0". This is not a detector-wide threshold.
+    const double analysisRateRatio = effectiveSampleRate / std::max(1.0, sampleRate_);
+    const float trustedCleanlinessFloor = analysisRateRatio <= 0.14
+        ? (rescueMode_ ? 0.40f : 0.46f)
+        : (analysisRateRatio <= 0.30
+            ? (rescueMode_ ? 0.36f : 0.40f)
+            : (rescueMode_ ? 0.22f : 0.26f));
+    result.valid = structurallyTrusted
+        && bestScore >= minimumCandidateScore
+        && bestHarmonicFamily >= trustedFamilyFloor
+        && bestTonalCleanliness >= trustedCleanlinessFloor;
     return result;
 }
 
@@ -479,7 +807,7 @@ float ModernPitchEngine::MultiRatePitchTracker::candidateBaseScore(
                   + 0.30f * candidate.periodicity) * ageWeight);
 }
 
-float ModernPitchEngine::MultiRatePitchTracker::pathReliability(
+float ModernPitchEngine::MultiRatePitchTracker::pathPitchAuthority(
     int pathIndex,
     float frequencyHz) const noexcept
 {
@@ -491,18 +819,48 @@ float ModernPitchEngine::MultiRatePitchTracker::pathReliability(
     {
         const float lower = smoothStep(lowerSoft, lowerFull, frequency);
         const float upper = 1.0f - smoothStep(upperFull, upperSoft, frequency);
-        return std::clamp(lower * upper, 0.08f, 1.0f);
+        return std::clamp(lower * upper, 0.03f, 1.0f);
     };
 
     switch (pathIndex)
     {
-        case 0: return bandWeight(frequencyHz, 125.0f, 185.0f, 1250.0f, 2300.0f);
-        case 1: return bandWeight(frequencyHz, 62.0f, 92.0f, 650.0f, 980.0f);
-        case 2: return bandWeight(frequencyHz, 30.0f, 48.0f, 330.0f, 500.0f);
-        case 3: return bandWeight(frequencyHz, 22.0f, 36.0f, 165.0f, 250.0f);
+        case 0: return bandWeight(frequencyHz, 135.0f, 185.0f, 1250.0f, 2400.0f);
+        case 1: return bandWeight(frequencyHz,  62.0f,  84.0f,  720.0f, 1020.0f);
+        // QUARTER_PATH_UPPER_COORDINATE_ROLLOFF_V1
+        case 2: return bandWeight(frequencyHz,  28.0f,  42.0f,  390.0f,  450.0f);
+        case 3: return bandWeight(frequencyHz,  20.0f,  30.0f,  170.0f,  250.0f);
         default: break;
     }
+    return 0.0f;
+}
 
+float ModernPitchEngine::MultiRatePitchTracker::pathCleanlinessAuthority(
+    int pathIndex,
+    float frequencyHz) const noexcept
+{
+    const auto bandWeight = [](float frequency,
+                               float lowerSoft,
+                               float lowerFull,
+                               float upperFull,
+                               float upperSoft) noexcept
+    {
+        const float lower = smoothStep(lowerSoft, lowerFull, frequency);
+        const float upper = 1.0f - smoothStep(upperFull, upperSoft, frequency);
+        return std::clamp(lower * upper, 0.05f, 1.0f);
+    };
+
+    // The lower the analysis rate, the less high-frequency evidence remains to
+    // distinguish glottal periodicity from breath/hiss. Low-rate paths therefore
+    // remain valuable frequency estimators but progressively weaker cleanliness
+    // witnesses. This is deliberate, not a quality ranking of their F0 estimate.
+    switch (pathIndex)
+    {
+        case 0: return 1.00f * bandWeight(frequencyHz, 130.0f, 175.0f, 1450.0f, 2700.0f);
+        case 1: return 0.95f * bandWeight(frequencyHz,  58.0f,  80.0f,  760.0f, 1080.0f);
+        case 2: return 0.78f * bandWeight(frequencyHz,  26.0f,  40.0f,  390.0f,  560.0f);
+        case 3: return 0.40f * bandWeight(frequencyHz,  20.0f,  30.0f,  175.0f,  255.0f);
+        default: break;
+    }
     return 0.0f;
 }
 
@@ -582,10 +940,19 @@ int ModernPitchEngine::MultiRatePitchTracker::buildConsensusHypotheses(
     {
         const float seedFrequency = hypotheses[static_cast<std::size_t>(seedIndex)].frequencyHz;
         double weightedLogFrequency = 0.0;
-        float totalWeight = 0.0f;
+        float coordinateWeightSum = 0.0f;
+        // DIRECT_COORDINATE_OWNS_F0_V1: octave-transposed support verifies a
+        // family but cannot steer a coordinate that is measured directly.
+        double directWeightedLogFrequency = 0.0;
+        float directCoordinateWeightSum = 0.0f;
+        float evidenceWeightSum = 0.0f;
         float confidenceSum = 0.0f;
         float periodicitySum = 0.0f;
+        float harmonicFamilySum = 0.0f;
+        float cleanlinessSum = 0.0f;
+        float cleanlinessWeightSum = 0.0f;
         int supportCount = 0;
+        int cleanSupportCount = 0;
         int directSupportCount = 0;
         std::uint8_t supportMask = 0;
         std::uint8_t freshSupportMask = 0;
@@ -619,24 +986,56 @@ int ModernPitchEngine::MultiRatePitchTracker::buildConsensusHypotheses(
 
             const float octavePrior = direct ? 1.0f
                 : (std::abs(bestOctaveShift) == 1 ? 0.52f : 0.25f);
-            const float reliability = pathReliability(candidate.pathIndex,
-                                                       candidate.frequencyHz);
+            const float pitchAuthority = pathPitchAuthority(candidate.pathIndex,
+                                                            candidate.frequencyHz);
+            const float cleanAuthority = pathCleanlinessAuthority(candidate.pathIndex,
+                                                                  candidate.frequencyHz);
             const float baseScore = candidateBaseScore(candidate);
-            const float weight = baseScore * reliability * octavePrior;
+            const float candidateCleanliness = candidate.tonalCleanliness >= 0.0f
+                ? clamp01(candidate.tonalCleanliness) : 1.0f;
+            const float evidenceWeight = baseScore * pitchAuthority * octavePrior;
+            // STALE_PATH_VERIFIES_NOT_STEERS_V1: keep stale candidates as
+            // evidence, but exponentially remove their ability to pull the live
+            // frequency coordinate after a new fresh family appears.
+            const float steeringFreshness = std::exp(-0.62f
+                * static_cast<float>(std::max(0, candidate.ageInHops)));
+            const float coordinateWeight = evidenceWeight * steeringFreshness
+                * (0.72f + 0.28f * candidateCleanliness);
+            const float cleanlinessFreshness = std::exp(-0.42f
+                * static_cast<float>(std::max(0, candidate.ageInHops)));
+            const float cleanlinessWeight = baseScore * cleanAuthority
+                * cleanlinessFreshness;
 
             // Octave-transposed support is useful as harmonic evidence, but it
             // must be genuinely strong; otherwise it is ignored rather than
             // being allowed to manufacture a low subharmonic.
-            const float minimumOctaveSupport = presenceMode_ ? 0.24f : 0.60f;
-            const float minimumWeight = presenceMode_ ? 0.02f : 0.10f;
-            if ((!direct && baseScore < minimumOctaveSupport) || weight < minimumWeight)
+            const float minimumOctaveSupport = rescueMode_ ? 0.48f : 0.60f;
+            const float minimumWeight = rescueMode_ ? 0.07f : 0.10f;
+            if ((!direct && baseScore < minimumOctaveSupport)
+                || evidenceWeight < minimumWeight)
+            {
                 continue;
+            }
 
-            weightedLogFrequency += static_cast<double>(weight)
+            weightedLogFrequency += static_cast<double>(coordinateWeight)
                                   * safeLog2(static_cast<double>(bestFrequency));
-            totalWeight += weight;
-            confidenceSum += weight * candidate.confidence;
-            periodicitySum += weight * candidate.periodicity;
+            coordinateWeightSum += coordinateWeight;
+            if (direct)
+            {
+                directWeightedLogFrequency += static_cast<double>(coordinateWeight)
+                    * safeLog2(static_cast<double>(bestFrequency));
+                directCoordinateWeightSum += coordinateWeight;
+            }
+            evidenceWeightSum += evidenceWeight;
+            confidenceSum += evidenceWeight * candidate.confidence;
+            periodicitySum += evidenceWeight * candidate.periodicity;
+            const float candidateFamily = candidate.harmonicFamily >= 0.0f
+                ? clamp01(candidate.harmonicFamily) : 1.0f;
+            harmonicFamilySum += evidenceWeight * candidateFamily;
+            cleanlinessSum += cleanlinessWeight * candidateCleanliness;
+            cleanlinessWeightSum += cleanlinessWeight;
+            if (cleanlinessWeight >= 0.08f && candidateCleanliness >= 0.24f)
+                ++cleanSupportCount;
             ++supportCount;
             if (direct)
                 ++directSupportCount;
@@ -647,15 +1046,25 @@ int ModernPitchEngine::MultiRatePitchTracker::buildConsensusHypotheses(
                 freshSupportMask = static_cast<std::uint8_t>(freshSupportMask | bit);
         }
 
-        if (supportCount <= 0 || totalWeight <= 1.0e-6f)
+        if (supportCount <= 0 || coordinateWeightSum <= 1.0e-6f
+            || evidenceWeightSum <= 1.0e-6f)
+        {
             continue;
+        }
 
         ConsensusHypothesis hypothesis;
-        hypothesis.frequencyHz = static_cast<float>(std::exp2(
-            weightedLogFrequency / static_cast<double>(totalWeight)));
-        hypothesis.confidence = clamp01(confidenceSum / totalWeight);
-        hypothesis.periodicity = clamp01(periodicitySum / totalWeight);
+        const bool hasDirectCoordinate = directCoordinateWeightSum > 1.0e-6f;
+        const double coordinateLogFrequency = hasDirectCoordinate
+            ? directWeightedLogFrequency / static_cast<double>(directCoordinateWeightSum)
+            : weightedLogFrequency / static_cast<double>(coordinateWeightSum);
+        hypothesis.frequencyHz = static_cast<float>(std::exp2(coordinateLogFrequency));
+        hypothesis.confidence = clamp01(confidenceSum / evidenceWeightSum);
+        hypothesis.periodicity = clamp01(periodicitySum / evidenceWeightSum);
+        hypothesis.harmonicFamily = clamp01(harmonicFamilySum / evidenceWeightSum);
+        hypothesis.tonalCleanliness = cleanlinessWeightSum > 1.0e-6f
+            ? clamp01(cleanlinessSum / cleanlinessWeightSum) : 0.0f;
         hypothesis.supportCount = supportCount;
+        hypothesis.cleanSupportCount = cleanSupportCount;
         hypothesis.directSupportCount = directSupportCount;
         hypothesis.supportMask = supportMask;
         hypothesis.freshSupportMask = freshSupportMask;
@@ -668,15 +1077,31 @@ int ModernPitchEngine::MultiRatePitchTracker::buildConsensusHypotheses(
                                      + 0.58f * pathConsensus
                                      + 0.30f * directConsensus);
 
-        const float meanEvidence = clamp01(totalWeight
+        const float meanEvidence = clamp01(evidenceWeightSum
             / static_cast<float>(std::max(1, supportCount)));
         const float directPenalty = directSupportCount == 0 ? 0.16f : 0.0f;
         hypothesis.evidenceScore = meanEvidence
-                                 * (0.70f + 0.30f * hypothesis.consensus)
+                                 * (0.58f
+                                  + 0.22f * hypothesis.consensus
+                                  + 0.20f * hypothesis.tonalCleanliness)
                                  + 0.045f * static_cast<float>(directSupportCount)
                                  - directPenalty;
-        hypothesis.valid = hypothesis.evidenceScore
-            > (presenceMode_ ? 0.055f : 0.20f);
+        const float minimumHypothesisEvidence = rescueMode_ ? 0.15f : 0.20f;
+        const float cleanFloor = rescueMode_ ? 0.22f : 0.26f;
+        const bool cleanEnough = hypothesis.tonalCleanliness >= cleanFloor
+            || (hypothesis.cleanSupportCount >= 2
+                && hypothesis.harmonicFamily >= 0.42f
+                && hypothesis.tonalCleanliness >= 0.18f);
+        // GLOTTAL_EVIDENCE_FUSION_V2: a resonant pole can look periodic on one
+        // decimated path.  Two direct paths constitute independent geometric
+        // evidence; otherwise demand much stronger cleanliness from the lone
+        // path.  This is detector evidence fusion, not a global confidence gate.
+        const float solitaryHypothesisFloor = rescueMode_ ? 0.64f : 0.68f;
+        const bool sourceStructureCredible = hypothesis.directSupportCount >= 2
+            || hypothesis.tonalCleanliness >= solitaryHypothesisFloor;
+        hypothesis.valid = hypothesis.evidenceScore > minimumHypothesisEvidence
+            && cleanEnough
+            && sourceStructureCredible;
 
         if (!hypothesis.valid)
             continue;
@@ -775,10 +1200,15 @@ void ModernPitchEngine::MultiRatePitchTracker::updateDecoderBeam(
                 const float deltaCents = static_cast<float>(1200.0
                     * (proposal.logFrequency - previous.logFrequency));
                 const float absoluteCents = std::abs(deltaCents);
-                const float continuityBonus = 0.30f * std::exp(-absoluteCents / 85.0f);
+                const bool strongCurrentFamily = hypothesis.harmonicFamily >= 0.58f
+                    && hypothesis.periodicity >= 0.52f
+                    && hypothesis.tonalCleanliness >= 0.34f;
+                const float continuityBonus = (strongCurrentFamily ? 0.10f : 0.30f)
+                    * std::exp(-absoluteCents / 85.0f);
                 const float transitionPenalty = onsetPending
                     ? 0.10f * std::min(1.0f, absoluteCents / 1800.0f)
-                    : 0.19f * std::min(2.0f, absoluteCents / 650.0f);
+                    : (strongCurrentFamily ? 0.10f : 0.19f)
+                        * std::min(2.0f, absoluteCents / 650.0f);
 
                 int octaveDelta = 0;
                 float residualCents = 0.0f;
@@ -792,7 +1222,10 @@ void ModernPitchEngine::MultiRatePitchTracker::updateDecoderBeam(
                         * (1.0f - 0.70f * hypothesis.consensus)
                     : 0.0f;
 
-                const float historyWeight = onsetPending ? 0.24f : 0.72f;
+                // OBSERVATION_MEMORY_IS_FALSIFIABLE_V1: a strong current
+                // vocal family demotes history to a prior; it never owns F0.
+                const float historyWeight = onsetPending ? 0.24f
+                    : (strongCurrentFamily ? 0.28f : 0.72f);
                 const float transitionScore = historyWeight * previous.score
                                             + proposal.score
                                             + continuityBonus
@@ -894,8 +1327,25 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
             {
                 continue;
             }
+            const float candidateCleanliness = candidate.tonalCleanliness >= 0.0f
+                ? clamp01(candidate.tonalCleanliness) : 1.0f;
+            // SINGLE_PATH_RESONANCE_IS_NOT_VOICE_V1: raw fallback has no
+            // independent path corroboration, so a real analyzer candidate must
+            // be substantially cleaner than the ordinary multi-path floor.
+            // SOLITARY_VOICE_STRUCTURE_V3: isolated full-band formant peaks
+            // measured in regression top out below ~0.65 cleanliness. A real
+            // lone F0 must show source structure beyond that measured region.
+            const float solitaryCleanFloor = candidate.pathIndex == 0 ? 0.68f
+                : (candidate.pathIndex == 1 ? 0.66f
+                   : (candidate.pathIndex == 2 ? 0.62f : 0.70f));
+            if (candidate.tonalCleanliness >= 0.0f
+                && candidateCleanliness < solitaryCleanFloor)
+            {
+                continue;
+            }
             const float score = candidateBaseScore(candidate)
-                * pathReliability(candidate.pathIndex, candidate.frequencyHz);
+                * pathPitchAuthority(candidate.pathIndex, candidate.frequencyHz)
+                * (0.70f + 0.30f * candidateCleanliness);
             if (score > bestScore)
             {
                 bestScore = score;
@@ -926,6 +1376,46 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
     if (hypothesisCount <= 0)
         return makeFreshRawDecision();
 
+    // TRANSITION_WAKES_DETECTOR_NOT_OUTPUT_V1
+    // A persistent transition/acquire state may falsify detector memory, never
+    // manufacture F0. Require multiple direct paths plus strong current source
+    // cleanliness before clearing a contradictory old register hypothesis.
+    if (transitionWake_)
+    {
+        const float oldReferenceHz = trackedPitchHz_ > 0.0f
+            ? trackedPitchHz_ : reacquisitionAnchorHz_;
+        int wakeHypothesis = -1;
+        float wakeScore = -1000.0f;
+        if (oldReferenceHz > 0.0f)
+        {
+            for (int index = 0; index < hypothesisCount; ++index)
+            {
+                const auto& current = hypotheses[static_cast<std::size_t>(index)];
+                if (!current.valid
+                    || current.freshSupportMask == 0
+                    || current.directSupportCount < 2
+                    || current.cleanSupportCount < 2
+                    || current.tonalCleanliness < 0.62f
+                    || current.harmonicFamily < 0.58f
+                    || current.periodicity < 0.52f
+                    || centsDistance(oldReferenceHz, current.frequencyHz) < 95.0f)
+                {
+                    continue;
+                }
+                const float currentScore = current.evidenceScore
+                    + 0.18f * current.consensus
+                    + 0.18f * current.tonalCleanliness;
+                if (currentScore > wakeScore)
+                {
+                    wakeScore = currentScore;
+                    wakeHypothesis = index;
+                }
+            }
+        }
+        if (wakeHypothesis >= 0)
+            clearObservationMemory(false);
+    }
+
     updateDecoderBeam(hypotheses, hypothesisCount, onsetPending);
     // Decoder history is diagnostic/ranking evidence. It cannot erase the
     // current measured coordinate merely because the transition is unusual.
@@ -951,17 +1441,22 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
         float score = current.evidenceScore + 0.20f * current.consensus;
         if (beamValid && beamFrequencyHz > 0.0f)
         {
+            const bool strongCurrentFamily = current.harmonicFamily >= 0.58f
+                && current.periodicity >= 0.52f
+                && current.tonalCleanliness >= 0.34f;
             const float distance = centsDistance(beamFrequencyHz,
                                                  current.frequencyHz);
-            score += 0.46f * std::exp(-distance / 95.0f);
+            score += (strongCurrentFamily ? 0.12f : 0.46f)
+                * std::exp(-distance / 95.0f);
 
             int octaveDelta = 0;
             float octaveResidual = 0.0f;
             if (isOctaveLikeTransition(beamFrequencyHz, current.frequencyHz,
                                        octaveDelta, octaveResidual))
             {
-                const float singleFamilyPenalty =
-                    current.directSupportCount >= 2 ? 0.20f : 0.46f;
+                const float singleFamilyPenalty = strongCurrentFamily
+                    ? (current.directSupportCount >= 2 ? 0.06f : 0.12f)
+                    : (current.directSupportCount >= 2 ? 0.20f : 0.46f);
                 score -= singleFamilyPenalty;
             }
         }
@@ -981,12 +1476,54 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
     decision.candidate.confidence = clamp01(hypothesis.confidence
         * (0.76f + 0.24f * hypothesis.consensus));
     decision.candidate.periodicity = hypothesis.periodicity;
+    decision.candidate.harmonicFamily = hypothesis.harmonicFamily;
+    decision.candidate.aperiodicity = 1.0f - hypothesis.harmonicFamily;
+    decision.candidate.tonalCleanliness = hypothesis.tonalCleanliness;
     decision.candidate.valid = true;
     decision.consensus = hypothesis.consensus;
     decision.supportCount = hypothesis.supportCount;
     decision.directSupportCount = hypothesis.directSupportCount;
     decision.freshSupportMask = hypothesis.freshSupportMask;
     decision.decoderOctaveIndex = decoderBeam_[0].octaveIndex;
+
+    // DIRECT_HIGH_PATH_OWNS_RATIONAL_ALIAS_V2
+    constexpr float halfRateDirectMaximumHz = 900.0f;
+    const auto& freshFull = fullRateCandidate_.candidate;
+    const bool freshQualifiedHighFull = fullRateCandidate_.ageInHops == 0
+        && freshFull.valid
+        && std::isfinite(freshFull.frequencyHz)
+        && freshFull.frequencyHz > halfRateDirectMaximumHz
+        && freshFull.harmonicFamily >= 0.68f
+        && freshFull.tonalCleanliness >= 0.68f;
+    if (freshQualifiedHighFull
+        && decision.candidate.frequencyHz > 0.0f)
+    {
+        int aliasDivisor = 0;
+        for (int divisor = 2; divisor <= 3; ++divisor)
+        {
+            const float expanded = static_cast<float>(divisor)
+                * decision.candidate.frequencyHz;
+            if (centsDistance(expanded, freshFull.frequencyHz) <= 55.0f)
+            {
+                aliasDivisor = divisor;
+                break;
+            }
+        }
+
+        if (aliasDivisor != 0)
+        {
+            // Lower-rate rational aliases verify periodic family membership but
+            // cannot own a coordinate outside their direct measurement band.
+            // Single-path consensus semantics make the authority explicit.
+            decision.candidate = freshFull;
+            decision.candidate.valid = true;
+            decision.consensus = 0.0f;
+            decision.supportCount = 1;
+            decision.directSupportCount = 1;
+            decision.freshSupportMask = static_cast<std::uint8_t>(1u);
+            decision.decoderOctaveIndex = octaveState_;
+        }
+    }
 
     // DETECTOR_VETO_NOT_PERMISSION_V1: once a current finite measurement has
     // survived the detector's falsification stages, low confidence/consensus
@@ -1065,9 +1602,14 @@ bool ModernPitchEngine::MultiRatePitchTracker::confirmOctaveTransition(
         // the fixed window; confidence never lengthens or shortens it.
         const bool multiPathDirect = decision.directSupportCount >= 2
             && decision.consensus >= 0.24f;
-        const int requiredObservations = multiPathDirect
-            ? (rescueOctaveDelta < 0 ? 12 : 10)
-            : (rescueOctaveDelta < 0 ? 28 : 24);
+        const bool strongCurrentFamily = decision.candidate.harmonicFamily >= 0.58f
+            && decision.candidate.periodicity >= 0.52f
+            && decision.candidate.tonalCleanliness >= 0.34f;
+        const int requiredObservations = strongCurrentFamily
+            ? (multiPathDirect ? 4 : 8)
+            : (multiPathDirect
+                ? (rescueOctaveDelta < 0 ? 12 : 10)
+                : (rescueOctaveDelta < 0 ? 28 : 24));
         if (pendingOctaveCount_ < requiredObservations)
         {
             decision.valid = false;
@@ -1155,9 +1697,49 @@ bool ModernPitchEngine::MultiRatePitchTracker::confirmOctaveTransition(
     // register hallucinations. Downward aliases receive two extra hops.
     const bool multiPathDirect = decision.directSupportCount >= 2
         && decision.consensus >= 0.24f;
-    const int requiredObservations = multiPathDirect
-        ? (octaveDelta < 0 ? 12 : 10)
-        : (octaveDelta < 0 ? 28 : 24);
+
+    // DIRECT_HIGH_FAMILY_FAST_CONFIRM_V1
+    // The full path is the only direct authority above 900 Hz. Half and quarter
+    // paths may still verify the same source as exact 1/2 and 1/3 aliases. When
+    // all three are simultaneously voice-clean, do not demand the generic
+    // octave-jump persistence from a register that was itself the 1/2 alias.
+    const auto& directHighFull = fullRateCandidate_.candidate;
+    const auto& directHighHalf = halfRateCandidate_.candidate;
+    const auto& directHighQuarter = quarterRateCandidate_.candidate;
+    const bool directHighFullValid = fullRateCandidate_.ageInHops == 0
+        && directHighFull.valid
+        && std::isfinite(directHighFull.frequencyHz)
+        && directHighFull.frequencyHz > 900.0f
+        && directHighFull.harmonicFamily >= 0.68f
+        && directHighFull.tonalCleanliness >= 0.68f;
+    const bool directHighHalfFamily = halfRateCandidate_.ageInHops <= 3
+        && directHighHalf.valid
+        && directHighHalf.frequencyHz > 0.0f
+        && directHighHalf.harmonicFamily >= 0.68f
+        && directHighHalf.tonalCleanliness >= 0.68f
+        && centsDistance(2.0f * directHighHalf.frequencyHz,
+                         directHighFull.frequencyHz) <= 55.0f;
+    const bool directHighQuarterFamily = quarterRateCandidate_.ageInHops <= 5
+        && directHighQuarter.valid
+        && directHighQuarter.frequencyHz > 0.0f
+        && directHighQuarter.harmonicFamily >= 0.68f
+        && directHighQuarter.tonalCleanliness >= 0.68f
+        && centsDistance(3.0f * directHighQuarter.frequencyHz,
+                         directHighFull.frequencyHz) <= 55.0f;
+    const bool directHighFamilyFastConfirm = octaveDelta == 1
+        && directHighFullValid
+        && directHighHalfFamily
+        && directHighQuarterFamily
+        && centsDistance(decision.candidate.frequencyHz,
+                         directHighFull.frequencyHz) <= 55.0f
+        && centsDistance(2.0f * trackedPitchHz_,
+                         directHighFull.frequencyHz) <= 85.0f;
+
+    const int requiredObservations = directHighFamilyFastConfirm
+        ? 3
+        : (multiPathDirect
+            ? (octaveDelta < 0 ? 12 : 10)
+            : (octaveDelta < 0 ? 28 : 24));
     if (pendingOctaveCount_ < requiredObservations)
     {
         // Hold the committed register only while an explicitly octave-like
@@ -1198,6 +1780,11 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
     previousDcOutput_ = dcBlocked;
 
     const float energy = dcBlocked * dcBlocked;
+    const float floorTarget = std::max(1.0e-12f, energy);
+    const float floorCoefficient = floorTarget < noiseFloorEnergy_
+        ? 0.020f : 0.000003f;
+    noiseFloorEnergy_ += floorCoefficient * (floorTarget - noiseFloorEnergy_);
+    noiseFloorEnergy_ = std::max(1.0e-12f, noiseFloorEnergy_);
     fastEnergy_ += fastEnergyCoefficient_ * (energy - fastEnergy_);
     slowEnergy_ += slowEnergyCoefficient_ * (energy - slowEnergy_);
 
@@ -1249,6 +1836,18 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
     ++analysisHopCounter_;
     presenceMode_ = presenceSinceLastHop_;
     presenceSinceLastHop_ = false;
+
+    // ZERO_INPUT_CLEARS_OBSERVER_NOT_MUSIC_V1
+    if (!presenceMode_)
+    {
+        clearObservationMemory(true);
+        observation.audioPresent = false;
+        observation.measurementAvailable = false;
+        observation.valid = false;
+        observation.onset = false;
+        observation.onsetStrength = 0.0f;
+        return true;
+    }
 
     ++fullRateCandidate_.ageInHops;
     ++halfRateCandidate_.ageInHops;
@@ -1332,21 +1931,40 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
     {
         PitchCandidate best {};
         float bestScore = -1.0f;
-        const auto consider = [&best, &bestScore](const CandidateSlot& slot,
-                                                  int maximumAge) noexcept
+        const auto consider = [this, &best, &bestScore](const CandidateSlot& slot,
+                                                        int maximumAge) noexcept
         {
             const auto& candidate = slot.candidate;
+            // PATH_REJECTED_CANDIDATE_IS_NOT_PROVISIONAL_V1
+            if (!candidate.valid)
+                return;
             if (slot.ageInHops > maximumAge
                 || !std::isfinite(candidate.frequencyHz)
-                || candidate.frequencyHz <= 0.0f)
+                || candidate.frequencyHz <= 0.0f
+                || (candidate.harmonicFamily >= 0.0f
+                    && candidate.harmonicFamily < 0.20f))
             {
                 return;
             }
-            const float ageWeight = std::exp(-0.22f
+            const float ageWeight = std::exp(-0.55f
                 * static_cast<float>(std::max(0, slot.ageInHops)));
+            const float candidateCleanliness = candidate.tonalCleanliness >= 0.0f
+                ? clamp01(candidate.tonalCleanliness) : 1.0f;
+            // PROVISIONAL_PATH_CLEANLINESS_V1: low-rate geometry alone cannot
+            // publish a vocal coordinate when source cleanliness is weak.
+            const float provisionalPathFloor = candidate.pathIndex == 0 ? 0.68f
+                : (candidate.pathIndex == 1 ? 0.66f
+                   : (candidate.pathIndex == 2 ? 0.62f : 0.70f));
+            if (candidate.tonalCleanliness >= 0.0f
+                && candidateCleanliness < provisionalPathFloor)
+            {
+                return;
+            }
             const float score = ageWeight
-                * (0.62f * clamp01(candidate.confidence)
-                 + 0.38f * clamp01(candidate.periodicity));
+                * pathPitchAuthority(candidate.pathIndex, candidate.frequencyHz)
+                * (0.46f * clamp01(candidate.confidence)
+                 + 0.28f * clamp01(candidate.periodicity)
+                 + 0.26f * candidateCleanliness);
             if (score > bestScore)
             {
                 bestScore = score;
@@ -1371,6 +1989,7 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
 
     if (decision.valid && decision.candidate.valid)
     {
+        observationContinuityBroken_ = false;
         const bool firstLock = trackedPitchHz_ <= 0.0f;
         const float selectedLog = std::log2(decision.candidate.frequencyHz);
         const float trackedLog = firstLock ? selectedLog : std::log2(trackedPitchHz_);
@@ -1669,19 +2288,26 @@ double ModernPitchEngine::ScaleQuantizer::chooseTargetLog2(
         return targetLog2_;
     }
 
-    // Keep the existing target until the challenger wins by the requested
-    // hysteresis margin. This acts in target selection, never as a dry/wet gate.
-    const double previousDistance = std::abs(targetLog2_ - inputLog2);
-    const double hysteresisOctaves = std::max(0.0f, hysteresisCents) / 1200.0;
-    if (previousDistance <= nearestDistance + hysteresisOctaves)
+    // SCALE_OWNED_HOLD_SEMANTICS_V1 / HOLD_IS_CENT_RADIUS_V2:
+    // Hold is measured literally from the centre of the already-owned scale
+    // degree. It never creates a dry/source preference and never weakens the
+    // correction. Hold=0 therefore recovers the ordinary Voronoi boundary;
+    // Hold=80 means 80 cents from the owned degree centre.
+    const double previousDistanceCents =
+        std::abs(targetLog2_ - inputLog2) * 1200.0;
+    const double holdRadiusCents = std::max(0.0f, hysteresisCents);
+    const bool nearestIsOwned =
+        std::abs(nearest - targetLog2_) * 1200.0 < 0.1;
+    if (nearestIsOwned || previousDistanceCents <= holdRadiusCents)
     {
         pendingValid_ = false;
         pendingCount_ = 0;
         return targetLog2_;
     }
 
-    // Once the explicit Hold boundary is crossed, the nearest degree wins.
-    // Confidence/consensus may rank pitch evidence but cannot veto the target.
+    // Outside the explicit radius the nearest scale degree wins. Confidence,
+    // consensus and hidden strictness may describe evidence but cannot turn
+    // target selection into a dry-following gate.
     (void) strictness;
     (void) confidence;
     (void) hardLock;
@@ -1849,33 +2475,14 @@ float ModernPitchEngine::adaptiveHysteresis(
     const ScaleQuantizer& quantizer,
     const PitchObservation& observation) const noexcept
 {
-    if (zeroPrudenceAuthority(parameters))
-        return 0.0f; // AUTHORITY_CONTROLS_EXPLICIT_V1: Hold=0 means exactly no target hold.
-
-    // NO_HIDDEN_PRUDENCE_OUTSIDE_LOCK_V1: there is no alternate automatic
-    // hysteresis law when Scale Lock is off. The same visible Hold value owns
-    // target retention everywhere.
-
-    // No mode, tempo, confidence or detector-derived multiplier may add Hold.
-    const float lockStrictness = clamp01(parameters.lockStrictness);
-    const float requestedHysteresis = std::clamp(
-        finiteOr(parameters.lockHysteresis, 24.0f), 0.0f, 80.0f);
-
-    // MICROTONAL_HARD_LOCK_V3: hysteresis may stabilise target identity, but
-    // it may never become a significant fraction of a dense scale degree.
-    // Otherwise 24/31/48-EDO can legally hold the previous target by one or
-    // more notes.  Keep the GUI range, then cap the effective musical margin
-    // relative to the actual minimum step of the selected/custom scale.
-    const float minimumStep = std::max(0.1f, quantizer.minimumStepCents());
-    // ABSOLUTE_SCALE_LOCK_V4_INTEGRATION: preserve an audible Hysteresis
-    // control on sparse/wide scales without weakening the strict microtonal
-    // endpoint. At strictness=1 this is still exactly 0.12 of the minimum
-    // scale step (3 cents in 48-EDO); at lower strictness the user deliberately
-    // requests more target-hold behaviour, capped well below half a degree.
-    const float degreeSafeCap = std::clamp(
-        minimumStep * (0.30f - 0.18f * lockStrictness),
-        0.35f, 36.0f);
-    return std::min(requestedHysteresis, degreeSafeCap);
+    // HOLD_IS_LITERAL_USER_CENTS_V2: the GUI value already has the complete
+    // musical meaning. Scale density, mode, confidence and sensor output may
+    // not silently remap it. Dense scales are allowed to have a wide Hold only
+    // when the user explicitly asks for one; a qualified new note can still
+    // override that radius in the supervisor below.
+    (void) quantizer;
+    (void) observation;
+    return std::clamp(finiteOr(parameters.lockHysteresis, 24.0f), 0.0f, 80.0f);
 }
 
 double ModernPitchEngine::responseTimeMs(
@@ -2480,6 +3087,10 @@ void ModernPitchEngine::updateCorrectionState(
     // this measurement and audible correction.
     const double observedLog2 = safeLog2(correctionFrequencyHz);
     const double correctionObservedLog2 = observedLog2;
+    // Hold belongs to musical identity, not detector confidence or transport.
+    // Compute the literal user radius once and use it only for identity logic.
+    const float holdRadiusCents = adaptiveHysteresis(
+        parameters, quantizer, observation);
 
     // LOCAL_DEGREE_GEOMETRY_V1: every within-note authority threshold is
     // measured against the actual adjacent scale degree in the direction of
@@ -2590,8 +3201,18 @@ void ModernPitchEngine::updateCorrectionState(
             // physical modulation, but do not grant this latent gate any target
             // authority. Octave-like observations are always treated as deep
             // ambiguity because their error cost is catastrophic.
+            // HOLD_DOES_NOT_CREATE_NOTE_IDENTITY_V2: crossing the Hold radius
+            // is not, by itself, evidence of a new musical note. Preserve the
+            // existing scale-relative deep geometry so vibrato and continuous
+            // trajectories cannot chatter between degrees. A wider Hold may
+            // suppress this fast/deep promotion, while the independent
+            // same-side persistence path below remains free to qualify a real
+            // sustained/legato note and then bypass Hold.
+            const bool outsideUserHold = observedDistanceFromOwnedTarget
+                > static_cast<double>(holdRadiusCents) + 1.0e-6;
             const bool deepCandidate = octaveLikeTarget
-                || observedDistanceFromOwnedTarget >= deepExitRatio * scaleStep;
+                || (outsideUserHold
+                    && observedDistanceFromOwnedTarget >= deepExitRatio * scaleStep);
 
             if (!deepCandidate)
             {
@@ -2804,7 +3425,12 @@ void ModernPitchEngine::updateCorrectionState(
         }
     }
 
-    const float hysteresis = adaptiveHysteresis(parameters, quantizer, observation);
+    const float hysteresis = holdRadiusCents;
+    // QUALIFIED_NOTE_BYPASSES_HOLD_V2: Hold defines the ordinary same-note
+    // radius. Once independent supervisor evidence has already qualified a new
+    // identity (persistent same-side boundary exit or detector-scale commit),
+    // Hold must not turn a real new note into an eternal old fundamental.
+    const float selectionHoldCents = forceTargetSwitch ? 0.0f : hysteresis;
     int pending = 0;
     // SCALE_OWNS_IDENTITY_V1: ordinary selection follows the persistent
     // musical centre. Only after that centre has proven a cell exit may the
@@ -2820,13 +3446,12 @@ void ModernPitchEngine::updateCorrectionState(
     {
         newTarget = quantizer.chooseTargetLog2(
             targetSelectionLog2,
-            hysteresis,
+            selectionHoldCents,
             targetStrictness,
             targetConfidence,
             parameters.scaleLock && parameters.hardLockActive,
-            // USER_HOLD_REMAINS_AUTHORITY_V1: supervisor confirmation only
-            // presents a challenger. It never receives onset semantics merely
-            // to bypass the Hold explicitly selected by the user.
+            // Onset is explicit new-note evidence. forceTargetSwitch above is
+            // the equivalent bounded legato/new-identity evidence.
             musicalOnset,
             pending);
         newTarget += std::round(state.pitchCentreLog2 - newTarget);
@@ -3332,6 +3957,10 @@ void ModernPitchEngine::process(
                     tracker.clearReacquisitionAnchor();
                 const bool rescueSearch = correction.noteBodyLatched
                     && correction.pitchStaleSamples >= static_cast<int>(0.060 * sampleRate_);
+                const bool detectorWake = correction.trackingState == TrackingState::transition
+                    || (correction.trackingState == TrackingState::acquire
+                        && correction.stateAgeSamples >= static_cast<int>(0.060 * sampleRate_));
+                tracker.setTransitionWake(detectorWake);
                 tracker.setRange(rescueSearch ? std::min(safe.minimumPitchHz, 28.0f) : safe.minimumPitchHz,
                                  safe.maximumPitchHz);
                 tracker.setSensitivity(rescueSearch ? std::max(safe.detectorSensitivity, 0.98f)
@@ -3395,6 +4024,10 @@ void ModernPitchEngine::process(
                 linkedTracker_.clearReacquisitionAnchor();
             const bool rescueSearch = linkedCorrection_.noteBodyLatched
                 && linkedCorrection_.pitchStaleSamples >= static_cast<int>(0.060 * sampleRate_);
+            const bool detectorWake = linkedCorrection_.trackingState == TrackingState::transition
+                || (linkedCorrection_.trackingState == TrackingState::acquire
+                    && linkedCorrection_.stateAgeSamples >= static_cast<int>(0.060 * sampleRate_));
+            linkedTracker_.setTransitionWake(detectorWake);
             linkedTracker_.setRange(rescueSearch ? std::min(safe.minimumPitchHz, 28.0f) : safe.minimumPitchHz,
                                     safe.maximumPitchHz);
             linkedTracker_.setSensitivity(rescueSearch ? std::max(safe.detectorSensitivity, 0.98f)

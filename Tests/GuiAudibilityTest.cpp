@@ -170,7 +170,9 @@ int main()
                               - humanResult.meter.correctionCents) > 6.0f,
                      "humanize_changes_correction_window");
 
-    // Scale Lock itself must change target hold, not merely expose sub-controls.
+    // HOLD_IS_CENT_RADIUS_V2: a sustained, qualified new note must reach the
+    // same scale degree regardless of Hold. Hold controls the ordinary same-note
+    // radius; it is not an eternal veto on real note identity.
     const double semitone = std::exp2(1.0 / 12.0);
     const std::vector<double> twoNoteScale { 1.0, semitone };
     const auto boundaryStep = [](double seconds)
@@ -189,9 +191,12 @@ int main()
     const auto lockedResult = render(
         ModernPitchEngine::LatencyMode::quality, locked,
         twoNoteScale, 440.0, 5.0, boundaryStep);
+    const double expectedLockedTarget = 440.0 * semitone;
     success &= check(std::abs(unlockedResult.meter.targetPitchHz
-                              - lockedResult.meter.targetPitchHz) > 15.0f,
-                     "scale_lock_switch_changes_target_hold");
+                              - expectedLockedTarget) < 0.5f
+                     && std::abs(lockedResult.meter.targetPitchHz
+                                 - expectedLockedTarget) < 0.5f,
+                     "scale_lock_hold_does_not_block_qualified_new_note");
 
     // Mode is a reconstruction/latency profile, never a pitch-quality control.
     const std::vector<std::pair<ModernPitchEngine::LatencyMode, int>> modes {
