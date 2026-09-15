@@ -36,7 +36,7 @@ jobs:
         run: |
           python3 Tests/MaterializeVoiceAwareF0DetectorV1.py
           python3 Tests/RefineVoiceAwareF0DetectorV1.py
-          python3 Tests/RefineVoiceAwarePathRolesV1.py
+          python3 Tests/ApplyVoiceAwarePathRolesV1.py
           python3 Tests/ProbeRapidF0DetectorV1.py
 
       - name: Verify narrow detector-only contract
