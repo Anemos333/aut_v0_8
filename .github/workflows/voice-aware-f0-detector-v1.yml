@@ -36,6 +36,7 @@ jobs:
         run: |
           python3 Tests/MaterializeVoiceAwareF0DetectorV1.py
           python3 Tests/RefineVoiceAwareF0DetectorV1.py
+          python3 Tests/RefineVoiceAwarePathRolesV1.py
           python3 Tests/ProbeRapidF0DetectorV1.py
 
       - name: Verify narrow detector-only contract
@@ -64,6 +65,11 @@ jobs:
           assert 'VOICE_AWARE_F0_FRONTEND_V1' in cpp
           assert 'RESIDUAL_HARMONIC_CONTRAST_V1' in cpp
           assert 'OBSERVATION_MEMORY_IS_FALSIFIABLE_V1' in cpp
+          assert 'PATH_ROLE_SPLIT_V1' in cpp or 'PATH_ROLE_SPLIT_V1' in hpp
+          assert 'STALE_PATH_VERIFIES_NOT_STEERS_V1' in cpp
+          assert 'pathPitchAuthority' in cpp
+          assert 'pathCleanlinessAuthority' in cpp
+          assert 'tonalCleanliness' in cpp
           assert 'presenceMode_\n        ? 0.0f' not in cpp
           assert '0.5f * (normalisedCorrelation + 1.0f)' not in cpp
           PY
@@ -120,5 +126,5 @@ jobs:
             echo 'No materialized changes to commit.'
             exit 0
           fi
-          git commit -m 'Make F0 detector voice-aware and memory-falsifiable [skip ci]'
+          git commit -m 'Make F0 detector voice-aware with split path roles [skip ci]'
           git push origin HEAD:voice-aware-f0-detector-v1
