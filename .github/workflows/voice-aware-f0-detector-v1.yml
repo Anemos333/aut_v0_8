@@ -61,6 +61,7 @@ jobs:
           assert hpp[hpp.index(hpp_marker):] == base_hpp[base_hpp.index(hpp_marker):], 'quantizer/header suffix changed'
 
           assert 'VOICE_AWARE_F0_FRONTEND_V1' in cpp
+          assert 'RESIDUAL_HARMONIC_CONTRAST_V1' in cpp
           assert 'OBSERVATION_MEMORY_IS_FALSIFIABLE_V1' in cpp
           assert 'presenceMode_\n        ? 0.0f' not in cpp
           assert '0.5f * (normalisedCorrelation + 1.0f)' not in cpp
@@ -83,18 +84,22 @@ jobs:
       - name: Configure focused invariant build
         run: cmake -S . -B build-voice-aware -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
 
-      - name: Build focused tests
+      - name: Build detector supervisor test
+        run: cmake --build build-voice-aware --config Release --parallel 2 --target SupervisorContinuityTest
+
+      - name: Run detector supervisor test
+        run: ./build-voice-aware/clean-engine-tests/SupervisorContinuityTest
+
+      - name: Build remaining frozen invariants
         run: >-
           cmake --build build-voice-aware --config Release --parallel 2
-          --target SupervisorContinuityTest SingleWetSpectralRendererTest
-          VoiceEvidenceAnalyzerTest CleanModernPitchEngineTest
-          GuiAudioControlContractTest
+          --target SingleWetSpectralRendererTest VoiceEvidenceAnalyzerTest
+          CleanModernPitchEngineTest GuiAudioControlContractTest
 
-      - name: Run focused tests
+      - name: Run remaining frozen invariants
         shell: bash
         run: |
           set -euo pipefail
-          ./build-voice-aware/clean-engine-tests/SupervisorContinuityTest
           ./build-voice-aware/clean-engine-tests/SingleWetSpectralRendererTest
           ./build-voice-aware/clean-engine-tests/VoiceEvidenceAnalyzerTest
           ./build-voice-aware/clean-engine-tests/CleanModernPitchEngineTest
