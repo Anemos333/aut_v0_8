@@ -1,4 +1,4 @@
-name: Authoritative detector fast path v6
+name: Authoritative detector fast path v6.2
 
 on:
   push:
@@ -6,6 +6,7 @@ on:
       - voice-aware-f0-detector-v1
     paths:
       - Tests/RefinePrimitivePeriodPathGeometryV1.py
+      - Tests/RefineQualifiedFirstMinimumV6_2.py
       - Tests/DetectorExtremeDiagnostic.cpp
       - Tests/DetectorPathDiagnostic.cpp
       - Tests/DetectorMotionDiagnostic.cpp
@@ -34,14 +35,18 @@ jobs:
           grep -q 'DETECTOR_VETO_NOT_PERMISSION_V1' Source/ModernPitchEngine.cpp
           grep -q 'HOLD_DOES_NOT_CREATE_NOTE_IDENTITY_V2' Source/ModernPitchEngine.cpp
 
-      - name: Apply V6 detector fast path in workspace only
-        run: python3 Tests/RefinePrimitivePeriodPathGeometryV1.py
+      - name: Apply V6.2 detector simplification in workspace only
+        run: |
+          python3 Tests/RefinePrimitivePeriodPathGeometryV1.py
+          python3 Tests/RefineQualifiedFirstMinimumV6_2.py
 
       - name: Verify simplified experimental scope
         shell: bash
         run: |
           set -euo pipefail
           grep -q 'AUTHORITATIVE_DIRECT_FAST_PATH_V6' Source/ModernPitchEngine.cpp
+          grep -q 'AUTHORITATIVE_RESCUE_CORROBORATION_V6_1' Source/ModernPitchEngine.cpp
+          grep -q 'QUALIFIED_FIRST_MINIMUM_OWNS_PATH_V6_2' Source/ModernPitchEngine.cpp
           grep -q 'AUTHORITATIVE_DIRECT_FAST_PATH_V6' Source/ModernPitchEngine.h
           ! grep -q 'PRIMITIVE_PERIOD_PATH_CADENCE_V5' Source/ModernPitchEngine.cpp
           ! grep -q 'PATH_CADENCE_OCTAVE_EVIDENCE_V1' Source/ModernPitchEngine.cpp
