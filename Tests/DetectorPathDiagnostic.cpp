@@ -28,6 +28,21 @@ struct Rng
     }
 };
 
+struct VoiceProfile
+{
+    const char* name;
+    double fundamental;
+    double second;
+    double third;
+    double fourth;
+};
+
+constexpr VoiceProfile harmonic4 { "harmonic4", 1.0, 0.44, 0.23, 0.12 };
+constexpr VoiceProfile legacy { "legacy", 1.0, 0.34, 0.18, 0.0 };
+// Deliberately hostile negative control: the second harmonic dominates, but
+// non-zero odd-harmonic structure still makes 110 Hz the physical period.
+constexpr VoiceProfile strongSecond { "strong_second", 0.35, 1.0, 0.22, 0.08 };
+
 double rms(const std::vector<float>& x)
 {
     double e = 0.0;
@@ -107,7 +122,7 @@ void print(const char* label, const Counts& c)
 void run(double targetHz,
          double snrDb,
          std::uint32_t seed,
-         bool legacyProfile)
+         const VoiceProfile& profile)
 {
     constexpr int n = 24000;
     std::vector<float> voice(n), noise(n);
@@ -118,24 +133,21 @@ void run(double targetHz,
     {
         phase += 2.0 * pi * targetHz / sr;
         if (phase >= 2.0 * pi) phase -= 2.0 * pi;
-        if (legacyProfile)
-            voice[i] = static_cast<float>(std::sin(phase)
-                + 0.34 * std::sin(2.0 * phase + 0.31)
-                + 0.18 * std::sin(3.0 * phase + 0.73));
-        else
-            voice[i] = static_cast<float>(std::sin(phase)
-                + 0.44 * std::sin(2.0 * phase + 0.17)
-                + 0.23 * std::sin(3.0 * phase + 0.41)
-                + 0.12 * std::sin(4.0 * phase + 0.73));
+        voice[static_cast<std::size_t>(i)] = static_cast<float>(
+            profile.fundamental * std::sin(phase)
+            + profile.second * std::sin(2.0 * phase + 0.17)
+            + profile.third * std::sin(3.0 * phase + 0.41)
+            + profile.fourth * std::sin(4.0 * phase + 0.73));
 
         const float white = rng.next();
         fast = 0.92f * fast + 0.08f * white;
         slow = 0.992f * slow + 0.008f * white;
-        noise[i] = 0.52f * white + 0.31f * fast + 0.17f * slow;
+        noise[static_cast<std::size_t>(i)] = 0.52f * white + 0.31f * fast + 0.17f * slow;
     }
     scaleRms(voice, std::pow(10.0, -42.0 / 20.0));
     scaleRms(noise, rms(voice) / std::pow(10.0, snrDb / 20.0));
-    for (int i = 0; i < n; ++i) voice[i] += noise[i];
+    for (int i = 0; i < n; ++i)
+        voice[static_cast<std::size_t>(i)] += noise[static_cast<std::size_t>(i)];
 
     auto t = std::make_unique<ModernPitchEngine::MultiRatePitchTracker>();
     t->prepare(sr);
@@ -146,7 +158,7 @@ void run(double targetHz,
     for (int i = 0; i < n; ++i)
     {
         ModernPitchEngine::PitchObservation o;
-        if (!t->processSample(voice[i], o)) continue;
+        if (!t->processSample(voice[static_cast<std::size_t>(i)], o)) continue;
 
         if (t->fullRateCandidate_.ageInHops == 0)
             add(full, t->fullRateCandidate_.candidate, targetHz);
@@ -169,7 +181,7 @@ void run(double targetHz,
               << "PATH_STRESS hz=" << targetHz
               << " snr=" << snrDb
               << " seed=" << seed
-              << " profile=" << (legacyProfile ? "legacy" : "harmonic4")
+              << " profile=" << profile.name
               << " first_valid_ms=" << (firstValid < 0 ? -1.0 : 1000.0 * firstValid / sr)
               << " first_correct_ms=" << (firstCorrect < 0 ? -1.0 : 1000.0 * firstCorrect / sr);
     print("out", out);
@@ -186,16 +198,26 @@ int main()
     const std::array<std::uint32_t, 4> seeds {
         0x1234567u, 0x9e3779b9u, 0x51f15e5du, 0xc001d00du
     };
-    for (bool legacy : {false, true})
+
+    for (const auto* profile : { &harmonic4, &legacy })
     {
         for (std::uint32_t seed : seeds)
         {
-            run(220.0, 9.0, seed, legacy);
-            run(220.0, 6.0, seed, legacy);
-            run(220.0, 3.0, seed, legacy);
-            run(440.0, 6.0, seed, legacy);
-            run(440.0, 3.0, seed, legacy);
+            // Symmetric low-note controls ensure octave resolution cannot simply
+            // become a global bias toward the higher member of a 2:1 family.
+            run(110.0, 6.0, seed, *profile);
+            run(220.0, 9.0, seed, *profile);
+            run(220.0, 6.0, seed, *profile);
+            run(220.0, 3.0, seed, *profile);
+            run(440.0, 6.0, seed, *profile);
+            run(440.0, 3.0, seed, *profile);
         }
+    }
+
+    for (std::uint32_t seed : seeds)
+    {
+        run(110.0, 6.0, seed, strongSecond);
+        run(110.0, 3.0, seed, strongSecond);
     }
     return 0;
 }
