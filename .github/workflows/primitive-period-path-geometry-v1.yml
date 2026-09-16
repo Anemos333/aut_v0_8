@@ -1,4 +1,4 @@
-name: Primitive-period path geometry v1
+name: Cross-path direct ownership geometry v4
 
 on:
   push:
@@ -32,16 +32,15 @@ jobs:
           grep -q 'DETECTOR_VETO_NOT_PERMISSION_V1' Source/ModernPitchEngine.cpp
           grep -q 'HOLD_DOES_NOT_CREATE_NOTE_IDENTITY_V2' Source/ModernPitchEngine.cpp
 
-      - name: Apply primitive-period geometry in workspace only
+      - name: Apply cross-path geometry in workspace only
         run: python3 Tests/RefinePrimitivePeriodPathGeometryV1.py
 
       - name: Verify experimental scope
         shell: bash
         run: |
           set -euo pipefail
-          grep -q 'PRIMITIVE_PERIOD_PATH_GEOMETRY_V3' Source/ModernPitchEngine.cpp
-          grep -q 'PRIMITIVE_PERIOD_WITHIN_PATH_V3' Source/ModernPitchEngine.cpp
-          grep -q 'RANGE_CENSORED_PATH_IS_FAMILY_EVIDENCE_V3' Source/ModernPitchEngine.cpp
+          grep -q 'RANGE_CENSORED_DIRECT_OWNERSHIP_V4' Source/ModernPitchEngine.cpp
+          ! grep -q 'PRIMITIVE_PERIOD_WITHIN_PATH_V3' Source/ModernPitchEngine.cpp
           changed="$(git diff --name-only | sort)"
           test "$changed" = "Source/ModernPitchEngine.cpp"
           test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
@@ -99,8 +98,6 @@ jobs:
                       and abs(float(r['snr']) - snr) < 0.01
                       and r['profile'] == profile]
 
-          # Positive controls: fix the measured F0/2 failures across noise seeds,
-          # rather than succeeding on one convenient realization.
           for hz, snr, profile in [
               (220.0, 6.0, 'harmonic4'),
               (440.0, 6.0, 'harmonic4'),
@@ -112,10 +109,6 @@ jobs:
               fractions = [int(r['out_correct']) / max(1, int(r['out_valid'])) for r in group]
               assert sum(f >= 0.80 for f in fractions) >= 3, (hz, snr, profile, fractions)
 
-          # Negative controls: the resolver must not become "always choose the
-          # higher octave". 110 Hz remains 110 even with a deliberately dominant
-          # second harmonic as long as odd-harmonic structure establishes the
-          # longer physical period.
           for profile in ['harmonic4', 'legacy', 'strong_second']:
               group = selected(110.0, 6.0, profile)
               assert len(group) == 4, (110.0, 6.0, profile, len(group))
