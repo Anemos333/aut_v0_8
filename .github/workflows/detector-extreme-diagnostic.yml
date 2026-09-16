@@ -7,6 +7,7 @@ on:
       - voice-aware-f0-detector-v1
     paths:
       - Tests/DetectorExtremeDiagnostic.cpp
+      - Tests/DetectorPathDiagnostic.cpp
       - .github/workflows/detector-extreme-diagnostic.yml
 
 permissions:
@@ -44,14 +45,26 @@ jobs:
       - name: Configure clean-engine tests
         run: cmake -S . -B build-detector-diagnostic -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
 
-      - name: Substitute diagnostic driver only
+      - name: Substitute extreme diagnostic driver only
         shell: bash
         run: |
           set -euo pipefail
           cp Tests/DetectorExtremeDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
 
-      - name: Build diagnostic against current detector
+      - name: Build extreme diagnostic against current detector
         run: cmake --build build-detector-diagnostic --config Release --parallel 2 --target SupervisorContinuityTest
 
-      - name: Measure detector
+      - name: Measure extreme detector cases
+        run: ./build-detector-diagnostic/clean-engine-tests/SupervisorContinuityTest
+
+      - name: Substitute path diagnostic driver only
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/DetectorPathDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
+
+      - name: Rebuild path diagnostic against current detector
+        run: cmake --build build-detector-diagnostic --config Release --parallel 2 --target SupervisorContinuityTest
+
+      - name: Measure noisy path geometry
         run: ./build-detector-diagnostic/clean-engine-tests/SupervisorContinuityTest
