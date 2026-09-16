@@ -1,75 +1,47 @@
 from pathlib import Path
 
-p = Path(__file__).resolve().parents[1] / 'Source' / 'ModernPitchEngine.cpp'
-cpp = p.read_text()
+root = Path(__file__).resolve().parents[1]
+cpp_path = root / 'Source' / 'ModernPitchEngine.cpp'
+h_path = root / 'Source' / 'ModernPitchEngine.h'
+cpp = cpp_path.read_text()
+h = h_path.read_text()
 
 
-def replace_once(anchor, replacement, label):
-    global cpp
-    count = cpp.count(anchor)
+def replace_once(text, anchor, replacement, label):
+    count = text.count(anchor)
     if count != 1:
         raise RuntimeError(f'{label}: expected one anchor, found {count}')
-    cpp = cpp.replace(anchor, replacement, 1)
+    return text.replace(anchor, replacement, 1)
 
 
-if 'PRIMITIVE_PERIOD_PATH_CADENCE_V5' not in cpp:
-    # A) Primitive-period geometry inside one detector path.
-    anchor = '''    int sourceTau = bestTau;\n    float sourcePeak = sourceLagCorrelation(bestTau);\n    for (int offset = -2; offset <= 2; ++offset)\n    {\n        const int candidateTau = bestTau + offset;\n        if (candidateTau < tauMinimum || candidateTau > tauMaximum)\n            continue;\n        const float candidatePeak = sourceLagCorrelation(candidateTau);\n        if (candidatePeak > sourcePeak)\n        {\n            sourcePeak = candidatePeak;\n            sourceTau = candidateTau;\n        }\n    }\n\n    double refinedTau = static_cast<double>(sourceTau);\n'''
-    replacement = '''    int sourceTau = bestTau;\n    float sourcePeak = sourceLagCorrelation(bestTau);\n    for (int offset = -2; offset <= 2; ++offset)\n    {\n        const int candidateTau = bestTau + offset;\n        if (candidateTau < tauMinimum || candidateTau > tauMaximum)\n            continue;\n        const float candidatePeak = sourceLagCorrelation(candidateTau);\n        if (candidatePeak > sourcePeak)\n        {\n            sourcePeak = candidatePeak;\n            sourceTau = candidateTau;\n        }\n    }\n\n    // PRIMITIVE_PERIOD_PATH_CADENCE_V5\n    // A doubled lag may correlate well merely because it contains two true\n    // cycles. T/2 owns the coordinate only when source, residual, YIN and comb\n    // geometry all say it is essentially the same complete repetition.\n    if (sourceTau >= 2 * tauMinimum)\n    {\n        const int centre = static_cast<int>(std::lround(\n            0.5 * static_cast<double>(sourceTau)));\n        int primitiveTau = centre;\n        float primitiveSourcePeak = -1.0f;\n        for (int offset = -2; offset <= 2; ++offset)\n        {\n            const int tau = centre + offset;\n            if (tau < tauMinimum || tau > tauMaximum)\n                continue;\n            const float peak = sourceLagCorrelation(tau);\n            if (peak > primitiveSourcePeak)\n            {\n                primitiveSourcePeak = peak;\n                primitiveTau = tau;\n            }\n        }\n\n        const float selectedResidual = residualLagCorrelation(sourceTau);\n        const float primitiveResidual = residualLagCorrelation(primitiveTau);\n        const float selectedYin = clamp01(\n            1.0f - difference_[static_cast<std::size_t>(sourceTau)]);\n        const float primitiveYin = clamp01(\n            1.0f - difference_[static_cast<std::size_t>(primitiveTau)]);\n        const float selectedComb = residualHarmonicContrast(sourceTau);\n        const float primitiveComb = residualHarmonicContrast(primitiveTau);\n\n        const bool samePrimitiveWaveform = primitiveSourcePeak >= 0.58f\n            && primitiveSourcePeak >= sourcePeak - 0.085f\n            && primitiveResidual >= 0.58f\n            && primitiveResidual >= selectedResidual - 0.085f\n            && primitiveYin >= selectedYin - 0.10f\n            && primitiveComb >= selectedComb - 0.12f;\n        if (samePrimitiveWaveform)\n        {\n            sourceTau = primitiveTau;\n            sourcePeak = primitiveSourcePeak;\n        }\n    }\n\n    double refinedTau = static_cast<double>(sourceTau);\n'''
-    replace_once(anchor, replacement, 'primitive geometry')
+marker = 'AUTHORITATIVE_DIRECT_FAST_PATH_V6'
+if marker not in cpp:
+    # V6 deliberately removes the V5 layering. It does not modify analyse(),
+    # buildConsensusHypotheses(), path cadence, detector thresholds, supervisor,
+    # scale authority or renderer. Existing path measurements are used as-is.
+    #
+    # Contract:
+    #   - a fresh, physically strong and unambiguous path measurement publishes
+    #     immediately;
+    #   - a low-rate F/2 observation cannot compete as a coordinate when 2F is
+    #     outside that path's direct range and another capable path measures 2F;
+    #   - consensus/beam remain the fallback only for genuinely ambiguous cases.
 
-    # C1) Consensus provenance: a path whose direct range ends below 2F may
-    # verify the family at F but cannot own F when another capable path directly
-    # measures the strong upper sibling 2F.
-    anchor = '''    int validCount = 0;\n    for (int seedIndex = 0; seedIndex < seedCount; ++seedIndex)\n'''
-    replacement = '''    const auto directMaximumForPathV5 = [](int pathIndex) noexcept\n    {\n        switch (pathIndex)\n        {\n            case 0: return 2600.0f;\n            case 1: return 900.0f;\n            case 2: return 460.0f;\n            case 3: return 230.0f;\n            default: return 0.0f;\n        }\n    };\n    const auto rangeLimitedLowerAliasV5 = [&](int sourceIndex,\n                                               float lowerHz) noexcept\n    {\n        if (!(lowerHz > 0.0f))\n            return false;\n        const auto& source = candidates[static_cast<std::size_t>(sourceIndex)];\n        const float upperHz = 2.0f * lowerHz;\n        if (upperHz > maximumPitchHz_\n            || upperHz <= directMaximumForPathV5(source.pathIndex) + 5.0f)\n            return false;\n\n        for (int i = 0; i < candidateCount; ++i)\n        {\n            if (i == sourceIndex)\n                continue;\n            const auto& other = candidates[static_cast<std::size_t>(i)];\n            if (!other.valid || !std::isfinite(other.frequencyHz)\n                || other.frequencyHz <= 0.0f\n                || upperHz > directMaximumForPathV5(other.pathIndex) + 5.0f)\n                continue;\n            const float family = other.harmonicFamily >= 0.0f\n                ? clamp01(other.harmonicFamily) : 0.0f;\n            const float clean = other.tonalCleanliness >= 0.0f\n                ? clamp01(other.tonalCleanliness) : 0.0f;\n            if (other.periodicity >= 0.52f\n                && family >= 0.58f\n                && clean >= 0.62f\n                && centsDistance(other.frequencyHz, upperHz) <= 70.0f)\n                return true;\n        }\n        return false;\n    };\n\n    int validCount = 0;\n    for (int seedIndex = 0; seedIndex < seedCount; ++seedIndex)\n'''
-    replace_once(anchor, replacement, 'consensus provenance helper')
+    h = replace_once(
+        h,
+        '''            int decoderOctaveIndex = 0;\n            bool valid = false;\n        };\n''',
+        '''            int decoderOctaveIndex = 0;\n            // AUTHORITATIVE_DIRECT_FAST_PATH_V6: this is not confidence. It\n            // means one current detector path has already demonstrated an\n            // unambiguous physical coordinate inside the path geometry.\n            bool authoritativeDirect = false;\n            bool valid = false;\n        };\n''',
+        'decoder decision flag')
 
-    anchor = '''            const bool direct = bestOctaveShift == 0;\n            const float tolerance = direct ? 55.0f : 38.0f;\n'''
-    replacement = '''            const bool direct = bestOctaveShift == 0;\n            const bool rangeLimitedAlias = direct\n                && rangeLimitedLowerAliasV5(candidateIndex, candidate.frequencyHz);\n            const bool coordinateDirect = direct && !rangeLimitedAlias;\n            const float tolerance = direct ? 55.0f : 38.0f;\n'''
-    replace_once(anchor, replacement, 'coordinate directness')
+    decode_anchor = '''    const int candidateCount = collectFreshCandidates(candidates);\n    if (candidateCount <= 0)\n        return {};\n\n'''
+    decode_replacement = '''    const int candidateCount = collectFreshCandidates(candidates);\n    if (candidateCount <= 0)\n        return {};\n\n    // AUTHORITATIVE_DIRECT_FAST_PATH_V6\n    // Most detector hops are not ambiguous and should not be sent through a\n    // voting bureaucracy. A structurally strong fresh measurement can own the\n    // physical coordinate immediately unless another comparably strong current\n    // path genuinely contradicts it. Paths remain asymmetric: if a low-rate\n    // path cannot physically observe the upper octave while another capable\n    // path actually measures it, the low F/2 result remains family evidence but\n    // is not a competing coordinate.\n    const auto directMaximumForPathV6 = [](int pathIndex) noexcept\n    {\n        switch (pathIndex)\n        {\n            case 0: return 2600.0f;\n            case 1: return 900.0f;\n            case 2: return 460.0f;\n            case 3: return 230.0f;\n            default: return 0.0f;\n        }\n    };\n\n    const auto directStructureScoreV6 = [this](const PitchCandidate& c) noexcept\n    {\n        if (!c.valid || !std::isfinite(c.frequencyHz) || c.frequencyHz <= 0.0f)\n            return -1.0f;\n        const float family = c.harmonicFamily >= 0.0f\n            ? clamp01(c.harmonicFamily) : 0.0f;\n        const float clean = c.tonalCleanliness >= 0.0f\n            ? clamp01(c.tonalCleanliness) : 0.0f;\n        return 0.34f * clamp01(c.confidence)\n             + 0.24f * clamp01(c.periodicity)\n             + 0.21f * family\n             + 0.21f * clean;\n    };\n\n    const auto structurallyAuthoritativeV6 = [&](const PitchCandidate& c) noexcept\n    {\n        if (!c.valid || !std::isfinite(c.frequencyHz) || c.frequencyHz <= 0.0f)\n            return false;\n        const float family = c.harmonicFamily >= 0.0f\n            ? clamp01(c.harmonicFamily) : 0.0f;\n        const float clean = c.tonalCleanliness >= 0.0f\n            ? clamp01(c.tonalCleanliness) : 0.0f;\n        return c.periodicity >= 0.58f\n            && family >= 0.68f\n            && clean >= 0.68f\n            && directStructureScoreV6(c) >= 0.70f;\n    };\n\n    const auto lowerAliasShadowedV6 = [&](int sourceIndex) noexcept\n    {\n        const auto& source = candidates[static_cast<std::size_t>(sourceIndex)];\n        if (!structurallyAuthoritativeV6(source))\n            return false;\n        const float upperHz = 2.0f * source.frequencyHz;\n        if (upperHz > maximumPitchHz_\n            || upperHz <= directMaximumForPathV6(source.pathIndex) + 5.0f)\n        {\n            return false;\n        }\n\n        for (int otherIndex = 0; otherIndex < candidateCount; ++otherIndex)\n        {\n            if (otherIndex == sourceIndex)\n                continue;\n            const auto& other = candidates[static_cast<std::size_t>(otherIndex)];\n            if (!structurallyAuthoritativeV6(other)\n                || upperHz > directMaximumForPathV6(other.pathIndex) + 5.0f)\n            {\n                continue;\n            }\n            // A recent slower-path measurement may shadow an alias between its\n            // scheduled updates; it does not need to be age zero to remain a\n            // physical observation. collectFreshCandidates() already bounds age.\n            if (centsDistance(other.frequencyHz, upperHz) <= 85.0f)\n                return true;\n        }\n        return false;\n    };\n\n    int authoritativeIndexV6 = -1;\n    float authoritativeScoreV6 = -1.0f;\n    for (int index = 0; index < candidateCount; ++index)\n    {\n        const auto& candidate = candidates[static_cast<std::size_t>(index)];\n        if (candidate.ageInHops != 0\n            || !structurallyAuthoritativeV6(candidate)\n            || lowerAliasShadowedV6(index))\n        {\n            continue;\n        }\n        const float score = directStructureScoreV6(candidate);\n        if (score > authoritativeScoreV6)\n        {\n            authoritativeScoreV6 = score;\n            authoritativeIndexV6 = index;\n        }\n    }\n\n    if (authoritativeIndexV6 >= 0)\n    {\n        const auto& best = candidates[static_cast<std::size_t>(authoritativeIndexV6)];\n        bool genuinelyAmbiguous = false;\n        for (int index = 0; index < candidateCount; ++index)\n        {\n            if (index == authoritativeIndexV6)\n                continue;\n            const auto& other = candidates[static_cast<std::size_t>(index)];\n            if (other.ageInHops != 0\n                || !structurallyAuthoritativeV6(other)\n                || lowerAliasShadowedV6(index)\n                || centsDistance(other.frequencyHz, best.frequencyHz) <= 70.0f)\n            {\n                continue;\n            }\n            // Only a comparably strong current physical measurement earns the\n            // right to invoke the slower ambiguity resolver. A weak path cannot\n            // veto an evident coordinate merely because it disagrees.\n            if (directStructureScoreV6(other) >= authoritativeScoreV6 - 0.10f)\n            {\n                genuinelyAmbiguous = true;\n                break;\n            }\n        }\n\n        if (!genuinelyAmbiguous)\n        {\n            DecoderDecision directDecision;\n            directDecision.candidate = best;\n            directDecision.candidate.valid = true;\n            directDecision.consensus = 0.0f;\n            directDecision.supportCount = 1;\n            directDecision.directSupportCount = 1;\n            directDecision.freshSupportMask = static_cast<std::uint8_t>(\n                1u << best.pathIndex);\n            directDecision.decoderOctaveIndex = octaveState_;\n            directDecision.authoritativeDirect = true;\n            directDecision.valid = true;\n            return directDecision;\n        }\n    }\n\n'''
+    cpp = replace_once(cpp, decode_anchor, decode_replacement, 'authoritative decode fast path')
 
-    anchor = '''            const float octavePrior = direct ? 1.0f\n                : (std::abs(bestOctaveShift) == 1 ? 0.52f : 0.25f);\n'''
-    replacement = '''            const float octavePrior = coordinateDirect ? 1.0f\n                : (rangeLimitedAlias ? 0.52f\n                   : (std::abs(bestOctaveShift) == 1 ? 0.52f : 0.25f));\n'''
-    replace_once(anchor, replacement, 'coordinate prior')
+    confirm_anchor = '''    if (octaveCommitGuardHops_ > 0)\n    {\n'''
+    confirm_replacement = '''    // AUTHORITATIVE_DIRECT_FAST_PATH_V6\n    // At this point initial acquisition and rescue-anchor semantics have already\n    // been handled above. A decisive current physical measurement must not be\n    // reinterpreted as a long-lived continuity preference. This is the explicit\n    // anti-stall rule: detector memory cannot turn the old F0 into a constant\n    // transposition while the current source has demonstrated a new coordinate.\n    if (decision.authoritativeDirect)\n    {\n        int directOctaveDelta = 0;\n        float directOctaveResidual = 0.0f;\n        if (isOctaveLikeTransition(trackedPitchHz_,\n                                   decision.candidate.frequencyHz,\n                                   directOctaveDelta,\n                                   directOctaveResidual))\n        {\n            octaveState_ = std::clamp(octaveState_ + directOctaveDelta, -4, 4);\n        }\n        committedOctaveFrequencyHz_ = decision.candidate.frequencyHz;\n        octaveCommitGuardHops_ = 4;\n        pendingOctaveDelta_ = 0;\n        pendingOctaveCount_ = 0;\n        pendingOctaveFrequencyHz_ = 0.0f;\n        decision.decoderOctaveIndex = octaveState_;\n        return true;\n    }\n\n    if (octaveCommitGuardHops_ > 0)\n    {\n'''
+    cpp = replace_once(cpp, confirm_anchor, confirm_replacement, 'authoritative confirmation')
 
-    replace_once(
-        '''            if ((!direct && baseScore < minimumOctaveSupport)\n                || evidenceWeight < minimumWeight)\n''',
-        '''            if ((!coordinateDirect && baseScore < minimumOctaveSupport)\n                || evidenceWeight < minimumWeight)\n''',
-        'coordinate support gate')
+    cpp_path.write_text(cpp)
+    h_path.write_text(h)
 
-    replace_once(
-        '''            if (direct)\n            {\n                directWeightedLogFrequency += static_cast<double>(coordinateWeight)\n                    * safeLog2(static_cast<double>(bestFrequency));\n                directCoordinateWeightSum += coordinateWeight;\n            }\n''',
-        '''            if (coordinateDirect)\n            {\n                directWeightedLogFrequency += static_cast<double>(coordinateWeight)\n                    * safeLog2(static_cast<double>(bestFrequency));\n                directCoordinateWeightSum += coordinateWeight;\n            }\n''',
-        'direct coordinate accumulation')
-
-    replace_once(
-        '''            ++supportCount;\n            if (direct)\n                ++directSupportCount;\n''',
-        '''            ++supportCount;\n            if (coordinateDirect)\n                ++directSupportCount;\n''',
-        'direct support count')
-
-    # C2) Raw fallback must use the same provenance rule; V4 omitted this path.
-    anchor = '''    const int candidateCount = collectFreshCandidates(candidates);\n    if (candidateCount <= 0)\n        return {};\n\n'''
-    replacement = '''    const int candidateCount = collectFreshCandidates(candidates);\n    if (candidateCount <= 0)\n        return {};\n\n    const auto directMaximumForPathDecodeV5 = [](int pathIndex) noexcept\n    {\n        switch (pathIndex)\n        {\n            case 0: return 2600.0f;\n            case 1: return 900.0f;\n            case 2: return 460.0f;\n            case 3: return 230.0f;\n            default: return 0.0f;\n        }\n    };\n    const auto rawCandidateShadowedByUpperV5 = [&](int sourceIndex) noexcept\n    {\n        const auto& source = candidates[static_cast<std::size_t>(sourceIndex)];\n        if (!source.valid || !(source.frequencyHz > 0.0f))\n            return false;\n        const float upperHz = 2.0f * source.frequencyHz;\n        if (upperHz > maximumPitchHz_\n            || upperHz <= directMaximumForPathDecodeV5(source.pathIndex) + 5.0f)\n            return false;\n\n        for (int i = 0; i < candidateCount; ++i)\n        {\n            if (i == sourceIndex)\n                continue;\n            const auto& other = candidates[static_cast<std::size_t>(i)];\n            if (!other.valid || !std::isfinite(other.frequencyHz)\n                || other.frequencyHz <= 0.0f\n                || upperHz > directMaximumForPathDecodeV5(other.pathIndex) + 5.0f)\n                continue;\n            const float family = other.harmonicFamily >= 0.0f\n                ? clamp01(other.harmonicFamily) : 0.0f;\n            const float clean = other.tonalCleanliness >= 0.0f\n                ? clamp01(other.tonalCleanliness) : 0.0f;\n            if (other.periodicity >= 0.52f\n                && family >= 0.58f\n                && clean >= 0.62f\n                && centsDistance(other.frequencyHz, upperHz) <= 70.0f)\n                return true;\n        }\n        return false;\n    };\n\n'''
-    replace_once(anchor, replacement, 'raw fallback helper')
-
-    replace_once(
-        '''            const auto& candidate = candidates[static_cast<std::size_t>(index)];\n            if (!candidate.valid || candidate.ageInHops != 0\n''',
-        '''            const auto& candidate = candidates[static_cast<std::size_t>(index)];\n            if (rawCandidateShadowedByUpperV5(index))\n                continue;\n            if (!candidate.valid || candidate.ageInHops != 0\n''',
-        'raw fallback candidate')
-
-    # B) Cadence-aware confirmation: empty/stale hops do not contradict fresh
-    # octave evidence. The existing >12 invalid-hop watchdog remains the bound.
-    replace_once(
-        '''    if (!decision.valid)\n    {\n        pendingOctaveDelta_ = 0;\n        pendingOctaveCount_ = 0;\n        pendingOctaveFrequencyHz_ = 0.0f;\n        return false;\n    }\n''',
-        '''    if (!decision.valid)\n    {\n        // PATH_CADENCE_OCTAVE_EVIDENCE_V1\n        // No newly scheduled measurement is absence, not contradiction.\n        return false;\n    }\n''',
-        'invalid decision cadence')
-
-    replace_once(
-        '''    if (!isOctaveLikeTransition(trackedPitchHz_,\n                                decision.candidate.frequencyHz,\n                                octaveDelta,\n                                residualCents))\n    {\n        pendingOctaveDelta_ = 0;\n        pendingOctaveCount_ = 0;\n        pendingOctaveFrequencyHz_ = 0.0f;\n        return true;\n    }\n''',
-        '''    if (!isOctaveLikeTransition(trackedPitchHz_,\n                                decision.candidate.frequencyHz,\n                                octaveDelta,\n                                residualCents))\n    {\n        if (decision.freshSupportMask != 0)\n        {\n            pendingOctaveDelta_ = 0;\n            pendingOctaveCount_ = 0;\n            pendingOctaveFrequencyHz_ = 0.0f;\n        }\n        return true;\n    }\n''',
-        'same-register cadence')
-
-    p.write_text(cpp)
-
-print('PRIMITIVE_PERIOD_PATH_CADENCE_V5 materialized')
+print('AUTHORITATIVE_DIRECT_FAST_PATH_V6 materialized')
