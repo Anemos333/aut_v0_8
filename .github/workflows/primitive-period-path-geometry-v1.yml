@@ -1,4 +1,4 @@
-name: Primitive period and cadence geometry v5
+name: Authoritative detector fast path v6
 
 on:
   push:
@@ -6,7 +6,9 @@ on:
       - voice-aware-f0-detector-v1
     paths:
       - Tests/RefinePrimitivePeriodPathGeometryV1.py
+      - Tests/DetectorExtremeDiagnostic.cpp
       - Tests/DetectorPathDiagnostic.cpp
+      - Tests/DetectorMotionDiagnostic.cpp
       - .github/workflows/primitive-period-path-geometry-v1.yml
   workflow_dispatch:
 
@@ -32,19 +34,22 @@ jobs:
           grep -q 'DETECTOR_VETO_NOT_PERMISSION_V1' Source/ModernPitchEngine.cpp
           grep -q 'HOLD_DOES_NOT_CREATE_NOTE_IDENTITY_V2' Source/ModernPitchEngine.cpp
 
-      - name: Apply V5 detector geometry in workspace only
+      - name: Apply V6 detector fast path in workspace only
         run: python3 Tests/RefinePrimitivePeriodPathGeometryV1.py
 
-      - name: Verify experimental scope
+      - name: Verify simplified experimental scope
         shell: bash
         run: |
           set -euo pipefail
-          grep -q 'PRIMITIVE_PERIOD_PATH_CADENCE_V5' Source/ModernPitchEngine.cpp
-          grep -q 'PATH_CADENCE_OCTAVE_EVIDENCE_V1' Source/ModernPitchEngine.cpp
+          grep -q 'AUTHORITATIVE_DIRECT_FAST_PATH_V6' Source/ModernPitchEngine.cpp
+          grep -q 'AUTHORITATIVE_DIRECT_FAST_PATH_V6' Source/ModernPitchEngine.h
+          ! grep -q 'PRIMITIVE_PERIOD_PATH_CADENCE_V5' Source/ModernPitchEngine.cpp
+          ! grep -q 'PATH_CADENCE_OCTAVE_EVIDENCE_V1' Source/ModernPitchEngine.cpp
           ! grep -q 'RANGE_CENSORED_DIRECT_OWNERSHIP_V4' Source/ModernPitchEngine.cpp
           ! grep -q 'PRIMITIVE_PERIOD_WITHIN_PATH_V3' Source/ModernPitchEngine.cpp
           changed="$(git diff --name-only | sort)"
-          test "$changed" = "Source/ModernPitchEngine.cpp"
+          expected=$'Source/ModernPitchEngine.cpp\nSource/ModernPitchEngine.h'
+          test "$changed" = "$expected"
           test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
           test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
 
@@ -59,27 +64,34 @@ jobs:
             libglu1-mesa-dev mesa-common-dev
 
       - name: Configure clean-engine build
-        run: cmake -S . -B build-primitive-geometry -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+        run: cmake -S . -B build-authority-v6 -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
 
       - name: Build and run existing supervisor invariants
         run: |
-          cmake --build build-primitive-geometry --config Release --parallel 2 --target SupervisorContinuityTest
-          ./build-primitive-geometry/clean-engine-tests/SupervisorContinuityTest
+          cmake --build build-authority-v6 --config Release --parallel 2 --target SupervisorContinuityTest
+          ./build-authority-v6/clean-engine-tests/SupervisorContinuityTest
 
-      - name: Measure extreme cases with geometry
+      - name: Measure extreme path and motion cases
         shell: bash
         run: |
           set -euo pipefail
           cp Tests/SupervisorContinuityTest.cpp /tmp/SupervisorContinuityTest.original.cpp
+
           cp Tests/DetectorExtremeDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
-          cmake --build build-primitive-geometry --config Release --parallel 2 --target SupervisorContinuityTest
-          ./build-primitive-geometry/clean-engine-tests/SupervisorContinuityTest | tee /tmp/extreme.log
+          cmake --build build-authority-v6 --config Release --parallel 2 --target SupervisorContinuityTest
+          ./build-authority-v6/clean-engine-tests/SupervisorContinuityTest | tee /tmp/extreme.log
+
           cp Tests/DetectorPathDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
-          cmake --build build-primitive-geometry --config Release --parallel 2 --target SupervisorContinuityTest
-          ./build-primitive-geometry/clean-engine-tests/SupervisorContinuityTest | tee /tmp/path.log
+          cmake --build build-authority-v6 --config Release --parallel 2 --target SupervisorContinuityTest
+          ./build-authority-v6/clean-engine-tests/SupervisorContinuityTest | tee /tmp/path.log
+
+          cp Tests/DetectorMotionDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-authority-v6 --config Release --parallel 2 --target SupervisorContinuityTest
+          /usr/bin/time -f 'MOTION_WALL_SECONDS=%e' ./build-authority-v6/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/motion.log
+
           cp /tmp/SupervisorContinuityTest.original.cpp Tests/SupervisorContinuityTest.cpp
 
-      - name: Check targeted noisy-family improvements and octave symmetry
+      - name: Check octave geometry and anti-stall contract
         shell: bash
         run: |
           set -euo pipefail
@@ -90,9 +102,8 @@ jobs:
           path_lines = Path('/tmp/path.log').read_text().splitlines()
           rows = []
           for line in path_lines:
-              if not line.startswith('PATH_STRESS '):
-                  continue
-              rows.append(dict(re.findall(r'(\w+)=([^ ]+)', line)))
+              if line.startswith('PATH_STRESS '):
+                  rows.append(dict(re.findall(r'(\w+)=([^ ]+)', line)))
 
           def selected(hz, snr, profile):
               return [r for r in rows
@@ -100,8 +111,6 @@ jobs:
                       and abs(float(r['snr']) - snr) < 0.01
                       and r['profile'] == profile]
 
-          # The exact families that exposed F/2 errors. Improvement must survive
-          # multiple noise seeds, not one selected realization.
           for hz, snr, profile in [
               (220.0, 6.0, 'harmonic4'),
               (440.0, 6.0, 'harmonic4'),
@@ -113,8 +122,6 @@ jobs:
               fractions = [int(r['out_correct']) / max(1, int(r['out_valid'])) for r in group]
               assert sum(f >= 0.80 for f in fractions) >= 3, (hz, snr, profile, fractions)
 
-          # Symmetry guard: a true 110-Hz fundamental must not be promoted to
-          # 220, even when the second harmonic is intentionally dominant.
           for profile in ['harmonic4', 'legacy', 'strong_second']:
               group = selected(110.0, 6.0, profile)
               assert len(group) == 4, (110.0, 6.0, profile, len(group))
@@ -129,22 +136,37 @@ jobs:
           pure = next(line for line in extreme.splitlines()
                       if 'case=pure_colored_noise' in line)
           assert 'valid=0' in pure, pure
+
+          motion = []
+          for line in Path('/tmp/motion.log').read_text().splitlines():
+              if line.startswith('MOTION_STEP '):
+                  motion.append(dict(re.findall(r'(\w+)=([^ ]+)', line)))
+          gated = [r for r in motion if abs(float(r['snr']) - 6.0) < 0.01]
+          assert len(gated) == 12, len(gated)
+          first = [float(r['first_correct_ms']) for r in gated]
+          stable = [float(r['stable_correct_ms']) for r in gated]
+          old = [float(r['max_old_lock_ms']) for r in gated]
+          fractions = [float(r['correct_fraction']) for r in gated]
+          assert all(0.0 <= x <= 90.0 for x in first), first
+          assert all(0.0 <= x <= 120.0 for x in stable), stable
+          assert max(old) <= 70.0, old
+          assert sum(x >= 0.80 for x in fractions) >= 10, fractions
           PY
 
       - name: Restore and run remaining invariants
         shell: bash
         run: |
           set -euo pipefail
-          cmake --build build-primitive-geometry --config Release --parallel 2 \
+          cmake --build build-authority-v6 --config Release --parallel 2 \
             --target SupervisorContinuityTest SingleWetSpectralRendererTest \
             VoiceEvidenceAnalyzerTest CleanModernPitchEngineTest \
             GuiAudioControlContractTest GuiAudibilityTest
-          ./build-primitive-geometry/clean-engine-tests/SupervisorContinuityTest
-          ./build-primitive-geometry/clean-engine-tests/SingleWetSpectralRendererTest
-          ./build-primitive-geometry/clean-engine-tests/VoiceEvidenceAnalyzerTest
-          ./build-primitive-geometry/clean-engine-tests/CleanModernPitchEngineTest
-          ./build-primitive-geometry/clean-engine-tests/GuiAudioControlContractTest
-          ./build-primitive-geometry/clean-engine-tests/GuiAudibilityTest
+          ./build-authority-v6/clean-engine-tests/SupervisorContinuityTest
+          ./build-authority-v6/clean-engine-tests/SingleWetSpectralRendererTest
+          ./build-authority-v6/clean-engine-tests/VoiceEvidenceAnalyzerTest
+          ./build-authority-v6/clean-engine-tests/CleanModernPitchEngineTest
+          ./build-authority-v6/clean-engine-tests/GuiAudioControlContractTest
+          ./build-authority-v6/clean-engine-tests/GuiAudibilityTest
 
       - name: Build VST3
-        run: cmake --build build-primitive-geometry --config Release --target Neumaton_VST3 --parallel 2
+        run: cmake --build build-authority-v6 --config Release --target Neumaton_VST3 --parallel 2
