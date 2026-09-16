@@ -6,6 +6,7 @@ on:
       - voice-aware-f0-detector-v1
     paths:
       - Tests/RefinePrimitivePeriodPathGeometryV1.py
+      - Tests/DetectorPathDiagnostic.cpp
       - .github/workflows/primitive-period-path-geometry-v1.yml
   workflow_dispatch:
 
@@ -38,7 +39,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          grep -q 'PRIMITIVE_PERIOD_PATH_GEOMETRY_V2' Source/ModernPitchEngine.cpp
+          grep -q 'PRIMITIVE_PERIOD_PATH_GEOMETRY_V3' Source/ModernPitchEngine.cpp
+          grep -q 'PRIMITIVE_PERIOD_WITHIN_PATH_V3' Source/ModernPitchEngine.cpp
+          grep -q 'RANGE_CENSORED_PATH_IS_FAMILY_EVIDENCE_V3' Source/ModernPitchEngine.cpp
           changed="$(git diff --name-only | sort)"
           test "$changed" = "Source/ModernPitchEngine.cpp"
           test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
@@ -75,7 +78,7 @@ jobs:
           ./build-primitive-geometry/clean-engine-tests/SupervisorContinuityTest | tee /tmp/path.log
           cp /tmp/SupervisorContinuityTest.original.cpp Tests/SupervisorContinuityTest.cpp
 
-      - name: Check targeted noisy-family improvements
+      - name: Check targeted noisy-family improvements and octave symmetry
         shell: bash
         run: |
           set -euo pipefail
@@ -88,8 +91,7 @@ jobs:
           for line in path_lines:
               if not line.startswith('PATH_STRESS '):
                   continue
-              values = dict(re.findall(r'(\w+)=([^ ]+)', line))
-              rows.append(values)
+              rows.append(dict(re.findall(r'(\w+)=([^ ]+)', line)))
 
           def selected(hz, snr, profile):
               return [r for r in rows
@@ -97,6 +99,8 @@ jobs:
                       and abs(float(r['snr']) - snr) < 0.01
                       and r['profile'] == profile]
 
+          # Positive controls: fix the measured F0/2 failures across noise seeds,
+          # rather than succeeding on one convenient realization.
           for hz, snr, profile in [
               (220.0, 6.0, 'harmonic4'),
               (440.0, 6.0, 'harmonic4'),
@@ -107,6 +111,18 @@ jobs:
               assert len(group) == 4, (hz, snr, profile, len(group))
               fractions = [int(r['out_correct']) / max(1, int(r['out_valid'])) for r in group]
               assert sum(f >= 0.80 for f in fractions) >= 3, (hz, snr, profile, fractions)
+
+          # Negative controls: the resolver must not become "always choose the
+          # higher octave". 110 Hz remains 110 even with a deliberately dominant
+          # second harmonic as long as odd-harmonic structure establishes the
+          # longer physical period.
+          for profile in ['harmonic4', 'legacy', 'strong_second']:
+              group = selected(110.0, 6.0, profile)
+              assert len(group) == 4, (110.0, 6.0, profile, len(group))
+              fractions = [int(r['out_correct']) / max(1, int(r['out_valid'])) for r in group]
+              doubles = [int(r['out_double']) / max(1, int(r['out_valid'])) for r in group]
+              assert sum(f >= 0.80 for f in fractions) >= 3, (110.0, profile, fractions)
+              assert max(doubles) <= 0.10, (110.0, profile, doubles)
 
           extreme = Path('/tmp/extreme.log').read_text()
           pure = next(line for line in extreme.splitlines()
