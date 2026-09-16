@@ -1,4 +1,4 @@
-name: Cross-path direct ownership geometry v4
+name: Primitive period and cadence geometry v5
 
 on:
   push:
@@ -32,14 +32,16 @@ jobs:
           grep -q 'DETECTOR_VETO_NOT_PERMISSION_V1' Source/ModernPitchEngine.cpp
           grep -q 'HOLD_DOES_NOT_CREATE_NOTE_IDENTITY_V2' Source/ModernPitchEngine.cpp
 
-      - name: Apply cross-path geometry in workspace only
+      - name: Apply V5 detector geometry in workspace only
         run: python3 Tests/RefinePrimitivePeriodPathGeometryV1.py
 
       - name: Verify experimental scope
         shell: bash
         run: |
           set -euo pipefail
-          grep -q 'RANGE_CENSORED_DIRECT_OWNERSHIP_V4' Source/ModernPitchEngine.cpp
+          grep -q 'PRIMITIVE_PERIOD_PATH_CADENCE_V5' Source/ModernPitchEngine.cpp
+          grep -q 'PATH_CADENCE_OCTAVE_EVIDENCE_V1' Source/ModernPitchEngine.cpp
+          ! grep -q 'RANGE_CENSORED_DIRECT_OWNERSHIP_V4' Source/ModernPitchEngine.cpp
           ! grep -q 'PRIMITIVE_PERIOD_WITHIN_PATH_V3' Source/ModernPitchEngine.cpp
           changed="$(git diff --name-only | sort)"
           test "$changed" = "Source/ModernPitchEngine.cpp"
@@ -98,6 +100,8 @@ jobs:
                       and abs(float(r['snr']) - snr) < 0.01
                       and r['profile'] == profile]
 
+          # The exact families that exposed F/2 errors. Improvement must survive
+          # multiple noise seeds, not one selected realization.
           for hz, snr, profile in [
               (220.0, 6.0, 'harmonic4'),
               (440.0, 6.0, 'harmonic4'),
@@ -109,13 +113,17 @@ jobs:
               fractions = [int(r['out_correct']) / max(1, int(r['out_valid'])) for r in group]
               assert sum(f >= 0.80 for f in fractions) >= 3, (hz, snr, profile, fractions)
 
+          # Symmetry guard: a true 110-Hz fundamental must not be promoted to
+          # 220, even when the second harmonic is intentionally dominant.
           for profile in ['harmonic4', 'legacy', 'strong_second']:
               group = selected(110.0, 6.0, profile)
               assert len(group) == 4, (110.0, 6.0, profile, len(group))
               fractions = [int(r['out_correct']) / max(1, int(r['out_valid'])) for r in group]
               doubles = [int(r['out_double']) / max(1, int(r['out_valid'])) for r in group]
+              halves = [int(r['out_half']) / max(1, int(r['out_valid'])) for r in group]
               assert sum(f >= 0.80 for f in fractions) >= 3, (110.0, profile, fractions)
               assert max(doubles) <= 0.10, (110.0, profile, doubles)
+              assert max(halves) <= 0.10, (110.0, profile, halves)
 
           extreme = Path('/tmp/extreme.log').read_text()
           pure = next(line for line in extreme.splitlines()
