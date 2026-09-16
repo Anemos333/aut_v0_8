@@ -1,0 +1,65 @@
+name: Detector ownership diagnostic
+
+on:
+  push:
+    branches:
+      - voice-aware-f0-detector-v1
+    paths:
+      - Tests/DetectorOwnershipDiagnostic.cpp
+      - .github/workflows/detector-ownership-diagnostic.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout current detector branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Guard validated runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+          grep -q 'DIRECT_COORDINATE_OWNS_F0_V1' Source/ModernPitchEngine.cpp
+          grep -q 'DETECTOR_VETO_NOT_PERMISSION_V1' Source/ModernPitchEngine.cpp
+          ! grep -q 'RANGE_CENSORED_DIRECT_OWNERSHIP_V4' Source/ModernPitchEngine.cpp
+          ! grep -q 'PRIMITIVE_PERIOD_WITHIN_PATH_V3' Source/ModernPitchEngine.cpp
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev
+
+      - name: Configure clean-engine build
+        run: cmake -S . -B build-ownership -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Compile and run ownership diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/SupervisorContinuityTest.original.cpp
+          cp Tests/DetectorOwnershipDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-ownership --config Release --parallel 2 --target SupervisorContinuityTest
+          ./build-ownership/clean-engine-tests/SupervisorContinuityTest | tee /tmp/ownership.log
+          cp /tmp/SupervisorContinuityTest.original.cpp Tests/SupervisorContinuityTest.cpp
+
+      - name: Sanity-check diagnostic coverage
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'OWNERSHIP_CASE label=bad220_seed1' /tmp/ownership.log
+          grep -q 'OWNERSHIP_CASE label=mixed440_seed1' /tmp/ownership.log
+          grep -q 'OWNERSHIP_CASE label=bad110_seed3' /tmp/ownership.log
+          grep -q 'OWN hop=' /tmp/ownership.log
