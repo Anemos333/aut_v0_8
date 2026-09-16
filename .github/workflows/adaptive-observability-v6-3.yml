@@ -1,0 +1,178 @@
+name: Adaptive observability detector v6.3
+
+on:
+  push:
+    branches:
+      - voice-aware-f0-detector-v1
+    paths:
+      - Tests/RefinePrimitivePeriodPathGeometryV1.py
+      - Tests/RefineAdaptiveObservabilityV6_3.py
+      - Tests/DetectorExtremeDiagnostic.cpp
+      - Tests/DetectorPathDiagnostic.cpp
+      - Tests/DetectorMotionDiagnostic.cpp
+      - .github/workflows/adaptive-observability-v6-3.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-adaptive-observability:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout current detector branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Guard frozen architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+          grep -q 'DIRECT_COORDINATE_OWNS_F0_V1' Source/ModernPitchEngine.cpp
+          grep -q 'DETECTOR_VETO_NOT_PERMISSION_V1' Source/ModernPitchEngine.cpp
+          grep -q 'HOLD_DOES_NOT_CREATE_NOTE_IDENTITY_V2' Source/ModernPitchEngine.cpp
+
+      - name: Apply V6.1 plus adaptive observability V6.3 in workspace only
+        run: |
+          python3 Tests/RefinePrimitivePeriodPathGeometryV1.py
+          python3 Tests/RefineAdaptiveObservabilityV6_3.py
+
+      - name: Verify V6.3 experimental scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'AUTHORITATIVE_RESCUE_CORROBORATION_V6_1' Source/ModernPitchEngine.cpp
+          grep -q 'ADAPTIVE_OBSERVABILITY_PERIOD_GATE_V6_3' Source/ModernPitchEngine.cpp
+          grep -q 'ADAPTIVE_OBSERVABILITY_PERIOD_GATE_V6_3' Source/ModernPitchEngine.h
+          ! grep -q 'QUALIFIED_FIRST_MINIMUM_OWNS_PATH_V6_2' Source/ModernPitchEngine.cpp
+          ! grep -q 'PRIMITIVE_PERIOD_PATH_CADENCE_V5' Source/ModernPitchEngine.cpp
+          ! grep -q 'PATH_CADENCE_OCTAVE_EVIDENCE_V1' Source/ModernPitchEngine.cpp
+          ! grep -q 'RANGE_CENSORED_DIRECT_OWNERSHIP_V4' Source/ModernPitchEngine.cpp
+          ! grep -q 'PRIMITIVE_PERIOD_WITHIN_PATH_V3' Source/ModernPitchEngine.cpp
+          changed="$(git diff --name-only | sort)"
+          expected=$'Source/ModernPitchEngine.cpp\nSource/ModernPitchEngine.h'
+          test "$changed" = "$expected"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev
+
+      - name: Configure clean-engine build
+        run: cmake -S . -B build-adaptive-v63 -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Build and run existing supervisor invariants
+        run: |
+          cmake --build build-adaptive-v63 --config Release --parallel 2 --target SupervisorContinuityTest
+          ./build-adaptive-v63/clean-engine-tests/SupervisorContinuityTest
+
+      - name: Measure extreme path and motion cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/SupervisorContinuityTest.original.cpp
+
+          cp Tests/DetectorExtremeDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-adaptive-v63 --config Release --parallel 2 --target SupervisorContinuityTest
+          ./build-adaptive-v63/clean-engine-tests/SupervisorContinuityTest | tee /tmp/extreme.log
+
+          cp Tests/DetectorPathDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-adaptive-v63 --config Release --parallel 2 --target SupervisorContinuityTest
+          ./build-adaptive-v63/clean-engine-tests/SupervisorContinuityTest | tee /tmp/path.log
+
+          cp Tests/DetectorMotionDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-adaptive-v63 --config Release --parallel 2 --target SupervisorContinuityTest
+          /usr/bin/time -f 'MOTION_WALL_SECONDS=%e' ./build-adaptive-v63/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/motion.log
+
+          cp /tmp/SupervisorContinuityTest.original.cpp Tests/SupervisorContinuityTest.cpp
+
+      - name: Check adaptive geometry and anti-stall contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          rows = []
+          for line in Path('/tmp/path.log').read_text().splitlines():
+              if line.startswith('PATH_STRESS '):
+                  rows.append(dict(re.findall(r'(\w+)=([^ ]+)', line)))
+
+          def selected(hz, snr, profile):
+              return [r for r in rows
+                      if abs(float(r['hz']) - hz) < 0.01
+                      and abs(float(r['snr']) - snr) < 0.01
+                      and r['profile'] == profile]
+
+          # Difficult material that V6.1 rescued must remain rescued.
+          for hz, snr, profile in [
+              (220.0, 6.0, 'harmonic4'),
+              (440.0, 6.0, 'harmonic4'),
+              (220.0, 6.0, 'legacy'),
+              (440.0, 6.0, 'legacy'),
+          ]:
+              group = selected(hz, snr, profile)
+              assert len(group) == 4, (hz, snr, profile, len(group))
+              fractions = [int(r['out_correct']) / max(1, int(r['out_valid'])) for r in group]
+              assert sum(f >= 0.80 for f in fractions) >= 3, (hz, snr, profile, fractions)
+
+          # Material that historically had stable register must not acquire F/2.
+          for profile in ['harmonic4', 'legacy', 'strong_second']:
+              group = selected(110.0, 6.0, profile)
+              assert len(group) == 4, (110.0, 6.0, profile, len(group))
+              fractions = [int(r['out_correct']) / max(1, int(r['out_valid'])) for r in group]
+              halves = [int(r['out_half']) / max(1, int(r['out_valid'])) for r in group]
+              doubles = [int(r['out_double']) / max(1, int(r['out_valid'])) for r in group]
+              assert sum(f >= 0.80 for f in fractions) >= 3, (110.0, profile, fractions)
+              assert max(halves) <= 0.10, (110.0, profile, halves)
+              assert max(doubles) <= 0.10, (110.0, profile, doubles)
+
+          extreme = Path('/tmp/extreme.log').read_text()
+          pure = next(line for line in extreme.splitlines()
+                      if 'case=pure_colored_noise' in line)
+          assert 'valid=0' in pure, pure
+
+          motion = []
+          for line in Path('/tmp/motion.log').read_text().splitlines():
+              if line.startswith('MOTION_STEP '):
+                  motion.append(dict(re.findall(r'(\w+)=([^ ]+)', line)))
+          gated = [r for r in motion if abs(float(r['snr']) - 6.0) < 0.01]
+          assert len(gated) == 12, len(gated)
+          first = [float(r['first_correct_ms']) for r in gated]
+          stable = [float(r['stable_correct_ms']) for r in gated]
+          old = [float(r['max_old_lock_ms']) for r in gated]
+          fractions = [float(r['correct_fraction']) for r in gated]
+          assert all(0.0 <= x <= 90.0 for x in first), first
+          assert all(0.0 <= x <= 120.0 for x in stable), stable
+          assert max(old) <= 70.0, old
+          assert sum(x >= 0.80 for x in fractions) >= 10, fractions
+          PY
+
+      - name: Restore and run remaining invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build build-adaptive-v63 --config Release --parallel 2 \
+            --target SupervisorContinuityTest SingleWetSpectralRendererTest \
+            VoiceEvidenceAnalyzerTest CleanModernPitchEngineTest \
+            GuiAudioControlContractTest GuiAudibilityTest
+          ./build-adaptive-v63/clean-engine-tests/SupervisorContinuityTest
+          ./build-adaptive-v63/clean-engine-tests/SingleWetSpectralRendererTest
+          ./build-adaptive-v63/clean-engine-tests/VoiceEvidenceAnalyzerTest
+          ./build-adaptive-v63/clean-engine-tests/CleanModernPitchEngineTest
+          ./build-adaptive-v63/clean-engine-tests/GuiAudioControlContractTest
+          ./build-adaptive-v63/clean-engine-tests/GuiAudibilityTest
+
+      - name: Build VST3
+        run: cmake --build build-adaptive-v63 --config Release --target Neumaton_VST3 --parallel 2
