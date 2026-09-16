@@ -38,7 +38,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          grep -q 'PRIMITIVE_PERIOD_PATH_GEOMETRY_V1' Source/ModernPitchEngine.cpp
+          grep -q 'PRIMITIVE_PERIOD_PATH_GEOMETRY_V2' Source/ModernPitchEngine.cpp
           changed="$(git diff --name-only | sort)"
           test "$changed" = "Source/ModernPitchEngine.cpp"
           test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
@@ -97,9 +97,6 @@ jobs:
                       and abs(float(r['snr']) - snr) < 0.01
                       and r['profile'] == profile]
 
-          # These are the exact families that exposed the octave/subharmonic
-          # ambiguity. The experiment is useful only if it fixes most of them
-          # across seeds, not one hand-picked noise realization.
           for hz, snr, profile in [
               (220.0, 6.0, 'harmonic4'),
               (440.0, 6.0, 'harmonic4'),
