@@ -1,0 +1,57 @@
+name: Detector extreme diagnostics
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - voice-aware-f0-detector-v1
+    paths:
+      - Tests/DetectorExtremeDiagnostic.cpp
+      - .github/workflows/detector-extreme-diagnostic.yml
+
+permissions:
+  contents: read
+
+jobs:
+  measure-current-detector:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout current materialized branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Guard measurement-only scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+          grep -q 'DETECTOR_VETO_NOT_PERMISSION_V1' Source/ModernPitchEngine.cpp
+          grep -q 'DIRECT_HIGH_FAMILY_FAST_CONFIRM_V1' Source/ModernPitchEngine.cpp
+          grep -q 'DIRECT_COORDINATE_OWNS_F0_V1' Source/ModernPitchEngine.cpp
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev
+
+      - name: Configure clean-engine tests
+        run: cmake -S . -B build-detector-diagnostic -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Substitute diagnostic driver only
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/DetectorExtremeDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
+
+      - name: Build diagnostic against current detector
+        run: cmake --build build-detector-diagnostic --config Release --parallel 2 --target SupervisorContinuityTest
+
+      - name: Measure detector
+        run: ./build-detector-diagnostic/clean-engine-tests/SupervisorContinuityTest
