@@ -66,3 +66,5 @@ jobs:
           if [ -f /tmp/SupervisorContinuityTest.golden.original.cpp ]; then
             cp /tmp/SupervisorContinuityTest.golden.original.cpp Tests/SupervisorContinuityTest.cpp
           fi
+
+# This workflow is intentionally branch-local: no production DSP promotion occurs here.
