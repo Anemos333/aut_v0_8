@@ -114,9 +114,9 @@ void ModernPitchEngine::MultiRatePitchTracker::reset() noexcept
     halfRateRing_.fill(0.0f);
     quarterRateRing_.fill(0.0f);
     eighthRateRing_.fill(0.0f);
-    frame_.fill(0.0f);
-    voiceResidualFrame_.fill(0.0f);
-    difference_.fill(1.0f);
+    analysisWorkspace_.frame.fill(0.0f);
+    analysisWorkspace_.voiceResidualFrame.fill(0.0f);
+    analysisWorkspace_.difference.fill(1.0f);
 
     fullRateWritePosition_ = 0;
     halfRateWritePosition_ = 0;
@@ -305,8 +305,16 @@ ModernPitchEngine::MultiRatePitchTracker::analyse(
     double effectiveSampleRate,
     float minimumFrequency,
     float maximumFrequency,
-    int analysisLength) noexcept
+    int analysisLength,
+    AnalysisWorkspace& workspace) noexcept
 {
+    // ANALYSIS_WORKSPACE_REENTRANCY_V1: preserve the golden detector body and
+    // its exact operation ordering. These local aliases deliberately keep the
+    // original identifiers used by every arithmetic expression below.
+    auto& frame_ = workspace.frame;
+    auto& voiceResidualFrame_ = workspace.voiceResidualFrame;
+    auto& difference_ = workspace.difference;
+
     PitchCandidate result;
     analysisLength = std::clamp(analysisLength, 64, maxAnalysisSize);
 
@@ -2288,7 +2296,8 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
                                                sampleRate_,
                                                fullMinimum,
                                                fullMaximum,
-                                               standardAnalysisSize);
+                                               standardAnalysisSize,
+                                               analysisWorkspace_);
         fullRateCandidate_.candidate.pathIndex = 0;
         fullRateCandidate_.candidate.ageInHops = 0;
         fullRateCandidate_.ageInHops = 0;
@@ -2306,7 +2315,8 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
                                                    sampleRate_ * 0.5,
                                                    halfMinimum,
                                                    halfMaximum,
-                                                   standardAnalysisSize);
+                                                   standardAnalysisSize,
+                                                   analysisWorkspace_);
             halfRateCandidate_.candidate.pathIndex = 1;
             halfRateCandidate_.candidate.ageInHops = 0;
             halfRateCandidate_.ageInHops = 0;
@@ -2325,7 +2335,8 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
                                                       sampleRate_ * 0.25,
                                                       quarterMinimum,
                                                       quarterMaximum,
-                                                      384);
+                                                      384,
+                                                      analysisWorkspace_);
             quarterRateCandidate_.candidate.pathIndex = 2;
             quarterRateCandidate_.candidate.ageInHops = 0;
             quarterRateCandidate_.ageInHops = 0;
@@ -2344,7 +2355,8 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
                                                      sampleRate_ * 0.125,
                                                      eighthMinimum,
                                                      eighthMaximum,
-                                                     maxAnalysisSize);
+                                                     maxAnalysisSize,
+                                                     analysisWorkspace_);
             eighthRateCandidate_.candidate.pathIndex = 3;
             eighthRateCandidate_.candidate.ageInHops = 0;
             eighthRateCandidate_.ageInHops = 0;

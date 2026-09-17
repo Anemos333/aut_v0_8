@@ -286,6 +286,15 @@ private:
             int ageInHops = 1000;
         };
 
+        struct AnalysisWorkspace
+        {
+            std::array<float, maxAnalysisSize> frame {};
+            // Detector-only inverse-filtered residual. The audible signal never
+            // enters this buffer and the renderer never reads it.
+            std::array<float, maxAnalysisSize> voiceResidualFrame {};
+            std::array<float, maxAnalysisSize> difference {};
+        };
+
         struct ConsensusHypothesis
         {
             float frequencyHz = 0.0f;
@@ -345,7 +354,8 @@ private:
             double effectiveSampleRate,
             float minimumFrequency,
             float maximumFrequency,
-            int analysisLength) noexcept;
+            int analysisLength,
+            AnalysisWorkspace& workspace) noexcept;
         [[nodiscard]] int collectFreshCandidates(
             std::array<PitchCandidate, detectorPathCount>& candidates) const noexcept;
         [[nodiscard]] int buildConsensusHypotheses(
@@ -439,11 +449,10 @@ private:
         CandidateSlot halfRateCandidate_;
         CandidateSlot quarterRateCandidate_;
         CandidateSlot eighthRateCandidate_;
-        std::array<float, maxAnalysisSize> frame_ {};
-        // Detector-only inverse-filtered residual. The audible signal never
-        // enters this buffer and the renderer never reads it.
-        std::array<float, maxAnalysisSize> voiceResidualFrame_ {};
-        std::array<float, maxAnalysisSize> difference_ {};
+        // Serial workspace today; explicit ownership makes analyse() re-entrant
+        // without changing any detector arithmetic. Future workers must provide
+        // their own private AnalysisWorkspace instance.
+        AnalysisWorkspace analysisWorkspace_ {};
         std::array<DecoderState, decoderBeamWidth> decoderBeam_ {};
         float trackedPitchHz_ = 0.0f;
         float reacquisitionAnchorHz_ = 0.0f;
