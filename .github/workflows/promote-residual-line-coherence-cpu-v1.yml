@@ -1,0 +1,129 @@
+name: Promote residual line coherence CPU v1
+
+on:
+  push:
+    branches:
+      - voice-aware-f0-detector-v1
+    paths:
+      - '.github/workflows/promote-residual-line-coherence-cpu-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  promote:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout branch head
+        uses: actions/checkout@v4
+        with:
+          ref: voice-aware-f0-detector-v1
+          fetch-depth: 1
+
+      - name: Guard golden pre-promotion Source
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'VOICE_BODY_LIVE_PERMISSION_V6_7_1' Source/ModernPitchEngine.cpp
+          ! grep -q 'RESIDUAL_LINE_COHERENCE_CPU_V1' Source/ModernPitchEngine.cpp
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+
+      - name: Materialize validated CPU optimization
+        run: python3 Tests/OptimizeResidualLineCoherenceV1.py
+
+      - name: Guard promotion scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          changed=$(git diff --name-only | sort)
+          printf '%s\n' "$changed"
+          test "$changed" = "Source/ModernPitchEngine.cpp"
+          grep -q 'RESIDUAL_LINE_COHERENCE_CPU_V1' Source/ModernPitchEngine.cpp
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev
+
+      - name: Configure Release validation build
+        run: cmake -S . -B build-promote-cpu -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Run full detector and renderer invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build build-promote-cpu --config Release --parallel 2 \
+            --target SupervisorContinuityTest SingleWetSpectralRendererTest \
+            VoiceEvidenceAnalyzerTest CleanModernPitchEngineTest
+          ./build-promote-cpu/clean-engine-tests/SupervisorContinuityTest
+          ./build-promote-cpu/clean-engine-tests/SingleWetSpectralRendererTest
+          ./build-promote-cpu/clean-engine-tests/VoiceEvidenceAnalyzerTest
+          ./build-promote-cpu/clean-engine-tests/CleanModernPitchEngineTest
+
+      - name: Run V6.7.1 authority gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/SupervisorContinuityTest.promote-cpu.cpp
+          cp Tests/DetectorAdaptiveAuthorityDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-promote-cpu --config Release --parallel 2 --target SupervisorContinuityTest
+          ./build-promote-cpu/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/v671-promote-cpu.log
+          cp /tmp/SupervisorContinuityTest.promote-cpu.cpp Tests/SupervisorContinuityTest.cpp
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          rows=[]
+          for line in Path('/tmp/v671-promote-cpu.log').read_text().splitlines():
+              if line.startswith('V67_AUTH '): rows.append(dict(re.findall(r'(\w+)=([^ ]+)', line)))
+          def group(name): return [r for r in rows if r['case']==name]
+          assert len(group('stable440_legacy'))==4 and all(float(r['correct_fraction'])>=0.98 for r in group('stable440_legacy'))
+          assert len(group('stable220_legacy'))==2 and all(float(r['correct_fraction'])>=0.98 for r in group('stable220_legacy'))
+          down=group('down440_220_legacy'); assert len(down)==4 and sum(float(r['correct_fraction'])>=0.90 for r in down)>=3
+          up=group('up220_440_legacy'); assert len(up)==2 and all(float(r['correct_fraction'])>=0.90 for r in up)
+          strong=group('down220_110_strong2'); assert len(strong)==2 and all(float(r['correct_fraction'])>=0.80 for r in strong)
+          noise=group('pure_noise'); assert len(noise)==1 and int(noise[0]['valid_after'])==0
+          print('PROMOTE_CPU_V671_GATE=PASS')
+          PY
+
+      - name: Build VST3 before commit
+        run: cmake --build build-promote-cpu --config Release --target Neumaton_VST3 --parallel 2
+
+      - name: Commit optimized Source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Source/ModernPitchEngine.cpp
+          git commit -m "Optimize detector residual line coherence CPU [skip ci]"
+          git push origin HEAD:voice-aware-f0-detector-v1
+          git rev-parse HEAD
+
+  verify-committed-source:
+    needs: promote
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout promoted branch head
+        uses: actions/checkout@v4
+        with:
+          ref: voice-aware-f0-detector-v1
+          fetch-depth: 1
+
+      - name: Verify committed marker and frozen renderer
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'RESIDUAL_LINE_COHERENCE_CPU_V1' Source/ModernPitchEngine.cpp
+          grep -q 'VOICE_BODY_LIVE_PERMISSION_V6_7_1' Source/ModernPitchEngine.cpp
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+          git log -1 --oneline
