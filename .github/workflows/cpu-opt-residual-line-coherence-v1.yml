@@ -1,0 +1,162 @@
+name: CPU optimize residual line coherence v1
+
+on:
+  push:
+    branches:
+      - voice-aware-f0-detector-v1
+    paths:
+      - 'Tests/OptimizeResidualLineCoherenceV1.py'
+      - '.github/workflows/cpu-opt-residual-line-coherence-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark-and-verify:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout detector branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Guard golden Source and frozen renderer
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'PRIMITIVE_DIVISOR_GEOMETRY_V6_6' Source/ModernPitchEngine.cpp
+          grep -q 'VOICE_BODY_LIVE_PERMISSION_V6_7_1' Source/ModernPitchEngine.cpp
+          ! grep -q 'RESIDUAL_LINE_COHERENCE_CPU_V1' Source/ModernPitchEngine.cpp
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev
+
+      - name: Configure Release build
+        run: cmake -S . -B build-cpu-opt -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Build baseline benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/SupervisorContinuityTest.cpuopt.original.cpp
+          cp Tests/CpuHotspotBenchmark.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-cpu-opt --config Release --parallel 2 --target SupervisorContinuityTest
+          ./build-cpu-opt/clean-engine-tests/SupervisorContinuityTest | tee /tmp/cpu-baseline.log
+          cp /tmp/SupervisorContinuityTest.cpuopt.original.cpp Tests/SupervisorContinuityTest.cpp
+
+      - name: Materialize CPU optimization in workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 Tests/OptimizeResidualLineCoherenceV1.py
+          grep -q 'RESIDUAL_LINE_COHERENCE_CPU_V1' Source/ModernPitchEngine.cpp
+          changed=$(git diff --name-only | sort)
+          printf '%s\n' "$changed"
+          test "$changed" = "Source/ModernPitchEngine.cpp"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+
+      - name: Build and run full behavioral invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build build-cpu-opt --config Release --parallel 2 \
+            --target SupervisorContinuityTest SingleWetSpectralRendererTest \
+            VoiceEvidenceAnalyzerTest CleanModernPitchEngineTest \
+            GuiAudioControlContractTest GuiAudibilityTest
+          ./build-cpu-opt/clean-engine-tests/SupervisorContinuityTest
+          ./build-cpu-opt/clean-engine-tests/SingleWetSpectralRendererTest
+          ./build-cpu-opt/clean-engine-tests/VoiceEvidenceAnalyzerTest
+          ./build-cpu-opt/clean-engine-tests/CleanModernPitchEngineTest
+          ./build-cpu-opt/clean-engine-tests/GuiAudioControlContractTest
+          ./build-cpu-opt/clean-engine-tests/GuiAudibilityTest
+
+      - name: Run V6.7.1 adaptive-authority diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/SupervisorContinuityTest.cpuopt.behavior.cpp
+          cp Tests/DetectorAdaptiveAuthorityDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-cpu-opt --config Release --parallel 2 --target SupervisorContinuityTest
+          ./build-cpu-opt/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/v671-cpuopt.log
+          cp /tmp/SupervisorContinuityTest.cpuopt.behavior.cpp Tests/SupervisorContinuityTest.cpp
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          rows=[]
+          for line in Path('/tmp/v671-cpuopt.log').read_text().splitlines():
+              if line.startswith('V67_AUTH '):
+                  rows.append(dict(re.findall(r'(\w+)=([^ ]+)', line)))
+          def group(name): return [r for r in rows if r['case']==name]
+          errors=[]
+          stable440=group('stable440_legacy')
+          if len(stable440)!=4 or any(float(r['correct_fraction'])<0.98 for r in stable440): errors.append(('stable440',stable440))
+          stable220=group('stable220_legacy')
+          if len(stable220)!=2 or any(float(r['correct_fraction'])<0.98 for r in stable220): errors.append(('stable220',stable220))
+          down=group('down440_220_legacy')
+          if len(down)!=4 or sum(float(r['correct_fraction'])>=0.90 for r in down)<3 or max([float(r['max_old_ms']) for r in down] or [999])>25.0: errors.append(('down',down))
+          up=group('up220_440_legacy')
+          if len(up)!=2 or any(float(r['correct_fraction'])<0.90 for r in up): errors.append(('up',up))
+          strong=group('down220_110_strong2')
+          if len(strong)!=2 or any(float(r['correct_fraction'])<0.80 for r in strong): errors.append(('strong',strong))
+          noise=group('pure_noise')
+          if len(noise)!=1 or int(noise[0]['valid_after'])!=0: errors.append(('noise',noise))
+          if errors: raise AssertionError(errors)
+          print('CPU_OPT_V671_BEHAVIOR_GATE=PASS')
+          PY
+
+      - name: Build optimized benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/SupervisorContinuityTest.cpuopt.original2.cpp
+          cp Tests/CpuHotspotBenchmark.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-cpu-opt --config Release --parallel 2 --target SupervisorContinuityTest
+          ./build-cpu-opt/clean-engine-tests/SupervisorContinuityTest | tee /tmp/cpu-optimized.log
+          cp /tmp/SupervisorContinuityTest.cpuopt.original2.cpp Tests/SupervisorContinuityTest.cpp
+
+      - name: Compare CPU baseline vs optimized
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, statistics
+          def rows(path):
+              out=[]
+              for line in Path(path).read_text().splitlines():
+                  if line.startswith('CPU_PROFILE '):
+                      out.append(dict(re.findall(r'(\w+)=([^ ]+)', line)))
+              return out
+          b=rows('/tmp/cpu-baseline.log'); o=rows('/tmp/cpu-optimized.log')
+          if len(b)!=3 or len(o)!=3:
+              raise AssertionError((len(b),len(o)))
+          ratios=[]
+          for block in (64,128,256):
+              br=next(r for r in b if int(r['block'])==block)
+              orow=next(r for r in o if int(r['block'])==block)
+              bt=float(br['tracker_ms']); ot=float(orow['tracker_ms'])
+              speed=bt/max(ot,1e-9)
+              ratios.append(speed)
+              print(f'CPU_OPT_RESULT block={block} baseline_tracker_ms={bt:.3f} optimized_tracker_ms={ot:.3f} speedup={speed:.3f} optimized_rt={float(orow["tracker_rt"]):.3f}')
+          median=statistics.median(ratios)
+          print(f'CPU_OPT_MEDIAN_SPEEDUP={median:.3f}')
+          if median < 1.20:
+              raise AssertionError(('insufficient_speedup', ratios))
+          PY
+
+      - name: Build VST3 with optimized workspace Source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build build-cpu-opt --config Release --target Neumaton_VST3 --parallel 2
