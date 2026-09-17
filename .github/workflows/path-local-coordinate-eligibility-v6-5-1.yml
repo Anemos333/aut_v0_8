@@ -1,0 +1,123 @@
+name: Path-local coordinate eligibility v6.5.1
+
+on:
+  push:
+    branches:
+      - voice-aware-f0-detector-v1
+    paths:
+      - Tests/RefinePrimitivePeriodPathGeometryV1.py
+      - Tests/RefineCentFamilyAuthorityV6_4.py
+      - Tests/RefinePathLocalFamilyPersistenceV6_5.py
+      - Tests/RefinePathLocalCoordinateEligibilityV6_5_1.py
+      - Tests/DetectorPathDiagnostic.cpp
+      - Tests/DetectorMotionDiagnostic.cpp
+      - .github/workflows/path-local-coordinate-eligibility-v6-5-1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-coordinate-eligibility:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Guard and materialize
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+          python3 Tests/RefinePrimitivePeriodPathGeometryV1.py
+          python3 Tests/RefineCentFamilyAuthorityV6_4.py
+          python3 Tests/RefinePathLocalFamilyPersistenceV6_5.py
+          python3 Tests/RefinePathLocalCoordinateEligibilityV6_5_1.py
+          grep -q 'PENDING_FAMILY_IS_EVIDENCE_NOT_COORDINATE_V6_5_1' Source/ModernPitchEngine.cpp
+          changed="$(git diff --name-only | sort)"
+          expected=$'Source/ModernPitchEngine.cpp\nSource/ModernPitchEngine.h'
+          test "$changed" = "$expected"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev
+
+      - name: Configure
+        run: cmake -S . -B build-family-v651 -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Historical supervisor invariants
+        run: |
+          cmake --build build-family-v651 --config Release --parallel 2 --target SupervisorContinuityTest
+          ./build-family-v651/clean-engine-tests/SupervisorContinuityTest
+
+      - name: Measure path and motion matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/SupervisorContinuityTest.original.cpp
+          cp Tests/DetectorPathDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-family-v651 --config Release --parallel 2 --target SupervisorContinuityTest
+          ./build-family-v651/clean-engine-tests/SupervisorContinuityTest | tee /tmp/path.log
+          cp Tests/DetectorMotionDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-family-v651 --config Release --parallel 2 --target SupervisorContinuityTest
+          ./build-family-v651/clean-engine-tests/SupervisorContinuityTest | tee /tmp/motion.log
+          cp /tmp/SupervisorContinuityTest.original.cpp Tests/SupervisorContinuityTest.cpp
+
+      - name: Report all gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          rows=[]
+          for line in Path('/tmp/path.log').read_text().splitlines():
+              if line.startswith('PATH_STRESS '):
+                  rows.append(dict(re.findall(r'(\w+)=([^ ]+)', line)))
+          def selected(hz,snr,profile):
+              return [r for r in rows if abs(float(r['hz'])-hz)<.01 and abs(float(r['snr'])-snr)<.01 and r['profile']==profile]
+          errors=[]
+          print('V651_PATH_SUMMARY')
+          for hz,profile in [(110.,'harmonic4'),(110.,'legacy'),(110.,'strong_second'),(220.,'harmonic4'),(220.,'legacy'),(440.,'harmonic4'),(440.,'legacy')]:
+              g=selected(hz,6.,profile)
+              correct=[int(r['out_correct'])/max(1,int(r['out_valid'])) for r in g]
+              half=[int(r['out_half'])/max(1,int(r['out_valid'])) for r in g]
+              print(hz,profile,'correct=',[round(x,4) for x in correct],'half=',[round(x,4) for x in half])
+              if len(g)!=4 or sum(x>=.80 for x in correct)<3:
+                  errors.append((hz,profile,'correct',correct))
+              if hz==110. and g and max(half)>.10:
+                  errors.append((hz,profile,'half',half))
+          motion=[]
+          for line in Path('/tmp/motion.log').read_text().splitlines():
+              if line.startswith('MOTION_STEP '):
+                  motion.append(dict(re.findall(r'(\w+)=([^ ]+)', line)))
+          gated=[r for r in motion if abs(float(r['snr'])-6.)<.01]
+          first=[float(r['first_correct_ms']) for r in gated]
+          stable=[float(r['stable_correct_ms']) for r in gated]
+          old=[float(r['max_old_lock_ms']) for r in gated]
+          fractions=[float(r['correct_fraction']) for r in gated]
+          print('V651_MOTION_FIRST_MS',first)
+          print('V651_MOTION_STABLE_MS',stable)
+          print('V651_MOTION_OLD_MS',old)
+          print('V651_MOTION_CORRECT_FRACTIONS',fractions)
+          if len(gated)!=12: errors.append(('motion_count',len(gated)))
+          else:
+              if not all(0.<=x<=90. for x in first): errors.append(('motion_first',first))
+              if not all(0.<=x<=120. for x in stable): errors.append(('motion_stable',stable))
+              if max(old)>10.: errors.append(('motion_old',old))
+              if sum(x>=.80 for x in fractions)<10: errors.append(('motion_fraction',fractions))
+          if errors:
+              print('V651_FAILURES')
+              for e in errors: print(e)
+              raise AssertionError(errors)
+          PY
