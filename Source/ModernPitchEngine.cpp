@@ -514,6 +514,33 @@ ModernPitchEngine::MultiRatePitchTracker::analyse(
     // inverse filtering. Broadband breath/background produces comparable energy
     // between those lines. The half-harmonic subtraction also suppresses the
     // common 2F0 alias without requiring detector history to own the register.
+    // RESIDUAL_LINE_COHERENCE_CPU_V1
+    // The Hann-windowed residual and its normaliser do not depend on the
+    // frequency being probed.  The previous implementation rebuilt both for
+    // every harmonic/inter-harmonic line and called sin/cos for every sample.
+    // Build that invariant frame once, then advance each probe with a complex
+    // oscillator.  This changes no detector authority, thresholds or path
+    // cadence; it only removes repeated transcendental work.
+    std::array<double, maxAnalysisSize> harmonicWindowedResidual {};
+    double harmonicWindowedSignalEnergy = 0.0;
+    double harmonicWindowEnergy = 0.0;
+    const double harmonicWindowDenominator =
+        static_cast<double>(std::max(1, analysisLength - 1));
+    for (int index = 0; index < analysisLength; ++index)
+    {
+        // Keep the exact Hann expression from the baseline, but evaluate it
+        // once per analysis frame rather than once per spectral line.
+        const double window = 0.5 - 0.5 * std::cos(
+            twoPi * static_cast<double>(index) / harmonicWindowDenominator);
+        const double sample = static_cast<double>(
+            voiceResidualFrame_[static_cast<std::size_t>(index)]) * window;
+        harmonicWindowedResidual[static_cast<std::size_t>(index)] = sample;
+        harmonicWindowedSignalEnergy += sample * sample;
+        harmonicWindowEnergy += window * window;
+    }
+    const double harmonicWindowNormaliser = std::max(
+        1.0e-20, harmonicWindowedSignalEnergy * harmonicWindowEnergy);
+
     const auto residualLineCoherence = [&](double cyclesPerSample) noexcept
     {
         if (!std::isfinite(cyclesPerSample)
@@ -521,26 +548,39 @@ ModernPitchEngine::MultiRatePitchTracker::analyse(
         {
             return 0.0f;
         }
+
+        const double angle = twoPi * cyclesPerSample;
+        const double stepCos = std::cos(angle);
+        const double stepSin = std::sin(angle);
+        double phaseCos = 1.0;
+        double phaseSin = 0.0;
         double real = 0.0;
         double imag = 0.0;
-        double signalEnergy = 0.0;
-        double windowEnergy = 0.0;
-        const double denominatorN = static_cast<double>(std::max(1, analysisLength - 1));
+
         for (int index = 0; index < analysisLength; ++index)
         {
-            const double window = 0.5 - 0.5 * std::cos(
-                twoPi * static_cast<double>(index) / denominatorN);
-            const double sample = static_cast<double>(
-                voiceResidualFrame_[static_cast<std::size_t>(index)]) * window;
-            const double phase = twoPi * cyclesPerSample * static_cast<double>(index);
-            real += sample * std::cos(phase);
-            imag -= sample * std::sin(phase);
-            signalEnergy += sample * sample;
-            windowEnergy += window * window;
+            const double sample =
+                harmonicWindowedResidual[static_cast<std::size_t>(index)];
+            real += sample * phaseCos;
+            imag -= sample * phaseSin;
+
+            const double nextCos = phaseCos * stepCos - phaseSin * stepSin;
+            const double nextSin = phaseSin * stepCos + phaseCos * stepSin;
+            phaseCos = nextCos;
+            phaseSin = nextSin;
+
+            // Bound oscillator drift without reintroducing per-sample trig.
+            if ((index & 63) == 63)
+            {
+                const double norm = std::sqrt(std::max(
+                    1.0e-30, phaseCos * phaseCos + phaseSin * phaseSin));
+                phaseCos /= norm;
+                phaseSin /= norm;
+            }
         }
-        const double normaliser = std::max(1.0e-20, signalEnergy * windowEnergy);
+
         return clamp01(static_cast<float>(std::sqrt(
-            2.0 * (real * real + imag * imag) / normaliser)));
+            2.0 * (real * real + imag * imag) / harmonicWindowNormaliser)));
     };
 
     const auto residualHarmonicContrast = [&](int tau) noexcept
