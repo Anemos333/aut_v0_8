@@ -1,0 +1,231 @@
+name: Primitive divisor geometry detector v6.6
+
+on:
+  push:
+    branches:
+      - voice-aware-f0-detector-v1
+    paths:
+      - Tests/RefinePrimitiveDivisorGeometryV6_6.py
+      - Tests/RefinePrimitivePeriodPathGeometryV1.py
+      - Tests/DetectorExtremeDiagnostic.cpp
+      - Tests/DetectorPathDiagnostic.cpp
+      - Tests/DetectorMotionDiagnostic.cpp
+      - .github/workflows/primitive-divisor-geometry-v6-6.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-primitive-divisor-geometry:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout current detector branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Guard frozen architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+          grep -q 'DIRECT_COORDINATE_OWNS_F0_V1' Source/ModernPitchEngine.cpp
+          grep -q 'DETECTOR_VETO_NOT_PERMISSION_V1' Source/ModernPitchEngine.cpp
+          grep -q 'HOLD_DOES_NOT_CREATE_NOTE_IDENTITY_V2' Source/ModernPitchEngine.cpp
+          ! grep -q 'CENT_FAMILY_AUTHORITY_GATE_V6_4' Source/ModernPitchEngine.cpp
+          ! grep -q 'PATH_LOCAL_FAMILY_PERSISTENCE_V6_5' Source/ModernPitchEngine.cpp
+
+      - name: Apply V6.6 measurement plus V6.1 ownership in workspace only
+        run: |
+          python3 Tests/RefinePrimitiveDivisorGeometryV6_6.py
+          python3 Tests/RefinePrimitivePeriodPathGeometryV1.py
+
+      - name: Verify experimental scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'PRIMITIVE_DIVISOR_GEOMETRY_V6_6' Source/ModernPitchEngine.cpp
+          grep -q 'AUTHORITATIVE_RESCUE_CORROBORATION_V6_1' Source/ModernPitchEngine.cpp
+          grep -q 'AUTHORITATIVE_DIRECT_FAST_PATH_V6' Source/ModernPitchEngine.h
+          ! grep -q 'CENT_FAMILY_AUTHORITY_GATE_V6_4' Source/ModernPitchEngine.cpp
+          ! grep -q 'PATH_LOCAL_FAMILY_PERSISTENCE_V6_5' Source/ModernPitchEngine.cpp
+          ! grep -q 'PENDING_FAMILY_IS_EVIDENCE_NOT_COORDINATE_V6_5_1' Source/ModernPitchEngine.cpp
+          ! grep -q 'ADAPTIVE_OBSERVABILITY_PERIOD_GATE_V6_3' Source/ModernPitchEngine.cpp
+          ! grep -q 'QUALIFIED_FIRST_MINIMUM_OWNS_PATH_V6_2' Source/ModernPitchEngine.cpp
+          ! grep -q 'PRIMITIVE_PERIOD_PATH_CADENCE_V5' Source/ModernPitchEngine.cpp
+          ! grep -q 'RANGE_CENSORED_DIRECT_OWNERSHIP_V4' Source/ModernPitchEngine.cpp
+          ! grep -q 'PRIMITIVE_PERIOD_WITHIN_PATH_V3' Source/ModernPitchEngine.cpp
+          changed="$(git diff --name-only | sort)"
+          expected=$'Source/ModernPitchEngine.cpp\nSource/ModernPitchEngine.h'
+          test "$changed" = "$expected"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev
+
+      - name: Configure clean-engine build
+        run: cmake -S . -B build-v66 -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Build and run historical supervisor invariants
+        run: |
+          cmake --build build-v66 --config Release --parallel 2 --target SupervisorContinuityTest
+          ./build-v66/clean-engine-tests/SupervisorContinuityTest
+
+      - name: Measure extreme path and motion cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/SupervisorContinuityTest.original.cpp
+
+          cp Tests/DetectorExtremeDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-v66 --config Release --parallel 2 --target SupervisorContinuityTest
+          /usr/bin/time -f 'EXTREME_WALL_SECONDS=%e' ./build-v66/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/extreme.log
+
+          cp Tests/DetectorPathDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-v66 --config Release --parallel 2 --target SupervisorContinuityTest
+          /usr/bin/time -f 'PATH_WALL_SECONDS=%e' ./build-v66/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/path.log
+
+          cp Tests/DetectorMotionDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-v66 --config Release --parallel 2 --target SupervisorContinuityTest
+          /usr/bin/time -f 'MOTION_WALL_SECONDS=%e' ./build-v66/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/motion.log
+
+          cp /tmp/SupervisorContinuityTest.original.cpp Tests/SupervisorContinuityTest.cpp
+
+      - name: Report and gate V6.6 behavior
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          rows=[]
+          for line in Path('/tmp/path.log').read_text().splitlines():
+              if line.startswith('PATH_STRESS '):
+                  rows.append(dict(re.findall(r'(\w+)=([^ ]+)', line)))
+
+          def selected(hz,snr,profile):
+              return [r for r in rows
+                      if abs(float(r['hz'])-hz)<0.01
+                      and abs(float(r['snr'])-snr)<0.01
+                      and r['profile']==profile]
+
+          errors=[]
+          print('V66_PATH_SUMMARY')
+          for hz,profile in [
+              (110.,'harmonic4'),(110.,'legacy'),(110.,'strong_second'),
+              (220.,'harmonic4'),(220.,'legacy'),
+              (440.,'harmonic4'),(440.,'legacy')]:
+              for snr in (6.,3.):
+                  g=selected(hz,snr,profile)
+                  if not g:
+                      continue
+                  correct=[int(r['out_correct'])/max(1,int(r['out_valid'])) for r in g]
+                  half=[int(r['out_half'])/max(1,int(r['out_valid'])) for r in g]
+                  dbl=[int(r['out_double'])/max(1,int(r['out_valid'])) for r in g]
+                  print(hz,profile,'snr=',snr,
+                        'correct=',[round(x,4) for x in correct],
+                        'half=',[round(x,4) for x in half],
+                        'double=',[round(x,4) for x in dbl])
+
+          # +6 dB is the release gate. +3 dB remains diagnostic near the known
+          # evidence boundary and is printed above rather than used to weaken F0.
+          for hz,profile in [
+              (220.,'harmonic4'),(220.,'legacy'),
+              (440.,'harmonic4'),(440.,'legacy')]:
+              g=selected(hz,6.,profile)
+              if len(g)!=4:
+                  errors.append((hz,profile,'count',len(g)))
+                  continue
+              correct=[int(r['out_correct'])/max(1,int(r['out_valid'])) for r in g]
+              if sum(x>=0.80 for x in correct)<3:
+                  errors.append((hz,profile,'correct',correct))
+
+          for profile in ('harmonic4','legacy','strong_second'):
+              g=selected(110.,6.,profile)
+              if len(g)!=4:
+                  errors.append((110.,profile,'count',len(g)))
+                  continue
+              correct=[int(r['out_correct'])/max(1,int(r['out_valid'])) for r in g]
+              half=[int(r['out_half'])/max(1,int(r['out_valid'])) for r in g]
+              dbl=[int(r['out_double'])/max(1,int(r['out_valid'])) for r in g]
+              if sum(x>=0.80 for x in correct)<3:
+                  errors.append((110.,profile,'correct',correct))
+              if max(half)>0.10:
+                  errors.append((110.,profile,'half',half))
+              if max(dbl)>0.10:
+                  errors.append((110.,profile,'double',dbl))
+
+          extreme=Path('/tmp/extreme.log').read_text().splitlines()
+          stress=[]
+          for line in extreme:
+              if line.startswith('DETECTOR_STRESS '):
+                  stress.append(dict(re.findall(r'(\w+)=([^ ]+)', line)))
+          pure=next(r for r in stress if r['case']=='pure_colored_noise')
+          missing=next(r for r in stress if r['case']=='missing_fundamental')
+          print('V66_PURE_NOISE', pure)
+          print('V66_MISSING_FUNDAMENTAL', missing)
+          if int(pure['valid']) != 0:
+              errors.append(('pure_noise_valid',pure['valid']))
+          if int(missing['valid']) == 0 or float(missing['correct_fraction']) < 0.70:
+              errors.append(('missing_fundamental',missing))
+
+          motion=[]
+          for line in Path('/tmp/motion.log').read_text().splitlines():
+              if line.startswith('MOTION_STEP '):
+                  motion.append(dict(re.findall(r'(\w+)=([^ ]+)', line)))
+          gated=[r for r in motion if abs(float(r['snr'])-6.0)<0.01]
+          first=[float(r['first_correct_ms']) for r in gated]
+          stable=[float(r['stable_correct_ms']) for r in gated]
+          old=[float(r['max_old_lock_ms']) for r in gated]
+          fractions=[float(r['correct_fraction']) for r in gated]
+          print('V66_MOTION_FIRST_MS',first)
+          print('V66_MOTION_STABLE_MS',stable)
+          print('V66_MOTION_OLD_MS',old)
+          print('V66_MOTION_CORRECT_FRACTIONS',fractions)
+          if len(gated)!=12:
+              errors.append(('motion_count',len(gated)))
+          else:
+              if not all(0.0<=x<=90.0 for x in first): errors.append(('motion_first',first))
+              if not all(0.0<=x<=120.0 for x in stable): errors.append(('motion_stable',stable))
+              if max(old)>10.0: errors.append(('motion_old',old))
+              if sum(x>=0.80 for x in fractions)<10: errors.append(('motion_fraction',fractions))
+
+          for name,path in [('extreme','/tmp/extreme.log'),('path','/tmp/path.log'),('motion','/tmp/motion.log')]:
+              timing=[line for line in Path(path).read_text().splitlines() if 'WALL_SECONDS=' in line]
+              print('V66_TIMING',name,timing)
+
+          if errors:
+              print('V66_FAILURES')
+              for error in errors:
+                  print(error)
+              raise AssertionError(errors)
+          PY
+
+      - name: Restore and run remaining invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build build-v66 --config Release --parallel 2 \
+            --target SupervisorContinuityTest SingleWetSpectralRendererTest \
+            VoiceEvidenceAnalyzerTest CleanModernPitchEngineTest \
+            GuiAudioControlContractTest GuiAudibilityTest
+          ./build-v66/clean-engine-tests/SupervisorContinuityTest
+          ./build-v66/clean-engine-tests/SingleWetSpectralRendererTest
+          ./build-v66/clean-engine-tests/VoiceEvidenceAnalyzerTest
+          ./build-v66/clean-engine-tests/CleanModernPitchEngineTest
+          ./build-v66/clean-engine-tests/GuiAudioControlContractTest
+          ./build-v66/clean-engine-tests/GuiAudibilityTest
+
+      - name: Build VST3
+        run: cmake --build build-v66 --config Release --target Neumaton_VST3 --parallel 2
