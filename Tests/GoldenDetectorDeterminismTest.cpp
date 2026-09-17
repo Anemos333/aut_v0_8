@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <iomanip>
 #include <iostream>
 
 namespace
@@ -46,10 +47,46 @@ std::uint32_t bits(float value) noexcept
     return result;
 }
 
+std::uint64_t bits(double value) noexcept
+{
+    std::uint64_t result = 0;
+    static_assert(sizeof(result) == sizeof(value));
+    std::memcpy(&result, &value, sizeof(result));
+    return result;
+}
+
 bool sameFloat(float a, float b) noexcept
 {
     return bits(a) == bits(b);
 }
+
+struct TraceHash
+{
+    void mixByte(std::uint8_t byte) noexcept
+    {
+        value ^= static_cast<std::uint64_t>(byte);
+        value *= 1099511628211ull;
+    }
+
+    void mix32(std::uint32_t word) noexcept
+    {
+        for (int shift = 0; shift < 32; shift += 8)
+            mixByte(static_cast<std::uint8_t>((word >> shift) & 0xffu));
+    }
+
+    void mix64(std::uint64_t word) noexcept
+    {
+        for (int shift = 0; shift < 64; shift += 8)
+            mixByte(static_cast<std::uint8_t>((word >> shift) & 0xffu));
+    }
+
+    void mixFloat(float valueToMix) noexcept { mix32(bits(valueToMix)); }
+    void mixDouble(double valueToMix) noexcept { mix64(bits(valueToMix)); }
+    void mixInt(int valueToMix) noexcept { mix32(static_cast<std::uint32_t>(valueToMix)); }
+    void mixBool(bool valueToMix) noexcept { mixByte(valueToMix ? 1u : 0u); }
+
+    std::uint64_t value = 1469598103934665603ull;
+};
 
 bool sameCandidate(const ModernPitchEngine::MultiRatePitchTracker::PitchCandidate& a,
                    const ModernPitchEngine::MultiRatePitchTracker::PitchCandidate& b) noexcept
@@ -65,10 +102,31 @@ bool sameCandidate(const ModernPitchEngine::MultiRatePitchTracker::PitchCandidat
         && a.valid == b.valid;
 }
 
+void hashCandidate(TraceHash& hash,
+                   const ModernPitchEngine::MultiRatePitchTracker::PitchCandidate& candidate) noexcept
+{
+    hash.mixFloat(candidate.frequencyHz);
+    hash.mixFloat(candidate.confidence);
+    hash.mixFloat(candidate.periodicity);
+    hash.mixFloat(candidate.harmonicFamily);
+    hash.mixFloat(candidate.aperiodicity);
+    hash.mixFloat(candidate.tonalCleanliness);
+    hash.mixInt(candidate.pathIndex);
+    hash.mixInt(candidate.ageInHops);
+    hash.mixBool(candidate.valid);
+}
+
 bool sameSlot(const ModernPitchEngine::MultiRatePitchTracker::CandidateSlot& a,
               const ModernPitchEngine::MultiRatePitchTracker::CandidateSlot& b) noexcept
 {
     return a.ageInHops == b.ageInHops && sameCandidate(a.candidate, b.candidate);
+}
+
+void hashSlot(TraceHash& hash,
+              const ModernPitchEngine::MultiRatePitchTracker::CandidateSlot& slot) noexcept
+{
+    hashCandidate(hash, slot.candidate);
+    hash.mixInt(slot.ageInHops);
 }
 
 bool sameObservation(const ModernPitchEngine::PitchObservation& a,
@@ -88,6 +146,25 @@ bool sameObservation(const ModernPitchEngine::PitchObservation& a,
         && a.measurementAvailable == b.measurementAvailable
         && a.onset == b.onset
         && a.audioPresent == b.audioPresent;
+}
+
+void hashObservation(TraceHash& hash,
+                     const ModernPitchEngine::PitchObservation& observation) noexcept
+{
+    hash.mixFloat(observation.frequencyHz);
+    hash.mixFloat(observation.correctionFrequencyHz);
+    hash.mixFloat(observation.confidence);
+    hash.mixFloat(observation.periodicity);
+    hash.mixFloat(observation.voicing);
+    hash.mixFloat(observation.consensus);
+    hash.mixFloat(observation.onsetStrength);
+    hash.mixInt(observation.detectorSupport);
+    hash.mixInt(observation.octaveState);
+    hash.mixInt(observation.pendingOctaveObservations);
+    hash.mixBool(observation.valid);
+    hash.mixBool(observation.measurementAvailable);
+    hash.mixBool(observation.onset);
+    hash.mixBool(observation.audioPresent);
 }
 
 void configure(ModernPitchEngine::MultiRatePitchTracker& tracker) noexcept
@@ -124,6 +201,38 @@ bool compareTrackerState(const ModernPitchEngine::MultiRatePitchTracker& a,
         std::cerr << "GOLDEN_DETECTOR_STATE_MISMATCH sample=" << sampleIndex << '\n';
     return same;
 }
+
+void hashTrackerState(TraceHash& hash,
+                      const ModernPitchEngine::MultiRatePitchTracker& tracker) noexcept
+{
+    hashSlot(hash, tracker.fullRateCandidate_);
+    hashSlot(hash, tracker.halfRateCandidate_);
+    hashSlot(hash, tracker.quarterRateCandidate_);
+    hashSlot(hash, tracker.eighthRateCandidate_);
+    hash.mixFloat(tracker.trackedPitchHz_);
+    hash.mixFloat(tracker.reacquisitionAnchorHz_);
+    hash.mixFloat(tracker.trackedConfidence_);
+    hash.mixFloat(tracker.trackedPeriodicity_);
+    hash.mixFloat(tracker.trackedConsensus_);
+    hash.mixInt(tracker.trackedSupportCount_);
+    hash.mixInt(tracker.invalidHopCount_);
+    hash.mixInt(tracker.octaveState_);
+    hash.mixInt(tracker.pendingOctaveDelta_);
+    hash.mixInt(tracker.pendingOctaveCount_);
+    hash.mixFloat(tracker.pendingOctaveFrequencyHz_);
+    hash.mixFloat(tracker.committedOctaveFrequencyHz_);
+    hash.mixInt(tracker.octaveCommitGuardHops_);
+    hash.mixInt(tracker.analysisHopCounter_);
+    hash.mixBool(tracker.observationContinuityBroken_);
+    for (const auto& state : tracker.decoderBeam_)
+    {
+        hash.mixDouble(state.logFrequency);
+        hash.mixFloat(state.score);
+        hash.mixInt(state.ageInHops);
+        hash.mixInt(state.octaveIndex);
+        hash.mixBool(state.valid);
+    }
+}
 }
 
 int main()
@@ -136,6 +245,7 @@ int main()
     ModernPitchEngine::PitchObservation observationA;
     ModernPitchEngine::PitchObservation observationB;
     SignalGenerator generator;
+    TraceHash traceHash;
 
     constexpr std::uint64_t sampleCount = static_cast<std::uint64_t>(kSampleRate * 8.0);
     std::uint64_t emittedObservations = 0;
@@ -164,6 +274,10 @@ int main()
 
         if (!compareTrackerState(trackerA, trackerB, sampleIndex))
             return 1;
+
+        traceHash.mix64(sampleIndex);
+        hashObservation(traceHash, observationA);
+        hashTrackerState(traceHash, trackerA);
     }
 
     if (emittedObservations == 0)
@@ -174,5 +288,8 @@ int main()
 
     std::cout << "GOLDEN_DETECTOR_BITWISE_DETERMINISM=PASS"
               << " observations=" << emittedObservations << '\n';
+    std::cout << "GOLDEN_DETECTOR_TRACE_HASH="
+              << std::hex << std::setw(16) << std::setfill('0') << traceHash.value
+              << std::dec << '\n';
     return 0;
 }
