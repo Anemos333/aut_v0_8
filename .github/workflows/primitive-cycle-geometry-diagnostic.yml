@@ -1,0 +1,132 @@
+name: Primitive cycle geometry diagnostic
+
+on:
+  push:
+    branches:
+      - voice-aware-f0-detector-v1
+    paths:
+      - Tests/InstrumentPrimitiveCycleGeometryV1.py
+      - Tests/DetectorPrimitiveCycleDiagnostic.cpp
+      - .github/workflows/primitive-cycle-geometry-diagnostic.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  measure-primitive-cycle-geometry:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Guard frozen production architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+          grep -q 'DIRECT_COORDINATE_OWNS_F0_V1' Source/ModernPitchEngine.cpp
+          grep -q 'DETECTOR_VETO_NOT_PERMISSION_V1' Source/ModernPitchEngine.cpp
+          ! grep -q 'PATH_LOCAL_FAMILY_PERSISTENCE_V6_5' Source/ModernPitchEngine.cpp
+          ! grep -q 'CENT_FAMILY_AUTHORITY_GATE_V6_4' Source/ModernPitchEngine.cpp
+
+      - name: Instrument measurement geometry in workspace only
+        run: python3 Tests/InstrumentPrimitiveCycleGeometryV1.py
+
+      - name: Verify diagnostic scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'PRIMITIVE_CYCLE_GEOMETRY_DIAGNOSTIC_V1' Source/ModernPitchEngine.cpp
+          grep -q 'PRIMITIVE_CYCLE_GEOMETRY_DIAGNOSTIC_V1' Source/ModernPitchEngine.h
+          changed="$(git diff --name-only | sort)"
+          expected=$'Source/ModernPitchEngine.cpp\nSource/ModernPitchEngine.h'
+          test "$changed" = "$expected"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev
+
+      - name: Configure clean-engine build
+        run: cmake -S . -B build-primitive-geometry -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Build and run primitive geometry diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/SupervisorContinuityTest.original.cpp
+          cp Tests/DetectorPrimitiveCycleDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-primitive-geometry --config Release --parallel 2 --target SupervisorContinuityTest
+          ./build-primitive-geometry/clean-engine-tests/SupervisorContinuityTest | tee /tmp/primitive.log
+          cp /tmp/SupervisorContinuityTest.original.cpp Tests/SupervisorContinuityTest.cpp
+
+      - name: Summarize primitive-vs-multiple separation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          rows=[]
+          for line in Path('/tmp/primitive.log').read_text().splitlines():
+              if line.startswith('PRIMITIVE_GEOMETRY '):
+                  rows.append(dict(re.findall(r'(\w+)=([^ ]+)', line)))
+
+          print('PRIMITIVE_GEOMETRY_ROWS', len(rows))
+          wrong=[]
+          correct=[]
+          divisor_for={'half':2,'third':3,'quarter':4}
+          for r in rows:
+              cls=r['class']
+              if cls in divisor_for:
+                  d=divisor_for[cls]
+                  prefix=f'd{d}_'
+                  if int(r.get(prefix+'n','0')) > 0:
+                      wrong.append((
+                          float(r['target']), r['profile'], r['seed'], r['path'], cls,
+                          float(r[prefix+'source_delta']),
+                          float(r[prefix+'residual_delta']),
+                          float(r[prefix+'yin_delta']),
+                          float(r[prefix+'cycle_delta'])))
+              elif cls == 'correct':
+                  for d in (2,3,4):
+                      prefix=f'd{d}_'
+                      if int(r.get(prefix+'n','0')) > 0:
+                          correct.append((
+                              float(r['target']), r['profile'], r['seed'], r['path'], d,
+                              float(r[prefix+'source_delta']),
+                              float(r[prefix+'residual_delta']),
+                              float(r[prefix+'yin_delta']),
+                              float(r[prefix+'cycle_delta'])))
+
+          print('WRONG_FAMILY_MATCHING_DIVISOR')
+          for row in wrong:
+              print(row)
+          print('CORRECT_COORDINATE_SHORTER_DIVISORS')
+          for row in correct:
+              print(row)
+
+          def rng(items, index):
+              vals=[x[index] for x in items]
+              return (min(vals), max(vals)) if vals else None
+          print('WRONG_RANGES source residual yin cycle',
+                rng(wrong,5), rng(wrong,6), rng(wrong,7), rng(wrong,8))
+          print('CORRECT_RANGES source residual yin cycle',
+                rng(correct,5), rng(correct,6), rng(correct,7), rng(correct,8))
+
+          # Focus the exact release-blocking geometry separately.
+          release=[x for x in wrong if x[0] in (110.0,440.0)
+                   and x[1] in ('harmonic4','legacy')]
+          print('RELEASE_BLOCKER_WRONG_RANGES source residual yin cycle',
+                rng(release,5), rng(release,6), rng(release,7), rng(release,8))
+          PY
