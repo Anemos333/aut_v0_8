@@ -35,7 +35,7 @@ jobs:
           git checkout a84bf64a7603bdbda8eb8ab246c6dfa46aa05981 -- Source/ModernPitchEngine.cpp
           ! grep -q 'RESIDUAL_LINE_COHERENCE_CPU_V1' Source/ModernPitchEngine.cpp
           grep -q 'VOICE_BODY_LIVE_PERMISSION_V6_7_1' Source/ModernPitchEngine.cpp
-          test "$(git diff --name-only | sort)" = "Source/ModernPitchEngine.cpp"
+          test "$(git diff --cached --name-only | sort)" = "Source/ModernPitchEngine.cpp"
           test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
           test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
 
@@ -45,7 +45,6 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Source/ModernPitchEngine.cpp
           git commit -m "Restore golden V6.7.1 detector DSP [skip ci]"
           git push origin HEAD:voice-aware-f0-detector-v1
           git rev-parse HEAD
