@@ -1,0 +1,188 @@
+name: Promote green V6.7.1 to Source
+
+on:
+  push:
+    branches:
+      - voice-aware-f0-detector-v1
+    paths:
+      - .github/workflows/promote-v6-7-1-to-source.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  promote-v671-source:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout detector branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Guard pre-promotion Source and renderer
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+          grep -q 'DIRECT_COORDINATE_OWNS_F0_V1' Source/ModernPitchEngine.cpp
+          grep -q 'DETECTOR_VETO_NOT_PERMISSION_V1' Source/ModernPitchEngine.cpp
+          grep -q 'HOLD_DOES_NOT_CREATE_NOTE_IDENTITY_V2' Source/ModernPitchEngine.cpp
+          ! grep -q 'PRIMITIVE_DIVISOR_GEOMETRY_V6_6' Source/ModernPitchEngine.cpp
+          ! grep -q 'AUTHORITATIVE_DIRECT_FAST_PATH_V6' Source/ModernPitchEngine.cpp
+          ! grep -q 'VOICE_BODY_ADAPTIVE_PATH_AUTHORITY_V6_7' Source/ModernPitchEngine.cpp
+          ! grep -q 'VOICE_BODY_LIVE_PERMISSION_V6_7_1' Source/ModernPitchEngine.cpp
+
+      - name: Materialize exact green V6.7.1 stack
+        run: |
+          python3 Tests/RefinePrimitiveDivisorGeometryV6_6.py
+          python3 Tests/RefinePrimitivePeriodPathGeometryV1.py
+          python3 Tests/RefineVoiceBodyAdaptiveAuthorityV6_7.py
+          python3 Tests/RefineVoiceBodyAdaptiveAuthorityV6_7_1.py
+
+      - name: Verify exact promotion scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'PRIMITIVE_DIVISOR_GEOMETRY_V6_6' Source/ModernPitchEngine.cpp
+          grep -q 'AUTHORITATIVE_DIRECT_FAST_PATH_V6' Source/ModernPitchEngine.cpp
+          grep -q 'AUTHORITATIVE_RESCUE_CORROBORATION_V6_1' Source/ModernPitchEngine.cpp
+          grep -q 'VOICE_BODY_ADAPTIVE_PATH_AUTHORITY_V6_7' Source/ModernPitchEngine.cpp
+          grep -q 'VOICE_BODY_LIVE_PERMISSION_V6_7_1' Source/ModernPitchEngine.cpp
+          grep -q 'VOICE_BODY_ADAPTIVE_PATH_AUTHORITY_V6_7' Source/ModernPitchEngine.h
+          grep -q 'VOICE_BODY_LIVE_PERMISSION_V6_7_1' Source/VoiceEvidenceAnalyzer.h
+          grep -q 'voiceLowerFamilyEvidence' Source/LivePitchProcessor.h
+          changed="$(git diff --name-only | sort)"
+          expected=$'Source/LivePitchProcessor.h\nSource/ModernPitchEngine.cpp\nSource/ModernPitchEngine.h\nSource/VoiceEvidenceAnalyzer.h'
+          test "$changed" = "$expected"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev
+
+      - name: Configure promotion build
+        run: cmake -S . -B build-promote-v671 -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Run historical supervisor invariants
+        run: |
+          cmake --build build-promote-v671 --config Release --parallel 2 --target SupervisorContinuityTest
+          ./build-promote-v671/clean-engine-tests/SupervisorContinuityTest
+
+      - name: Run V6.7.1 causal diagnostic
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/SupervisorContinuityTest.promote.original.cpp
+          cp Tests/DetectorAdaptiveAuthorityDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-promote-v671 --config Release --parallel 2 --target SupervisorContinuityTest
+          ./build-promote-v671/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/promote-v671.log
+          cp /tmp/SupervisorContinuityTest.promote.original.cpp Tests/SupervisorContinuityTest.cpp
+
+      - name: Gate V6.7.1 before commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          rows=[]
+          for line in Path('/tmp/promote-v671.log').read_text().splitlines():
+              if line.startswith('V67_AUTH '):
+                  rows.append(dict(re.findall(r'(\w+)=([^ ]+)', line)))
+          def group(name): return [r for r in rows if r['case']==name]
+          def vals(name,key): return [float(r[key]) for r in group(name)]
+
+          errors=[]
+          stable440=group('stable440_legacy')
+          if len(stable440)!=4 or any(float(r['correct_fraction'])<0.98 for r in stable440):
+              errors.append(('stable440_correct',vals('stable440_legacy','correct_fraction')))
+          if stable440 and any(float(r['half_fraction'])>0.02 for r in stable440):
+              errors.append(('stable440_half',vals('stable440_legacy','half_fraction')))
+
+          stable220=group('stable220_legacy')
+          if len(stable220)!=2 or any(float(r['correct_fraction'])<0.98 for r in stable220):
+              errors.append(('stable220',vals('stable220_legacy','correct_fraction')))
+
+          down=group('down440_220_legacy')
+          if len(down)!=4:
+              errors.append(('down_count',len(down)))
+          else:
+              first=vals('down440_220_legacy','first_correct_ms')
+              correct=vals('down440_220_legacy','correct_fraction')
+              old=vals('down440_220_legacy','max_old_ms')
+              if not all(0.0<=x<=90.0 for x in first): errors.append(('down_first',first))
+              if sum(x>=0.90 for x in correct)<3: errors.append(('down_correct',correct))
+              if max(old)>25.0: errors.append(('down_old_lock',old))
+
+          up=group('up220_440_legacy')
+          if len(up)!=2:
+              errors.append(('up_count',len(up)))
+          else:
+              first=vals('up220_440_legacy','first_correct_ms')
+              correct=vals('up220_440_legacy','correct_fraction')
+              half=vals('up220_440_legacy','half_fraction')
+              if not all(0.0<=x<=80.0 for x in first): errors.append(('up_first',first))
+              if any(x<0.90 for x in correct): errors.append(('up_correct',correct))
+              if any(x>0.10 for x in half): errors.append(('up_half',half))
+
+          strong=group('down220_110_strong2')
+          if len(strong)!=2:
+              errors.append(('strong_count',len(strong)))
+          else:
+              first=vals('down220_110_strong2','first_correct_ms')
+              correct=vals('down220_110_strong2','correct_fraction')
+              old=vals('down220_110_strong2','max_old_ms')
+              if not all(0.0<=x<=110.0 for x in first): errors.append(('strong_first',first))
+              if any(x<0.80 for x in correct): errors.append(('strong_correct',correct))
+              if max(old)>30.0: errors.append(('strong_old_lock',old))
+
+          noise=group('pure_noise')
+          if len(noise)!=1 or int(noise[0]['valid_after'])!=0:
+              errors.append(('pure_noise',noise))
+
+          if errors:
+              print('PROMOTION_V671_FAILURES')
+              for e in errors: print(e)
+              raise AssertionError(errors)
+          print('PROMOTION_V671_GATE=PASS')
+          PY
+
+      - name: Run remaining invariants and VST3
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build build-promote-v671 --config Release --parallel 2 \
+            --target SupervisorContinuityTest SingleWetSpectralRendererTest \
+            VoiceEvidenceAnalyzerTest CleanModernPitchEngineTest \
+            GuiAudioControlContractTest GuiAudibilityTest
+          ./build-promote-v671/clean-engine-tests/SupervisorContinuityTest
+          ./build-promote-v671/clean-engine-tests/SingleWetSpectralRendererTest
+          ./build-promote-v671/clean-engine-tests/VoiceEvidenceAnalyzerTest
+          ./build-promote-v671/clean-engine-tests/CleanModernPitchEngineTest
+          ./build-promote-v671/clean-engine-tests/GuiAudioControlContractTest
+          ./build-promote-v671/clean-engine-tests/GuiAudibilityTest
+          cmake --build build-promote-v671 --config Release --target Neumaton_VST3 --parallel 2
+
+      - name: Commit exact green Source state
+        shell: bash
+        run: |
+          set -euo pipefail
+          changed="$(git diff --name-only | sort)"
+          expected=$'Source/LivePitchProcessor.h\nSource/ModernPitchEngine.cpp\nSource/ModernPitchEngine.h\nSource/VoiceEvidenceAnalyzer.h'
+          test "$changed" = "$expected"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Source/LivePitchProcessor.h Source/ModernPitchEngine.cpp Source/ModernPitchEngine.h Source/VoiceEvidenceAnalyzer.h
+          git diff --cached --name-only | sort | diff -u <(printf '%s\n' "$expected") -
+          git commit -m "Promote validated V6.7.1 detector authority to Source"
+          git push origin HEAD:voice-aware-f0-detector-v1
