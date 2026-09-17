@@ -7,136 +7,38 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: voice-aware-f0-detector-v1-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  validate-and-materialize:
+  validate-promoted-source:
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout exact branch
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
-      - name: Guard definitive architecture baseline
+      - name: Guard promoted detector architecture
         shell: bash
         run: |
           set -euo pipefail
-          git fetch origin main
-          test "$(git rev-parse origin/main)" = "a68122181f9fd629ca18ecb4e17ca82ec06e54d3"
           test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
           test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
-          git diff --exit-code origin/main -- Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h Source/LivePitchProcessor.h Source/VoiceEvidenceAnalyzer.h
-
-      - name: Materialize voice-aware detector and scale-owned Hold
-        run: |
-          python3 Tests/MaterializeVoiceAwareF0DetectorV1.py
-          python3 Tests/RefineVoiceAwareF0DetectorV1.py
-          python3 Tests/ApplyVoiceAwarePathRolesV1.py
-          python3 Tests/RefineVoiceAwareSourceGeometryV1.py
-          python3 Tests/ProbeRapidF0DetectorV1.py
-          python3 Tests/DiagnoseVoiceAwareFailuresV1.py
-          python3 Tests/RefineVoiceInputMeasurementV2.py
-          python3 Tests/RefineLowRateVoiceValidityV1.py
-          python3 Tests/RefineSolitaryVoiceStructureV3.py
-          python3 Tests/RefineDirectCoordinateOwnershipV1.py
-          python3 Tests/DiagnoseFormantFalseValidsV2.py
-          python3 Tests/RefineDetectorObservationSemanticsV1.py
-          python3 Tests/UpdateObservationMemoryRegressionsV1.py
-          python3 Tests/RefineScaleOwnedHoldSemanticsV2.py
-
-      - name: Verify detector and scale-owned Hold contract
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import subprocess
-          from pathlib import Path
-
-          def from_main(path):
-              return subprocess.check_output(['git','show',f'origin/main:{path}'], text=True)
-
-          cpp = Path('Source/ModernPitchEngine.cpp').read_text()
-          base_cpp = from_main('Source/ModernPitchEngine.cpp')
-          quantizer_marker = '//==============================================================================\n// ScaleQuantizer\n'
-          process_marker = '''void ModernPitchEngine::process(
-              juce::AudioBuffer<float>& buffer,
-              const double* scaleRatios,
-          '''
-          tail_marker = 'void ModernPitchEngine::processBypassed(juce::AudioBuffer<float>& buffer)\n'
-          assert quantizer_marker in cpp and quantizer_marker in base_cpp
-          assert process_marker in cpp and process_marker in base_cpp
-          assert tail_marker in cpp and tail_marker in base_cpp
-          p = cpp.index(process_marker)
-          bp = base_cpp.index(process_marker)
-          tail = cpp.index(tail_marker)
-          btail = base_cpp.index(tail_marker)
-          assert cpp[tail:] == base_cpp[btail:], 'post-process engine code changed'
-
-          process = cpp[p:tail]
-          base_process = base_cpp[bp:btail]
-          allowed = [
-          '''                const bool detectorWake = correction.trackingState == TrackingState::transition
-                              || (correction.trackingState == TrackingState::acquire
-                                  && correction.stateAgeSamples >= static_cast<int>(0.060 * sampleRate_));
-                          tracker.setTransitionWake(detectorWake);
-          ''',
-          '''            const bool detectorWake = linkedCorrection_.trackingState == TrackingState::transition
-                          || (linkedCorrection_.trackingState == TrackingState::acquire
-                              && linkedCorrection_.stateAgeSamples >= static_cast<int>(0.060 * sampleRate_));
-                      linkedTracker_.setTransitionWake(detectorWake);
-          ''']
-          for snippet in allowed:
-              assert process.count(snippet) == 1, 'missing or duplicated detector-wake wiring'
-              process = process.replace(snippet, '', 1)
-          assert process == base_process, 'process() changed beyond detector wake wiring'
-
-          hpp = Path('Source/ModernPitchEngine.h').read_text()
-          base_hpp = from_main('Source/ModernPitchEngine.h')
-          hpp_marker = '    class ScaleQuantizer\n'
-          assert hpp_marker in hpp and hpp_marker in base_hpp
-          assert hpp[hpp.index(hpp_marker):] == base_hpp[base_hpp.index(hpp_marker):], 'quantizer/header suffix changed'
-
-          for marker in [
-              'VOICE_AWARE_F0_FRONTEND_V1',
-              'RESIDUAL_HARMONIC_CONTRAST_V1',
-              'OBSERVATION_MEMORY_IS_FALSIFIABLE_V1',
-              'STALE_PATH_VERIFIES_NOT_STEERS_V1',
-              'CLEAN_RESIDUAL_DISCOVERS_SOURCE_GEOMETRY_REFINES_V1',
-              'SUBFRAME_GLOTTAL_STABILITY_V1',
-              'GLOTTAL_EVIDENCE_FUSION_V2',
-              'SINGLE_PATH_RESONANCE_IS_NOT_VOICE_V1',
-              'PROVISIONAL_PATH_CLEANLINESS_V1',
-              'SOLITARY_VOICE_STRUCTURE_V3',
-              'DIRECT_HIGH_FAMILY_FAST_CONFIRM_V1',
-              'DIRECT_COORDINATE_OWNS_F0_V1',
-              'LOW_RATE_RESONANCE_VETO_V1',
-              'OBSERVATION_MEMORY_SEPARATION_V1',
-              'ZERO_INPUT_CLEARS_OBSERVER_NOT_MUSIC_V1',
-              'TRANSITION_WAKES_DETECTOR_NOT_OUTPUT_V1',
-              'SCALE_OWNED_HOLD_SEMANTICS_V1',
-              'HOLD_IS_CENT_RADIUS_V2',
-              'HOLD_IS_LITERAL_USER_CENTS_V2',
-              'QUALIFIED_NOTE_BYPASSES_HOLD_V2',
-              'HOLD_DOES_NOT_CREATE_NOTE_IDENTITY_V2'
-          ]:
-              assert marker in cpp, marker
-          assert 'PATH_ROLE_SPLIT_V1' in cpp or 'PATH_ROLE_SPLIT_V1' in hpp
-          assert 'pathPitchAuthority' in cpp
-          assert 'pathCleanlinessAuthority' in cpp
-          assert 'tonalCleanliness' in cpp
-          assert 'presenceMode_\n        ? 0.0f' not in cpp
-          assert '0.5f * (normalisedCorrelation + 1.0f)' not in cpp
-          assert 'USER_HOLD_REMAINS_AUTHORITY_V1' not in cpp
-          PY
-          changed="$(git diff --name-only | sort)"
-          expected=$'Source/ModernPitchEngine.cpp\nSource/ModernPitchEngine.h\nTests/CleanModernPitchEngineTest.cpp\nTests/GuiAudibilityTest.cpp\nTests/SupervisorContinuityTest.cpp'
-          test "$changed" = "$expected"
-          git diff --exit-code -- Source/SingleWetSpectralRenderer.cpp Source/SingleWetSpectralRenderer.h Source/LivePitchProcessor.h Source/VoiceEvidenceAnalyzer.h
+          grep -q 'DIRECT_COORDINATE_OWNS_F0_V1' Source/ModernPitchEngine.cpp
+          grep -q 'DETECTOR_VETO_NOT_PERMISSION_V1' Source/ModernPitchEngine.cpp
+          grep -q 'HOLD_DOES_NOT_CREATE_NOTE_IDENTITY_V2' Source/ModernPitchEngine.cpp
+          grep -q 'PRIMITIVE_DIVISOR_GEOMETRY_V6_6' Source/ModernPitchEngine.cpp
+          grep -q 'AUTHORITATIVE_DIRECT_FAST_PATH_V6' Source/ModernPitchEngine.cpp
+          grep -q 'AUTHORITATIVE_RESCUE_CORROBORATION_V6_1' Source/ModernPitchEngine.cpp
+          grep -q 'VOICE_BODY_ADAPTIVE_PATH_AUTHORITY_V6_7' Source/ModernPitchEngine.cpp
+          grep -q 'VOICE_BODY_LIVE_PERMISSION_V6_7_1' Source/ModernPitchEngine.cpp
+          grep -q 'VOICE_BODY_ADAPTIVE_PATH_AUTHORITY_V6_7' Source/ModernPitchEngine.h
+          grep -q 'VOICE_BODY_LIVE_PERMISSION_V6_7_1' Source/VoiceEvidenceAnalyzer.h
+          grep -q 'voiceLowerFamilyEvidence' Source/LivePitchProcessor.h
 
       - name: Install build dependencies
         run: |
@@ -148,46 +50,108 @@ jobs:
             libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
             libglu1-mesa-dev mesa-common-dev
 
-      - name: Configure focused invariant build
+      - name: Configure promoted Source build
         run: cmake -S . -B build-voice-aware -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
 
-      - name: Build detector supervisor test
-        run: cmake --build build-voice-aware --config Release --parallel 2 --target SupervisorContinuityTest
-
-      - name: Run detector supervisor test
-        run: ./build-voice-aware/clean-engine-tests/SupervisorContinuityTest
-
-      - name: Build remaining invariants
-        run: >-
-          cmake --build build-voice-aware --config Release --parallel 2
-          --target SingleWetSpectralRendererTest VoiceEvidenceAnalyzerTest
-          CleanModernPitchEngineTest GuiAudioControlContractTest GuiAudibilityTest
-
-      - name: Run remaining invariants
+      - name: Build and run branch invariants
         shell: bash
         run: |
           set -euo pipefail
+          cmake --build build-voice-aware --config Release --parallel 2 \
+            --target SupervisorContinuityTest SingleWetSpectralRendererTest \
+            VoiceEvidenceAnalyzerTest CleanModernPitchEngineTest \
+            GuiAudioControlContractTest GuiAudibilityTest
+          ./build-voice-aware/clean-engine-tests/SupervisorContinuityTest
           ./build-voice-aware/clean-engine-tests/SingleWetSpectralRendererTest
           ./build-voice-aware/clean-engine-tests/VoiceEvidenceAnalyzerTest
           ./build-voice-aware/clean-engine-tests/CleanModernPitchEngineTest
           ./build-voice-aware/clean-engine-tests/GuiAudioControlContractTest
           ./build-voice-aware/clean-engine-tests/GuiAudibilityTest
 
-      - name: Build VST3
-        run: cmake --build build-voice-aware --config Release --target Neumaton_VST3 --parallel 2
-
-      - name: Commit validated detector implementation
+      - name: Run V6.7.1 adaptive-authority diagnostic from Source
         shell: bash
         run: |
           set -euo pipefail
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add Source/ModernPitchEngine.cpp Source/ModernPitchEngine.h \
-            Tests/SupervisorContinuityTest.cpp Tests/CleanModernPitchEngineTest.cpp \
-            Tests/GuiAudibilityTest.cpp
-          if git diff --cached --quiet; then
-            echo 'No materialized changes to commit.'
-            exit 0
-          fi
-          git commit -m 'Make Hold scale-owned and detector voice-aware [skip ci]'
-          git push origin HEAD:voice-aware-f0-detector-v1
+          cp Tests/SupervisorContinuityTest.cpp /tmp/SupervisorContinuityTest.primary.original.cpp
+          cp Tests/DetectorAdaptiveAuthorityDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-voice-aware --config Release --parallel 2 --target SupervisorContinuityTest
+          ./build-voice-aware/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/v671-primary.log
+          cp /tmp/SupervisorContinuityTest.primary.original.cpp Tests/SupervisorContinuityTest.cpp
+
+      - name: Gate promoted detector authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          rows=[]
+          for line in Path('/tmp/v671-primary.log').read_text().splitlines():
+              if line.startswith('V67_AUTH '):
+                  rows.append(dict(re.findall(r'(\w+)=([^ ]+)', line)))
+          def group(name): return [r for r in rows if r['case']==name]
+          def vals(name,key): return [float(r[key]) for r in group(name)]
+
+          errors=[]
+          stable440=group('stable440_legacy')
+          if len(stable440)!=4 or any(float(r['correct_fraction'])<0.98 for r in stable440):
+              errors.append(('stable440_correct',vals('stable440_legacy','correct_fraction')))
+          if stable440 and any(float(r['half_fraction'])>0.02 for r in stable440):
+              errors.append(('stable440_half',vals('stable440_legacy','half_fraction')))
+
+          stable220=group('stable220_legacy')
+          if len(stable220)!=2 or any(float(r['correct_fraction'])<0.98 for r in stable220):
+              errors.append(('stable220',vals('stable220_legacy','correct_fraction')))
+
+          down=group('down440_220_legacy')
+          if len(down)!=4:
+              errors.append(('down_count',len(down)))
+          else:
+              first=vals('down440_220_legacy','first_correct_ms')
+              correct=vals('down440_220_legacy','correct_fraction')
+              old=vals('down440_220_legacy','max_old_ms')
+              if not all(0.0<=x<=90.0 for x in first): errors.append(('down_first',first))
+              if sum(x>=0.90 for x in correct)<3: errors.append(('down_correct',correct))
+              if max(old)>25.0: errors.append(('down_old_lock',old))
+
+          up=group('up220_440_legacy')
+          if len(up)!=2:
+              errors.append(('up_count',len(up)))
+          else:
+              first=vals('up220_440_legacy','first_correct_ms')
+              correct=vals('up220_440_legacy','correct_fraction')
+              half=vals('up220_440_legacy','half_fraction')
+              if not all(0.0<=x<=80.0 for x in first): errors.append(('up_first',first))
+              if any(x<0.90 for x in correct): errors.append(('up_correct',correct))
+              if any(x>0.10 for x in half): errors.append(('up_half',half))
+
+          strong=group('down220_110_strong2')
+          if len(strong)!=2:
+              errors.append(('strong_count',len(strong)))
+          else:
+              first=vals('down220_110_strong2','first_correct_ms')
+              correct=vals('down220_110_strong2','correct_fraction')
+              old=vals('down220_110_strong2','max_old_ms')
+              if not all(0.0<=x<=110.0 for x in first): errors.append(('strong_first',first))
+              if any(x<0.80 for x in correct): errors.append(('strong_correct',correct))
+              if max(old)>30.0: errors.append(('strong_old_lock',old))
+
+          noise=group('pure_noise')
+          if len(noise)!=1 or int(noise[0]['valid_after'])!=0:
+              errors.append(('pure_noise',noise))
+
+          if errors:
+              print('VOICE_AWARE_PROMOTED_FAILURES')
+              for e in errors: print(e)
+              raise AssertionError(errors)
+          print('VOICE_AWARE_PROMOTED_V671_GATE=PASS')
+          PY
+
+      - name: Restore historical supervisor and build VST3
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build build-voice-aware --config Release --parallel 2 --target SupervisorContinuityTest
+          ./build-voice-aware/clean-engine-tests/SupervisorContinuityTest
+          cmake --build build-voice-aware --config Release --target Neumaton_VST3 --parallel 2
