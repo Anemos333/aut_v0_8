@@ -1,0 +1,68 @@
+name: Golden detector determinism v1
+
+on:
+  push:
+    branches:
+      - voice-aware-f0-parallel-golden-v1
+    paths:
+      - Source/ModernPitchEngine.cpp
+      - Source/ModernPitchEngine.h
+      - Tests/GoldenDetectorDeterminismTest.cpp
+      - .github/workflows/golden-detector-determinism-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  golden-determinism:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout experimental branch
+        uses: actions/checkout@v4
+        with:
+          ref: voice-aware-f0-parallel-golden-v1
+          fetch-depth: 1
+
+      - name: Guard golden detector math and frozen renderer
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'PRIMITIVE_DIVISOR_GEOMETRY_V6_6' Source/ModernPitchEngine.cpp
+          grep -q 'AUTHORITATIVE_DIRECT_FAST_PATH_V6' Source/ModernPitchEngine.cpp
+          grep -q 'VOICE_BODY_ADAPTIVE_PATH_AUTHORITY_V6_7' Source/ModernPitchEngine.cpp
+          grep -q 'VOICE_BODY_LIVE_PERMISSION_V6_7_1' Source/ModernPitchEngine.cpp
+          ! grep -q 'RESIDUAL_LINE_COHERENCE_CPU_V1' Source/ModernPitchEngine.cpp
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Configure Release test build
+        run: cmake -S . -B build-golden-detector -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+
+      - name: Build and run determinism guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/SupervisorContinuityTest.golden.original.cpp
+          cp Tests/GoldenDetectorDeterminismTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-golden-detector --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-golden-detector/clean-engine-tests/SupervisorContinuityTest | tee /tmp/golden-detector.log
+          grep -q 'GOLDEN_DETECTOR_BITWISE_DETERMINISM=PASS' /tmp/golden-detector.log
+
+      - name: Restore historical test file
+        if: always()
+        shell: bash
+        run: |
+          if [ -f /tmp/SupervisorContinuityTest.golden.original.cpp ]; then
+            cp /tmp/SupervisorContinuityTest.golden.original.cpp Tests/SupervisorContinuityTest.cpp
+          fi
