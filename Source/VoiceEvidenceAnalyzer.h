@@ -37,6 +37,10 @@ public:
         float secondHarmonicDominance = 0.0f;
         float voicedBodyEnergy = 0.0f;
         float polyphonyRisk = 0.0f;
+        // VOICE_BODY_ADAPTIVE_PATH_AUTHORITY_V6_7: physical permission to
+        // inspect a longer period below the currently observed family. This is
+        // not an F0 vote and never attenuates an upper coordinate by itself.
+        float lowerFamilyEvidence = 0.0f;
     };
 
     void prepare(double sampleRate, int maximumBlockSize, int maximumChannels) noexcept
@@ -251,6 +255,17 @@ public:
             std::sqrt(std::max(0.0f, lowRatio + midRatio))
             * smoothStep(0.0008f, 0.010f, rms));
 
+        // VOICE_BODY_ADAPTIVE_PATH_AUTHORITY_V6_7
+        // subharmonicConflict already measures the F/2 probe against the
+        // current harmonic family. Convert it into permission to LOOK below
+        // only when the same block has coherent vocal body. A breath/formant
+        // cannot earn lower-register authority merely by containing low energy.
+        const float lowerFamilyEvidenceRaw = clamp01(
+            smoothStep(0.08f, 0.34f, subharmonicConflict)
+            * std::sqrt(std::max(0.0f, harmonicityRaw * voicedBodyRaw))
+            * (0.65f + 0.35f * formantStability)
+            * (1.0f - 0.35f * breathRaw));
+
         Evidence target;
         target.harmonicity = harmonicityRaw;
         target.breathiness = breathRaw;
@@ -260,6 +275,7 @@ public:
         target.secondHarmonicDominance = secondHarmonicRaw;
         target.voicedBodyEnergy = voicedBodyRaw;
         target.polyphonyRisk = polyphonyRaw;
+        target.lowerFamilyEvidence = lowerFamilyEvidenceRaw;
 
         const float blockSeconds = static_cast<float>(samples / sampleRate_);
         smoothEvidence(target, blockSeconds);
@@ -283,6 +299,7 @@ public:
             result.secondHarmonicDominance = secondHarmonicDominance_.load(std::memory_order_relaxed);
             result.voicedBodyEnergy = voicedBodyEnergy_.load(std::memory_order_relaxed);
             result.polyphonyRisk = polyphonyRisk_.load(std::memory_order_relaxed);
+            result.lowerFamilyEvidence = lowerFamilyEvidence_.load(std::memory_order_relaxed);
             const std::uint32_t after = sequence_.load(std::memory_order_acquire);
             if (before == after && (after & 1u) == 0u)
                 return result;
@@ -406,6 +423,12 @@ private:
                      mediumAttack, release);
         smoothMetric(smoothed_.polyphonyRisk, target.polyphonyRisk,
                      mediumAttack, slowRelease);
+        // VOICE_BODY_LIVE_PERMISSION_V6_7_1
+        // Permission is current physical evidence, not register memory. Attack
+        // remains fast and release is intentionally short so a completed upward
+        // transition cannot keep authorising the old lower coordinate.
+        smoothMetric(smoothed_.lowerFamilyEvidence, target.lowerFamilyEvidence,
+                     fastAttack, coefficient(14.0f));
     }
 
     void decayToSilence(int samples) noexcept
@@ -421,6 +444,7 @@ private:
         smoothed_.secondHarmonicDominance += release * (0.0f - smoothed_.secondHarmonicDominance);
         smoothed_.voicedBodyEnergy += release * (0.0f - smoothed_.voicedBodyEnergy);
         smoothed_.polyphonyRisk += release * (0.0f - smoothed_.polyphonyRisk);
+        smoothed_.lowerFamilyEvidence += release * (0.0f - smoothed_.lowerFamilyEvidence);
     }
 
     void publish(const Evidence& evidence) noexcept
@@ -434,6 +458,7 @@ private:
         secondHarmonicDominance_.store(evidence.secondHarmonicDominance, std::memory_order_relaxed);
         voicedBodyEnergy_.store(evidence.voicedBodyEnergy, std::memory_order_relaxed);
         polyphonyRisk_.store(evidence.polyphonyRisk, std::memory_order_relaxed);
+        lowerFamilyEvidence_.store(evidence.lowerFamilyEvidence, std::memory_order_relaxed);
         sequence_.fetch_add(1u, std::memory_order_release);
     }
 
@@ -462,4 +487,5 @@ private:
     std::atomic<float> secondHarmonicDominance_ { 0.0f };
     std::atomic<float> voicedBodyEnergy_ { 0.0f };
     std::atomic<float> polyphonyRisk_ { 0.0f };
+    std::atomic<float> lowerFamilyEvidence_ { 0.0f };
 };

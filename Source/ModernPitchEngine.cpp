@@ -163,6 +163,14 @@ void ModernPitchEngine::MultiRatePitchTracker::reset() noexcept
     presenceSinceLastHop_ = false;
     transitionWake_ = false;
     observationContinuityBroken_ = false;
+    voiceAuthorityContextValid_ = false;
+    voiceAuthorityHarmonicity_ = 0.0f;
+    voiceAuthorityBreathiness_ = 0.0f;
+    voiceAuthorityBodyEnergy_ = 0.0f;
+    voiceAuthoritySpectralReliability_ = 0.0f;
+    voiceAuthorityEventStrength_ = 0.0f;
+    voiceAuthorityFormantStability_ = 0.0f;
+    voiceAuthorityLowerFamilyEvidence_ = 0.0f;
 
     octaveState_ = 0;
     pendingOctaveDelta_ = 0;
@@ -184,6 +192,26 @@ void ModernPitchEngine::MultiRatePitchTracker::setRange(float minimumPitchHz,
 void ModernPitchEngine::MultiRatePitchTracker::setSensitivity(float sensitivity) noexcept
 {
     sensitivity_ = clamp01(sensitivity);
+}
+
+void ModernPitchEngine::MultiRatePitchTracker::setVoiceAuthorityContext(
+    bool valid,
+    float harmonicity,
+    float breathiness,
+    float bodyEnergy,
+    float spectralReliability,
+    float eventStrength,
+    float formantStability,
+    float lowerFamilyEvidence) noexcept
+{
+    voiceAuthorityContextValid_ = valid;
+    voiceAuthorityHarmonicity_ = clamp01(harmonicity);
+    voiceAuthorityBreathiness_ = clamp01(breathiness);
+    voiceAuthorityBodyEnergy_ = clamp01(bodyEnergy);
+    voiceAuthoritySpectralReliability_ = clamp01(spectralReliability);
+    voiceAuthorityEventStrength_ = clamp01(eventStrength);
+    voiceAuthorityFormantStability_ = clamp01(formantStability);
+    voiceAuthorityLowerFamilyEvidence_ = clamp01(lowerFamilyEvidence);
 }
 
 void ModernPitchEngine::MultiRatePitchTracker::setReacquisitionAnchor(
@@ -733,6 +761,83 @@ ModernPitchEngine::MultiRatePitchTracker::analyse(
         }
     }
 
+    // PRIMITIVE_DIVISOR_GEOMETRY_V6_6
+    // The existing candidate set can represent global/2 but not global/3 or
+    // global/4. Consequently a path that falls into 3P or 4P literally has no
+    // route back to P before this point. Rather than adding more full candidate
+    // evaluations (and CPU), test only simple divisors of the already selected
+    // basin, using cheap staged current-sample geometry.
+    const int selectedSourceTauV66 = sourceTau;
+    const float selectedSourceCorrelationV66 = sourcePeak;
+    const float selectedResidualCorrelationV66 = residualLagCorrelation(sourceTau);
+    const float selectedYinV66 = clamp01(
+        1.0f - difference_[static_cast<std::size_t>(sourceTau)]);
+
+    int primitiveTauV66 = sourceTau;
+    float primitiveSourceCorrelationV66 = selectedSourceCorrelationV66;
+    float primitiveResidualCorrelationV66 = selectedResidualCorrelationV66;
+    float primitiveYinV66 = selectedYinV66;
+
+    // Highest divisor first means the shortest demonstrated primitive period
+    // wins when several multiples are equally explanatory (e.g. 4P -> 2P -> P).
+    constexpr std::array<int, 3> primitiveDivisorsV66 { 4, 3, 2 };
+    for (const int divisor : primitiveDivisorsV66)
+    {
+        const int candidateTau = static_cast<int>(std::lround(
+            static_cast<double>(selectedSourceTauV66)
+            / static_cast<double>(divisor)));
+        if (candidateTau < tauMinimum
+            || candidateTau > tauMaximum
+            || candidateTau >= selectedSourceTauV66 - 2)
+        {
+            continue;
+        }
+
+        // Stage 1 is intentionally the strongest and cheapest separator. It was
+        // clean by >0.13 correlation even against the hostile strong-second
+        // control. Most true primitive periods therefore stop here with one
+        // extra source-correlation pass and no further work.
+        const float candidateSourceCorrelation = sourceLagCorrelation(candidateTau);
+        if (candidateSourceCorrelation < 0.55f
+            || candidateSourceCorrelation < selectedSourceCorrelationV66 - 0.12f)
+        {
+            continue;
+        }
+
+        // Stage 2 falsifies accidental source-waveform resemblance. These are
+        // current residual/YIN measurements already available to analyse(); no
+        // new hypothesis layer or temporal persistence is introduced.
+        const float candidateResidualCorrelation = residualLagCorrelation(candidateTau);
+        const float candidateYin = clamp01(
+            1.0f - difference_[static_cast<std::size_t>(candidateTau)]);
+        if (candidateResidualCorrelation < 0.30f
+            || candidateYin < 0.30f
+            || candidateResidualCorrelation < selectedResidualCorrelationV66 - 0.12f
+            || candidateYin < selectedYinV66 - 0.12f)
+        {
+            continue;
+        }
+
+        primitiveTauV66 = candidateTau;
+        primitiveSourceCorrelationV66 = candidateSourceCorrelation;
+        primitiveResidualCorrelationV66 = candidateResidualCorrelation;
+        primitiveYinV66 = candidateYin;
+        break;
+    }
+
+    if (primitiveTauV66 != sourceTau)
+    {
+        sourceTau = primitiveTauV66;
+        sourcePeak = primitiveSourceCorrelationV66;
+
+        // The promoted coordinate is the same demonstrated periodic family, but
+        // publish the primitive path's direct periodic evidence rather than the
+        // old multiple's value. Harmonic-family/cleanliness remain the qualified
+        // family evidence that allowed this path measurement to exist at all.
+        bestPeriodicity = clamp01(primitiveResidualCorrelationV66);
+        (void) primitiveYinV66;
+    }
+
     double refinedTau = static_cast<double>(sourceTau);
     if (sourceTau > tauMinimum && sourceTau < tauMaximum)
     {
@@ -805,6 +910,32 @@ float ModernPitchEngine::MultiRatePitchTracker::candidateBaseScore(
         * static_cast<float>(std::max(0, candidate.ageInHops)));
     return clamp01((0.70f * candidate.confidence
                   + 0.30f * candidate.periodicity) * ageWeight);
+}
+
+float ModernPitchEngine::MultiRatePitchTracker::voiceBodyAuthorityV67() const noexcept
+{
+    if (!voiceAuthorityContextValid_)
+        return 0.0f;
+
+    return clamp01(0.30f * voiceAuthorityBodyEnergy_
+                 + 0.24f * voiceAuthorityHarmonicity_
+                 + 0.22f * voiceAuthoritySpectralReliability_
+                 + 0.14f * voiceAuthorityFormantStability_
+                 + 0.10f * (1.0f - voiceAuthorityBreathiness_));
+}
+
+bool ModernPitchEngine::MultiRatePitchTracker::voiceAllowsLowerFamilyV67() const noexcept
+{
+    if (!voiceAuthorityContextValid_)
+        return false;
+
+    // VOICE_BODY_ADAPTIVE_PATH_AUTHORITY_V6_7
+    // This is permission to inspect below, not permission to choose below. The
+    // actual lower coordinate must still be measured by one or more F0 paths.
+    return voiceBodyAuthorityV67() >= 0.40f
+        && voiceAuthoritySpectralReliability_ >= 0.24f
+        && voiceAuthorityBreathiness_ <= 0.76f
+        && voiceAuthorityLowerFamilyEvidence_ >= 0.18f;
 }
 
 float ModernPitchEngine::MultiRatePitchTracker::pathPitchAuthority(
@@ -1307,6 +1438,214 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
     if (candidateCount <= 0)
         return {};
 
+    // AUTHORITATIVE_DIRECT_FAST_PATH_V6
+    // Most detector hops are not ambiguous and should not be sent through a
+    // voting bureaucracy. A structurally strong fresh measurement can own the
+    // physical coordinate immediately unless another comparably strong current
+    // path genuinely contradicts it. Paths remain asymmetric: if a low-rate
+    // path cannot physically observe the upper octave while another capable
+    // path actually measures it, the low F/2 result remains family evidence but
+    // is not a competing coordinate.
+    const auto directMaximumForPathV6 = [](int pathIndex) noexcept
+    {
+        switch (pathIndex)
+        {
+            case 0: return 2600.0f;
+            case 1: return 900.0f;
+            case 2: return 460.0f;
+            case 3: return 230.0f;
+            default: return 0.0f;
+        }
+    };
+
+    const auto directStructureScoreV6 = [this](const PitchCandidate& c) noexcept
+    {
+        if (!c.valid || !std::isfinite(c.frequencyHz) || c.frequencyHz <= 0.0f)
+            return -1.0f;
+        const float family = c.harmonicFamily >= 0.0f
+            ? clamp01(c.harmonicFamily) : 0.0f;
+        const float clean = c.tonalCleanliness >= 0.0f
+            ? clamp01(c.tonalCleanliness) : 0.0f;
+        return 0.34f * clamp01(c.confidence)
+             + 0.24f * clamp01(c.periodicity)
+             + 0.21f * family
+             + 0.21f * clean;
+    };
+
+    const auto structurallyAuthoritativeV6 = [&](const PitchCandidate& c) noexcept
+    {
+        if (!c.valid || !std::isfinite(c.frequencyHz) || c.frequencyHz <= 0.0f)
+            return false;
+        const float family = c.harmonicFamily >= 0.0f
+            ? clamp01(c.harmonicFamily) : 0.0f;
+        const float clean = c.tonalCleanliness >= 0.0f
+            ? clamp01(c.tonalCleanliness) : 0.0f;
+        return c.periodicity >= 0.58f
+            && family >= 0.68f
+            && clean >= 0.68f
+            && directStructureScoreV6(c) >= 0.70f;
+    };
+
+    const auto lowerAliasShadowedV6 = [&](int sourceIndex) noexcept
+    {
+        const auto& source = candidates[static_cast<std::size_t>(sourceIndex)];
+        if (!structurallyAuthoritativeV6(source))
+            return false;
+        const float upperHz = 2.0f * source.frequencyHz;
+        if (upperHz > maximumPitchHz_
+            || upperHz <= directMaximumForPathV6(source.pathIndex) + 5.0f)
+        {
+            return false;
+        }
+
+        for (int otherIndex = 0; otherIndex < candidateCount; ++otherIndex)
+        {
+            if (otherIndex == sourceIndex)
+                continue;
+            const auto& other = candidates[static_cast<std::size_t>(otherIndex)];
+            if (!structurallyAuthoritativeV6(other)
+                || upperHz > directMaximumForPathV6(other.pathIndex) + 5.0f)
+            {
+                continue;
+            }
+            // A recent slower-path measurement may shadow an alias between its
+            // scheduled updates; collectFreshCandidates() already bounds age.
+            if (centsDistance(other.frequencyHz, upperHz) <= 85.0f)
+                return true;
+        }
+        return false;
+    };
+
+    // VOICE_BODY_ADAPTIVE_PATH_AUTHORITY_V6_7
+    // A lower-rate octave member remains family evidence by default. The vocal
+    // body can OPEN the lower-family question, but cannot answer it.
+    const bool lowerFamilyPermissionV67 = voiceAllowsLowerFamilyV67();
+    const auto isOneOctaveBelowV67 = [this](float lowerHz, float upperHz) noexcept
+    {
+        return lowerHz > 0.0f && upperHz > 0.0f
+            && centsDistance(2.0f * lowerHz, upperHz) <= 85.0f;
+    };
+    const auto challengesCommittedUpperV67 = [&](const PitchCandidate& c) noexcept
+    {
+        const float reference = trackedPitchHz_ > 0.0f
+            ? trackedPitchHz_ : committedOctaveFrequencyHz_;
+        return reference > 0.0f
+            && isOneOctaveBelowV67(c.frequencyHz, reference);
+    };
+
+    int authoritativeIndexV6 = -1;
+    float authoritativeScoreV6 = -1.0f;
+    for (int index = 0; index < candidateCount; ++index)
+    {
+        const auto& candidate = candidates[static_cast<std::size_t>(index)];
+        if (candidate.ageInHops != 0
+            || !structurallyAuthoritativeV6(candidate)
+            || (lowerAliasShadowedV6(index) && !lowerFamilyPermissionV67)
+            || (challengesCommittedUpperV67(candidate)
+                && voiceAuthorityContextValid_
+                && !lowerFamilyPermissionV67))
+        {
+            continue;
+        }
+        const float score = directStructureScoreV6(candidate);
+        if (score > authoritativeScoreV6)
+        {
+            authoritativeScoreV6 = score;
+            authoritativeIndexV6 = index;
+        }
+    }
+
+    if (authoritativeIndexV6 >= 0)
+    {
+        const auto& best = candidates[static_cast<std::size_t>(authoritativeIndexV6)];
+        bool genuinelyAmbiguous = false;
+        for (int index = 0; index < candidateCount; ++index)
+        {
+            if (index == authoritativeIndexV6)
+                continue;
+            const auto& other = candidates[static_cast<std::size_t>(index)];
+            if (other.ageInHops != 0
+                || !structurallyAuthoritativeV6(other)
+                || (lowerAliasShadowedV6(index) && !lowerFamilyPermissionV67)
+                || centsDistance(other.frequencyHz, best.frequencyHz) <= 70.0f)
+            {
+                continue;
+            }
+            // Only a comparably strong current physical measurement earns the
+            // right to invoke the slower ambiguity resolver. A weak path cannot
+            // veto an evident coordinate merely because it disagrees.
+            const bool octaveFamilyPair = isOneOctaveBelowV67(
+                    other.frequencyHz, best.frequencyHz)
+                || isOneOctaveBelowV67(best.frequencyHz, other.frequencyHz);
+            // If the vocal body has physically justified looking below, an
+            // octave-related pair is a real ambiguity regardless of a small
+            // score advantage. We consult the old resolver; we do NOT select
+            // the lower member here.
+            if ((octaveFamilyPair && lowerFamilyPermissionV67)
+                || directStructureScoreV6(other) >= authoritativeScoreV6 - 0.10f)
+            {
+                genuinelyAmbiguous = true;
+                break;
+            }
+        }
+
+        if (!genuinelyAmbiguous)
+        {
+            // AUTHORITATIVE_RESCUE_CORROBORATION_V6_1
+            // Count only native strong measurements of this same coordinate.
+            // Retained slower-path observations may corroborate between their
+            // scheduled updates, but octave-transposed family support does not.
+            int nativeSupport = 0;
+            std::uint8_t nativeFreshMask = 0;
+            for (int index = 0; index < candidateCount; ++index)
+            {
+                const auto& other = candidates[static_cast<std::size_t>(index)];
+                if (!structurallyAuthoritativeV6(other)
+                    || (lowerAliasShadowedV6(index) && !lowerFamilyPermissionV67)
+                    || centsDistance(other.frequencyHz, best.frequencyHz) > 70.0f)
+                {
+                    continue;
+                }
+                ++nativeSupport;
+                if (other.ageInHops == 0)
+                {
+                    nativeFreshMask = static_cast<std::uint8_t>(
+                        nativeFreshMask | static_cast<std::uint8_t>(1u << other.pathIndex));
+                }
+            }
+
+            DecoderDecision directDecision;
+            directDecision.candidate = best;
+            directDecision.candidate.valid = true;
+            directDecision.consensus = nativeSupport > 1
+                ? std::min(1.0f, 0.25f * static_cast<float>(nativeSupport - 1))
+                : 0.0f;
+            directDecision.supportCount = std::max(1, nativeSupport);
+            directDecision.directSupportCount = std::max(1, nativeSupport);
+            directDecision.freshSupportMask = nativeFreshMask != 0
+                ? nativeFreshMask
+                : static_cast<std::uint8_t>(1u << best.pathIndex);
+            directDecision.decoderOctaveIndex = octaveState_;
+            // A single lower-family witness may nominate a downward octave, but
+            // body permission is only permission to inspect it. Require either
+            // two native direct paths or the historical octave confirmer before
+            // the lower coordinate may bypass continuity.
+            const bool downwardFamilyChallengeV67 =
+                challengesCommittedUpperV67(best);
+            // VOICE_BODY_LIVE_PERMISSION_V6_7_1
+            // One structurally strong path plus an independent live vocal-body
+            // F/2 signature is already two different physical observations. Do
+            // not demand a second F0 path as a bureaucratic permission layer.
+            // If an upper path is still structurally strong, the ambiguity loop
+            // above has already routed the pair to the resolver instead.
+            directDecision.authoritativeDirect = !downwardFamilyChallengeV67
+                || nativeSupport >= 2
+                || lowerFamilyPermissionV67;
+            directDecision.valid = true;
+            return directDecision;
+        }
+    }
+
     // DETECTOR_VETO_NOT_PERMISSION_V1: a fresh finite detector result is a
     // measurement, even when confidence/consensus are poor. Confidence may
     // rank competing measurements, but it may not suppress the only real F0.
@@ -1553,6 +1892,36 @@ bool ModernPitchEngine::MultiRatePitchTracker::confirmOctaveTransition(
     // anchor owns the register and a subharmonic may not restart it.
     if (trackedPitchHz_ <= 0.0f && rescueMode_ && reacquisitionAnchorHz_ > 0.0f)
     {
+        // AUTHORITATIVE_RESCUE_CORROBORATION_V6_1
+        // Rescue memory is useful only while current physics is ambiguous. Two
+        // or more native strong paths agreeing on the same live coordinate are
+        // sufficient to falsify a stale anchor immediately. A solitary octave
+        // alias still falls through to the historical bounded negative veto.
+        if (decision.authoritativeDirect
+            && (decision.directSupportCount >= 2
+                || voiceAllowsLowerFamilyV67()))
+        {
+            // VOICE_BODY_LIVE_PERMISSION_V6_7_1: stale detector memory cannot
+            // demand a second F0 path after current vocal-body physics has
+            // independently corroborated the fresh lower coordinate.
+            int directRescueDelta = 0;
+            float directRescueResidual = 0.0f;
+            if (isOctaveLikeTransition(reacquisitionAnchorHz_,
+                                       decision.candidate.frequencyHz,
+                                       directRescueDelta,
+                                       directRescueResidual))
+            {
+                octaveState_ = std::clamp(octaveState_ + directRescueDelta, -4, 4);
+            }
+            committedOctaveFrequencyHz_ = decision.candidate.frequencyHz;
+            octaveCommitGuardHops_ = 4;
+            pendingOctaveDelta_ = 0;
+            pendingOctaveCount_ = 0;
+            pendingOctaveFrequencyHz_ = 0.0f;
+            decision.decoderOctaveIndex = octaveState_;
+            return true;
+        }
+
         int rescueOctaveDelta = 0;
         float rescueResidualCents = 0.0f;
         const bool octaveLike = isOctaveLikeTransition(
@@ -1610,7 +1979,12 @@ bool ModernPitchEngine::MultiRatePitchTracker::confirmOctaveTransition(
             : (multiPathDirect
                 ? (rescueOctaveDelta < 0 ? 12 : 10)
                 : (rescueOctaveDelta < 0 ? 28 : 24));
-        if (pendingOctaveCount_ < requiredObservations)
+        const bool rescueLowerPermittedV67 = rescueOctaveDelta >= 0
+            || !voiceAuthorityContextValid_
+            || voiceAllowsLowerFamilyV67()
+            || multiPathDirect;
+        if (pendingOctaveCount_ < requiredObservations
+            || !rescueLowerPermittedV67)
         {
             decision.valid = false;
             return false;
@@ -1642,6 +2016,32 @@ bool ModernPitchEngine::MultiRatePitchTracker::confirmOctaveTransition(
         }
         committedOctaveFrequencyHz_ = decision.candidate.frequencyHz;
         octaveCommitGuardHops_ = 6;
+        pendingOctaveDelta_ = 0;
+        pendingOctaveCount_ = 0;
+        pendingOctaveFrequencyHz_ = 0.0f;
+        decision.decoderOctaveIndex = octaveState_;
+        return true;
+    }
+
+    // AUTHORITATIVE_DIRECT_FAST_PATH_V6
+    // At this point initial acquisition and rescue-anchor semantics have already
+    // been handled above. A decisive current physical measurement must not be
+    // reinterpreted as a long-lived continuity preference. This is the explicit
+    // anti-stall rule: detector memory cannot turn the old F0 into a constant
+    // transposition while the current source has demonstrated a new coordinate.
+    if (decision.authoritativeDirect)
+    {
+        int directOctaveDelta = 0;
+        float directOctaveResidual = 0.0f;
+        if (isOctaveLikeTransition(trackedPitchHz_,
+                                   decision.candidate.frequencyHz,
+                                   directOctaveDelta,
+                                   directOctaveResidual))
+        {
+            octaveState_ = std::clamp(octaveState_ + directOctaveDelta, -4, 4);
+        }
+        committedOctaveFrequencyHz_ = decision.candidate.frequencyHz;
+        octaveCommitGuardHops_ = 4;
         pendingOctaveDelta_ = 0;
         pendingOctaveCount_ = 0;
         pendingOctaveFrequencyHz_ = 0.0f;
@@ -1740,6 +2140,30 @@ bool ModernPitchEngine::MultiRatePitchTracker::confirmOctaveTransition(
         : (multiPathDirect
             ? (octaveDelta < 0 ? 12 : 10)
             : (octaveDelta < 0 ? 28 : 24));
+
+    // VOICE_BODY_ADAPTIVE_PATH_AUTHORITY_V6_7
+    // Negative evidence is extremely narrow: only a DOWNWARD octave family
+    // conflict, only with valid coherent body context, and only when one path
+    // is trying to win by persistence alone. This is not global prudence. A
+    // real lower period measured by two native paths remains immediately legal.
+    const bool lowerFamilyPhysicallyPermittedV67 = octaveDelta >= 0
+        || !voiceAuthorityContextValid_
+        || voiceAllowsLowerFamilyV67()
+        || multiPathDirect;
+    if (!lowerFamilyPhysicallyPermittedV67)
+    {
+        pendingOctaveCount_ = std::min(pendingOctaveCount_,
+                                      std::max(0, requiredObservations - 1));
+        decision.candidate.frequencyHz = trackedPitchHz_;
+        decision.candidate.confidence = trackedConfidence_ * 0.97f;
+        decision.candidate.periodicity = trackedPeriodicity_;
+        decision.consensus = trackedConsensus_;
+        decision.supportCount = trackedSupportCount_;
+        decision.decoderOctaveIndex = octaveState_;
+        decision.valid = trackedPitchHz_ > 0.0f;
+        return false;
+    }
+
     if (pendingOctaveCount_ < requiredObservations)
     {
         // Hold the committed register only while an explicitly octave-like
@@ -3856,6 +4280,7 @@ void ModernPitchEngine::process(
     safe.voiceSpectralReliability = clamp01(finiteOr(safe.voiceSpectralReliability, 0.0f));
     safe.voiceEventStrength = clamp01(finiteOr(safe.voiceEventStrength, 0.0f));
     safe.voiceFormantStability = clamp01(finiteOr(safe.voiceFormantStability, 0.0f));
+    safe.voiceLowerFamilyEvidence = clamp01(finiteOr(safe.voiceLowerFamilyEvidence, 0.0f));
     safe.lockHysteresis = std::clamp(finiteOr(safe.lockHysteresis, 24.0f), 0.0f, 80.0f);
     safe.vibratoPreserve = clamp01(finiteOr(safe.vibratoPreserve, 0.0f));
     safe.lockStrictness = clamp01(finiteOr(safe.lockStrictness, 0.0f));
@@ -3891,12 +4316,30 @@ void ModernPitchEngine::process(
 
     linkedTracker_.setRange(safe.minimumPitchHz, safe.maximumPitchHz);
     linkedTracker_.setSensitivity(safe.detectorSensitivity);
+    linkedTracker_.setVoiceAuthorityContext(
+        safe.voiceEvidenceValid,
+        safe.voiceHarmonicity,
+        safe.voiceBreathiness,
+        safe.voiceBodyEnergy,
+        safe.voiceSpectralReliability,
+        safe.voiceEventStrength,
+        safe.voiceFormantStability,
+        safe.voiceLowerFamilyEvidence);
     for (int channel = 0; channel < channels; ++channel)
     {
         channelTrackers_[static_cast<std::size_t>(channel)].setRange(
             safe.minimumPitchHz, safe.maximumPitchHz);
         channelTrackers_[static_cast<std::size_t>(channel)].setSensitivity(
             safe.detectorSensitivity);
+        channelTrackers_[static_cast<std::size_t>(channel)].setVoiceAuthorityContext(
+            safe.voiceEvidenceValid,
+            safe.voiceHarmonicity,
+            safe.voiceBreathiness,
+            safe.voiceBodyEnergy,
+            safe.voiceSpectralReliability,
+            safe.voiceEventStrength,
+            safe.voiceFormantStability,
+            safe.voiceLowerFamilyEvidence);
     }
 
     tempoController_.beginBlock(hostTempoPosition, safe.tempo, samples);

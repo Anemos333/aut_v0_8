@@ -330,6 +330,8 @@ private:
         conditioned.voiceEventStrength = std::clamp(evidence.eventStrength, 0.0f, 1.0f);
         conditioned.voiceFormantStability = std::clamp(
             evidence.formantStability, 0.0f, 1.0f);
+        conditioned.voiceLowerFamilyEvidence = std::clamp(
+            evidence.lowerFamilyEvidence, 0.0f, 1.0f);
         return conditioned;
     }
 

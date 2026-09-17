@@ -64,6 +64,9 @@ public:
         float voiceSpectralReliability = 0.0f;
         float voiceEventStrength = 0.0f;
         float voiceFormantStability = 0.0f;
+        // VOICE_BODY_ADAPTIVE_PATH_AUTHORITY_V6_7: analysis-only. This value
+        // permits lower-family inspection; it never reduces correction depth.
+        float voiceLowerFamilyEvidence = 0.0f;
 
         bool scaleLock = false;
         float lockHysteresis = 24.0f;
@@ -232,6 +235,14 @@ private:
         void reset() noexcept;
         void setRange(float minimumPitchHz, float maximumPitchHz) noexcept;
         void setSensitivity(float sensitivity) noexcept;
+        void setVoiceAuthorityContext(bool valid,
+                                      float harmonicity,
+                                      float breathiness,
+                                      float bodyEnergy,
+                                      float spectralReliability,
+                                      float eventStrength,
+                                      float formantStability,
+                                      float lowerFamilyEvidence) noexcept;
         void setRescueMode(bool enabled) noexcept { rescueMode_ = enabled; }
         // TRANSITION_WAKES_DETECTOR_NOT_OUTPUT_V1: analysis-only watchdog.
         void setTransitionWake(bool enabled) noexcept { transitionWake_ = enabled; }
@@ -309,6 +320,11 @@ private:
             int directSupportCount = 0;
             std::uint8_t freshSupportMask = 0;
             int decoderOctaveIndex = 0;
+            // AUTHORITATIVE_DIRECT_FAST_PATH_V6: this is not confidence. It
+            // means current detector geometry has already demonstrated an
+            // unambiguous physical coordinate. directSupportCount records the
+            // number of native strong path measurements agreeing with it.
+            bool authoritativeDirect = false;
             bool valid = false;
         };
 
@@ -344,6 +360,8 @@ private:
         [[nodiscard]] float pathPitchAuthority(int pathIndex, float frequencyHz) const noexcept;
         [[nodiscard]] float pathCleanlinessAuthority(int pathIndex, float frequencyHz) const noexcept;
         [[nodiscard]] float candidateBaseScore(const PitchCandidate& candidate) const noexcept;
+        [[nodiscard]] float voiceBodyAuthorityV67() const noexcept;
+        [[nodiscard]] bool voiceAllowsLowerFamilyV67() const noexcept;
         [[nodiscard]] static float centsDistance(float frequencyA,
                                                  float frequencyB) noexcept;
         [[nodiscard]] static bool isOctaveLikeTransition(float fromFrequency,
@@ -369,6 +387,18 @@ private:
         // While true, musical note-body state may not be re-injected as an F0
         // anchor. A fresh measured F0 clears it.
         bool observationContinuityBroken_ = false;
+
+        // VOICE_BODY_ADAPTIVE_PATH_AUTHORITY_V6_7: previous-block causal
+        // supervision only. Coordinate measurements still come exclusively
+        // from the detector paths below.
+        bool voiceAuthorityContextValid_ = false;
+        float voiceAuthorityHarmonicity_ = 0.0f;
+        float voiceAuthorityBreathiness_ = 0.0f;
+        float voiceAuthorityBodyEnergy_ = 0.0f;
+        float voiceAuthoritySpectralReliability_ = 0.0f;
+        float voiceAuthorityEventStrength_ = 0.0f;
+        float voiceAuthorityFormantStability_ = 0.0f;
+        float voiceAuthorityLowerFamilyEvidence_ = 0.0f;
 
         std::array<float, ringSize> fullRateRing_ {};
         std::array<float, ringSize> halfRateRing_ {};
