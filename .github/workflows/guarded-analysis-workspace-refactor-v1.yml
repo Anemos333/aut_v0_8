@@ -1,0 +1,116 @@
+name: Guarded analysis workspace refactor v1
+
+on:
+  push:
+    branches:
+      - voice-aware-f0-parallel-golden-v1
+    paths:
+      - Tests/ApplyAnalysisWorkspaceRefactor.py
+      - Tests/GoldenDetectorDeterminismTest.cpp
+      - .github/workflows/guarded-analysis-workspace-refactor-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate-and-promote:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout experimental branch
+        uses: actions/checkout@v4
+        with:
+          ref: voice-aware-f0-parallel-golden-v1
+          fetch-depth: 0
+
+      - name: Guard exact golden source before refactor
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/ModernPitchEngine.cpp)" = "6ce24fc21ced2a9633a937217b2992b9ac994d32"
+          test "$(git hash-object Source/ModernPitchEngine.h)" = "314b378f3b8910a21a3d2a9f2cd43e57e88750a8"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+          grep -q 'VOICE_BODY_LIVE_PERMISSION_V6_7_1' Source/ModernPitchEngine.cpp
+          ! grep -q 'RESIDUAL_LINE_COHERENCE_CPU_V1' Source/ModernPitchEngine.cpp
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Materialize frozen golden worktree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach /tmp/neumaton-golden d261894ad4b63e2346065b95ebb095fc58dc2c14
+          cp Tests/GoldenDetectorDeterminismTest.cpp /tmp/neumaton-golden/Tests/GoldenDetectorDeterminismTest.cpp
+
+      - name: Apply workspace refactor in candidate checkout only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 Tests/ApplyAnalysisWorkspaceRefactor.py | tee /tmp/workspace-refactor.diff.log
+          test "$(git diff --name-only | sort)" = $'Source/ModernPitchEngine.cpp\nSource/ModernPitchEngine.h'
+          grep -q 'ANALYSIS_WORKSPACE_REENTRANCY_V1' Source/ModernPitchEngine.cpp
+          grep -q 'AnalysisWorkspace analysisWorkspace_' Source/ModernPitchEngine.h
+          ! grep -q 'RESIDUAL_LINE_COHERENCE_CPU_V1' Source/ModernPitchEngine.cpp
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+
+      - name: Build frozen golden trace
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/neumaton-golden
+          cp Tests/SupervisorContinuityTest.cpp /tmp/golden-supervisor-original.cpp
+          cp Tests/GoldenDetectorDeterminismTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-golden-trace -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-golden-trace --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-golden-trace/clean-engine-tests/SupervisorContinuityTest | tee /tmp/golden-trace.log
+          cp /tmp/golden-supervisor-original.cpp Tests/SupervisorContinuityTest.cpp
+          grep -q '^GOLDEN_DETECTOR_BITWISE_DETERMINISM=PASS' /tmp/golden-trace.log
+          grep -q '^GOLDEN_DETECTOR_TRACE_HASH=' /tmp/golden-trace.log
+
+      - name: Build workspace candidate trace
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/candidate-supervisor-original.cpp
+          cp Tests/GoldenDetectorDeterminismTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-workspace-trace -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-workspace-trace --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-workspace-trace/clean-engine-tests/SupervisorContinuityTest | tee /tmp/candidate-trace.log
+          cp /tmp/candidate-supervisor-original.cpp Tests/SupervisorContinuityTest.cpp
+          grep -q '^GOLDEN_DETECTOR_BITWISE_DETERMINISM=PASS' /tmp/candidate-trace.log
+          grep -q '^GOLDEN_DETECTOR_TRACE_HASH=' /tmp/candidate-trace.log
+
+      - name: Require bit-identical golden detector timeline
+        shell: bash
+        run: |
+          set -euo pipefail
+          golden_hash="$(grep '^GOLDEN_DETECTOR_TRACE_HASH=' /tmp/golden-trace.log | tail -1)"
+          candidate_hash="$(grep '^GOLDEN_DETECTOR_TRACE_HASH=' /tmp/candidate-trace.log | tail -1)"
+          golden_count="$(grep '^GOLDEN_DETECTOR_BITWISE_DETERMINISM=PASS' /tmp/golden-trace.log | tail -1)"
+          candidate_count="$(grep '^GOLDEN_DETECTOR_BITWISE_DETERMINISM=PASS' /tmp/candidate-trace.log | tail -1)"
+          echo "GOLDEN:    ${golden_count} ${golden_hash}"
+          echo "CANDIDATE: ${candidate_count} ${candidate_hash}"
+          test "$golden_count" = "$candidate_count"
+          test "$golden_hash" = "$candidate_hash"
+          echo 'ANALYSIS_WORKSPACE_GOLDEN_EQUIVALENCE=PASS'
+
+      - name: Promote source refactor only after equivalence PASS
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git diff --name-only | sort)" = $'Source/ModernPitchEngine.cpp\nSource/ModernPitchEngine.h'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Source/ModernPitchEngine.cpp Source/ModernPitchEngine.h
+          git commit -m 'Refactor detector scratch into explicit analysis workspace [skip ci]'
+          git push origin HEAD:voice-aware-f0-parallel-golden-v1
