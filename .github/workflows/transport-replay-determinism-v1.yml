@@ -1,0 +1,72 @@
+name: Transport replay determinism v1
+
+on:
+  push:
+    branches: [voice-aware-f0-detector-v1]
+    paths:
+      - 'Tests/EnableTransportReplayResetV1.py'
+      - '.github/workflows/transport-replay-determinism-v1.yml'
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout golden branch
+        uses: actions/checkout@v4
+        with:
+          ref: voice-aware-f0-detector-v1
+
+      - name: Guard golden Source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/ModernPitchEngine.cpp)" = "6ce24fc21ced2a9633a937217b2992b9ac994d32"
+          test "$(git hash-object Source/LivePitchProcessor.h)" = "0f1e95c3659f1c72e3c9ab981fcebf3dc4272a81"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+
+      - name: Materialize replay reset experiment
+        run: python3 Tests/EnableTransportReplayResetV1.py
+
+      - name: Guard experiment scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git diff --name-only | sort)" = "Source/LivePitchProcessor.h"
+          grep -q 'TRANSPORT_REPLAY_DETERMINISM_V1' Source/LivePitchProcessor.h
+          test "$(git hash-object Source/ModernPitchEngine.cpp)" = "6ce24fc21ced2a9633a937217b2992b9ac994d32"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y libasound2-dev libjack-jackd2-dev ladspa-sdk libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Configure
+        run: cmake -S . -B build-transport -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+
+      - name: Run replay determinism diagnostic with experiment
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/SupervisorContinuityTest.original.cpp
+          cp Tests/ReplayDeterminismDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-transport --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-transport/clean-engine-tests/SupervisorContinuityTest | tee /tmp/replay-fixed.log
+          cp /tmp/SupervisorContinuityTest.original.cpp Tests/SupervisorContinuityTest.cpp
+          grep -q 'FRESH_INSTANCE_DETERMINISM=PASS' /tmp/replay-fixed.log
+          grep -q 'REPLAY_STATE_DEPENDENCE_PRESENT=NO' /tmp/replay-fixed.log
+
+      - name: Run historical invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build build-transport --config Release --parallel 2 --target SupervisorContinuityTest CleanModernPitchEngineTest VoiceEvidenceAnalyzerTest SingleWetSpectralRendererTest >/dev/null
+          ./build-transport/clean-engine-tests/SupervisorContinuityTest >/tmp/supervisor.log
+          ./build-transport/clean-engine-tests/CleanModernPitchEngineTest >/tmp/engine.log
+          ./build-transport/clean-engine-tests/VoiceEvidenceAnalyzerTest >/tmp/voice.log
+          ./build-transport/clean-engine-tests/SingleWetSpectralRendererTest >/tmp/renderer.log
+
+      - name: Build VST3
+        run: cmake --build build-transport --config Release --target Neumaton_VST3 --parallel 2 >/dev/null
