@@ -53,6 +53,10 @@ public:
 
         voiceEvidenceAnalyzer_.prepare(sampleRate_, maximumBlockSize_, channelCount_);
         voiceEvidencePrimed_ = false;
+        hostTransportHistoryValid_ = false;
+        hostPpqHistoryValid_ = false;
+        expectedNextHostSample_ = 0;
+        expectedNextHostPpq_ = 0.0;
         activeModeIndex_.store(toModeIndex(latencyMode),
                                std::memory_order_release);
         prepared_.store(true, std::memory_order_release);
@@ -68,6 +72,10 @@ public:
 
         voiceEvidenceAnalyzer_.reset();
         voiceEvidencePrimed_ = false;
+        hostTransportHistoryValid_ = false;
+        hostPpqHistoryValid_ = false;
+        expectedNextHostSample_ = 0;
+        expectedNextHostPpq_ = 0.0;
     }
 
     // Safe from the message thread while audio is running. No prepare(), heap
@@ -142,7 +150,63 @@ public:
 
     void setTempoHostPosition(const CreativeTempo::HostPosition& position) noexcept
     {
+        // TRANSPORT_REPLAY_DETERMINISM_V1
+        // A non-looping seek/restart is a physical observation discontinuity.
+        // Detector, correction, voice-evidence and renderer state from the old
+        // timeline must not seed the new playback. This is transport hygiene,
+        // never a confidence/F0 gate and never runs during contiguous playback.
+        bool transportDiscontinuity = false;
+        if (position.isPlaying && !position.isLooping)
+        {
+            if (hostTransportHistoryValid_ && position.hasTimeInSamples)
+            {
+                const auto error = std::llabs(position.timeInSamples
+                                              - expectedNextHostSample_);
+                const auto tolerance = static_cast<std::int64_t>(
+                    std::max(4, std::max(1, position.numberOfSamples) * 2));
+                transportDiscontinuity = error > tolerance;
+            }
+            else if (!position.hasTimeInSamples
+                     && hostPpqHistoryValid_
+                     && position.hasPpq
+                     && position.hasBpm
+                     && std::isfinite(position.ppqAtBlockStart)
+                     && std::isfinite(position.bpm)
+                     && position.bpm > 1.0)
+            {
+                const double expectedTravel = position.bpm
+                    / (60.0 * std::max(8000.0, sampleRate_))
+                    * static_cast<double>(std::max(1, position.numberOfSamples));
+                const double tolerance = std::max(0.01, expectedTravel * 3.0);
+                transportDiscontinuity = std::abs(position.ppqAtBlockStart
+                                                  - expectedNextHostPpq_) > tolerance;
+            }
+        }
+
+        if (transportDiscontinuity)
+            reset();
+
         tempoHostPosition_ = position;
+
+        if (position.isPlaying && position.hasTimeInSamples)
+        {
+            expectedNextHostSample_ = position.timeInSamples
+                + static_cast<std::int64_t>(std::max(0, position.numberOfSamples));
+            hostTransportHistoryValid_ = true;
+        }
+
+        if (position.isPlaying
+            && position.hasPpq
+            && position.hasBpm
+            && std::isfinite(position.ppqAtBlockStart)
+            && std::isfinite(position.bpm)
+            && position.bpm > 1.0)
+        {
+            expectedNextHostPpq_ = position.ppqAtBlockStart
+                + position.bpm / (60.0 * std::max(8000.0, sampleRate_))
+                    * static_cast<double>(std::max(0, position.numberOfSamples));
+            hostPpqHistoryValid_ = true;
+        }
     }
 
     void process(juce::AudioBuffer<float>& buffer,
@@ -423,4 +487,8 @@ private:
     int maximumBlockSize_ = 0;
     int channelCount_ = 1;
     CreativeTempo::HostPosition tempoHostPosition_;
+    bool hostTransportHistoryValid_ = false;
+    bool hostPpqHistoryValid_ = false;
+    std::int64_t expectedNextHostSample_ = 0;
+    double expectedNextHostPpq_ = 0.0;
 };
