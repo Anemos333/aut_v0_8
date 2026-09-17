@@ -1,0 +1,51 @@
+name: Hotfix restore golden detector DSP
+
+on:
+  push:
+    branches: [voice-aware-f0-detector-v1]
+    paths:
+      - '.github/workflows/hotfix-restore-golden-detector.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  restore:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: voice-aware-f0-detector-v1
+          fetch-depth: 0
+
+      - name: Guard current regression and frozen renderer
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'RESIDUAL_LINE_COHERENCE_CPU_V1' Source/ModernPitchEngine.cpp
+          grep -q 'VOICE_BODY_LIVE_PERMISSION_V6_7_1' Source/ModernPitchEngine.cpp
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+
+      - name: Restore exact golden detector source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout a84bf64a7603bdbda8eb8ab246c6dfa46aa05981 -- Source/ModernPitchEngine.cpp
+          ! grep -q 'RESIDUAL_LINE_COHERENCE_CPU_V1' Source/ModernPitchEngine.cpp
+          grep -q 'VOICE_BODY_LIVE_PERMISSION_V6_7_1' Source/ModernPitchEngine.cpp
+          test "$(git diff --name-only | sort)" = "Source/ModernPitchEngine.cpp"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+
+      - name: Commit restored golden detector
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Source/ModernPitchEngine.cpp
+          git commit -m "Restore golden V6.7.1 detector DSP [skip ci]"
+          git push origin HEAD:voice-aware-f0-detector-v1
+          git rev-parse HEAD
