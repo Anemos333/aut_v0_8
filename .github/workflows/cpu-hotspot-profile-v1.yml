@@ -1,0 +1,99 @@
+name: CPU hotspot profile v1
+
+on:
+  push:
+    branches:
+      - voice-aware-f0-detector-v1
+    paths:
+      - Tests/CpuHotspotBenchmark.cpp
+      - .github/workflows/cpu-hotspot-profile-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  profile-cpu:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout detector branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Guard promoted Source and frozen renderer
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'PRIMITIVE_DIVISOR_GEOMETRY_V6_6' Source/ModernPitchEngine.cpp
+          grep -q 'AUTHORITATIVE_DIRECT_FAST_PATH_V6' Source/ModernPitchEngine.cpp
+          grep -q 'VOICE_BODY_ADAPTIVE_PATH_AUTHORITY_V6_7' Source/ModernPitchEngine.cpp
+          grep -q 'VOICE_BODY_LIVE_PERMISSION_V6_7_1' Source/ModernPitchEngine.cpp
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev
+
+      - name: Configure Release benchmark build
+        run: cmake -S . -B build-cpu-profile -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Build benchmark through existing clean-engine target
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/SupervisorContinuityTest.cpu.original.cpp
+          cp Tests/CpuHotspotBenchmark.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-cpu-profile --config Release --parallel 2 --target SupervisorContinuityTest
+
+      - name: Run CPU profile three times
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in 1 2 3; do
+            echo "CPU_PROFILE_RUN=$i"
+            ./build-cpu-profile/clean-engine-tests/SupervisorContinuityTest
+          done | tee /tmp/cpu-profile.log
+
+      - name: Summarize profile medians
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, statistics
+          rows=[]
+          for line in Path('/tmp/cpu-profile.log').read_text().splitlines():
+              if line.startswith('CPU_PROFILE '):
+                  d=dict(re.findall(r'(\w+)=([^ ]+)', line))
+                  rows.append(d)
+          if len(rows)!=9:
+              raise SystemExit(f'expected 9 CPU_PROFILE rows, got {len(rows)}')
+          for block in (64,128,256):
+              g=[r for r in rows if int(r['block'])==block]
+              def med(k): return statistics.median(float(r[k]) for r in g)
+              tracker=med('tracker_ms'); engine=med('engine_ms'); live=med('live_ms')
+              print('CPU_PROFILE_MEDIAN',
+                    f'block={block}',
+                    f'tracker_ms={tracker:.3f}',
+                    f'engine_ms={engine:.3f}',
+                    f'live_ms={live:.3f}',
+                    f'tracker_share_of_engine={tracker/max(engine,1e-9):.4f}',
+                    f'tracker_share_of_live={tracker/max(live,1e-9):.4f}',
+                    f'engine_minus_tracker_ms={engine-tracker:.3f}',
+                    f'live_minus_engine_ms={live-engine:.3f}')
+          PY
+
+      - name: Restore historical test file
+        if: always()
+        shell: bash
+        run: |
+          if [ -f /tmp/SupervisorContinuityTest.cpu.original.cpp ]; then
+            cp /tmp/SupervisorContinuityTest.cpu.original.cpp Tests/SupervisorContinuityTest.cpp
+          fi
