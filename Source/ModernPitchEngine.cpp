@@ -3633,6 +3633,7 @@ void ModernPitchEngine::updateCorrectionState(
     // only note-identity authority. This is symmetric for falling and rising
     // tails and is measured in the actual adjacent-degree geometry.
     bool terminalTailIdentityVeto = false;
+    bool terminalTailStableCompensation = false;
     if (state.targetValid
         && state.noteBodyLatched
         && richEvidence
@@ -3659,6 +3660,17 @@ void ModernPitchEngine::updateCorrectionState(
         degradationVotes += parameters.voiceBreathiness > 0.42f ? 1 : 0;
         const bool terminalStructure = parameters.voiceEventStrength < 0.55f
             && degradationVotes >= 2;
+
+        // TERMINAL_TAIL_STABLE_TRANSPORT_REBASE_V1
+        // A weakening same-note tail may keep reporting valid F0 while its
+        // physical source coordinate falls or rises quickly. Stable still owns
+        // the already selected scale degree, so Response must not turn that
+        // transport motion into a temporary audible pitch escape. This flag
+        // grants no target identity authority and does not freeze transport.
+        terminalTailStableCompensation = terminalStructure
+            && sameTailSide
+            && state.trackingState == TrackingState::stable;
+
         const bool outsideStableCore =
             std::abs(signedTailDistanceCents) >= 0.32 * localTailStep;
 
@@ -4020,6 +4032,17 @@ void ModernPitchEngine::updateCorrectionState(
     state.targetLog2 = newTarget;
     state.targetValid = true;
 
+    // Preserve the pre-update transport coordinate only for the stable terminal
+    // tail rebase below. It is not a detector fallback and never reaches the
+    // renderer directly.
+    double preTailTransportSourceLog2 = correctionObservedLog2;
+    if (terminalTailStableCompensation
+        && state.transportPeriodHz > 0.0
+        && std::isfinite(state.transportPeriodHz))
+    {
+        preTailTransportSourceLog2 = safeLog2(state.transportPeriodHz);
+    }
+
     // LOCAL_TRAJECTORY_V1: the audible source coordinate is a persistent
     // local trajectory, not raw F0 and not a slow detector average. Continuous
     // within-note motion (including real vibrato that must be removed at zero
@@ -4211,6 +4234,50 @@ void ModernPitchEngine::updateCorrectionState(
         static_cast<double>(finiteOr(parameters.maximumCorrectionSemitones, 12.0f)),
         0.0, 48.0);
     errorCents = std::clamp(errorCents, -maximumCents, maximumCents);
+
+    if (terminalTailStableCompensation
+        && state.trackingState == TrackingState::stable
+        && !targetIdentityChanged)
+    {
+        // Re-evaluate only the same target-owned law at the previous transport
+        // coordinate. The difference to the new desired value is therefore the
+        // correction delta caused by source transport, not a target/Response
+        // change. Shift current by exactly that delta so the pre-existing
+        // desired-current Response error is preserved rather than snapped.
+        const double priorSourceOffsetCents =
+            (preTailTransportSourceLog2 - state.targetLog2) * 1200.0;
+        const double priorTargetOwnedSourceResidual =
+            residualBudgetCents > 1.0e-9
+            ? residualBudgetCents
+                * std::tanh(priorSourceOffsetCents / residualBudgetCents)
+                * softness
+            : 0.0;
+        const double currentVibratoOffsetCents = std::clamp(
+            requestedVibratoCents,
+            -vibratoBudgetCents,
+            vibratoBudgetCents);
+        const double priorTargetOwnedOffsetCents = std::clamp(
+            priorTargetOwnedSourceResidual + currentVibratoOffsetCents,
+            -residualBudgetCents,
+            residualBudgetCents);
+        const double priorCorrectedLog2 = state.targetLog2
+            + priorTargetOwnedOffsetCents / 1200.0;
+        const double priorDesiredAtCurrentControls = std::clamp(
+            (priorCorrectedLog2 - preTailTransportSourceLog2) * 1200.0,
+            -maximumCents,
+            maximumCents);
+        const double transportCorrectionDelta =
+            errorCents - priorDesiredAtCurrentControls;
+
+        if (std::isfinite(transportCorrectionDelta))
+        {
+            state.currentCents = std::clamp(
+                state.currentCents + transportCorrectionDelta,
+                -maximumCents,
+                maximumCents);
+        }
+    }
+
     state.desiredCents = errorCents;
     state.responseMs = responseTimeMs(parameters, targetChanged, targetJump);
     if (firstOwnedTarget)
