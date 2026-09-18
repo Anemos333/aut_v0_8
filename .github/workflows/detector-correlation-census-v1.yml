@@ -1,0 +1,92 @@
+name: Detector correlation census v1
+
+on:
+  push:
+    branches:
+      - voice-aware-f0-parallel-golden-v1
+    paths:
+      - Tests/ApplyCorrelationCensus.py
+      - .github/workflows/detector-correlation-census-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  census:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout experimental branch
+        uses: actions/checkout@v4
+        with:
+          ref: voice-aware-f0-parallel-golden-v1
+          fetch-depth: 0
+
+      - name: Guard validated tau baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/ModernPitchEngine.cpp)" = "683372bfba27afa6ed99aef3a2f7a82f393af046"
+          grep -q 'TAU_EVIDENCE_MEMOIZATION_V1' Source/ModernPitchEngine.cpp
+          ! grep -q 'CORRELATION_CENSUS_V1' Source/ModernPitchEngine.cpp
+          ! grep -q 'RESIDUAL_LINE_INVARIANT_HOIST_V1' Source/ModernPitchEngine.cpp
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y             libasound2-dev libjack-jackd2-dev ladspa-sdk             libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev             libx11-dev libxcomposite-dev libxcursor-dev libxext-dev             libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev             libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Apply census instrumentation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 Tests/ApplyCorrelationCensus.py
+          grep -q 'CORRELATION_CENSUS_V1' Source/ModernPitchEngine.cpp
+          test "$(git diff --name-only)" = "Source/ModernPitchEngine.cpp"
+
+      - name: Verify detector output remains golden
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/supervisor-original.cpp
+          cp Tests/GoldenDetectorDeterminismTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-detector -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-detector --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-detector/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/detector.log
+          cp /tmp/supervisor-original.cpp Tests/SupervisorContinuityTest.cpp
+          grep -q '^GOLDEN_DETECTOR_TRACE_HASH=58273352d40c5499$' /tmp/detector.log
+
+      - name: Run census on CPU benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/supervisor-before-cpu.cpp
+          cp Tests/CpuHotspotBenchmark.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-census -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-census --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-census/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/census.log
+          cp /tmp/supervisor-before-cpu.cpp Tests/SupervisorContinuityTest.cpp
+          grep '^CORRELATION_CENSUS ' /tmp/census.log | tail -1
+
+      - name: Summarize duplicate rates
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          lines=[x for x in Path('/tmp/census.log').read_text().splitlines()
+                 if x.startswith('CORRELATION_CENSUS ')]
+          if not lines:
+              raise SystemExit('missing census line')
+          d={k:int(v) for k,v in re.findall(r'(\w+)=(\d+)', lines[-1])}
+
+          def pct(dup, req):
+              return 100.0 * d[dup] / max(1, d[req])
+
+          print('CORRELATION_CENSUS_SUMMARY',
+                f"analyses={d['analyses']}",
+                f"residual_lag_duplicate_pct={pct('residual_lag_duplicates','residual_lag_requests'):.2f}",
+                f"source_lag_duplicate_pct={pct('source_lag_duplicates','source_lag_requests'):.2f}",
+                f"line_exact_duplicate_pct={pct('line_exact_duplicates','line_requests'):.2f}")
+          PY
