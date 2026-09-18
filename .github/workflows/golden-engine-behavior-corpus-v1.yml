@@ -1,0 +1,111 @@
+name: Golden engine behavior corpus v1
+
+on:
+  push:
+    branches:
+      - voice-aware-f0-parallel-golden-v1
+    paths:
+      - Source/ModernPitchEngine.cpp
+      - Source/ModernPitchEngine.h
+      - Tests/GoldenEngineBehaviorCorpusTest.cpp
+      - .github/workflows/golden-engine-behavior-corpus-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare-frozen-golden:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout experimental branch
+        uses: actions/checkout@v4
+        with:
+          ref: voice-aware-f0-parallel-golden-v1
+          fetch-depth: 0
+
+      - name: Guard renderer and rejected optimization
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+          ! grep -q 'RESIDUAL_LINE_INVARIANT_HOIST_V1' Source/ModernPitchEngine.cpp
+          ! grep -q 'RESIDUAL_LINE_COHERENCE_CPU_V1' Source/ModernPitchEngine.cpp
+          grep -q 'ANALYSIS_WORKSPACE_REENTRANCY_V1' Source/ModernPitchEngine.cpp
+          grep -q 'VOICE_BODY_LIVE_PERMISSION_V6_7_1' Source/ModernPitchEngine.cpp
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Materialize frozen V6.7.1 golden
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach /tmp/neumaton-golden d261894ad4b63e2346065b95ebb095fc58dc2c14
+          cp Tests/GoldenEngineBehaviorCorpusTest.cpp /tmp/neumaton-golden/Tests/GoldenEngineBehaviorCorpusTest.cpp
+
+      - name: Build frozen golden corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/neumaton-golden
+          cp Tests/SupervisorContinuityTest.cpp /tmp/golden-supervisor-original.cpp
+          cp Tests/GoldenEngineBehaviorCorpusTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-golden-corpus -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-golden-corpus --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-golden-corpus/clean-engine-tests/SupervisorContinuityTest | tee /tmp/golden-engine-corpus.log
+          cp /tmp/golden-supervisor-original.cpp Tests/SupervisorContinuityTest.cpp
+          grep -q '^GOLDEN_ENGINE_BEHAVIOR_CORPUS=PASS scenarios=14$' /tmp/golden-engine-corpus.log
+          grep -q '^GOLDEN_ENGINE_CORPUS_HASH=' /tmp/golden-engine-corpus.log
+
+      - name: Build experimental corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/candidate-supervisor-original.cpp
+          cp Tests/GoldenEngineBehaviorCorpusTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-candidate-corpus -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-candidate-corpus --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-candidate-corpus/clean-engine-tests/SupervisorContinuityTest | tee /tmp/candidate-engine-corpus-1.log
+          cp /tmp/candidate-supervisor-original.cpp Tests/SupervisorContinuityTest.cpp
+          grep -q '^GOLDEN_ENGINE_BEHAVIOR_CORPUS=PASS scenarios=14$' /tmp/candidate-engine-corpus-1.log
+          grep -q '^GOLDEN_ENGINE_CORPUS_HASH=' /tmp/candidate-engine-corpus-1.log
+
+      - name: Require exact scenario-by-scenario equivalence
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep '^GOLDEN_ENGINE_SCENARIO_HASH' /tmp/golden-engine-corpus.log > /tmp/golden-scenarios.log
+          grep '^GOLDEN_ENGINE_SCENARIO_HASH' /tmp/candidate-engine-corpus-1.log > /tmp/candidate-scenarios.log
+          diff -u /tmp/golden-scenarios.log /tmp/candidate-scenarios.log
+
+          golden_hash="$(grep '^GOLDEN_ENGINE_CORPUS_HASH=' /tmp/golden-engine-corpus.log | tail -1)"
+          candidate_hash="$(grep '^GOLDEN_ENGINE_CORPUS_HASH=' /tmp/candidate-engine-corpus-1.log | tail -1)"
+          echo "GOLDEN:    $golden_hash"
+          echo "CANDIDATE: $candidate_hash"
+          test "$golden_hash" = "$candidate_hash"
+          echo 'GOLDEN_ENGINE_EXACT_EQUIVALENCE=PASS'
+
+      - name: Require repeated deterministic end-to-end output
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="$(grep '^GOLDEN_ENGINE_CORPUS_HASH=' /tmp/golden-engine-corpus.log | tail -1)"
+          for run in 2 3; do
+            ./build-candidate-corpus/clean-engine-tests/SupervisorContinuityTest \
+              | tee "/tmp/candidate-engine-corpus-$run.log"
+            actual="$(grep '^GOLDEN_ENGINE_CORPUS_HASH=' "/tmp/candidate-engine-corpus-$run.log" | tail -1)"
+            test "$actual" = "$expected"
+            grep '^GOLDEN_ENGINE_SCENARIO_HASH' "/tmp/candidate-engine-corpus-$run.log" \
+              > "/tmp/candidate-scenarios-$run.log"
+            diff -u /tmp/golden-scenarios.log "/tmp/candidate-scenarios-$run.log"
+          done
+          echo 'GOLDEN_ENGINE_REPEAT_DETERMINISM=PASS'
