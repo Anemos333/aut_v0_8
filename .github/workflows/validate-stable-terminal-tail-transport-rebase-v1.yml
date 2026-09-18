@@ -1,0 +1,224 @@
+name: Validate stable terminal tail transport rebase v1
+
+on:
+  push:
+    branches:
+      - voice-aware-f0-parallel-golden-v1
+    paths:
+      - Tests/TerminalTailStableAuthorityTest.cpp
+      - Tests/ApplyTerminalTailStableTransportRebase.py
+      - .github/workflows/validate-stable-terminal-tail-transport-rebase-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout experiment
+        uses: actions/checkout@v4
+        with:
+          ref: voice-aware-f0-parallel-golden-v1
+          fetch-depth: 0
+
+      - name: Guard validated CPU baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/ModernPitchEngine.cpp)" = "841a689a5691fdea8813c301c2ed5ac08aba76ac"
+          test "$(git hash-object Source/ModernPitchEngine.h)" = "3112845dc8210da85ebe38e01cf3f0387fc59428"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          grep -q 'TAU_EVIDENCE_MEMOIZATION_V1' Source/ModernPitchEngine.cpp
+          grep -q 'RESIDUAL_LINE_EXACT_MEMOIZATION_V1' Source/ModernPitchEngine.cpp
+          ! grep -q 'TERMINAL_TAIL_STABLE_TRANSPORT_REBASE_V1' Source/ModernPitchEngine.cpp
+          ! grep -q 'LAG_CORRELATION_MEMOIZATION_V1' Source/ModernPitchEngine.cpp
+          ! grep -q 'RESIDUAL_LINE_INVARIANT_HOIST_V1' Source/ModernPitchEngine.cpp
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Materialize pre-fix reference
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach /tmp/neumaton-tail-baseline 2394044f341cbd76f434f91011eb822fe6f1364a
+          cp Tests/TerminalTailStableAuthorityTest.cpp /tmp/neumaton-tail-baseline/Tests/TerminalTailStableAuthorityTest.cpp
+          cp Tests/CpuHotspotBenchmark.cpp /tmp/neumaton-tail-baseline/Tests/CpuHotspotBenchmark.cpp
+
+      - name: Prove regression exists on pre-fix baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/neumaton-tail-baseline
+          cp Tests/SupervisorContinuityTest.cpp /tmp/tail-baseline-supervisor.cpp
+          cp Tests/TerminalTailStableAuthorityTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-tail-regression -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-tail-regression --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          set +e
+          ./build-tail-regression/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/tail-baseline.log
+          status=${PIPESTATUS[0]}
+          set -e
+          cp /tmp/tail-baseline-supervisor.cpp Tests/SupervisorContinuityTest.cpp
+          test "$status" -ne 0
+          grep -q 'terminal_tail_stable_current_correction_follows_owned_center=FAIL' /tmp/tail-baseline.log
+          echo 'TERMINAL_TAIL_REGRESSION_REPRODUCED=PASS'
+
+      - name: Apply candidate fix only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 Tests/ApplyTerminalTailStableTransportRebase.py
+          test "$(git diff --name-only)" = "Source/ModernPitchEngine.cpp"
+          grep -q 'TERMINAL_TAIL_STABLE_TRANSPORT_REBASE_V1' Source/ModernPitchEngine.cpp
+          grep -q 'TAU_EVIDENCE_MEMOIZATION_V1' Source/ModernPitchEngine.cpp
+          grep -q 'RESIDUAL_LINE_EXACT_MEMOIZATION_V1' Source/ModernPitchEngine.cpp
+          ! grep -q 'LAG_CORRELATION_MEMOIZATION_V1' Source/ModernPitchEngine.cpp
+          ! grep -q 'RESIDUAL_LINE_INVARIANT_HOIST_V1' Source/ModernPitchEngine.cpp
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+
+      - name: Verify targeted tail regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/tail-candidate-supervisor.cpp
+          cp Tests/TerminalTailStableAuthorityTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-tail-candidate -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-tail-candidate --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-tail-candidate/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/tail-candidate.log
+          cp /tmp/tail-candidate-supervisor.cpp Tests/SupervisorContinuityTest.cpp
+          grep -q '^terminal_tail_stable_current_correction_follows_owned_center=PASS$' /tmp/tail-candidate.log
+          grep -q '^terminal_tail_rising_current_correction_follows_owned_center=PASS$' /tmp/tail-candidate.log
+          grep -q '^TERMINAL_TAIL_STABLE_AUTHORITY=PASS$' /tmp/tail-candidate.log
+          echo 'TERMINAL_TAIL_TARGETED_FIX=PASS'
+
+      - name: Verify detector oracle unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/detector-supervisor.cpp
+          cp Tests/GoldenDetectorDeterminismTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-detector -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-detector --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          for run in 1 2 3; do
+            ./build-detector/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee "/tmp/detector-$run.log"
+            grep -q '^GOLDEN_DETECTOR_TRACE_HASH=58273352d40c5499$' "/tmp/detector-$run.log"
+          done
+          cp /tmp/detector-supervisor.cpp Tests/SupervisorContinuityTest.cpp
+          echo 'TERMINAL_TAIL_DETECTOR_ORACLE=PASS'
+
+      - name: Verify existing authority and renderer contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-contracts -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-contracts --config Release --parallel 2 \
+            --target SupervisorContinuityTest CleanModernPitchEngineTest SingleWetSpectralRendererTest >/dev/null
+          ./build-contracts/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/supervisor.log
+          ./build-contracts/clean-engine-tests/CleanModernPitchEngineTest 2>&1 | tee /tmp/engine.log
+          ./build-contracts/clean-engine-tests/SingleWetSpectralRendererTest 2>&1 | tee /tmp/renderer.log
+          ! grep -q '=FAIL' /tmp/supervisor.log
+          ! grep -q '=FAIL' /tmp/engine.log
+          ! grep -q '=FAIL' /tmp/renderer.log
+          grep -q 'falling_terminal_tail_stays_on_previous_degree_and_remains_corrected=PASS' /tmp/supervisor.log
+          grep -q 'rising_terminal_tail_stays_on_previous_degree_and_remains_corrected=PASS' /tmp/supervisor.log
+          grep -q 'strong_new_note_after_terminal_tail_can_commit_normally=PASS' /tmp/supervisor.log
+          grep -q 'transition_detector_wobble_cannot_move_destination=PASS' /tmp/supervisor.log
+          grep -q 'periodic_reentry_has_no_click=PASS' /tmp/renderer.log
+          echo 'TERMINAL_TAIL_EXISTING_CONTRACTS=PASS'
+
+      - name: Verify end to end repeat determinism
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/corpus-supervisor.cpp
+          cp Tests/GoldenEngineBehaviorCorpusTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-corpus -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-corpus --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          for run in 1 2; do
+            ./build-corpus/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee "/tmp/corpus-$run.log"
+          done
+          grep '^GOLDEN_ENGINE_SCENARIO_HASH' /tmp/corpus-1.log > /tmp/corpus-scenarios-1.log
+          grep '^GOLDEN_ENGINE_SCENARIO_HASH' /tmp/corpus-2.log > /tmp/corpus-scenarios-2.log
+          diff -u /tmp/corpus-scenarios-1.log /tmp/corpus-scenarios-2.log
+          hash1=$(grep '^GOLDEN_ENGINE_CORPUS_HASH=' /tmp/corpus-1.log | tail -1)
+          hash2=$(grep '^GOLDEN_ENGINE_CORPUS_HASH=' /tmp/corpus-2.log | tail -1)
+          test "$hash1" = "$hash2"
+          echo "$hash1"
+          cp /tmp/corpus-supervisor.cpp Tests/SupervisorContinuityTest.cpp
+          echo 'TERMINAL_TAIL_END_TO_END_DETERMINISM=PASS'
+
+      - name: Profile pre-fix CPU
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/neumaton-tail-baseline
+          cp Tests/SupervisorContinuityTest.cpp /tmp/cpu-baseline-supervisor.cpp
+          cp Tests/CpuHotspotBenchmark.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-cpu -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-cpu --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          : > /tmp/tail-cpu-baseline.log
+          for run in 1 2 3; do
+            ./build-cpu/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee -a /tmp/tail-cpu-baseline.log
+          done
+          cp /tmp/cpu-baseline-supervisor.cpp Tests/SupervisorContinuityTest.cpp
+
+      - name: Profile fixed CPU
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/cpu-candidate-supervisor.cpp
+          cp Tests/CpuHotspotBenchmark.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-cpu-candidate -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-cpu-candidate --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          : > /tmp/tail-cpu-candidate.log
+          for run in 1 2 3; do
+            ./build-cpu-candidate/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee -a /tmp/tail-cpu-candidate.log
+          done
+          cp /tmp/cpu-candidate-supervisor.cpp Tests/SupervisorContinuityTest.cpp
+
+      - name: Summarize CPU sanity
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, statistics
+
+          def rows(path):
+              out=[]
+              for line in Path(path).read_text().splitlines():
+                  if line.startswith("CPU_PROFILE "):
+                      out.append(dict(re.findall(r'(\w+)=([^ ]+)', line)))
+              if len(out) != 9:
+                  raise SystemExit(f"{path}: expected 9 CPU rows, got {len(out)}")
+              return out
+
+          b=rows('/tmp/tail-cpu-baseline.log')
+          c=rows('/tmp/tail-cpu-candidate.log')
+          def med(rows, block, key):
+              return statistics.median(float(r[key]) for r in rows if int(r['block']) == block)
+
+          worst=0.0
+          for block in (64,128,256):
+              be=med(b,block,'engine_ms'); ce=med(c,block,'engine_ms')
+              bl=med(b,block,'live_ms'); cl=med(c,block,'live_ms')
+              engine_delta=(ce/max(be,1e-9)-1.0)*100.0
+              live_delta=(cl/max(bl,1e-9)-1.0)*100.0
+              worst=max(worst,engine_delta,live_delta)
+              print('TERMINAL_TAIL_CPU_SANITY',
+                    f'block={block}',
+                    f'engine_delta_pct={engine_delta:.2f}',
+                    f'live_delta_pct={live_delta:.2f}')
+          if worst > 2.0:
+              raise SystemExit(f'CPU regression too large: {worst:.2f}%')
+          print('TERMINAL_TAIL_CPU_SANITY=PASS')
+          PY
+          echo 'TERMINAL_TAIL_FIX_VALIDATION=PASS_NO_PROMOTION'
