@@ -1,0 +1,62 @@
+name: Promote validated lazy Hann memoization v1
+
+on:
+  push:
+    branches:
+      - voice-aware-f0-parallel-golden-v1
+    paths:
+      - .github/workflows/promote-validated-lazy-hann-memoization-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  promote:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout experiment
+        uses: actions/checkout@v4
+        with:
+          ref: voice-aware-f0-parallel-golden-v1
+          fetch-depth: 0
+
+      - name: Guard exact validated baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/ModernPitchEngine.cpp)" = "e94ff49957b5ff82fdad5502d9dbe49358b212bd"
+          test "$(git hash-object Source/ModernPitchEngine.h)" = "3112845dc8210da85ebe38e01cf3f0387fc59428"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+          grep -q 'TAU_EVIDENCE_MEMOIZATION_V1' Source/ModernPitchEngine.cpp
+          grep -q 'RESIDUAL_LINE_EXACT_MEMOIZATION_V1' Source/ModernPitchEngine.cpp
+          grep -q 'TERMINAL_TAIL_STABLE_TRANSPORT_REBASE_V1' Source/ModernPitchEngine.cpp
+          ! grep -q 'RESIDUAL_HANN_LAZY_MEMOIZATION_V1' Source/ModernPitchEngine.cpp
+          ! grep -q 'LAG_CORRELATION_MEMOIZATION_V1' Source/ModernPitchEngine.cpp
+          ! grep -q 'RESIDUAL_LINE_INVARIANT_HOIST_V1' Source/ModernPitchEngine.cpp
+
+      - name: Apply validated lazy Hann memoization
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 Tests/ApplyResidualHannLazyMemoization.py
+          changed="$(git diff --name-only)"
+          test "$changed" = $'Source/ModernPitchEngine.cpp\nSource/ModernPitchEngine.h'
+          grep -q 'RESIDUAL_HANN_LAZY_MEMOIZATION_V1' Source/ModernPitchEngine.cpp
+          grep -q 'RESIDUAL_HANN_LAZY_MEMOIZATION_V1' Source/ModernPitchEngine.h
+          grep -q 'TERMINAL_TAIL_STABLE_TRANSPORT_REBASE_V1' Source/ModernPitchEngine.cpp
+          ! grep -q 'LAG_CORRELATION_MEMOIZATION_V1' Source/ModernPitchEngine.cpp
+          ! grep -q 'RESIDUAL_LINE_INVARIANT_HOIST_V1' Source/ModernPitchEngine.cpp
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+
+      - name: Commit validated source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Source/ModernPitchEngine.cpp Source/ModernPitchEngine.h
+          git commit -m 'Memoize Hann coefficients inside golden residual loop [skip ci]'
+          git push origin HEAD:voice-aware-f0-parallel-golden-v1
