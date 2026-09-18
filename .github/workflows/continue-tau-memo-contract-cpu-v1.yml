@@ -1,0 +1,177 @@
+name: Continue tau memo contracts and CPU v1
+
+on:
+  push:
+    branches:
+      - voice-aware-f0-parallel-golden-v1
+    paths:
+      - .github/workflows/continue-tau-memo-contract-cpu-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contracts-and-profile:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout experimental branch
+        uses: actions/checkout@v4
+        with:
+          ref: voice-aware-f0-parallel-golden-v1
+          fetch-depth: 0
+
+      - name: Guard exact base and renderer
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/ModernPitchEngine.cpp)" = "8ed7d48721fbdd04e2a6b88431ff76bb1c254c12"
+          test "$(git hash-object Source/ModernPitchEngine.h)" = "3112845dc8210da85ebe38e01cf3f0387fc59428"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+          ! grep -q 'RESIDUAL_LINE_INVARIANT_HOIST_V1' Source/ModernPitchEngine.cpp
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Apply already-oracle-validated tau memoization
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 Tests/ApplyTauEvidenceMemoization.py
+          test "$(git diff --name-only)" = "Source/ModernPitchEngine.cpp"
+          grep -q 'TAU_EVIDENCE_MEMOIZATION_V1' Source/ModernPitchEngine.cpp
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+
+      - name: Build authority and renderer tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-contracts -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-contracts --config Release --parallel 2 \
+            --target SupervisorContinuityTest CleanModernPitchEngineTest SingleWetSpectralRendererTest >/dev/null
+
+      - name: Run supervisor authority contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./build-contracts/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/supervisor-contract.log
+          grep -q 'explicit_unvoiced_label_never_mutes_scale_correction=PASS' /tmp/supervisor-contract.log
+          grep -q 'pitchless_tail_never_glides_back_to_source=PASS' /tmp/supervisor-contract.log
+          grep -q 'transition_controller_is_monotonic_without_ratio_bounce=PASS' /tmp/supervisor-contract.log
+          grep -q 'transition_detector_wobble_cannot_move_destination=PASS' /tmp/supervisor-contract.log
+          grep -q 'visible_vibrato_zero_removes_hidden_nonlock_preserve=PASS' /tmp/supervisor-contract.log
+          grep -q 'zero_vibrato_lock_tracks_continuous_source_without_target_chatter=PASS' /tmp/supervisor-contract.log
+          grep -q 'scale_lock_never_changes_correction_depth=PASS' /tmp/supervisor-contract.log
+          grep -q 'tremolo_presence_blink_cannot_create_dry_like_escape=PASS' /tmp/supervisor-contract.log
+          grep -q 'amount_softens_inside_target_cell_never_restores_dry_authority=PASS' /tmp/supervisor-contract.log
+          echo 'SUPERVISOR_AUTHORITY_CONTRACT=PASS'
+
+      - name: Run visible control engine contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./build-contracts/clean-engine-tests/CleanModernPitchEngineTest 2>&1 | tee /tmp/clean-engine-contract.log
+          grep -q 'amount_zero_never_grants_unity_off_target=PASS' /tmp/clean-engine-contract.log
+          grep -q 'amount_changes_scale_owned_tolerance=PASS' /tmp/clean-engine-contract.log
+          grep -q 'humanize_changes_correction_window=PASS' /tmp/clean-engine-contract.log
+          grep -q 'speed_never_creates_unity_during_owned_transition=PASS' /tmp/clean-engine-contract.log
+          grep -q 'hold_never_returns_owned_note_to_dry=PASS' /tmp/clean-engine-contract.log
+          grep -q 'vibrato_preserve_changes_locked_trajectory=PASS' /tmp/clean-engine-contract.log
+          echo 'VISIBLE_CONTROL_AUTHORITY_CONTRACT=PASS'
+
+      - name: Run single wet continuity and click contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./build-contracts/clean-engine-tests/SingleWetSpectralRendererTest 2>&1 | tee /tmp/wet-renderer-contract.log
+          grep -q 'periodic_reentry_respects_commanded_lock_ratio=PASS' /tmp/wet-renderer-contract.log
+          grep -q 'periodic_reentry_has_no_source_or_dry_copy=PASS' /tmp/wet-renderer-contract.log
+          grep -q 'periodic_reentry_has_no_click=PASS' /tmp/wet-renderer-contract.log
+          grep -q 'periodic_reentry_has_no_interruption_when_signal_exists=PASS' /tmp/wet-renderer-contract.log
+          grep -q 'pure_noise_reentry_has_no_energy_burst_or_hole=PASS' /tmp/wet-renderer-contract.log
+          grep -q 'filtered_noise_reentry_has_no_energy_burst_or_hole=PASS' /tmp/wet-renderer-contract.log
+          echo 'SINGLE_WET_CONTINUITY_CONTRACT=PASS'
+
+      - name: Materialize frozen V6.7.1 CPU reference
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach /tmp/neumaton-golden-cpu d261894ad4b63e2346065b95ebb095fc58dc2c14
+          cp Tests/CpuHotspotBenchmark.cpp /tmp/neumaton-golden-cpu/Tests/CpuHotspotBenchmark.cpp
+
+      - name: Profile frozen golden
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/neumaton-golden-cpu
+          cp Tests/SupervisorContinuityTest.cpp /tmp/golden-cpu-supervisor.cpp
+          cp Tests/CpuHotspotBenchmark.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-cpu -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-cpu --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          : > /tmp/golden-cpu.log
+          for run in 1 2 3; do
+            ./build-cpu/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee -a /tmp/golden-cpu.log
+          done
+          cp /tmp/golden-cpu-supervisor.cpp Tests/SupervisorContinuityTest.cpp
+
+      - name: Profile tau memo candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/candidate-cpu-supervisor.cpp
+          cp Tests/CpuHotspotBenchmark.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-candidate-cpu -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-candidate-cpu --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          : > /tmp/candidate-cpu.log
+          for run in 1 2 3; do
+            ./build-candidate-cpu/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee -a /tmp/candidate-cpu.log
+          done
+          cp /tmp/candidate-cpu-supervisor.cpp Tests/SupervisorContinuityTest.cpp
+
+      - name: Summarize CPU medians
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, statistics
+
+          def rows(path):
+              out=[]
+              for line in Path(path).read_text().splitlines():
+                  if line.startswith("CPU_PROFILE "):
+                      out.append(dict(re.findall(r'(\w+)=([^ ]+)', line)))
+              if len(out) != 9:
+                  raise SystemExit(f"{path}: expected 9 CPU rows, got {len(out)}")
+              return out
+
+          g=rows("/tmp/golden-cpu.log")
+          c=rows("/tmp/candidate-cpu.log")
+
+          def med(rows, block, key):
+              return statistics.median(float(r[key]) for r in rows if int(r["block"]) == block)
+
+          for block in (64,128,256):
+              gt=med(g,block,"tracker_ms"); ct=med(c,block,"tracker_ms")
+              ge=med(g,block,"engine_ms"); ce=med(c,block,"engine_ms")
+              gl=med(g,block,"live_ms"); cl=med(c,block,"live_ms")
+              print("TAU_MEMO_CPU_MEDIAN",
+                    f"block={block}",
+                    f"golden_tracker_ms={gt:.3f}",
+                    f"candidate_tracker_ms={ct:.3f}",
+                    f"tracker_reduction_pct={(1-ct/max(gt,1e-9))*100:.2f}",
+                    f"golden_engine_ms={ge:.3f}",
+                    f"candidate_engine_ms={ce:.3f}",
+                    f"engine_reduction_pct={(1-ce/max(ge,1e-9))*100:.2f}",
+                    f"golden_live_ms={gl:.3f}",
+                    f"candidate_live_ms={cl:.3f}",
+                    f"live_reduction_pct={(1-cl/max(gl,1e-9))*100:.2f}")
+          PY
+          echo 'TAU_MEMO_CONTRACTS_AND_CPU=PASS_NO_PROMOTION'
