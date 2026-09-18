@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <limits>
 
@@ -522,6 +523,14 @@ ModernPitchEngine::MultiRatePitchTracker::analyse(
     // inverse filtering. Broadband breath/background produces comparable energy
     // between those lines. The half-harmonic subtraction also suppresses the
     // common 2F0 alias without requiring detector history to own the register.
+    //
+    // RESIDUAL_LINE_EXACT_MEMOIZATION_V1
+    // Cache only an exactly identical IEEE-754 argument bit pattern within this
+    // analyse() call. The first request executes the golden loop unchanged.
+    std::array<std::uint64_t, 96> residualLineCacheKeys {};
+    std::array<float, 96> residualLineCacheValues {};
+    std::size_t residualLineCacheCount = 0;
+
     const auto residualLineCoherence = [&](double cyclesPerSample) noexcept
     {
         if (!std::isfinite(cyclesPerSample)
@@ -529,6 +538,18 @@ ModernPitchEngine::MultiRatePitchTracker::analyse(
         {
             return 0.0f;
         }
+
+        std::uint64_t cacheKey = 0;
+        static_assert(sizeof(cacheKey) == sizeof(cyclesPerSample));
+        std::memcpy(&cacheKey, &cyclesPerSample, sizeof(cacheKey));
+        for (std::size_t cacheIndex = 0;
+             cacheIndex < residualLineCacheCount;
+             ++cacheIndex)
+        {
+            if (residualLineCacheKeys[cacheIndex] == cacheKey)
+                return residualLineCacheValues[cacheIndex];
+        }
+
         double real = 0.0;
         double imag = 0.0;
         double signalEnergy = 0.0;
@@ -547,8 +568,16 @@ ModernPitchEngine::MultiRatePitchTracker::analyse(
             windowEnergy += window * window;
         }
         const double normaliser = std::max(1.0e-20, signalEnergy * windowEnergy);
-        return clamp01(static_cast<float>(std::sqrt(
+        const float value = clamp01(static_cast<float>(std::sqrt(
             2.0 * (real * real + imag * imag) / normaliser)));
+
+        if (residualLineCacheCount < residualLineCacheKeys.size())
+        {
+            residualLineCacheKeys[residualLineCacheCount] = cacheKey;
+            residualLineCacheValues[residualLineCacheCount] = value;
+            ++residualLineCacheCount;
+        }
+        return value;
     };
 
     const auto residualHarmonicContrast = [&](int tau) noexcept
