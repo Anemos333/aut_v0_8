@@ -1,0 +1,56 @@
+name: Promote validated tau memoization v1
+
+on:
+  push:
+    branches:
+      - voice-aware-f0-parallel-golden-v1
+    paths:
+      - .github/workflows/promote-validated-tau-memoization-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  promote:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout experimental branch
+        uses: actions/checkout@v4
+        with:
+          ref: voice-aware-f0-parallel-golden-v1
+          fetch-depth: 0
+
+      - name: Guard exact validated base
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/ModernPitchEngine.cpp)" = "8ed7d48721fbdd04e2a6b88431ff76bb1c254c12"
+          test "$(git hash-object Source/ModernPitchEngine.h)" = "3112845dc8210da85ebe38e01cf3f0387fc59428"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+          ! grep -q 'TAU_EVIDENCE_MEMOIZATION_V1' Source/ModernPitchEngine.cpp
+          ! grep -q 'RESIDUAL_LINE_INVARIANT_HOIST_V1' Source/ModernPitchEngine.cpp
+
+      - name: Apply validated tau memoization
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 Tests/ApplyTauEvidenceMemoization.py
+          test "$(git diff --name-only)" = "Source/ModernPitchEngine.cpp"
+          grep -q 'TAU_EVIDENCE_MEMOIZATION_V1' Source/ModernPitchEngine.cpp
+          ! grep -q 'RESIDUAL_LINE_INVARIANT_HOIST_V1' Source/ModernPitchEngine.cpp
+          ! grep -q 'RESIDUAL_LINE_COHERENCE_CPU_V1' Source/ModernPitchEngine.cpp
+          test "$(git hash-object Source/ModernPitchEngine.h)" = "3112845dc8210da85ebe38e01cf3f0387fc59428"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+
+      - name: Commit validated source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Source/ModernPitchEngine.cpp
+          git commit -m 'Memoize duplicate tau evidence with golden-equivalent output [skip ci]'
+          git push origin HEAD:voice-aware-f0-parallel-golden-v1
