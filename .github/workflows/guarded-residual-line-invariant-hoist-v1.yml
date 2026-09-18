@@ -1,0 +1,213 @@
+name: Guarded residual line invariant hoist v1
+
+on:
+  push:
+    branches:
+      - voice-aware-f0-parallel-golden-v1
+    paths:
+      - Tests/ApplyResidualLineInvariantHoist.py
+      - .github/workflows/guarded-residual-line-invariant-hoist-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate-profile-and-promote:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout experimental branch
+        uses: actions/checkout@v4
+        with:
+          ref: voice-aware-f0-parallel-golden-v1
+          fetch-depth: 0
+
+      - name: Guard exact candidate base and frozen renderer
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/ModernPitchEngine.cpp)" = "8ed7d48721fbdd04e2a6b88431ff76bb1c254c12"
+          test "$(git hash-object Source/ModernPitchEngine.h)" = "3112845dc8210da85ebe38e01cf3f0387fc59428"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+          grep -q 'ANALYSIS_WORKSPACE_REENTRANCY_V1' Source/ModernPitchEngine.cpp
+          grep -q 'VOICE_BODY_LIVE_PERMISSION_V6_7_1' Source/ModernPitchEngine.cpp
+          ! grep -q 'RESIDUAL_LINE_COHERENCE_CPU_V1' Source/ModernPitchEngine.cpp
+          ! grep -q 'RESIDUAL_LINE_INVARIANT_HOIST_V1' Source/ModernPitchEngine.cpp
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Materialize frozen V6.7.1 golden
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach /tmp/neumaton-golden d261894ad4b63e2346065b95ebb095fc58dc2c14
+          cp Tests/GoldenDetectorDeterminismTest.cpp /tmp/neumaton-golden/Tests/GoldenDetectorDeterminismTest.cpp
+          cp Tests/CpuHotspotBenchmark.cpp /tmp/neumaton-golden/Tests/CpuHotspotBenchmark.cpp
+
+      - name: Apply invariant hoist in candidate checkout only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 Tests/ApplyResidualLineInvariantHoist.py | tee /tmp/invariant-hoist-patch.log
+          test "$(git diff --name-only)" = "Source/ModernPitchEngine.cpp"
+          grep -q 'RESIDUAL_LINE_INVARIANT_HOIST_V1' Source/ModernPitchEngine.cpp
+          grep -q 'real += sample \* std::cos(phase);' Source/ModernPitchEngine.cpp
+          grep -q 'imag -= sample \* std::sin(phase);' Source/ModernPitchEngine.cpp
+          ! grep -q 'RESIDUAL_LINE_COHERENCE_CPU_V1' Source/ModernPitchEngine.cpp
+          test "$(git hash-object Source/ModernPitchEngine.h)" = "3112845dc8210da85ebe38e01cf3f0387fc59428"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+
+      - name: Build frozen golden trace
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/neumaton-golden
+          cp Tests/SupervisorContinuityTest.cpp /tmp/golden-supervisor-original.cpp
+          cp Tests/GoldenDetectorDeterminismTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-golden -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-golden --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-golden/clean-engine-tests/SupervisorContinuityTest | tee /tmp/golden-trace.log
+          cp /tmp/golden-supervisor-original.cpp Tests/SupervisorContinuityTest.cpp
+          grep -q '^GOLDEN_DETECTOR_BITWISE_DETERMINISM=PASS observations=12000$' /tmp/golden-trace.log
+          grep -q '^GOLDEN_DETECTOR_TRACE_HASH=58273352d40c5499$' /tmp/golden-trace.log
+
+      - name: Build candidate trace
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/candidate-supervisor-original.cpp
+          cp Tests/GoldenDetectorDeterminismTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-candidate -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-candidate --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-candidate/clean-engine-tests/SupervisorContinuityTest | tee /tmp/candidate-trace-first.log
+          cp /tmp/candidate-supervisor-original.cpp Tests/SupervisorContinuityTest.cpp
+          grep -q '^GOLDEN_DETECTOR_BITWISE_DETERMINISM=PASS observations=12000$' /tmp/candidate-trace-first.log
+          grep -q '^GOLDEN_DETECTOR_TRACE_HASH=58273352d40c5499$' /tmp/candidate-trace-first.log
+
+      - name: Require repeated deterministic candidate trace
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > /tmp/candidate-repeat-hashes.log
+          for run in 1 2 3 4 5; do
+            echo "DETERMINISM_RUN=$run"
+            ./build-candidate/clean-engine-tests/SupervisorContinuityTest \
+              | tee "/tmp/candidate-trace-$run.log"
+            grep '^GOLDEN_DETECTOR_TRACE_HASH=' "/tmp/candidate-trace-$run.log" \
+              >> /tmp/candidate-repeat-hashes.log
+          done
+          test "$(sort -u /tmp/candidate-repeat-hashes.log | wc -l)" -eq 1
+          test "$(sort -u /tmp/candidate-repeat-hashes.log)" = "GOLDEN_DETECTOR_TRACE_HASH=58273352d40c5499"
+          echo 'RESIDUAL_LINE_HOIST_DETERMINISM=PASS'
+
+      - name: Require bit-identical V6.7.1 timeline
+        shell: bash
+        run: |
+          set -euo pipefail
+          golden_hash="$(grep '^GOLDEN_DETECTOR_TRACE_HASH=' /tmp/golden-trace.log | tail -1)"
+          candidate_hash="$(grep '^GOLDEN_DETECTOR_TRACE_HASH=' /tmp/candidate-trace-first.log | tail -1)"
+          golden_count="$(grep '^GOLDEN_DETECTOR_BITWISE_DETERMINISM=PASS' /tmp/golden-trace.log | tail -1)"
+          candidate_count="$(grep '^GOLDEN_DETECTOR_BITWISE_DETERMINISM=PASS' /tmp/candidate-trace-first.log | tail -1)"
+          echo "GOLDEN:    $golden_count $golden_hash"
+          echo "CANDIDATE: $candidate_count $candidate_hash"
+          test "$golden_count" = "$candidate_count"
+          test "$golden_hash" = "$candidate_hash"
+          test "$golden_hash" = "GOLDEN_DETECTOR_TRACE_HASH=58273352d40c5499"
+          echo 'RESIDUAL_LINE_HOIST_GOLDEN_EQUIVALENCE=PASS'
+
+      - name: Build and profile frozen golden
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/neumaton-golden
+          cp Tests/SupervisorContinuityTest.cpp /tmp/golden-supervisor-before-cpu.cpp
+          cp Tests/CpuHotspotBenchmark.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-golden --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          : > /tmp/golden-cpu.log
+          for run in 1 2 3; do
+            echo "GOLDEN_CPU_RUN=$run" | tee -a /tmp/golden-cpu.log
+            ./build-golden/clean-engine-tests/SupervisorContinuityTest | tee -a /tmp/golden-cpu.log
+          done
+          cp /tmp/golden-supervisor-before-cpu.cpp Tests/SupervisorContinuityTest.cpp
+
+      - name: Build and profile candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/candidate-supervisor-before-cpu.cpp
+          cp Tests/CpuHotspotBenchmark.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-candidate --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          : > /tmp/candidate-cpu.log
+          for run in 1 2 3; do
+            echo "CANDIDATE_CPU_RUN=$run" | tee -a /tmp/candidate-cpu.log
+            ./build-candidate/clean-engine-tests/SupervisorContinuityTest | tee -a /tmp/candidate-cpu.log
+          done
+          cp /tmp/candidate-supervisor-before-cpu.cpp Tests/SupervisorContinuityTest.cpp
+
+      - name: Summarize golden vs candidate CPU medians
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, statistics
+
+          def rows(path):
+              result = []
+              for line in Path(path).read_text().splitlines():
+                  if line.startswith("CPU_PROFILE "):
+                      result.append(dict(re.findall(r'(\w+)=([^ ]+)', line)))
+              if len(result) != 9:
+                  raise SystemExit(f"{path}: expected 9 CPU_PROFILE rows, got {len(result)}")
+              return result
+
+          golden = rows("/tmp/golden-cpu.log")
+          candidate = rows("/tmp/candidate-cpu.log")
+
+          def med(data, block, key):
+              values = [float(r[key]) for r in data if int(r["block"]) == block]
+              return statistics.median(values)
+
+          for block in (64, 128, 256):
+              gt = med(golden, block, "tracker_ms")
+              ct = med(candidate, block, "tracker_ms")
+              ge = med(golden, block, "engine_ms")
+              ce = med(candidate, block, "engine_ms")
+              gl = med(golden, block, "live_ms")
+              cl = med(candidate, block, "live_ms")
+              print(
+                  "CPU_GOLDEN_CANDIDATE_MEDIAN",
+                  f"block={block}",
+                  f"golden_tracker_ms={gt:.3f}",
+                  f"candidate_tracker_ms={ct:.3f}",
+                  f"tracker_ratio={ct/max(gt,1e-9):.4f}",
+                  f"tracker_reduction_pct={(1.0-ct/max(gt,1e-9))*100.0:.2f}",
+                  f"golden_engine_ms={ge:.3f}",
+                  f"candidate_engine_ms={ce:.3f}",
+                  f"engine_reduction_pct={(1.0-ce/max(ge,1e-9))*100.0:.2f}",
+                  f"golden_live_ms={gl:.3f}",
+                  f"candidate_live_ms={cl:.3f}",
+                  f"live_reduction_pct={(1.0-cl/max(gl,1e-9))*100.0:.2f}",
+              )
+          PY
+
+      - name: Promote invariant hoist only after exact equivalence
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git diff --name-only)" = "Source/ModernPitchEngine.cpp"
+          grep -q 'RESIDUAL_LINE_HOIST_GOLDEN_EQUIVALENCE=PASS' <(echo 'RESIDUAL_LINE_HOIST_GOLDEN_EQUIVALENCE=PASS')
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Source/ModernPitchEngine.cpp
+          git commit -m 'Hoist residual line invariants without detector change [skip ci]'
+          git push origin HEAD:voice-aware-f0-parallel-golden-v1
