@@ -1,0 +1,256 @@
+name: Validate tau evidence memoization v1
+
+on:
+  push:
+    branches:
+      - voice-aware-f0-parallel-golden-v1
+    paths:
+      - Tests/ApplyTauEvidenceMemoization.py
+      - .github/workflows/validate-tau-evidence-memoization-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout experimental branch
+        uses: actions/checkout@v4
+        with:
+          ref: voice-aware-f0-parallel-golden-v1
+          fetch-depth: 0
+
+      - name: Guard exact source base and authority contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/ModernPitchEngine.cpp)" = "8ed7d48721fbdd04e2a6b88431ff76bb1c254c12"
+          test "$(git hash-object Source/ModernPitchEngine.h)" = "3112845dc8210da85ebe38e01cf3f0387fc59428"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+          grep -q 'NO_AUDIO_DROPOUT_ON_UNCERTAINTY_V1' Source/ModernPitchEngine.cpp
+          grep -q 'TRANSITION_DESTINATION_FROZEN_V2' Source/ModernPitchEngine.cpp
+          grep -q 'SCALE_CELL_OWNS_SOFTNESS_V1' Source/ModernPitchEngine.cpp
+          grep -q 'SINGLE_VISIBLE_VIBRATO_AUTHORITY_V1' Source/ModernPitchEngine.cpp
+          grep -q 'SOURCE_COORDINATE_REBASE_V1' Source/ModernPitchEngine.cpp
+          grep -q 'NO_UNITY_ESCAPE_V1' Source/ModernPitchEngine.cpp
+          grep -q 'PURE_SINGLE_TRANSPORT_V4' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'ACTIVE_PATH_NEVER_DRY_FALLBACK_V1' Source/SingleWetSpectralRenderer.cpp
+          ! grep -q 'RESIDUAL_LINE_INVARIANT_HOIST_V1' Source/ModernPitchEngine.cpp
+          ! grep -q 'RESIDUAL_LINE_COHERENCE_CPU_V1' Source/ModernPitchEngine.cpp
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Materialize frozen V6.7.1 golden
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach /tmp/neumaton-golden d261894ad4b63e2346065b95ebb095fc58dc2c14
+          cp Tests/GoldenDetectorDeterminismTest.cpp /tmp/neumaton-golden/Tests/GoldenDetectorDeterminismTest.cpp
+          cp Tests/GoldenEngineBehaviorCorpusTest.cpp /tmp/neumaton-golden/Tests/GoldenEngineBehaviorCorpusTest.cpp
+          cp Tests/CpuHotspotBenchmark.cpp /tmp/neumaton-golden/Tests/CpuHotspotBenchmark.cpp
+
+      - name: Apply tau memoization to candidate only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 Tests/ApplyTauEvidenceMemoization.py | tee /tmp/tau-patch.log
+          test "$(git diff --name-only)" = "Source/ModernPitchEngine.cpp"
+          grep -q 'TAU_EVIDENCE_MEMOIZATION_V1' Source/ModernPitchEngine.cpp
+          ! grep -q 'RESIDUAL_LINE_INVARIANT_HOIST_V1' Source/ModernPitchEngine.cpp
+          test "$(git hash-object Source/ModernPitchEngine.h)" = "3112845dc8210da85ebe38e01cf3f0387fc59428"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+
+      - name: Build frozen golden detector oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/neumaton-golden
+          cp Tests/SupervisorContinuityTest.cpp /tmp/golden-supervisor-original.cpp
+          cp Tests/GoldenDetectorDeterminismTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-detector -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-detector --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-detector/clean-engine-tests/SupervisorContinuityTest | tee /tmp/golden-detector.log
+          cp /tmp/golden-supervisor-original.cpp Tests/SupervisorContinuityTest.cpp
+          grep -q '^GOLDEN_DETECTOR_BITWISE_DETERMINISM=PASS observations=12000$' /tmp/golden-detector.log
+          grep -q '^GOLDEN_DETECTOR_TRACE_HASH=58273352d40c5499$' /tmp/golden-detector.log
+
+      - name: Build candidate detector oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/candidate-supervisor-original.cpp
+          cp Tests/GoldenDetectorDeterminismTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-candidate-detector -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-candidate-detector --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-candidate-detector/clean-engine-tests/SupervisorContinuityTest | tee /tmp/candidate-detector-1.log
+          cp /tmp/candidate-supervisor-original.cpp Tests/SupervisorContinuityTest.cpp
+          grep -q '^GOLDEN_DETECTOR_BITWISE_DETERMINISM=PASS observations=12000$' /tmp/candidate-detector-1.log
+          grep -q '^GOLDEN_DETECTOR_TRACE_HASH=58273352d40c5499$' /tmp/candidate-detector-1.log
+          for run in 2 3 4 5; do
+            ./build-candidate-detector/clean-engine-tests/SupervisorContinuityTest \
+              | tee "/tmp/candidate-detector-$run.log"
+            grep -q '^GOLDEN_DETECTOR_TRACE_HASH=58273352d40c5499$' "/tmp/candidate-detector-$run.log"
+          done
+          echo 'TAU_MEMO_DETECTOR_EXACT_AND_DETERMINISTIC=PASS'
+
+      - name: Build frozen golden end to end corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/neumaton-golden
+          cp Tests/SupervisorContinuityTest.cpp /tmp/golden-supervisor-before-corpus.cpp
+          cp Tests/GoldenEngineBehaviorCorpusTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-corpus -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-corpus --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-corpus/clean-engine-tests/SupervisorContinuityTest | tee /tmp/golden-corpus.log
+          cp /tmp/golden-supervisor-before-corpus.cpp Tests/SupervisorContinuityTest.cpp
+          grep -q '^GOLDEN_ENGINE_CORPUS_HASH=022ae649ee590533$' /tmp/golden-corpus.log
+
+      - name: Build candidate end to end corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/candidate-supervisor-before-corpus.cpp
+          cp Tests/GoldenEngineBehaviorCorpusTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-candidate-corpus -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-candidate-corpus --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-candidate-corpus/clean-engine-tests/SupervisorContinuityTest | tee /tmp/candidate-corpus-1.log
+          cp /tmp/candidate-supervisor-before-corpus.cpp Tests/SupervisorContinuityTest.cpp
+          grep -q '^GOLDEN_ENGINE_CORPUS_HASH=022ae649ee590533$' /tmp/candidate-corpus-1.log
+          grep '^GOLDEN_ENGINE_SCENARIO_HASH' /tmp/golden-corpus.log > /tmp/golden-scenarios.log
+          grep '^GOLDEN_ENGINE_SCENARIO_HASH' /tmp/candidate-corpus-1.log > /tmp/candidate-scenarios.log
+          diff -u /tmp/golden-scenarios.log /tmp/candidate-scenarios.log
+          ./build-candidate-corpus/clean-engine-tests/SupervisorContinuityTest | tee /tmp/candidate-corpus-2.log
+          grep -q '^GOLDEN_ENGINE_CORPUS_HASH=022ae649ee590533$' /tmp/candidate-corpus-2.log
+          grep '^GOLDEN_ENGINE_SCENARIO_HASH' /tmp/candidate-corpus-2.log > /tmp/candidate-scenarios-2.log
+          diff -u /tmp/golden-scenarios.log /tmp/candidate-scenarios-2.log
+          echo 'TAU_MEMO_END_TO_END_EXACT_AND_DETERMINISTIC=PASS'
+
+      - name: Build authority and renderer contract tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-contracts -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-contracts --config Release --parallel 2 \
+            --target SupervisorContinuityTest CleanModernPitchEngineTest SingleWetSpectralRendererTest >/dev/null
+
+      - name: Run supervisor authority contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./build-contracts/clean-engine-tests/SupervisorContinuityTest | tee /tmp/supervisor-contract.log
+          grep -q 'explicit_unvoiced_label_never_mutes_scale_correction=PASS' /tmp/supervisor-contract.log
+          grep -q 'pitchless_tail_never_glides_back_to_source=PASS' /tmp/supervisor-contract.log
+          grep -q 'transition_hard_bound_finishes_without_controller_momentum=PASS' /tmp/supervisor-contract.log
+          grep -q 'visible_vibrato_zero_removes_hidden_nonlock_preserve=PASS' /tmp/supervisor-contract.log
+          grep -q 'hold_zero_has_no_hidden_unlocked_hysteresis=PASS' /tmp/supervisor-contract.log
+          echo 'SUPERVISOR_AUTHORITY_CONTRACT=PASS'
+
+      - name: Run engine visible control contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./build-contracts/clean-engine-tests/CleanModernPitchEngineTest | tee /tmp/clean-engine-contract.log
+          grep -q 'amount_zero_never_grants_unity_off_target=PASS' /tmp/clean-engine-contract.log
+          grep -q 'amount_changes_scale_owned_tolerance=PASS' /tmp/clean-engine-contract.log
+          grep -q 'humanize_changes_correction_window=PASS' /tmp/clean-engine-contract.log
+          grep -q 'speed_never_creates_unity_during_owned_transition=PASS' /tmp/clean-engine-contract.log
+          grep -q 'hold_never_returns_owned_note_to_dry=PASS' /tmp/clean-engine-contract.log
+          grep -q 'vibrato_preserve_changes_locked_trajectory=PASS' /tmp/clean-engine-contract.log
+          echo 'VISIBLE_CONTROL_AUTHORITY_CONTRACT=PASS'
+
+      - name: Run wet renderer continuity contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./build-contracts/clean-engine-tests/SingleWetSpectralRendererTest | tee /tmp/wet-renderer-contract.log
+          grep -q 'periodic_reentry_respects_commanded_lock_ratio=PASS' /tmp/wet-renderer-contract.log
+          grep -q 'periodic_reentry_has_no_source_or_dry_copy=PASS' /tmp/wet-renderer-contract.log
+          grep -q 'periodic_reentry_has_no_click=PASS' /tmp/wet-renderer-contract.log
+          grep -q 'periodic_reentry_has_no_interruption_when_signal_exists=PASS' /tmp/wet-renderer-contract.log
+          grep -q 'pure_noise_reentry_has_no_energy_burst_or_hole=PASS' /tmp/wet-renderer-contract.log
+          grep -q 'filtered_noise_reentry_has_no_energy_burst_or_hole=PASS' /tmp/wet-renderer-contract.log
+          echo 'SINGLE_WET_CONTINUITY_CONTRACT=PASS'
+
+      - name: Build frozen golden CPU profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/neumaton-golden
+          cp Tests/SupervisorContinuityTest.cpp /tmp/golden-supervisor-before-cpu.cpp
+          cp Tests/CpuHotspotBenchmark.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-cpu -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-cpu --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          : > /tmp/golden-cpu.log
+          for run in 1 2 3; do
+            ./build-cpu/clean-engine-tests/SupervisorContinuityTest | tee -a /tmp/golden-cpu.log
+          done
+          cp /tmp/golden-supervisor-before-cpu.cpp Tests/SupervisorContinuityTest.cpp
+
+      - name: Build candidate CPU profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/candidate-supervisor-before-cpu.cpp
+          cp Tests/CpuHotspotBenchmark.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-candidate-cpu -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-candidate-cpu --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          : > /tmp/candidate-cpu.log
+          for run in 1 2 3; do
+            ./build-candidate-cpu/clean-engine-tests/SupervisorContinuityTest | tee -a /tmp/candidate-cpu.log
+          done
+          cp /tmp/candidate-supervisor-before-cpu.cpp Tests/SupervisorContinuityTest.cpp
+
+      - name: Summarize CPU medians
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, statistics
+
+          def rows(path):
+              out=[]
+              for line in Path(path).read_text().splitlines():
+                  if line.startswith("CPU_PROFILE "):
+                      out.append(dict(re.findall(r'(\w+)=([^ ]+)', line)))
+              if len(out) != 9:
+                  raise SystemExit(f"{path}: expected 9 CPU rows, got {len(out)}")
+              return out
+
+          g=rows("/tmp/golden-cpu.log")
+          c=rows("/tmp/candidate-cpu.log")
+          def med(rows, block, key):
+              return statistics.median(float(r[key]) for r in rows if int(r["block"]) == block)
+
+          for block in (64,128,256):
+              gt=med(g,block,"tracker_ms"); ct=med(c,block,"tracker_ms")
+              ge=med(g,block,"engine_ms"); ce=med(c,block,"engine_ms")
+              gl=med(g,block,"live_ms"); cl=med(c,block,"live_ms")
+              print("TAU_MEMO_CPU_MEDIAN",
+                    f"block={block}",
+                    f"golden_tracker_ms={gt:.3f}",
+                    f"candidate_tracker_ms={ct:.3f}",
+                    f"tracker_reduction_pct={(1-ct/max(gt,1e-9))*100:.2f}",
+                    f"golden_engine_ms={ge:.3f}",
+                    f"candidate_engine_ms={ce:.3f}",
+                    f"engine_reduction_pct={(1-ce/max(ge,1e-9))*100:.2f}",
+                    f"golden_live_ms={gl:.3f}",
+                    f"candidate_live_ms={cl:.3f}",
+                    f"live_reduction_pct={(1-cl/max(gl,1e-9))*100:.2f}")
+          PY
+
+      - name: Final validation marker
+        run: |
+          echo 'TAU_MEMOIZATION_VALIDATION=PASS_NO_PROMOTION'
