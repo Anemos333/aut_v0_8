@@ -315,6 +315,7 @@ ModernPitchEngine::MultiRatePitchTracker::analyse(
     auto& frame_ = workspace.frame;
     auto& voiceResidualFrame_ = workspace.voiceResidualFrame;
     auto& difference_ = workspace.difference;
+    auto& residualHannWindow_ = workspace.residualHannWindow;
 
     PitchCandidate result;
     analysisLength = std::clamp(analysisLength, 64, maxAnalysisSize);
@@ -531,6 +532,13 @@ ModernPitchEngine::MultiRatePitchTracker::analyse(
     std::array<float, 96> residualLineCacheValues {};
     std::size_t residualLineCacheCount = 0;
 
+    // RESIDUAL_HANN_LAZY_MEMOIZATION_V1
+    // False at the beginning of every analyse() call. The first unique spectral
+    // line computes each Hann coefficient at the exact point where the golden
+    // loop computed it and stores the resulting double. No sample/window-energy
+    // accumulation is moved or precomputed.
+    bool residualHannReady = false;
+
     const auto residualLineCoherence = [&](double cyclesPerSample) noexcept
     {
         if (!std::isfinite(cyclesPerSample)
@@ -557,8 +565,18 @@ ModernPitchEngine::MultiRatePitchTracker::analyse(
         const double denominatorN = static_cast<double>(std::max(1, analysisLength - 1));
         for (int index = 0; index < analysisLength; ++index)
         {
-            const double window = 0.5 - 0.5 * std::cos(
-                twoPi * static_cast<double>(index) / denominatorN);
+            double window = 0.0;
+            if (!residualHannReady)
+            {
+                window = 0.5 - 0.5 * std::cos(
+                    twoPi * static_cast<double>(index) / denominatorN);
+                residualHannWindow_[static_cast<std::size_t>(index)] = window;
+            }
+            else
+            {
+                window = residualHannWindow_[static_cast<std::size_t>(index)];
+            }
+
             const double sample = static_cast<double>(
                 voiceResidualFrame_[static_cast<std::size_t>(index)]) * window;
             const double phase = twoPi * cyclesPerSample * static_cast<double>(index);
@@ -567,6 +585,7 @@ ModernPitchEngine::MultiRatePitchTracker::analyse(
             signalEnergy += sample * sample;
             windowEnergy += window * window;
         }
+        residualHannReady = true;
         const double normaliser = std::max(1.0e-20, signalEnergy * windowEnergy);
         const float value = clamp01(static_cast<float>(std::sqrt(
             2.0 * (real * real + imag * imag) / normaliser)));

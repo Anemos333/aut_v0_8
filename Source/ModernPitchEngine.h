@@ -293,6 +293,10 @@ private:
             // enters this buffer and the renderer never reads it.
             std::array<float, maxAnalysisSize> voiceResidualFrame {};
             std::array<float, maxAnalysisSize> difference {};
+            // RESIDUAL_HANN_LAZY_MEMOIZATION_V1: scratch for one analyse() call.
+            // The first unique residual line fills this lazily in golden loop
+            // order; later unique lines reuse the exact double coefficients.
+            std::array<double, maxAnalysisSize> residualHannWindow {};
         };
 
         struct ConsensusHypothesis
