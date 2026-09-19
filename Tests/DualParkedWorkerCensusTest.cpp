@@ -263,14 +263,13 @@ private:
                 break;
 
             CandidateSet local {};
-            runMask(tracker_, mask_, workspace_, local);
+            runMask(tracker_, kWorkerMask, workspace_, local);
             result_ = local;
             completed_.store(seen, std::memory_order_release);
         }
     }
 
     Tracker& tracker_;
-    int mask_ = kWorkerMask;
     Tracker::AnalysisWorkspace workspace_ {};
     std::thread thread_;
     std::atomic<bool> stop_ { false };
@@ -335,13 +334,14 @@ private:
 
             const auto ticket = request_.load(std::memory_order_acquire);
             CandidateSet local {};
-            runMask(tracker_, kWorkerMask, workspace_, local);
+            runMask(tracker_, mask_, workspace_, local);
             result_ = local;
             completed_.store(ticket, std::memory_order_release);
         }
     }
 
     Tracker& tracker_;
+    int mask_ = kWorkerMask;
     Tracker::AnalysisWorkspace workspace_ {};
     sem_t wake_ {};
     std::thread thread_;
