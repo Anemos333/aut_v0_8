@@ -1,0 +1,127 @@
+name: Low-rate parallel detector prototype v1
+
+on:
+  push:
+    branches:
+      - cpu-low-rate-parallel-prototype-v1
+    paths:
+      - Tests/LowRateParallelPrototypeTest.cpp
+      - .github/workflows/low-rate-parallel-prototype-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prototype:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout prototype branch
+        uses: actions/checkout@v4
+        with:
+          ref: cpu-low-rate-parallel-prototype-v1
+          fetch-depth: 1
+
+      - name: Guard promoted golden DSP
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/ModernPitchEngine.cpp)" = "5702fbc14dfe5d7e2f959096d7e56fff98198cea"
+          test "$(git hash-object Source/ModernPitchEngine.h)" = "e4647f124f5b0253eb1216b62816b2c4dc3a0c30"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          grep -q 'RESIDUAL_ENERGY_EXACT_REUSE_V1' Source/ModernPitchEngine.cpp
+          echo 'PARALLEL_PROTOTYPE_GOLDEN_GUARD=PASS'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Configure Release build
+        run: cmake -S . -B build-parallel-prototype -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Preserve historical test source
+        run: cp Tests/SupervisorContinuityTest.cpp /tmp/parallel-prototype-supervisor.original.cpp
+
+      - name: Verify golden detector oracle before prototype
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/GoldenDetectorDeterminismTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-parallel-prototype --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-parallel-prototype/clean-engine-tests/SupervisorContinuityTest | tee /tmp/parallel-prototype-golden.log
+          grep -q '^GOLDEN_DETECTOR_BITWISE_DETERMINISM=PASS observations=12000$' /tmp/parallel-prototype-golden.log
+          grep -q '^GOLDEN_DETECTOR_TRACE_HASH=58273352d40c5499$' /tmp/parallel-prototype-golden.log
+
+      - name: Build test-only persistent-worker prototype
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/LowRateParallelPrototypeTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-parallel-prototype --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          cp build-parallel-prototype/clean-engine-tests/SupervisorContinuityTest /tmp/LowRateParallelPrototypeTest
+
+      - name: Run prototype five times
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > /tmp/parallel-prototype.log
+          for run in 1 2 3 4 5; do
+            echo "PARALLEL_PROTOTYPE_RUN=$run" | tee -a /tmp/parallel-prototype.log
+            /tmp/LowRateParallelPrototypeTest | tee -a /tmp/parallel-prototype.log
+          done
+          test "$(grep -c '^PARALLEL_PROTOTYPE_BIT_EQUIVALENCE=PASS repetitions=300$' /tmp/parallel-prototype.log)" = "5"
+
+      - name: Summarize prototype medians
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee /tmp/parallel-prototype-summary.log
+          from pathlib import Path
+          import re, statistics
+
+          rows = []
+          for line in Path('/tmp/parallel-prototype.log').read_text().splitlines():
+              if line.startswith('PARALLEL_PROTOTYPE name='):
+                  rows.append(dict(re.findall(r'(\w+)=([^ ]+)', line)))
+
+          if len(rows) != 10:
+              raise SystemExit(f'expected 10 prototype rows, got {len(rows)}')
+
+          for name in ('quarter_hop', 'super_hop'):
+              group = [r for r in rows if r['name'] == name]
+              if len(group) != 5:
+                  raise SystemExit(f'{name}: expected 5 rows, got {len(group)}')
+
+              def med(key):
+                  return statistics.median(float(r[key]) for r in group)
+
+              print('PARALLEL_PROTOTYPE_MEDIAN',
+                    f'name={name}',
+                    f'serial_p50_us={med("serial_p50_us"):.3f}',
+                    f'parallel_p50_us={med("parallel_p50_us"):.3f}',
+                    f'p50_reduction_pct={med("p50_reduction_pct"):.2f}',
+                    f'serial_p95_us={med("serial_p95_us"):.3f}',
+                    f'parallel_p95_us={med("parallel_p95_us"):.3f}',
+                    f'p95_reduction_pct={med("p95_reduction_pct"):.2f}',
+                    f'serial_p99_us={med("serial_p99_us"):.3f}',
+                    f'parallel_p99_us={med("parallel_p99_us"):.3f}',
+                    f'p99_reduction_pct={med("p99_reduction_pct"):.2f}')
+          PY
+          cat /tmp/parallel-prototype-summary.log >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Restore historical test source
+        if: always()
+        shell: bash
+        run: |
+          if [ -f /tmp/parallel-prototype-supervisor.original.cpp ]; then
+            cp /tmp/parallel-prototype-supervisor.original.cpp Tests/SupervisorContinuityTest.cpp
+          fi
+
+      - name: Final marker
+        run: echo 'LOW_RATE_PARALLEL_PROTOTYPE=PASS_TEST_ONLY_NO_PROMOTION'
