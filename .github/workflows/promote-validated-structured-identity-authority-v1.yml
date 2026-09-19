@@ -1,0 +1,57 @@
+name: Promote validated structured identity authority v1
+
+on:
+  push:
+    branches:
+      - voice-aware-f0-parallel-golden-v1
+    paths:
+      - .github/workflows/promote-validated-structured-identity-authority-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  promote:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout experiment
+        uses: actions/checkout@v4
+        with:
+          ref: voice-aware-f0-parallel-golden-v1
+          fetch-depth: 0
+
+      - name: Guard exact diagnostic v2 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/ModernPitchEngine.cpp)" = "bc99c8895c570d3ee434667fb0aa6ebf356f7a20"
+          test "$(git hash-object Source/ModernPitchEngine.h)" = "e4647f124f5b0253eb1216b62816b2c4dc3a0c30"
+          test "$(git hash-object Source/ControlRoomPage.cpp)" = "30b59b7d5a60387b08de41f806e7dfc7b5a32e5f"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          grep -q 'TARGET_REVISION_DIAGNOSTIC_LATCH_V2' Source/ModernPitchEngine.cpp
+          grep -q 'RESIDUAL_HANN_LAZY_MEMOIZATION_V1' Source/ModernPitchEngine.cpp
+          grep -q 'TERMINAL_TAIL_STABLE_TRANSPORT_REBASE_V1' Source/ModernPitchEngine.cpp
+          ! grep -q 'STRUCTURED_IDENTITY_AUTHORITY_V1' Source/ModernPitchEngine.cpp
+          ! grep -q 'LAG_CORRELATION_MEMOIZATION_V1' Source/ModernPitchEngine.cpp
+          ! grep -q 'RESIDUAL_LINE_INVARIANT_HOIST_V1' Source/ModernPitchEngine.cpp
+
+      - name: Apply validated structured identity authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 Tests/ApplyStructuredIdentityAuthority.py
+          test "$(git diff --name-only)" = "Source/ModernPitchEngine.cpp"
+          grep -q 'STRUCTURED_IDENTITY_AUTHORITY_V1' Source/ModernPitchEngine.cpp
+          grep -q 'TARGET_REVISION_DIAGNOSTIC_LATCH_V2' Source/ModernPitchEngine.cpp
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+
+      - name: Commit validated source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Source/ModernPitchEngine.cpp
+          git commit -m 'Require structured evidence for stable identity revisions [skip ci]'
+          git push origin HEAD:voice-aware-f0-parallel-golden-v1
