@@ -108,12 +108,12 @@ if hdr.count(old_atomics) != 1:
     raise SystemExit("atomic v2 anchor missing")
 hdr = hdr.replace(old_atomics, new_atomics, 1)
 
-# Capture pre-update correction command.
 old_top = r'''    const int hopSamples = MultiRatePitchTracker::hopSize();
     const double hopSeconds = static_cast<double>(hopSamples) / sampleRate_;
 '''
 new_top = r'''    const int hopSamples = MultiRatePitchTracker::hopSize();
     const double hopSeconds = static_cast<double>(hopSamples) / sampleRate_;
+    // TARGET_REVISION_DIAGNOSTIC_LATCH_V2
     const double diagnosticDesiredBeforeUpdate = state.desiredCents;
     const std::uint32_t diagnosticRevisionSerialBeforeUpdate =
         targetRevisionDiagnosticSerial_;
@@ -122,7 +122,6 @@ if cpp.count(old_top) != 1:
     raise SystemExit("top diagnostic anchor missing")
 cpp = cpp.replace(old_top, new_top, 1)
 
-# Expose terminal-tail predicate parts.
 old_tail_decl = r'''    bool terminalTailIdentityVeto = false;
     bool terminalTailStableCompensation = false;
 '''
@@ -171,7 +170,6 @@ if cpp.count(old_outside) != 1:
     raise SystemExit("outside core anchor missing")
 cpp = cpp.replace(old_outside, new_outside, 1)
 
-# Capture which live identity route fired.
 old_live_decl = r'''    bool liveIdentityBreak = false;
     bool forceTargetSwitch = false;
 '''
@@ -206,7 +204,6 @@ if cpp.count(old_routes) != 1:
     raise SystemExit("route anchor missing")
 cpp = cpp.replace(old_routes, new_routes, 1)
 
-# Extend event latch.
 old_latch = r'''            targetRevisionMusicalOnset_ = musicalOnset;
             targetRevisionLiveIdentityBreak_ = liveIdentityBreak;
 
@@ -236,7 +233,6 @@ if cpp.count(old_latch) != 1:
     raise SystemExit("latch extension anchor missing")
 cpp = cpp.replace(old_latch, new_latch, 1)
 
-# After final errorCents is known, record command consequence only for new revision.
 old_desired = r'''    state.desiredCents = errorCents;
     state.responseMs = responseTimeMs(parameters, targetChanged, targetJump);
 '''
@@ -256,7 +252,6 @@ if cpp.count(old_desired) != 1:
     raise SystemExit("desired consequence anchor missing")
 cpp = cpp.replace(old_desired, new_desired, 1)
 
-# Reset private + atomic v2 fields.
 old_reset_private = r'''    targetRevisionMusicalOnset_ = false;
     targetRevisionLiveIdentityBreak_ = false;
     meterTargetRevisionDiagnosticSerial_.store(0, std::memory_order_relaxed);
@@ -309,7 +304,6 @@ if cpp.count(old_reset_atomic) != 1:
     raise SystemExit("reset atomics anchor missing")
 cpp = cpp.replace(old_reset_atomic, new_reset_atomic, 1)
 
-# Publish atomics.
 old_publish = r'''    meterTargetRevisionMusicalOnset_.store(
         targetRevisionMusicalOnset_, std::memory_order_relaxed);
     meterTargetRevisionLiveIdentityBreak_.store(
@@ -354,7 +348,6 @@ if cpp.count(old_publish) != 1:
     raise SystemExit("publish v2 anchor missing")
 cpp = cpp.replace(old_publish, new_publish, 1)
 
-# Read coherent meter.
 old_get = r'''        result.targetRevisionLiveIdentityBreak =
             meterTargetRevisionLiveIdentityBreak_.load(std::memory_order_relaxed);
         result.tempoBpm = meterTempoBpm_.load(std::memory_order_relaxed);
@@ -395,7 +388,6 @@ if cpp.count(old_get) != 1:
     raise SystemExit("get v2 anchor missing")
 cpp = cpp.replace(old_get, new_get, 1)
 
-# UI: compact two-line diagnostic appended to existing persistent Rev.
 old_ui = r'''        line += metering_.targetRevisionMusicalOnset ? " O1" : " O0";
         line += metering_.targetRevisionLiveIdentityBreak ? " I1" : " I0";
     }
