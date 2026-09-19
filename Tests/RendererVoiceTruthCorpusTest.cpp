@@ -3,23 +3,14 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <cstdint>
 #include <iostream>
 #include <limits>
-#include <numeric>
 #include <vector>
 
 namespace
 {
 constexpr double pi = 3.14159265358979323846;
 constexpr double sampleRate = 48000.0;
-
-double centsError(double measuredHz, double expectedHz)
-{
-    if (!(measuredHz > 0.0) || !(expectedHz > 0.0))
-        return 1.0e9;
-    return 1200.0 * std::log2(measuredHz / expectedHz);
-}
 
 double tonePowerRange(const std::vector<float>& signal,
                       double frequencyHz,
@@ -41,73 +32,73 @@ double tonePowerRange(const std::vector<float>& signal,
     return real * real + imaginary * imaginary;
 }
 
-double harmonicScore(const std::vector<float>& signal,
-                     double fundamentalHz,
-                     int startSample,
-                     int sampleCount)
+double centsError(double measuredHz, double expectedHz)
 {
-    if (!(fundamentalHz > 0.0))
-        return 0.0;
-
-    double score = 0.0;
-    double weightSum = 0.0;
-    for (int harmonic = 1; harmonic <= 10; ++harmonic)
-    {
-        const double frequency = fundamentalHz * static_cast<double>(harmonic);
-        if (frequency >= 0.46 * sampleRate)
-            break;
-
-        // Weight odd and low-order harmonics slightly more strongly so an
-        // octave hypothesis cannot win merely by matching the even subset.
-        const double weight = (1.0 / static_cast<double>(harmonic))
-            * ((harmonic & 1) ? 1.35 : 1.0);
-        score += weight * tonePowerRange(signal, frequency, startSample, sampleCount);
-        weightSum += weight;
-    }
-    return score / std::max(1.0e-20, weightSum);
+    if (!(measuredHz > 0.0) || !(expectedHz > 0.0))
+        return 1.0e9;
+    return 1200.0 * std::log2(measuredHz / expectedHz);
 }
 
-double estimateHarmonicFundamental(const std::vector<float>& signal,
-                                   double expectedHz,
-                                   int startSample,
-                                   int sampleCount)
+double estimateFundamentalNearExpected(const std::vector<float>& signal,
+                                       double expectedHz,
+                                       int startSample,
+                                       int sampleCount)
 {
-    double bestHz = expectedHz;
-    double bestScore = -1.0;
-
-    // Search +/- 80 cents around the commanded target. This estimator is not
-    // allowed to "solve" octave errors by wrapping the answer.
-    for (double cents = -80.0; cents <= 80.0001; cents += 0.5)
+    double bestCents = 0.0;
+    double bestPower = -1.0;
+    for (double cents = -40.0; cents <= 40.0001; cents += 1.0)
     {
-        const double candidate = expectedHz * std::exp2(cents / 1200.0);
-        const double score = harmonicScore(signal, candidate, startSample, sampleCount);
-        if (score > bestScore)
+        const double frequency = expectedHz * std::exp2(cents / 1200.0);
+        const double power = tonePowerRange(signal, frequency, startSample, sampleCount);
+        if (power > bestPower)
         {
-            bestScore = score;
-            bestHz = candidate;
+            bestPower = power;
+            bestCents = cents;
         }
     }
 
-    double leftCents = 1200.0 * std::log2(bestHz / expectedHz) - 0.8;
-    double rightCents = leftCents + 1.6;
-    for (int iteration = 0; iteration < 18; ++iteration)
+    double left = bestCents - 1.25;
+    double right = bestCents + 1.25;
+    for (int iteration = 0; iteration < 16; ++iteration)
     {
-        const double third = (rightCents - leftCents) / 3.0;
-        const double aCents = leftCents + third;
-        const double bCents = rightCents - third;
+        const double third = (right - left) / 3.0;
+        const double aCents = left + third;
+        const double bCents = right - third;
         const double aHz = expectedHz * std::exp2(aCents / 1200.0);
         const double bHz = expectedHz * std::exp2(bCents / 1200.0);
-        if (harmonicScore(signal, aHz, startSample, sampleCount)
-            < harmonicScore(signal, bHz, startSample, sampleCount))
+        if (tonePowerRange(signal, aHz, startSample, sampleCount)
+            < tonePowerRange(signal, bHz, startSample, sampleCount))
         {
-            leftCents = aCents;
+            left = aCents;
         }
         else
         {
-            rightCents = bCents;
+            right = bCents;
         }
     }
-    return expectedHz * std::exp2(0.5 * (leftCents + rightCents) / 1200.0);
+    return expectedHz * std::exp2(0.5 * (left + right) / 1200.0);
+}
+
+double octaveEvidenceScore(const std::vector<float>& signal,
+                           double hypothesisF0,
+                           int startSample,
+                           int sampleCount)
+{
+    // Keep odd harmonics visible so the true fundamental has evidence that a
+    // doubled-octave hypothesis cannot reproduce merely by matching evens.
+    constexpr std::array<int, 6> harmonics { 1, 2, 3, 5, 7, 9 };
+    constexpr std::array<double, 6> weights { 1.7, 1.0, 1.25, 0.90, 0.65, 0.50 };
+    double score = 0.0;
+    double weightSum = 0.0;
+    for (std::size_t i = 0; i < harmonics.size(); ++i)
+    {
+        const double frequency = hypothesisF0 * static_cast<double>(harmonics[i]);
+        if (frequency >= 0.46 * sampleRate)
+            continue;
+        score += weights[i] * tonePowerRange(signal, frequency, startSample, sampleCount);
+        weightSum += weights[i];
+    }
+    return score / std::max(1.0e-20, weightSum);
 }
 
 struct VowelProfile
@@ -117,14 +108,16 @@ struct VowelProfile
     std::array<double, 3> bandwidthHz;
 };
 
-double vowelHarmonicGain(double frequencyHz, const VowelProfile& vowel)
+double vowelEnvelope(double frequencyHz, const VowelProfile& vowel)
 {
-    double envelope = 0.018;
+    // A glottal floor preserves a measurable fundamental while three resonant
+    // regions create a strongly multi-harmonic, vowel-like spectrum.
+    double envelope = 0.18;
     for (std::size_t index = 0; index < vowel.formantHz.size(); ++index)
     {
         const double distance = (frequencyHz - vowel.formantHz[index])
             / std::max(1.0, vowel.bandwidthHz[index]);
-        envelope += std::exp(-0.5 * distance * distance);
+        envelope += 0.82 * std::exp(-0.5 * distance * distance);
     }
     return envelope;
 }
@@ -138,28 +131,26 @@ std::vector<float> renderStaticVowel(int frameSize,
     SingleWetSpectralRenderer renderer;
     renderer.prepare(sampleRate, frameSize);
 
-    constexpr int sampleCount = 120000;
-    std::vector<float> output(static_cast<std::size_t>(sampleCount));
+    constexpr int totalSamples = 60000;
+    std::vector<float> output(static_cast<std::size_t>(totalSamples));
     const int maximumHarmonic = std::min(
-        28, static_cast<int>(std::floor(9000.0 / sourceF0)));
+        24, static_cast<int>(std::floor(8500.0 / sourceF0)));
 
-    for (int sample = 0; sample < sampleCount; ++sample)
+    for (int sample = 0; sample < totalSamples; ++sample)
     {
         const double t = static_cast<double>(sample) / sampleRate;
         double input = 0.0;
         for (int harmonic = 1; harmonic <= maximumHarmonic; ++harmonic)
         {
             const double frequency = sourceF0 * static_cast<double>(harmonic);
-            const double rolloff = 1.0 / std::pow(static_cast<double>(harmonic), 1.08);
-            const double envelope = vowelHarmonicGain(frequency, vowel);
-            const double phase = 0.17 * static_cast<double>(harmonic)
-                + 0.013 * static_cast<double>(harmonic * harmonic);
-            input += rolloff * envelope
+            const double rolloff = 1.0 / std::pow(static_cast<double>(harmonic), 1.06);
+            const double phase = 0.19 * static_cast<double>(harmonic)
+                + 0.009 * static_cast<double>(harmonic * harmonic);
+            input += rolloff * vowelEnvelope(frequency, vowel)
                 * std::sin(2.0 * pi * frequency * t + phase);
         }
-
         output[static_cast<std::size_t>(sample)] = renderer.processSample(
-            static_cast<float>(0.11 * input), correctionCents, formantPreservation);
+            static_cast<float>(0.075 * input), correctionCents, formantPreservation);
     }
     return output;
 }
@@ -173,47 +164,39 @@ std::vector<float> renderCompensatedVibratoVowel(int frameSize,
     SingleWetSpectralRenderer renderer;
     renderer.prepare(sampleRate, frameSize);
 
-    constexpr int sampleCount = 144000;
-    std::vector<float> output(static_cast<std::size_t>(sampleCount));
-
-    std::array<double, 24> phases {};
-    for (std::size_t harmonic = 1; harmonic < phases.size(); ++harmonic)
-        phases[harmonic] = 0.11 * static_cast<double>(harmonic);
-
+    constexpr int totalSamples = 72000;
+    std::vector<float> output(static_cast<std::size_t>(totalSamples));
     double fundamentalPhase = 0.0;
-    for (int sample = 0; sample < sampleCount; ++sample)
+
+    for (int sample = 0; sample < totalSamples; ++sample)
     {
         const double t = static_cast<double>(sample) / sampleRate;
-
-        // A realistic, deliberately modest sung-vowel motion. The renderer gets
-        // the exact inverse command sample-by-sample, so the acoustic target is
-        // mathematically constant even though the source coordinate moves.
         const double vibratoCents =
             18.0 * std::sin(2.0 * pi * 5.2 * t)
             + 4.0 * std::sin(2.0 * pi * 1.15 * t + 0.7);
         const double sourceF0 = sourceCentreHz * std::exp2(vibratoCents / 1200.0);
+
         fundamentalPhase += 2.0 * pi * sourceF0 / sampleRate;
         fundamentalPhase -= 2.0 * pi * std::floor(fundamentalPhase / (2.0 * pi));
 
         double input = 0.0;
-        for (int harmonic = 1; harmonic < static_cast<int>(phases.size()); ++harmonic)
+        for (int harmonic = 1; harmonic <= 22; ++harmonic)
         {
             const double frequency = sourceF0 * static_cast<double>(harmonic);
-            if (frequency > 9000.0)
+            if (frequency >= 8500.0)
                 break;
-            const double rolloff = 1.0 / std::pow(static_cast<double>(harmonic), 1.05);
-            const double envelope = vowelHarmonicGain(frequency, vowel);
+            const double rolloff = 1.0 / std::pow(static_cast<double>(harmonic), 1.04);
             const double slowEnvelopeMotion = 1.0
-                + 0.10 * std::sin(2.0 * pi * 0.63 * t
-                    + 0.29 * static_cast<double>(harmonic));
-            input += rolloff * envelope * slowEnvelopeMotion
+                + 0.08 * std::sin(2.0 * pi * 0.63 * t
+                    + 0.31 * static_cast<double>(harmonic));
+            input += rolloff * vowelEnvelope(frequency, vowel) * slowEnvelopeMotion
                 * std::sin(static_cast<double>(harmonic) * fundamentalPhase
-                    + phases[static_cast<std::size_t>(harmonic)]);
+                    + 0.13 * static_cast<double>(harmonic));
         }
 
         const double correctionCents = 1200.0 * std::log2(targetHz / sourceF0);
         output[static_cast<std::size_t>(sample)] = renderer.processSample(
-            static_cast<float>(0.10 * input), correctionCents, formantPreservation);
+            static_cast<float>(0.07 * input), correctionCents, formantPreservation);
     }
     return output;
 }
@@ -223,56 +206,59 @@ struct WindowStats
     double medianErrorCents = 0.0;
     double maxAbsErrorCents = 0.0;
     double errorSpanCents = 0.0;
-    double minimumTrueToHalfOctaveScore = std::numeric_limits<double>::infinity();
-    double minimumTrueToDoubleOctaveScore = std::numeric_limits<double>::infinity();
+    double minimumTrueToHalfOctave = std::numeric_limits<double>::infinity();
+    double minimumTrueToDoubleOctave = std::numeric_limits<double>::infinity();
 };
 
 WindowStats analyseWindows(const std::vector<float>& output,
                            double expectedF0,
-                           int startSample,
-                           int windowSamples,
-                           int strideSamples)
+                           int startSample)
 {
+    constexpr int windowSamples = 4096;
+    constexpr int strideSamples = 6144;
+
     std::vector<double> errors;
-    double minimumHalfRatio = std::numeric_limits<double>::infinity();
-    double minimumDoubleRatio = std::numeric_limits<double>::infinity();
+    WindowStats stats;
 
     for (int start = startSample;
          start + windowSamples <= static_cast<int>(output.size());
          start += strideSamples)
     {
-        const double measured = estimateHarmonicFundamental(
+        const double measured = estimateFundamentalNearExpected(
             output, expectedF0, start, windowSamples);
         errors.push_back(centsError(measured, expectedF0));
 
-        const double trueScore = harmonicScore(output, expectedF0, start, windowSamples);
-        const double halfScore = harmonicScore(output, 0.5 * expectedF0, start, windowSamples);
-        const double doubleScore = harmonicScore(output, 2.0 * expectedF0, start, windowSamples);
-        minimumHalfRatio = std::min(minimumHalfRatio,
+        const double trueScore = octaveEvidenceScore(
+            output, expectedF0, start, windowSamples);
+        const double halfScore = octaveEvidenceScore(
+            output, expectedF0 * 0.5, start, windowSamples);
+        const double doubleScore = octaveEvidenceScore(
+            output, expectedF0 * 2.0, start, windowSamples);
+        stats.minimumTrueToHalfOctave = std::min(
+            stats.minimumTrueToHalfOctave,
             trueScore / std::max(1.0e-20, halfScore));
-        minimumDoubleRatio = std::min(minimumDoubleRatio,
+        stats.minimumTrueToDoubleOctave = std::min(
+            stats.minimumTrueToDoubleOctave,
             trueScore / std::max(1.0e-20, doubleScore));
     }
 
-    WindowStats result;
     if (errors.empty())
-        return result;
+        return stats;
 
     auto sorted = errors;
     std::sort(sorted.begin(), sorted.end());
-    result.medianErrorCents = sorted[sorted.size() / 2];
+    stats.medianErrorCents = sorted[sorted.size() / 2];
+
     const auto [minimum, maximum] = std::minmax_element(errors.begin(), errors.end());
-    result.errorSpanCents = *maximum - *minimum;
+    stats.errorSpanCents = *maximum - *minimum;
     for (const double error : errors)
-        result.maxAbsErrorCents = std::max(result.maxAbsErrorCents, std::abs(error));
-    result.minimumTrueToHalfOctaveScore = minimumHalfRatio;
-    result.minimumTrueToDoubleOctaveScore = minimumDoubleRatio;
-    return result;
+        stats.maxAbsErrorCents = std::max(stats.maxAbsErrorCents, std::abs(error));
+    return stats;
 }
 
 void printStats(const char* type,
                 int frameSize,
-                const char* vowel,
+                const char* vowelName,
                 double sourceF0,
                 double correctionCents,
                 double expectedF0,
@@ -281,15 +267,15 @@ void printStats(const char* type,
     std::cerr << "RENDERER_VOICE_TRUTH"
               << " type=" << type
               << " frame=" << frameSize
-              << " vowel=" << vowel
+              << " vowel=" << vowelName
               << " source_f0=" << sourceF0
               << " correction_cents=" << correctionCents
               << " expected_f0=" << expectedF0
               << " median_error_cents=" << stats.medianErrorCents
               << " max_abs_error_cents=" << stats.maxAbsErrorCents
               << " error_span_cents=" << stats.errorSpanCents
-              << " true_half_octave_ratio=" << stats.minimumTrueToHalfOctaveScore
-              << " true_double_octave_ratio=" << stats.minimumTrueToDoubleOctaveScore
+              << " true_half_octave_ratio=" << stats.minimumTrueToHalfOctave
+              << " true_double_octave_ratio=" << stats.minimumTrueToDoubleOctave
               << '\n';
 }
 
@@ -306,7 +292,7 @@ int main()
     struct StaticCase
     {
         double sourceF0;
-        double cents;
+        double correctionCents;
     };
     const std::array<StaticCase, 6> staticCases {{
         { 118.0,  37.0 },
@@ -326,34 +312,47 @@ int main()
             for (const auto& testCase : staticCases)
             {
                 const double expectedF0 = testCase.sourceF0
-                    * std::exp2(testCase.cents / 1200.0);
+                    * std::exp2(testCase.correctionCents / 1200.0);
                 const auto output = renderStaticVowel(
-                    frameSize, testCase.sourceF0, testCase.cents, vowel, 0.92f);
-                const auto stats = analyseWindows(
-                    output, expectedF0, 24000, 8192, 4096);
-                printStats("static", frameSize, vowel.name,
-                           testCase.sourceF0, testCase.cents, expectedF0, stats);
+                    frameSize,
+                    testCase.sourceF0,
+                    testCase.correctionCents,
+                    vowel,
+                    0.92f);
+                const auto stats = analyseWindows(output, expectedF0, 12000);
 
-                // Deliberately broad census guard: failures here indicate a
-                // structural reconstruction fault, not a tuning preference.
-                broadContractPass &= std::abs(stats.medianErrorCents) < 6.0;
-                broadContractPass &= stats.maxAbsErrorCents < 18.0;
-                broadContractPass &= stats.errorSpanCents < 22.0;
+                printStats("static",
+                           frameSize,
+                           vowel.name,
+                           testCase.sourceF0,
+                           testCase.correctionCents,
+                           expectedF0,
+                           stats);
+
+                broadContractPass &= std::abs(stats.medianErrorCents) < 5.0;
+                broadContractPass &= stats.maxAbsErrorCents < 14.0;
+                broadContractPass &= stats.errorSpanCents < 18.0;
             }
 
             const double sourceCentre = 196.0;
             const double target = 220.0;
+            const double nominalCorrection =
+                1200.0 * std::log2(target / sourceCentre);
             const auto moving = renderCompensatedVibratoVowel(
                 frameSize, sourceCentre, target, vowel, 0.92f);
-            const auto movingStats = analyseWindows(
-                moving, target, 24000, 8192, 4096);
-            const double nominalCorrection = 1200.0 * std::log2(target / sourceCentre);
-            printStats("compensated_vibrato", frameSize, vowel.name,
-                       sourceCentre, nominalCorrection, target, movingStats);
+            const auto movingStats = analyseWindows(moving, target, 12000);
 
-            broadContractPass &= std::abs(movingStats.medianErrorCents) < 8.0;
-            broadContractPass &= movingStats.maxAbsErrorCents < 28.0;
-            broadContractPass &= movingStats.errorSpanCents < 34.0;
+            printStats("compensated_vibrato",
+                       frameSize,
+                       vowel.name,
+                       sourceCentre,
+                       nominalCorrection,
+                       target,
+                       movingStats);
+
+            broadContractPass &= std::abs(movingStats.medianErrorCents) < 7.0;
+            broadContractPass &= movingStats.maxAbsErrorCents < 22.0;
+            broadContractPass &= movingStats.errorSpanCents < 28.0;
         }
     }
 
