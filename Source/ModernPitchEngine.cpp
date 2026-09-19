@@ -3400,17 +3400,6 @@ void ModernPitchEngine::updateCorrectionState(
         && parameters.voiceBreathiness <= 0.34f
         && parameters.voiceEventStrength <= 0.30f;
 
-    // STRUCTURED_IDENTITY_AUTHORITY_V1
-    // Audio presence owns continuity/correction, not musical identity. When
-    // rich voice evidence exists, a Stable no-onset target revision requires
-    // positive structured body evidence. Analysis/challenger accumulation and
-    // source transport remain fully live, so a real legato can commit as soon
-    // as coherent body structure returns. When rich evidence is unavailable,
-    // preserve the legacy detector-only authority path.
-    const bool structuredIdentityAuthority = !richEvidence
-        || state.trackingState != TrackingState::stable
-        || rescueBodyFrame;
-
     // SCALE_OWNS_VOICE_V2: detector state describes evidence only. Audible
     // material never receives permission to return to dry/source pitch merely
     // because it is breathy, aperiodic or phonetic.
@@ -3892,8 +3881,7 @@ void ModernPitchEngine::updateCorrectionState(
                         : 6;
                 }
 
-                if (state.latentTargetHops >= requiredHops
-                    && structuredIdentityAuthority)
+                if (state.latentTargetHops >= requiredHops)
                 {
                     detectorScaleCommit = true;
                     state.latentTargetValid = false;
@@ -4044,10 +4032,7 @@ void ModernPitchEngine::updateCorrectionState(
             diagnosticDeepCentreExit = deepCentreExit;
             diagnosticPersistentBoundaryExit = persistentBoundaryExit;
 
-            const bool geometricIdentityBreak =
-                deepCentreExit || persistentBoundaryExit;
-            liveIdentityBreak = geometricIdentityBreak
-                && structuredIdentityAuthority;
+            liveIdentityBreak = deepCentreExit || persistentBoundaryExit;
             forceTargetSwitch = liveIdentityBreak;
         }
     }
