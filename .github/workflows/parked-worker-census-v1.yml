@@ -1,0 +1,141 @@
+name: Parked worker census v1
+
+on:
+  push:
+    branches:
+      - cpu-parked-worker-census-v1
+    paths:
+      - Tests/ParkedWorkerCensusTest.cpp
+      - .github/workflows/parked-worker-census-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  census:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout census branch
+        uses: actions/checkout@v4
+        with:
+          ref: cpu-parked-worker-census-v1
+          fetch-depth: 1
+
+      - name: Guard promoted golden DSP
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/ModernPitchEngine.cpp)" = "5702fbc14dfe5d7e2f959096d7e56fff98198cea"
+          test "$(git hash-object Source/ModernPitchEngine.h)" = "e4647f124f5b0253eb1216b62816b2c4dc3a0c30"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          grep -q 'RESIDUAL_ENERGY_EXACT_REUSE_V1' Source/ModernPitchEngine.cpp
+          echo 'PARKED_WORKER_GOLDEN_GUARD=PASS'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Configure Release build
+        run: cmake -S . -B build-parked-worker -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Preserve historical test source
+        run: cp Tests/SupervisorContinuityTest.cpp /tmp/parked-worker-supervisor.original.cpp
+
+      - name: Verify golden detector oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/GoldenDetectorDeterminismTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-parked-worker --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-parked-worker/clean-engine-tests/SupervisorContinuityTest | tee /tmp/parked-worker-golden.log
+          grep -q '^GOLDEN_DETECTOR_BITWISE_DETERMINISM=PASS observations=12000$' /tmp/parked-worker-golden.log
+          grep -q '^GOLDEN_DETECTOR_TRACE_HASH=58273352d40c5499$' /tmp/parked-worker-golden.log
+
+      - name: Build parked worker census
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/ParkedWorkerCensusTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-parked-worker --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          cp build-parked-worker/clean-engine-tests/SupervisorContinuityTest /tmp/ParkedWorkerCensusTest
+
+      - name: Run census five times with alternating order
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > /tmp/parked-worker-census.log
+          for run in 1 2 3 4 5; do
+            echo "PARKED_WORKER_RUN=$run" | tee -a /tmp/parked-worker-census.log
+            if (( run % 2 == 0 )); then
+              NEUMATON_PARKED_FIRST=1 /tmp/ParkedWorkerCensusTest | tee -a /tmp/parked-worker-census.log
+            else
+              /tmp/ParkedWorkerCensusTest | tee -a /tmp/parked-worker-census.log
+            fi
+          done
+          test "$(grep -c '^PARKED_WORKER_BIT_EQUIVALENCE=PASS repetitions=300$' /tmp/parked-worker-census.log)" = "5"
+
+      - name: Summarize parked worker medians
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee /tmp/parked-worker-summary.log
+          from pathlib import Path
+          import re, statistics
+
+          metrics = []
+          comparisons = []
+          for line in Path('/tmp/parked-worker-census.log').read_text().splitlines():
+              if line.startswith('PARKED_WORKER_METRIC '):
+                  metrics.append(dict(re.findall(r'(\w+)=([^ ]+)', line)))
+              elif line.startswith('PARKED_WORKER_COMPARISON '):
+                  comparisons.append(dict(re.findall(r'(\w+)=([^ ]+)', line)))
+
+          if len(metrics) != 10:
+              raise SystemExit(f'expected 10 metric rows, got {len(metrics)}')
+          if len(comparisons) != 5:
+              raise SystemExit(f'expected 5 comparison rows, got {len(comparisons)}')
+
+          def med(rows, key):
+              return statistics.median(float(r[key]) for r in rows)
+
+          for worker in ('hot', 'parked'):
+              group = [r for r in metrics if r['worker'] == worker]
+              if len(group) != 5:
+                  raise SystemExit(f'{worker}: expected 5 rows, got {len(group)}')
+              print('PARKED_WORKER_MEDIAN',
+                    f'worker={worker}',
+                    f'burst_p50_us={med(group,"burst_p50_us"):.3f}',
+                    f'burst_p95_us={med(group,"burst_p95_us"):.3f}',
+                    f'burst_p99_us={med(group,"burst_p99_us"):.3f}',
+                    f'burst_max_us={med(group,"burst_max_us"):.3f}',
+                    f'cadence_p50_us={med(group,"cadence_p50_us"):.3f}',
+                    f'cadence_p95_us={med(group,"cadence_p95_us"):.3f}',
+                    f'cadence_p99_us={med(group,"cadence_p99_us"):.3f}',
+                    f'cadence_max_us={med(group,"cadence_max_us"):.3f}',
+                    f'cadence_cpu_ratio={med(group,"cadence_cpu_ratio"):.4f}')
+
+          print('PARKED_WORKER_COMPARISON_MEDIAN',
+                f'cadence_p99_reduction_pct={med(comparisons,"cadence_p99_reduction_pct"):.2f}',
+                f'process_cpu_ratio_reduction_pct={med(comparisons,"process_cpu_ratio_reduction_pct"):.2f}',
+                f'hot_cpu_ratio={med(comparisons,"hot_cpu_ratio"):.4f}',
+                f'parked_cpu_ratio={med(comparisons,"parked_cpu_ratio"):.4f}')
+          PY
+          cat /tmp/parked-worker-summary.log >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Restore historical test source
+        if: always()
+        shell: bash
+        run: |
+          if [ -f /tmp/parked-worker-supervisor.original.cpp ]; then
+            cp /tmp/parked-worker-supervisor.original.cpp Tests/SupervisorContinuityTest.cpp
+          fi
+
+      - name: Final marker
+        run: echo 'PARKED_WORKER_CENSUS=PASS_TEST_ONLY_NO_PROMOTION'
