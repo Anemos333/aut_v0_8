@@ -1,0 +1,185 @@
+name: Detector super-hop CPU profile v1
+
+on:
+  push:
+    branches:
+      - cpu-post-hann-profile-v1
+    paths:
+      - Tests/DetectorSuperHopProfile.cpp
+      - .github/workflows/detector-superhop-profile-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  profile-detector:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout profiling branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Guard frozen golden DSP
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/ModernPitchEngine.cpp)" = "bc99c8895c570d3ee434667fb0aa6ebf356f7a20"
+          test "$(git hash-object Source/ModernPitchEngine.h)" = "e4647f124f5b0253eb1216b62816b2c4dc3a0c30"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+          echo "FROZEN_DSP_GUARD=PASS"
+
+      - name: Install build and profiling dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            valgrind \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev
+
+      - name: Configure optimized benchmark build with symbols
+        run: |
+          cmake -S . -B build-detector-profile \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG -g" \
+            -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Preserve historical test source
+        run: cp Tests/SupervisorContinuityTest.cpp /tmp/SupervisorContinuityTest.original.cpp
+
+      - name: Verify frozen V6.7.1 detector oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/GoldenDetectorDeterminismTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-detector-profile --config Release --parallel 2 --target SupervisorContinuityTest
+          ./build-detector-profile/clean-engine-tests/SupervisorContinuityTest | tee /tmp/golden-detector.log
+          grep -q 'GOLDEN_DETECTOR_BITWISE_DETERMINISM=PASS' /tmp/golden-detector.log
+          grep -q 'GOLDEN_DETECTOR_TRACE_HASH=58273352d40c5499' /tmp/golden-detector.log
+
+      - name: Build read-only super-hop profiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/DetectorSuperHopProfile.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-detector-profile --config Release --parallel 2 --target SupervisorContinuityTest
+          cp build-detector-profile/clean-engine-tests/SupervisorContinuityTest /tmp/DetectorSuperHopProfile
+
+      - name: Run interleaved detector profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > /tmp/superhop-profile.log
+          for i in 1 2 3 4 5; do
+            echo "PROFILE_RUN=$i" | tee -a /tmp/superhop-profile.log
+            NEUMATON_WARMUP_SECONDS=0.50 \
+            NEUMATON_PROFILE_SECONDS=4.0 \
+            NEUMATON_PATH_REPS=80 \
+              /tmp/DetectorSuperHopProfile | tee -a /tmp/superhop-profile.log
+          done
+
+      - name: Summarize timing medians
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee /tmp/superhop-summary.log
+          from pathlib import Path
+          import re, statistics
+
+          lines = Path('/tmp/superhop-profile.log').read_text().splitlines()
+          rows = []
+          ratios = []
+          for line in lines:
+              if line.startswith(('HOP_PROFILE ', 'PATH_PROFILE ')):
+                  d = dict(re.findall(r'(\w+)=([^ ]+)', line))
+                  d['kind'] = line.split()[0]
+                  rows.append(d)
+              elif line.startswith('SUPERHOP_RATIO '):
+                  d = dict(re.findall(r'(\w+)=([^ ]+)', line))
+                  ratios.append(d)
+
+          expected = 5 * 8
+          if len(rows) != expected:
+              raise SystemExit(f'expected {expected} profile rows, got {len(rows)}')
+          if len(ratios) != 5:
+              raise SystemExit(f'expected 5 superhop ratio rows, got {len(ratios)}')
+
+          def median(values):
+              return statistics.median(float(v) for v in values)
+
+          groups = {}
+          for row in rows:
+              groups.setdefault((row['kind'], row['name']), []).append(row)
+
+          for (kind, name), group in sorted(groups.items()):
+              print('PROFILE_MEDIAN',
+                    f'kind={kind}',
+                    f'name={name}',
+                    f'p50_us={median([r["p50_us"] for r in group]):.3f}',
+                    f'p95_us={median([r["p95_us"] for r in group]):.3f}',
+                    f'p99_us={median([r["p99_us"] for r in group]):.3f}',
+                    f'max_us={median([r["max_us"] for r in group]):.3f}')
+
+          print('SUPERHOP_RATIO_MEDIAN',
+                f'p50_vs_full={median([r["p50_vs_full"] for r in ratios]):.3f}',
+                f'p99_vs_full={median([r["p99_vs_full"] for r in ratios]):.3f}')
+          PY
+
+          cat /tmp/superhop-summary.log >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Collect line-level detector instruction profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          NEUMATON_WARMUP_SECONDS=0.10 \
+          NEUMATON_PROFILE_SECONDS=0.12 \
+          NEUMATON_PATH_REPS=2 \
+            valgrind --tool=callgrind \
+              --callgrind-out-file=/tmp/callgrind.detector.out \
+              /tmp/DetectorSuperHopProfile \
+              > /tmp/callgrind-program.log 2> /tmp/callgrind-stderr.log
+
+          callgrind_annotate \
+            --auto=yes \
+            --inclusive=yes \
+            --threshold=0.20 \
+            /tmp/callgrind.detector.out \
+            Source/ModernPitchEngine.cpp \
+            > /tmp/callgrind-modern-pitch.txt
+
+          {
+            echo
+            echo '## Callgrind ModernPitchEngine excerpt'
+            echo 'Full annotated report is attached as an artifact.'
+            echo
+            echo '\`\`\`text'
+            head -n 140 /tmp/callgrind-modern-pitch.txt
+            echo '\`\`\`'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Restore historical test source
+        if: always()
+        shell: bash
+        run: |
+          if [ -f /tmp/SupervisorContinuityTest.original.cpp ]; then
+            cp /tmp/SupervisorContinuityTest.original.cpp Tests/SupervisorContinuityTest.cpp
+          fi
+
+      - name: Upload profiling evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: detector-superhop-profile-v1
+          path: |
+            /tmp/golden-detector.log
+            /tmp/superhop-profile.log
+            /tmp/superhop-summary.log
+            /tmp/callgrind-program.log
+            /tmp/callgrind-stderr.log
+            /tmp/callgrind-modern-pitch.txt
+            /tmp/callgrind.detector.out
