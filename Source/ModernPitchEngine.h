@@ -7,6 +7,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 class ModernPitchEngine final
@@ -261,6 +262,12 @@ private:
     class MultiRatePitchTracker
     {
     public:
+        MultiRatePitchTracker() noexcept;
+        ~MultiRatePitchTracker();
+
+        MultiRatePitchTracker(const MultiRatePitchTracker&) = delete;
+        MultiRatePitchTracker& operator=(const MultiRatePitchTracker&) = delete;
+
         void prepare(double sampleRate) noexcept;
         void reset() noexcept;
         void setRange(float minimumPitchHz, float maximumPitchHz) noexcept;
@@ -282,6 +289,8 @@ private:
         [[nodiscard]] static constexpr int hopSize() noexcept { return detectorHop; }
 
     private:
+        class AnalysisWorker;
+
         static constexpr int ringSize = 1024;
         static constexpr int ringMask = ringSize - 1;
         static constexpr int maxAnalysisSize = 512;
@@ -483,10 +492,10 @@ private:
         CandidateSlot halfRateCandidate_;
         CandidateSlot quarterRateCandidate_;
         CandidateSlot eighthRateCandidate_;
-        // Serial workspace today; explicit ownership makes analyse() re-entrant
-        // without changing any detector arithmetic. Future workers must provide
-        // their own private AnalysisWorkspace instance.
+        // Main/audio-thread workspace. PARKED_LOW_RATE_WORKER_V1 owns a second
+        // private workspace and never shares scratch arithmetic with this one.
         AnalysisWorkspace analysisWorkspace_ {};
+        std::unique_ptr<AnalysisWorker> analysisWorker_;
         std::array<DecoderState, decoderBeamWidth> decoderBeam_ {};
         float trackedPitchHz_ = 0.0f;
         float reacquisitionAnchorHz_ = 0.0f;
