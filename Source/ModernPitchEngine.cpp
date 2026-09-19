@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <new>
+#include <thread>
 
 namespace
 {
@@ -87,8 +89,166 @@ float ModernPitchEngine::BiquadLowPass::process(float input) noexcept
 //==============================================================================
 // MultiRatePitchTracker
 
+// PARKED_LOW_RATE_WORKER_V1
+// Only half/eighth analyse() calls move off the audio thread. The ring buffers
+// are immutable from submit() until wait() returns because processSample() does
+// not advance to the next input sample before this rendezvous. The worker owns
+// its AnalysisWorkspace, so detector arithmetic remains re-entrant and no
+// scratch buffer is shared with full/quarter analysis.
+class ModernPitchEngine::MultiRatePitchTracker::AnalysisWorker final
+{
+public:
+    struct Job
+    {
+        bool runHalf = false;
+        bool runEighth = false;
+
+        int halfWritePosition = 0;
+        int halfAvailableSamples = 0;
+        double halfSampleRate = 0.0;
+        float halfMinimum = 0.0f;
+        float halfMaximum = 0.0f;
+
+        int eighthWritePosition = 0;
+        int eighthAvailableSamples = 0;
+        double eighthSampleRate = 0.0;
+        float eighthMinimum = 0.0f;
+        float eighthMaximum = 0.0f;
+    };
+
+    struct Result
+    {
+        PitchCandidate half {};
+        PitchCandidate eighth {};
+        bool halfComputed = false;
+        bool eighthComputed = false;
+    };
+
+    explicit AnalysisWorker(MultiRatePitchTracker& owner) noexcept
+        : owner_(owner)
+    {
+    }
+
+    ~AnalysisWorker()
+    {
+        stop();
+    }
+
+    bool start() noexcept
+    {
+        try
+        {
+            thread_ = std::thread([this] { run(); });
+            return true;
+        }
+        catch (...)
+        {
+            return false;
+        }
+    }
+
+    void stop() noexcept
+    {
+        stopRequested_.store(true, std::memory_order_release);
+        wakeEvent_.signal();
+        if (thread_.joinable())
+            thread_.join();
+    }
+
+    std::uint64_t submit(const Job& job) noexcept
+    {
+        job_ = job;
+        const std::uint64_t ticket =
+            requestTicket_.load(std::memory_order_relaxed) + 1u;
+        requestTicket_.store(ticket, std::memory_order_release);
+        wakeEvent_.signal();
+        return ticket;
+    }
+
+    Result wait(std::uint64_t ticket) noexcept
+    {
+        while (completedTicket_.load(std::memory_order_acquire) < ticket)
+            std::this_thread::yield();
+
+        return result_;
+    }
+
+private:
+    void run() noexcept
+    {
+        std::uint64_t seenTicket = 0;
+
+        while (!stopRequested_.load(std::memory_order_acquire))
+        {
+            wakeEvent_.wait();
+
+            if (stopRequested_.load(std::memory_order_acquire))
+                break;
+
+            const std::uint64_t ticket =
+                requestTicket_.load(std::memory_order_acquire);
+            if (ticket == seenTicket)
+                continue;
+
+            const Job job = job_;
+            Result local {};
+
+            if (job.runHalf)
+            {
+                local.half = owner_.analyse(owner_.halfRateRing_,
+                                            job.halfWritePosition,
+                                            job.halfAvailableSamples,
+                                            job.halfSampleRate,
+                                            job.halfMinimum,
+                                            job.halfMaximum,
+                                            standardAnalysisSize,
+                                            workspace_);
+                local.half.pathIndex = 1;
+                local.half.ageInHops = 0;
+                local.halfComputed = true;
+            }
+
+            if (job.runEighth)
+            {
+                local.eighth = owner_.analyse(owner_.eighthRateRing_,
+                                              job.eighthWritePosition,
+                                              job.eighthAvailableSamples,
+                                              job.eighthSampleRate,
+                                              job.eighthMinimum,
+                                              job.eighthMaximum,
+                                              maxAnalysisSize,
+                                              workspace_);
+                local.eighth.pathIndex = 3;
+                local.eighth.ageInHops = 0;
+                local.eighthComputed = true;
+            }
+
+            result_ = local;
+            seenTicket = ticket;
+            completedTicket_.store(ticket, std::memory_order_release);
+        }
+    }
+
+    MultiRatePitchTracker& owner_;
+    AnalysisWorkspace workspace_ {};
+    juce::WaitableEvent wakeEvent_;
+    std::thread thread_;
+    std::atomic<bool> stopRequested_ { false };
+    std::atomic<std::uint64_t> requestTicket_ { 0 };
+    std::atomic<std::uint64_t> completedTicket_ { 0 };
+    Job job_ {};
+    Result result_ {};
+};
+
+ModernPitchEngine::MultiRatePitchTracker::MultiRatePitchTracker() noexcept = default;
+ModernPitchEngine::MultiRatePitchTracker::~MultiRatePitchTracker() = default;
+
 void ModernPitchEngine::MultiRatePitchTracker::prepare(double sampleRate) noexcept
 {
+    // Host re-prepare happens off the realtime callback. Tear down an old
+    // parked worker before changing any detector geometry it may read.
+    analysisWorker_.reset();
+
     sampleRate_ = std::isfinite(sampleRate)
         ? std::max(8000.0, sampleRate)
         : 48000.0;
@@ -107,6 +267,13 @@ void ModernPitchEngine::MultiRatePitchTracker::prepare(double sampleRate) noexce
         1.0 - std::exp(-1.0 / (0.035 * sampleRate_)));
 
     reset();
+
+    // Allocation and thread creation are confined to prepare(). If the worker
+    // cannot be created, processSample() keeps the exact serial golden path.
+    std::unique_ptr<AnalysisWorker> candidate(
+        new (std::nothrow) AnalysisWorker(*this));
+    if (candidate != nullptr && candidate->start())
+        analysisWorker_ = std::move(candidate);
 }
 
 void ModernPitchEngine::MultiRatePitchTracker::reset() noexcept
