@@ -1,0 +1,133 @@
+name: Validate structured identity normalized CPU v1
+
+on:
+  push:
+    branches:
+      - voice-aware-f0-parallel-golden-v1
+    paths:
+      - .github/workflows/validate-structured-identity-normalized-cpu-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cpu:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout experiment
+        uses: actions/checkout@v4
+        with:
+          ref: voice-aware-f0-parallel-golden-v1
+          fetch-depth: 0
+
+      - name: Guard exact diagnostic v2 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/ModernPitchEngine.cpp)" = "bc99c8895c570d3ee434667fb0aa6ebf356f7a20"
+          test "$(git hash-object Source/ModernPitchEngine.h)" = "e4647f124f5b0253eb1216b62816b2c4dc3a0c30"
+          grep -q 'TARGET_REVISION_DIAGNOSTIC_LATCH_V2' Source/ModernPitchEngine.cpp
+          ! grep -q 'STRUCTURED_IDENTITY_AUTHORITY_V1' Source/ModernPitchEngine.cpp
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Materialize baseline and candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach /tmp/neumaton-identity-cpu-baseline d80e2dc8f20aa1465b396d8f7e09cf90b41aa214
+          cp Tests/CpuHotspotBenchmark.cpp /tmp/neumaton-identity-cpu-baseline/Tests/CpuHotspotBenchmark.cpp
+          python3 Tests/ApplyStructuredIdentityAuthority.py
+          test "$(git diff --name-only)" = "Source/ModernPitchEngine.cpp"
+          grep -q 'STRUCTURED_IDENTITY_AUTHORITY_V1' Source/ModernPitchEngine.cpp
+
+      - name: Build baseline benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/neumaton-identity-cpu-baseline
+          cp Tests/SupervisorContinuityTest.cpp /tmp/cpu-normalized-baseline-supervisor.cpp
+          cp Tests/CpuHotspotBenchmark.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-cpu -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-cpu --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          cp /tmp/cpu-normalized-baseline-supervisor.cpp Tests/SupervisorContinuityTest.cpp
+
+      - name: Build candidate benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/cpu-normalized-candidate-supervisor.cpp
+          cp Tests/CpuHotspotBenchmark.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-cpu-normalized -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-cpu-normalized --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          cp /tmp/cpu-normalized-candidate-supervisor.cpp Tests/SupervisorContinuityTest.cpp
+
+      - name: Run interleaved measurements
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > /tmp/identity-normalized-baseline.log
+          : > /tmp/identity-normalized-candidate.log
+          for pair in 1 2 3 4 5; do
+            if (( pair % 2 == 1 )); then
+              /tmp/neumaton-identity-cpu-baseline/build-cpu/clean-engine-tests/SupervisorContinuityTest \
+                2>&1 | tee -a /tmp/identity-normalized-baseline.log
+              ./build-cpu-normalized/clean-engine-tests/SupervisorContinuityTest \
+                2>&1 | tee -a /tmp/identity-normalized-candidate.log
+            else
+              ./build-cpu-normalized/clean-engine-tests/SupervisorContinuityTest \
+                2>&1 | tee -a /tmp/identity-normalized-candidate.log
+              /tmp/neumaton-identity-cpu-baseline/build-cpu/clean-engine-tests/SupervisorContinuityTest \
+                2>&1 | tee -a /tmp/identity-normalized-baseline.log
+            fi
+          done
+
+      - name: Evaluate tracker-normalized medians
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, statistics
+
+          def rows(path):
+              out=[]
+              for line in Path(path).read_text().splitlines():
+                  if line.startswith("CPU_PROFILE "):
+                      out.append(dict(re.findall(r'(\w+)=([^ ]+)', line)))
+              if len(out) != 15:
+                  raise SystemExit(f"{path}: expected 15 CPU rows, got {len(out)}")
+              return out
+
+          b=rows('/tmp/identity-normalized-baseline.log')
+          c=rows('/tmp/identity-normalized-candidate.log')
+
+          def vals(rows, block, num, den):
+              return [float(r[num]) / max(float(r[den]),1e-9)
+                      for r in rows if int(r['block']) == block]
+
+          worst=0.0
+          for block in (64,128,256):
+              for key in ('engine_ms','live_ms'):
+                  br=statistics.median(vals(b,block,key,'tracker_ms'))
+                  cr=statistics.median(vals(c,block,key,'tracker_ms'))
+                  delta=(cr/br-1.0)*100.0
+                  worst=max(worst,delta)
+                  print('STRUCTURED_IDENTITY_NORMALIZED_CPU',
+                        f'block={block}',
+                        f'metric={key}',
+                        f'baseline_ratio={br:.6f}',
+                        f'candidate_ratio={cr:.6f}',
+                        f'delta_pct={delta:.2f}')
+          if worst > 2.0:
+              raise SystemExit(f'normalized CPU regression too large: {worst:.2f}%')
+          print('STRUCTURED_IDENTITY_NORMALIZED_CPU=PASS')
+          PY
