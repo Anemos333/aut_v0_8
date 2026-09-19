@@ -149,6 +149,22 @@ public:
         bool targetRevisionMusicalOnset = false;
         bool targetRevisionLiveIdentityBreak = false;
 
+        // TARGET_REVISION_DIAGNOSTIC_LATCH_V2
+        bool targetRevisionDetectorScaleCommit = false;
+        bool targetRevisionDeepCentreExit = false;
+        bool targetRevisionPersistentBoundaryExit = false;
+        bool targetRevisionTerminalStructure = false;
+        bool targetRevisionSameTailSide = false;
+        bool targetRevisionOutsideStableCore = false;
+        float targetRevisionVoiceBodyEnergy = 0.0f;
+        float targetRevisionVoiceHarmonicity = 0.0f;
+        float targetRevisionVoiceSpectralReliability = 0.0f;
+        float targetRevisionVoiceBreathiness = 0.0f;
+        float targetRevisionVoiceEventStrength = 0.0f;
+        float targetRevisionCorrectionBeforeCents = 0.0f;
+        float targetRevisionCorrectionAfterCents = 0.0f;
+        float targetRevisionCorrectionDeltaCents = 0.0f;
+
         float tempoBpm = 120.0f;
         float tempoGridPhase = 0.0f;
         float tempoGlideTimeMs = 0.0f;
@@ -646,6 +662,22 @@ private:
     bool targetRevisionMusicalOnset_ = false;
     bool targetRevisionLiveIdentityBreak_ = false;
 
+    // TARGET_REVISION_DIAGNOSTIC_LATCH_V2
+    bool targetRevisionDetectorScaleCommit_ = false;
+    bool targetRevisionDeepCentreExit_ = false;
+    bool targetRevisionPersistentBoundaryExit_ = false;
+    bool targetRevisionTerminalStructure_ = false;
+    bool targetRevisionSameTailSide_ = false;
+    bool targetRevisionOutsideStableCore_ = false;
+    float targetRevisionVoiceBodyEnergy_ = 0.0f;
+    float targetRevisionVoiceHarmonicity_ = 0.0f;
+    float targetRevisionVoiceSpectralReliability_ = 0.0f;
+    float targetRevisionVoiceBreathiness_ = 0.0f;
+    float targetRevisionVoiceEventStrength_ = 0.0f;
+    float targetRevisionCorrectionBeforeCents_ = 0.0f;
+    float targetRevisionCorrectionAfterCents_ = 0.0f;
+    float targetRevisionCorrectionDeltaCents_ = 0.0f;
+
     std::atomic<std::uint32_t> meterSequence_ { 0 };
     std::atomic<float> meterPitchHz_ { 0.0f };
     std::atomic<float> meterTargetHz_ { 0.0f };
@@ -672,6 +704,20 @@ private:
     std::atomic<bool> meterTargetRevisionBodyPresent_ { false };
     std::atomic<bool> meterTargetRevisionMusicalOnset_ { false };
     std::atomic<bool> meterTargetRevisionLiveIdentityBreak_ { false };
+    std::atomic<bool> meterTargetRevisionDetectorScaleCommit_ { false };
+    std::atomic<bool> meterTargetRevisionDeepCentreExit_ { false };
+    std::atomic<bool> meterTargetRevisionPersistentBoundaryExit_ { false };
+    std::atomic<bool> meterTargetRevisionTerminalStructure_ { false };
+    std::atomic<bool> meterTargetRevisionSameTailSide_ { false };
+    std::atomic<bool> meterTargetRevisionOutsideStableCore_ { false };
+    std::atomic<float> meterTargetRevisionVoiceBodyEnergy_ { 0.0f };
+    std::atomic<float> meterTargetRevisionVoiceHarmonicity_ { 0.0f };
+    std::atomic<float> meterTargetRevisionVoiceSpectralReliability_ { 0.0f };
+    std::atomic<float> meterTargetRevisionVoiceBreathiness_ { 0.0f };
+    std::atomic<float> meterTargetRevisionVoiceEventStrength_ { 0.0f };
+    std::atomic<float> meterTargetRevisionCorrectionBeforeCents_ { 0.0f };
+    std::atomic<float> meterTargetRevisionCorrectionAfterCents_ { 0.0f };
+    std::atomic<float> meterTargetRevisionCorrectionDeltaCents_ { 0.0f };
     std::atomic<float> meterTempoBpm_ { 120.0f };
     std::atomic<float> meterTempoGridPhase_ { 0.0f };
     std::atomic<float> meterTempoGlideTimeMs_ { 0.0f };

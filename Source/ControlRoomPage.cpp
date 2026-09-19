@@ -761,6 +761,23 @@ void ControlRoomPage::drawDiagnosticGrid (juce::Graphics& g, juce::Rectangle<int
         line += metering_.targetRevisionBodyPresent ? " B1" : " B0";
         line += metering_.targetRevisionMusicalOnset ? " O1" : " O0";
         line += metering_.targetRevisionLiveIdentityBreak ? " I1" : " I0";
+
+        // TARGET_REVISION_DIAGNOSTIC_LATCH_V2
+        line += metering_.targetRevisionDetectorScaleCommit ? " D1" : " D0";
+        line += metering_.targetRevisionDeepCentreExit ? " C1" : " C0";
+        line += metering_.targetRevisionPersistentBoundaryExit ? " P1" : " P0";
+        line += metering_.targetRevisionTerminalStructure ? " TS1" : " TS0";
+        line += metering_.targetRevisionSameTailSide ? " SS1" : " SS0";
+        line += metering_.targetRevisionOutsideStableCore ? " X1" : " X0";
+        line += " | vE " + juce::String (metering_.targetRevisionVoiceBodyEnergy, 2)
+            + " h " + juce::String (metering_.targetRevisionVoiceHarmonicity, 2)
+            + " r " + juce::String (metering_.targetRevisionVoiceSpectralReliability, 2)
+            + " br " + juce::String (metering_.targetRevisionVoiceBreathiness, 2)
+            + " ev " + juce::String (metering_.targetRevisionVoiceEventStrength, 2);
+        line += " | corr "
+            + juce::String (metering_.targetRevisionCorrectionBeforeCents, 0)
+            + ">" + juce::String (metering_.targetRevisionCorrectionAfterCents, 0)
+            + " d" + juce::String (metering_.targetRevisionCorrectionDeltaCents, 0);
     }
 
     line += "   |   Tempo ";
