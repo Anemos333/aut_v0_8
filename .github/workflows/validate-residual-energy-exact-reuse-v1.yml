@@ -1,0 +1,255 @@
+name: Validate exact residual-energy reuse v1
+
+on:
+  push:
+    branches:
+      - cpu-residual-energy-exact-reuse-v1
+    paths:
+      - Tests/ApplyResidualEnergyExactReuse.py
+      - Tests/DetectorSuperHopProfile.cpp
+      - .github/workflows/validate-residual-energy-exact-reuse-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+        with:
+          ref: cpu-residual-energy-exact-reuse-v1
+          fetch-depth: 0
+
+      - name: Guard frozen golden baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/ModernPitchEngine.cpp)" = "bc99c8895c570d3ee434667fb0aa6ebf356f7a20"
+          test "$(git hash-object Source/ModernPitchEngine.h)" = "e4647f124f5b0253eb1216b62816b2c4dc3a0c30"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+          grep -q 'RESIDUAL_LINE_EXACT_MEMOIZATION_V1' Source/ModernPitchEngine.cpp
+          grep -q 'RESIDUAL_HANN_LAZY_MEMOIZATION_V1' Source/ModernPitchEngine.cpp
+          grep -q 'TAU_EVIDENCE_MEMOIZATION_V1' Source/ModernPitchEngine.cpp
+          ! grep -q 'RESIDUAL_ENERGY_EXACT_REUSE_V1' Source/ModernPitchEngine.cpp
+          echo 'RESIDUAL_ENERGY_BASELINE_GUARD=PASS'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Materialize frozen baseline worktree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach /tmp/neumaton-residual-energy-baseline HEAD
+          test "$(cd /tmp/neumaton-residual-energy-baseline && git hash-object Source/ModernPitchEngine.cpp)" = "bc99c8895c570d3ee434667fb0aa6ebf356f7a20"
+
+      - name: Apply candidate only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 Tests/ApplyResidualEnergyExactReuse.py
+          test "$(git diff --name-only)" = "Source/ModernPitchEngine.cpp"
+          grep -q 'RESIDUAL_ENERGY_EXACT_REUSE_V1' Source/ModernPitchEngine.cpp
+          test "$(git hash-object Source/ModernPitchEngine.h)" = "e4647f124f5b0253eb1216b62816b2c4dc3a0c30"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          echo 'RESIDUAL_ENERGY_CANDIDATE_MATERIALIZED=PASS'
+
+      - name: Verify detector oracle exact and deterministic
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/residual-energy-supervisor-original.cpp
+          cp Tests/GoldenDetectorDeterminismTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-detector -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-detector --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          for run in 1 2 3; do
+            ./build-detector/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee "/tmp/residual-energy-detector-$run.log"
+            grep -q '^GOLDEN_DETECTOR_BITWISE_DETERMINISM=PASS observations=12000$' "/tmp/residual-energy-detector-$run.log"
+            grep -q '^GOLDEN_DETECTOR_TRACE_HASH=58273352d40c5499$' "/tmp/residual-energy-detector-$run.log"
+          done
+          cp /tmp/residual-energy-supervisor-original.cpp Tests/SupervisorContinuityTest.cpp
+          echo 'RESIDUAL_ENERGY_DETECTOR_EXACT=PASS'
+
+      - name: Verify end-to-end golden corpus exact
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/residual-energy-before-corpus.cpp
+          cp Tests/GoldenEngineBehaviorCorpusTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-corpus -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-corpus --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          for run in 1 2; do
+            ./build-corpus/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee "/tmp/residual-energy-corpus-$run.log"
+            grep -q '^GOLDEN_ENGINE_BEHAVIOR_CORPUS=PASS scenarios=14$' "/tmp/residual-energy-corpus-$run.log"
+            grep -q '^GOLDEN_ENGINE_CORPUS_HASH=022ae649ee590533$' "/tmp/residual-energy-corpus-$run.log"
+          done
+          grep '^GOLDEN_ENGINE_SCENARIO_HASH' /tmp/residual-energy-corpus-1.log > /tmp/residual-energy-scenarios-1.log
+          grep '^GOLDEN_ENGINE_SCENARIO_HASH' /tmp/residual-energy-corpus-2.log > /tmp/residual-energy-scenarios-2.log
+          diff -u /tmp/residual-energy-scenarios-1.log /tmp/residual-energy-scenarios-2.log
+          cp /tmp/residual-energy-before-corpus.cpp Tests/SupervisorContinuityTest.cpp
+          echo 'RESIDUAL_ENERGY_END_TO_END_EXACT=PASS'
+
+      - name: Verify authority and renderer contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-contracts -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-contracts --config Release --parallel 2 \
+            --target SupervisorContinuityTest CleanModernPitchEngineTest SingleWetSpectralRendererTest >/dev/null
+          ./build-contracts/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/residual-energy-supervisor.log
+          ./build-contracts/clean-engine-tests/CleanModernPitchEngineTest 2>&1 | tee /tmp/residual-energy-engine.log
+          ./build-contracts/clean-engine-tests/SingleWetSpectralRendererTest 2>&1 | tee /tmp/residual-energy-renderer.log
+          ! grep -q '=FAIL' /tmp/residual-energy-supervisor.log
+          ! grep -q '=FAIL' /tmp/residual-energy-engine.log
+          ! grep -q '=FAIL' /tmp/residual-energy-renderer.log
+          grep -q 'transition_detector_wobble_cannot_move_destination=PASS' /tmp/residual-energy-supervisor.log
+          grep -q 'periodic_reentry_has_no_click=PASS' /tmp/residual-energy-renderer.log
+          echo 'RESIDUAL_ENERGY_CONTRACTS=PASS'
+
+      - name: Build frozen baseline profilers
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/neumaton-residual-energy-baseline
+          cp Tests/SupervisorContinuityTest.cpp /tmp/residual-energy-baseline-supervisor.cpp
+          cp Tests/CpuHotspotBenchmark.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-cpu -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-cpu --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          cp build-cpu/clean-engine-tests/SupervisorContinuityTest /tmp/residual-energy-baseline-cpu
+
+          cp Tests/DetectorSuperHopProfile.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-superhop -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-superhop --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          cp build-superhop/clean-engine-tests/SupervisorContinuityTest /tmp/residual-energy-baseline-superhop
+          cp /tmp/residual-energy-baseline-supervisor.cpp Tests/SupervisorContinuityTest.cpp
+
+      - name: Build candidate profilers
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/residual-energy-candidate-supervisor.cpp
+          cp Tests/CpuHotspotBenchmark.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-candidate-cpu -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-candidate-cpu --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          cp build-candidate-cpu/clean-engine-tests/SupervisorContinuityTest /tmp/residual-energy-candidate-cpu
+
+          cp Tests/DetectorSuperHopProfile.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-candidate-superhop -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-candidate-superhop --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          cp build-candidate-superhop/clean-engine-tests/SupervisorContinuityTest /tmp/residual-energy-candidate-superhop
+          cp /tmp/residual-energy-candidate-supervisor.cpp Tests/SupervisorContinuityTest.cpp
+
+      - name: Run interleaved baseline and candidate profiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > /tmp/residual-energy-baseline-cpu.log
+          : > /tmp/residual-energy-candidate-cpu.log
+          : > /tmp/residual-energy-baseline-superhop.log
+          : > /tmp/residual-energy-candidate-superhop.log
+
+          for run in 1 2 3 4 5; do
+            if (( run % 2 == 1 )); then
+              /tmp/residual-energy-baseline-cpu | tee -a /tmp/residual-energy-baseline-cpu.log
+              /tmp/residual-energy-candidate-cpu | tee -a /tmp/residual-energy-candidate-cpu.log
+            else
+              /tmp/residual-energy-candidate-cpu | tee -a /tmp/residual-energy-candidate-cpu.log
+              /tmp/residual-energy-baseline-cpu | tee -a /tmp/residual-energy-baseline-cpu.log
+            fi
+          done
+
+          for run in 1 2 3 4 5; do
+            if (( run % 2 == 1 )); then
+              NEUMATON_PROFILE_SECONDS=3.0 NEUMATON_PATH_REPS=60 /tmp/residual-energy-baseline-superhop | tee -a /tmp/residual-energy-baseline-superhop.log
+              NEUMATON_PROFILE_SECONDS=3.0 NEUMATON_PATH_REPS=60 /tmp/residual-energy-candidate-superhop | tee -a /tmp/residual-energy-candidate-superhop.log
+            else
+              NEUMATON_PROFILE_SECONDS=3.0 NEUMATON_PATH_REPS=60 /tmp/residual-energy-candidate-superhop | tee -a /tmp/residual-energy-candidate-superhop.log
+              NEUMATON_PROFILE_SECONDS=3.0 NEUMATON_PATH_REPS=60 /tmp/residual-energy-baseline-superhop | tee -a /tmp/residual-energy-baseline-superhop.log
+            fi
+          done
+
+      - name: Summarize CPU deltas
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee /tmp/residual-energy-cpu-summary.log
+          from pathlib import Path
+          import re, statistics
+
+          def cpu_rows(path):
+              rows=[]
+              for line in Path(path).read_text().splitlines():
+                  if line.startswith('CPU_PROFILE '):
+                      rows.append(dict(re.findall(r'(\w+)=([^ ]+)', line)))
+              if len(rows) != 15:
+                  raise SystemExit(f'{path}: expected 15 CPU_PROFILE rows, got {len(rows)}')
+              return rows
+
+          def hop_rows(path):
+              rows=[]
+              for line in Path(path).read_text().splitlines():
+                  if line.startswith('HOP_PROFILE '):
+                      rows.append(dict(re.findall(r'(\w+)=([^ ]+)', line)))
+              if len(rows) != 20:
+                  raise SystemExit(f'{path}: expected 20 HOP_PROFILE rows, got {len(rows)}')
+              return rows
+
+          def med(rows, pred, key):
+              vals=[float(r[key]) for r in rows if pred(r)]
+              if not vals:
+                  raise SystemExit(f'no values for {key}')
+              return statistics.median(vals)
+
+          b=cpu_rows('/tmp/residual-energy-baseline-cpu.log')
+          c=cpu_rows('/tmp/residual-energy-candidate-cpu.log')
+          for block in (64,128,256):
+              pred=lambda r, block=block: int(r['block']) == block
+              bt=med(b,pred,'tracker_ms'); ct=med(c,pred,'tracker_ms')
+              be=med(b,pred,'engine_ms'); ce=med(c,pred,'engine_ms')
+              bl=med(b,pred,'live_ms'); cl=med(c,pred,'live_ms')
+              print('RESIDUAL_ENERGY_CPU_MEDIAN',
+                    f'block={block}',
+                    f'baseline_tracker_ms={bt:.3f}',
+                    f'candidate_tracker_ms={ct:.3f}',
+                    f'tracker_reduction_pct={(1-ct/max(bt,1e-9))*100:.2f}',
+                    f'baseline_engine_ms={be:.3f}',
+                    f'candidate_engine_ms={ce:.3f}',
+                    f'engine_reduction_pct={(1-ce/max(be,1e-9))*100:.2f}',
+                    f'baseline_live_ms={bl:.3f}',
+                    f'candidate_live_ms={cl:.3f}',
+                    f'live_reduction_pct={(1-cl/max(bl,1e-9))*100:.2f}')
+
+          bh=hop_rows('/tmp/residual-energy-baseline-superhop.log')
+          ch=hop_rows('/tmp/residual-energy-candidate-superhop.log')
+          for name in ('full_only','full_half','full_half_quarter','super_full_half_quarter_eighth'):
+              pred=lambda r, name=name: r['name'] == name
+              bp50=med(bh,pred,'p50_us'); cp50=med(ch,pred,'p50_us')
+              bp99=med(bh,pred,'p99_us'); cp99=med(ch,pred,'p99_us')
+              bmax=med(bh,pred,'max_us'); cmax=med(ch,pred,'max_us')
+              print('RESIDUAL_ENERGY_HOP_MEDIAN',
+                    f'name={name}',
+                    f'baseline_p50_us={bp50:.3f}',
+                    f'candidate_p50_us={cp50:.3f}',
+                    f'p50_reduction_pct={(1-cp50/max(bp50,1e-9))*100:.2f}',
+                    f'baseline_p99_us={bp99:.3f}',
+                    f'candidate_p99_us={cp99:.3f}',
+                    f'p99_reduction_pct={(1-cp99/max(bp99,1e-9))*100:.2f}',
+                    f'baseline_max_us={bmax:.3f}',
+                    f'candidate_max_us={cmax:.3f}',
+                    f'max_reduction_pct={(1-cmax/max(bmax,1e-9))*100:.2f}')
+          PY
+          cat /tmp/residual-energy-cpu-summary.log >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Final validation marker
+        run: echo 'RESIDUAL_ENERGY_EXACT_REUSE_VALIDATION=PASS_NO_PROMOTION'
