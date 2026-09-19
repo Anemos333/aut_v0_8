@@ -746,6 +746,23 @@ void ControlRoomPage::drawDiagnosticGrid (juce::Graphics& g, juce::Rectangle<int
     if (metering_.pendingOctaveObservations > 0)
         line += "   |   Confirm " + juce::String (metering_.pendingOctaveObservations);
 
+    // TARGET_REVISION_DIAGNOSTIC_LATCH_V1
+    if (metering_.targetRevisionDiagnosticSerial > 0)
+    {
+        line += "   |   Rev#" + juce::String (
+            static_cast<int> (metering_.targetRevisionDiagnosticSerial))
+            + " " + juce::String (metering_.targetRevisionBeforeHz, 1)
+            + ">" + juce::String (metering_.targetRevisionAfterHz, 1)
+            + "Hz " + juce::String (metering_.targetRevisionJumpCents, 0) + "c";
+        if (metering_.targetRevisionFromStable)
+            line += " S";
+        line += metering_.targetRevisionVoiceEvidenceValid ? " V1" : " V0";
+        line += metering_.targetRevisionTerminalTailVeto ? " T1" : " T0";
+        line += metering_.targetRevisionBodyPresent ? " B1" : " B0";
+        line += metering_.targetRevisionMusicalOnset ? " O1" : " O0";
+        line += metering_.targetRevisionLiveIdentityBreak ? " I1" : " I0";
+    }
+
     line += "   |   Tempo ";
     line += metering_.tempoActive ? "active" : "off";
     line += metering_.tempoHostSyncValid ? " / host" : " / free";

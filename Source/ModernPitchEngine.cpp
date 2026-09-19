@@ -2992,6 +2992,27 @@ void ModernPitchEngine::reset() noexcept
     meterOnsetStrength_.store(0.0f, std::memory_order_relaxed);
     meterTargetJumpCents_.store(0.0f, std::memory_order_relaxed);
     meterSustainedSeconds_.store(0.0f, std::memory_order_relaxed);
+
+    targetRevisionDiagnosticSerial_ = 0;
+    targetRevisionBeforeHz_ = 0.0f;
+    targetRevisionAfterHz_ = 0.0f;
+    targetRevisionJumpCents_ = 0.0f;
+    targetRevisionFromStable_ = false;
+    targetRevisionVoiceEvidenceValid_ = false;
+    targetRevisionTerminalTailVeto_ = false;
+    targetRevisionBodyPresent_ = false;
+    targetRevisionMusicalOnset_ = false;
+    targetRevisionLiveIdentityBreak_ = false;
+    meterTargetRevisionDiagnosticSerial_.store(0, std::memory_order_relaxed);
+    meterTargetRevisionBeforeHz_.store(0.0f, std::memory_order_relaxed);
+    meterTargetRevisionAfterHz_.store(0.0f, std::memory_order_relaxed);
+    meterTargetRevisionJumpCents_.store(0.0f, std::memory_order_relaxed);
+    meterTargetRevisionFromStable_.store(false, std::memory_order_relaxed);
+    meterTargetRevisionVoiceEvidenceValid_.store(false, std::memory_order_relaxed);
+    meterTargetRevisionTerminalTailVeto_.store(false, std::memory_order_relaxed);
+    meterTargetRevisionBodyPresent_.store(false, std::memory_order_relaxed);
+    meterTargetRevisionMusicalOnset_.store(false, std::memory_order_relaxed);
+    meterTargetRevisionLiveIdentityBreak_.store(false, std::memory_order_relaxed);
     meterDetectorSupport_.store(0, std::memory_order_relaxed);
     meterOctaveState_.store(0, std::memory_order_relaxed);
     meterPendingOctave_.store(0, std::memory_order_relaxed);
@@ -4038,6 +4059,23 @@ void ModernPitchEngine::updateCorrectionState(
         state.lastTargetJumpCents = targetJump;
         if (targetIdentityChanged)
         {
+            // TARGET_REVISION_DIAGNOSTIC_LATCH_V1
+            // Observe the committed identity change before mutating tracking
+            // state. These fields are debug metering only and never participate
+            // in any subsequent DSP or authority decision.
+            ++targetRevisionDiagnosticSerial_;
+            targetRevisionBeforeHz_ = state.targetValid
+                ? static_cast<float>(std::exp2(state.targetLog2)) : 0.0f;
+            targetRevisionAfterHz_ = static_cast<float>(std::exp2(newTarget));
+            targetRevisionJumpCents_ = static_cast<float>(targetJump);
+            targetRevisionFromStable_ =
+                state.trackingState == TrackingState::stable;
+            targetRevisionVoiceEvidenceValid_ = richEvidence;
+            targetRevisionTerminalTailVeto_ = terminalTailIdentityVeto;
+            targetRevisionBodyPresent_ = bodyPresent;
+            targetRevisionMusicalOnset_ = musicalOnset;
+            targetRevisionLiveIdentityBreak_ = liveIdentityBreak;
+
             // TRANSITION_DESTINATION_FROZEN_V2: every committed note boundary
             // starts one clean monotonic trajectory. A later detector candidate
             // may be analysed, but cannot continuously rewrite this destination.
@@ -4776,6 +4814,26 @@ void ModernPitchEngine::publishMetering(
     meterOctaveState_.store(observation.octaveState, std::memory_order_relaxed);
     meterTrackingState_.store(static_cast<int>(state.trackingState),
                               std::memory_order_relaxed);
+    meterTargetRevisionDiagnosticSerial_.store(
+        targetRevisionDiagnosticSerial_, std::memory_order_relaxed);
+    meterTargetRevisionBeforeHz_.store(
+        targetRevisionBeforeHz_, std::memory_order_relaxed);
+    meterTargetRevisionAfterHz_.store(
+        targetRevisionAfterHz_, std::memory_order_relaxed);
+    meterTargetRevisionJumpCents_.store(
+        targetRevisionJumpCents_, std::memory_order_relaxed);
+    meterTargetRevisionFromStable_.store(
+        targetRevisionFromStable_, std::memory_order_relaxed);
+    meterTargetRevisionVoiceEvidenceValid_.store(
+        targetRevisionVoiceEvidenceValid_, std::memory_order_relaxed);
+    meterTargetRevisionTerminalTailVeto_.store(
+        targetRevisionTerminalTailVeto_, std::memory_order_relaxed);
+    meterTargetRevisionBodyPresent_.store(
+        targetRevisionBodyPresent_, std::memory_order_relaxed);
+    meterTargetRevisionMusicalOnset_.store(
+        targetRevisionMusicalOnset_, std::memory_order_relaxed);
+    meterTargetRevisionLiveIdentityBreak_.store(
+        targetRevisionLiveIdentityBreak_, std::memory_order_relaxed);
     meterTempoBpm_.store(tempoMeter.bpm, std::memory_order_relaxed);
     meterTempoGridPhase_.store(tempoMeter.gridPhase, std::memory_order_relaxed);
     meterTempoGlideTimeMs_.store(tempoMeter.glideTimeMs, std::memory_order_relaxed);
@@ -4823,6 +4881,26 @@ ModernPitchEngine::Metering ModernPitchEngine::getMetering() const noexcept
         result.pendingOctaveObservations = meterPendingOctave_.load(std::memory_order_relaxed);
         result.state = static_cast<TrackingState>(
             meterTrackingState_.load(std::memory_order_relaxed));
+        result.targetRevisionDiagnosticSerial =
+            meterTargetRevisionDiagnosticSerial_.load(std::memory_order_relaxed);
+        result.targetRevisionBeforeHz =
+            meterTargetRevisionBeforeHz_.load(std::memory_order_relaxed);
+        result.targetRevisionAfterHz =
+            meterTargetRevisionAfterHz_.load(std::memory_order_relaxed);
+        result.targetRevisionJumpCents =
+            meterTargetRevisionJumpCents_.load(std::memory_order_relaxed);
+        result.targetRevisionFromStable =
+            meterTargetRevisionFromStable_.load(std::memory_order_relaxed);
+        result.targetRevisionVoiceEvidenceValid =
+            meterTargetRevisionVoiceEvidenceValid_.load(std::memory_order_relaxed);
+        result.targetRevisionTerminalTailVeto =
+            meterTargetRevisionTerminalTailVeto_.load(std::memory_order_relaxed);
+        result.targetRevisionBodyPresent =
+            meterTargetRevisionBodyPresent_.load(std::memory_order_relaxed);
+        result.targetRevisionMusicalOnset =
+            meterTargetRevisionMusicalOnset_.load(std::memory_order_relaxed);
+        result.targetRevisionLiveIdentityBreak =
+            meterTargetRevisionLiveIdentityBreak_.load(std::memory_order_relaxed);
         result.tempoBpm = meterTempoBpm_.load(std::memory_order_relaxed);
         result.tempoGridPhase = meterTempoGridPhase_.load(std::memory_order_relaxed);
         result.tempoGlideTimeMs = meterTempoGlideTimeMs_.load(std::memory_order_relaxed);

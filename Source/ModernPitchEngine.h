@@ -135,6 +135,20 @@ public:
         int pendingOctaveObservations = 0;
         TrackingState state = TrackingState::unvoiced;
 
+        // TARGET_REVISION_DIAGNOSTIC_LATCH_V1
+        // Latched debug-only description of the most recent committed target
+        // identity change. It has no authority over detector, controller or DSP.
+        std::uint32_t targetRevisionDiagnosticSerial = 0;
+        float targetRevisionBeforeHz = 0.0f;
+        float targetRevisionAfterHz = 0.0f;
+        float targetRevisionJumpCents = 0.0f;
+        bool targetRevisionFromStable = false;
+        bool targetRevisionVoiceEvidenceValid = false;
+        bool targetRevisionTerminalTailVeto = false;
+        bool targetRevisionBodyPresent = false;
+        bool targetRevisionMusicalOnset = false;
+        bool targetRevisionLiveIdentityBreak = false;
+
         float tempoBpm = 120.0f;
         float tempoGridPhase = 0.0f;
         float tempoGlideTimeMs = 0.0f;
@@ -618,6 +632,20 @@ private:
     double audibleCorrectionCents_ = 0.0;
     std::int64_t sustainedSamples_ = 0;
 
+    // TARGET_REVISION_DIAGNOSTIC_LATCH_V1
+    // Audio-thread-only latched event state, copied into the normal coherent
+    // metering publication at block end. Never read by DSP decisions.
+    std::uint32_t targetRevisionDiagnosticSerial_ = 0;
+    float targetRevisionBeforeHz_ = 0.0f;
+    float targetRevisionAfterHz_ = 0.0f;
+    float targetRevisionJumpCents_ = 0.0f;
+    bool targetRevisionFromStable_ = false;
+    bool targetRevisionVoiceEvidenceValid_ = false;
+    bool targetRevisionTerminalTailVeto_ = false;
+    bool targetRevisionBodyPresent_ = false;
+    bool targetRevisionMusicalOnset_ = false;
+    bool targetRevisionLiveIdentityBreak_ = false;
+
     std::atomic<std::uint32_t> meterSequence_ { 0 };
     std::atomic<float> meterPitchHz_ { 0.0f };
     std::atomic<float> meterTargetHz_ { 0.0f };
@@ -634,6 +662,16 @@ private:
     std::atomic<int> meterOctaveState_ { 0 };
     std::atomic<int> meterPendingOctave_ { 0 };
     std::atomic<int> meterTrackingState_ { static_cast<int>(TrackingState::unvoiced) };
+    std::atomic<std::uint32_t> meterTargetRevisionDiagnosticSerial_ { 0 };
+    std::atomic<float> meterTargetRevisionBeforeHz_ { 0.0f };
+    std::atomic<float> meterTargetRevisionAfterHz_ { 0.0f };
+    std::atomic<float> meterTargetRevisionJumpCents_ { 0.0f };
+    std::atomic<bool> meterTargetRevisionFromStable_ { false };
+    std::atomic<bool> meterTargetRevisionVoiceEvidenceValid_ { false };
+    std::atomic<bool> meterTargetRevisionTerminalTailVeto_ { false };
+    std::atomic<bool> meterTargetRevisionBodyPresent_ { false };
+    std::atomic<bool> meterTargetRevisionMusicalOnset_ { false };
+    std::atomic<bool> meterTargetRevisionLiveIdentityBreak_ { false };
     std::atomic<float> meterTempoBpm_ { 120.0f };
     std::atomic<float> meterTempoGridPhase_ { 0.0f };
     std::atomic<float> meterTempoGlideTimeMs_ { 0.0f };
