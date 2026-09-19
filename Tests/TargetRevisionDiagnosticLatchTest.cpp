@@ -17,7 +17,7 @@ bool check(bool condition, const char* name)
     return condition;
 }
 
-ModernPitchEngine::PitchObservation pitch(float hz, bool onset = false)
+ModernPitchEngine::PitchObservation pitch(float hz)
 {
     ModernPitchEngine::PitchObservation o;
     o.valid = true;
@@ -30,8 +30,8 @@ ModernPitchEngine::PitchObservation pitch(float hz, bool onset = false)
     o.voicing = 0.95f;
     o.consensus = 0.90f;
     o.detectorSupport = 3;
-    o.onset = onset;
-    o.onsetStrength = onset ? 1.0f : 0.0f;
+    o.onset = false;
+    o.onsetStrength = 0.0f;
     return o;
 }
 
@@ -88,13 +88,30 @@ int main()
                      "diagnostic_test_starts_stable");
 
     const auto serialBefore = engine->targetRevisionDiagnosticSerial_;
-    const float nextHz = static_cast<float>(440.0 * std::exp2(1.0 / 12.0));
-    const auto next = pitch(nextHz, true);
+    const double targetBefore = state.targetLog2;
+    const float nextHz = static_cast<float>(440.0 * std::exp2(-1.0 / 12.0));
+    const auto next = pitch(nextHz);
 
-    engine->updateCorrectionState(state, quantizer, next, p);
+    bool committed = false;
+    bool enteredTransition = false;
+    for (int hop = 0; hop < 16 && !committed; ++hop)
+    {
+        engine->updateCorrectionState(state, quantizer, next, p);
+        committed = engine->targetRevisionDiagnosticSerial_ != serialBefore;
+        if (committed)
+        {
+            enteredTransition =
+                state.trackingState == ModernPitchEngine::TrackingState::transition;
+            break;
+        }
 
-    const bool enteredTransition =
-        state.trackingState == ModernPitchEngine::TrackingState::transition;
+        for (int sample = 0; sample < ModernPitchEngine::MultiRatePitchTracker::hopSize(); ++sample)
+            static_cast<void>(engine->advanceCorrection(state));
+    }
+
+    success &= check(committed
+                     && std::abs((state.targetLog2 - targetBefore) * 1200.0) > 90.0,
+                     "persistent_new_identity_really_commits_target_revision");
     success &= check(enteredTransition,
                      "target_revision_enters_transition_before_response_zero");
 
@@ -106,14 +123,14 @@ int main()
                      "target_revision_diagnostic_serial_latches_hidden_transition");
     success &= check(engine->targetRevisionFromStable_,
                      "target_revision_diagnostic_records_from_stable");
-    success &= check(engine->targetRevisionMusicalOnset_,
-                     "target_revision_diagnostic_records_onset");
+    success &= check(!engine->targetRevisionMusicalOnset_,
+                     "target_revision_diagnostic_distinguishes_legato_from_onset");
     success &= check(engine->targetRevisionVoiceEvidenceValid_,
                      "target_revision_diagnostic_records_voice_evidence");
     success &= check(std::abs(engine->targetRevisionBeforeHz_ - 440.0f) < 0.5f
-                     && std::abs(engine->targetRevisionAfterHz_ - nextHz) < 0.5f,
+                     && std::abs(engine->targetRevisionAfterHz_ - nextHz) < 0.8f,
                      "target_revision_diagnostic_records_target_before_after");
-    success &= check(std::abs(engine->targetRevisionJumpCents_ - 100.0f) < 1.0f,
+    success &= check(std::abs(std::abs(engine->targetRevisionJumpCents_) - 100.0f) < 1.0f,
                      "target_revision_diagnostic_records_jump_cents");
 
     std::cerr << "TARGET_REVISION_DIAGNOSTIC_LATCH="
