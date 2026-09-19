@@ -1,0 +1,293 @@
+name: Validate residual-line cache index v1
+
+on:
+  push:
+    branches:
+      - cpu-residual-line-cache-index-v1
+    paths:
+      - Tests/ApplyResidualLineCacheIndex.py
+      - Tests/DetectorSuperHopProfile.cpp
+      - Tests/ParallelPartitionCensusTest.cpp
+      - .github/workflows/validate-residual-line-cache-index-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+        with:
+          ref: cpu-residual-line-cache-index-v1
+          fetch-depth: 0
+
+      - name: Guard promoted golden baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/ModernPitchEngine.cpp)" = "5702fbc14dfe5d7e2f959096d7e56fff98198cea"
+          test "$(git hash-object Source/ModernPitchEngine.h)" = "e4647f124f5b0253eb1216b62816b2c4dc3a0c30"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          grep -q 'RESIDUAL_ENERGY_EXACT_REUSE_V1' Source/ModernPitchEngine.cpp
+          grep -q 'RESIDUAL_LINE_EXACT_MEMOIZATION_V1' Source/ModernPitchEngine.cpp
+          ! grep -q 'RESIDUAL_LINE_CACHE_INDEX_V1' Source/ModernPitchEngine.cpp
+          echo 'RESIDUAL_LINE_CACHE_BASELINE_GUARD=PASS'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Materialize frozen promoted baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach /tmp/neumaton-line-index-baseline 9a06f05ea1b504699eaeed50290fd7eeb4daf182
+          cp Tests/CpuHotspotBenchmark.cpp /tmp/neumaton-line-index-baseline/Tests/CpuHotspotBenchmark.cpp
+          cp Tests/DetectorSuperHopProfile.cpp /tmp/neumaton-line-index-baseline/Tests/DetectorSuperHopProfile.cpp
+          cp Tests/ParallelPartitionCensusTest.cpp /tmp/neumaton-line-index-baseline/Tests/ParallelPartitionCensusTest.cpp
+          test "$(cd /tmp/neumaton-line-index-baseline && git hash-object Source/ModernPitchEngine.cpp)" = "5702fbc14dfe5d7e2f959096d7e56fff98198cea"
+
+      - name: Apply cache-index candidate only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 Tests/ApplyResidualLineCacheIndex.py
+          test "$(git diff --name-only)" = "Source/ModernPitchEngine.cpp"
+          grep -q 'RESIDUAL_LINE_CACHE_INDEX_V1' Source/ModernPitchEngine.cpp
+          grep -q 'RESIDUAL_ENERGY_EXACT_REUSE_V1' Source/ModernPitchEngine.cpp
+          test "$(git hash-object Source/ModernPitchEngine.h)" = "e4647f124f5b0253eb1216b62816b2c4dc3a0c30"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          echo 'RESIDUAL_LINE_CACHE_CANDIDATE_MATERIALIZED=PASS'
+
+      - name: Verify detector oracle exact and deterministic
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/line-index-supervisor-original.cpp
+          cp Tests/GoldenDetectorDeterminismTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-detector -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-detector --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          for run in 1 2 3; do
+            ./build-detector/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee "/tmp/line-index-detector-$run.log"
+            grep -q '^GOLDEN_DETECTOR_BITWISE_DETERMINISM=PASS observations=12000$' "/tmp/line-index-detector-$run.log"
+            grep -q '^GOLDEN_DETECTOR_TRACE_HASH=58273352d40c5499$' "/tmp/line-index-detector-$run.log"
+          done
+          cp /tmp/line-index-supervisor-original.cpp Tests/SupervisorContinuityTest.cpp
+          echo 'RESIDUAL_LINE_CACHE_DETECTOR_EXACT=PASS'
+
+      - name: Verify end-to-end corpus exact
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/line-index-before-corpus.cpp
+          cp Tests/GoldenEngineBehaviorCorpusTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-corpus -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-corpus --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          for run in 1 2; do
+            ./build-corpus/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee "/tmp/line-index-corpus-$run.log"
+            grep -q '^GOLDEN_ENGINE_BEHAVIOR_CORPUS=PASS scenarios=14$' "/tmp/line-index-corpus-$run.log"
+            grep -q '^GOLDEN_ENGINE_CORPUS_HASH=022ae649ee590533$' "/tmp/line-index-corpus-$run.log"
+          done
+          grep '^GOLDEN_ENGINE_SCENARIO_HASH' /tmp/line-index-corpus-1.log > /tmp/line-index-scenarios-1.log
+          grep '^GOLDEN_ENGINE_SCENARIO_HASH' /tmp/line-index-corpus-2.log > /tmp/line-index-scenarios-2.log
+          diff -u /tmp/line-index-scenarios-1.log /tmp/line-index-scenarios-2.log
+          cp /tmp/line-index-before-corpus.cpp Tests/SupervisorContinuityTest.cpp
+          echo 'RESIDUAL_LINE_CACHE_END_TO_END_EXACT=PASS'
+
+      - name: Verify authority and renderer contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-contracts -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-contracts --config Release --parallel 2 \
+            --target SupervisorContinuityTest CleanModernPitchEngineTest SingleWetSpectralRendererTest >/dev/null
+          ./build-contracts/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/line-index-supervisor.log
+          ./build-contracts/clean-engine-tests/CleanModernPitchEngineTest 2>&1 | tee /tmp/line-index-engine.log
+          ./build-contracts/clean-engine-tests/SingleWetSpectralRendererTest 2>&1 | tee /tmp/line-index-renderer.log
+          ! grep -q '=FAIL' /tmp/line-index-supervisor.log
+          ! grep -q '=FAIL' /tmp/line-index-engine.log
+          ! grep -q '=FAIL' /tmp/line-index-renderer.log
+          grep -q 'transition_detector_wobble_cannot_move_destination=PASS' /tmp/line-index-supervisor.log
+          grep -q 'periodic_reentry_has_no_click=PASS' /tmp/line-index-renderer.log
+          echo 'RESIDUAL_LINE_CACHE_CONTRACTS=PASS'
+
+      - name: Build baseline CPU and hop profilers
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/neumaton-line-index-baseline
+          cp Tests/SupervisorContinuityTest.cpp /tmp/line-index-baseline-supervisor.cpp
+
+          cp Tests/CpuHotspotBenchmark.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-cpu -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-cpu --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          cp build-cpu/clean-engine-tests/SupervisorContinuityTest /tmp/line-index-baseline-cpu
+
+          cp Tests/DetectorSuperHopProfile.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-hop -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-hop --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          cp build-hop/clean-engine-tests/SupervisorContinuityTest /tmp/line-index-baseline-hop
+
+          cp Tests/ParallelPartitionCensusTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-partition -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-partition --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          cp build-partition/clean-engine-tests/SupervisorContinuityTest /tmp/line-index-baseline-partition
+
+          cp /tmp/line-index-baseline-supervisor.cpp Tests/SupervisorContinuityTest.cpp
+
+      - name: Build candidate CPU and hop profilers
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/line-index-candidate-supervisor.cpp
+
+          cp Tests/CpuHotspotBenchmark.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-candidate-cpu -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-candidate-cpu --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          cp build-candidate-cpu/clean-engine-tests/SupervisorContinuityTest /tmp/line-index-candidate-cpu
+
+          cp Tests/DetectorSuperHopProfile.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-candidate-hop -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-candidate-hop --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          cp build-candidate-hop/clean-engine-tests/SupervisorContinuityTest /tmp/line-index-candidate-hop
+
+          cp Tests/ParallelPartitionCensusTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-candidate-partition -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-candidate-partition --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          cp build-candidate-partition/clean-engine-tests/SupervisorContinuityTest /tmp/line-index-candidate-partition
+
+          cp /tmp/line-index-candidate-supervisor.cpp Tests/SupervisorContinuityTest.cpp
+
+      - name: Run interleaved average CPU profiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > /tmp/line-index-baseline-cpu.log
+          : > /tmp/line-index-candidate-cpu.log
+          for run in 1 2 3 4 5; do
+            if (( run % 2 == 1 )); then
+              /tmp/line-index-baseline-cpu | tee -a /tmp/line-index-baseline-cpu.log
+              /tmp/line-index-candidate-cpu | tee -a /tmp/line-index-candidate-cpu.log
+            else
+              /tmp/line-index-candidate-cpu | tee -a /tmp/line-index-candidate-cpu.log
+              /tmp/line-index-baseline-cpu | tee -a /tmp/line-index-baseline-cpu.log
+            fi
+          done
+
+      - name: Run interleaved hop profiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > /tmp/line-index-baseline-hop.log
+          : > /tmp/line-index-candidate-hop.log
+          for run in 1 2 3 4 5; do
+            if (( run % 2 == 1 )); then
+              NEUMATON_PROFILE_SECONDS=3.0 NEUMATON_PATH_REPS=60 /tmp/line-index-baseline-hop | tee -a /tmp/line-index-baseline-hop.log
+              NEUMATON_PROFILE_SECONDS=3.0 NEUMATON_PATH_REPS=60 /tmp/line-index-candidate-hop | tee -a /tmp/line-index-candidate-hop.log
+            else
+              NEUMATON_PROFILE_SECONDS=3.0 NEUMATON_PATH_REPS=60 /tmp/line-index-candidate-hop | tee -a /tmp/line-index-candidate-hop.log
+              NEUMATON_PROFILE_SECONDS=3.0 NEUMATON_PATH_REPS=60 /tmp/line-index-baseline-hop | tee -a /tmp/line-index-baseline-hop.log
+            fi
+          done
+
+      - name: Run balanced partition baseline and candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > /tmp/line-index-baseline-partition.log
+          : > /tmp/line-index-candidate-partition.log
+          for run in 1 2 3; do
+            /tmp/line-index-baseline-partition | tee -a /tmp/line-index-baseline-partition.log
+            /tmp/line-index-candidate-partition | tee -a /tmp/line-index-candidate-partition.log
+          done
+          test "$(grep -c '^PARTITION_CENSUS_BIT_EQUIVALENCE=PASS repetitions=300$' /tmp/line-index-baseline-partition.log)" = "3"
+          test "$(grep -c '^PARTITION_CENSUS_BIT_EQUIVALENCE=PASS repetitions=300$' /tmp/line-index-candidate-partition.log)" = "3"
+
+      - name: Summarize exact-cache CPU deltas
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee /tmp/line-index-summary.log
+          from pathlib import Path
+          import re, statistics
+
+          def parse(path, prefix):
+              rows=[]
+              for line in Path(path).read_text().splitlines():
+                  if line.startswith(prefix):
+                      rows.append(dict(re.findall(r'(\w+)=([^ ]+)', line)))
+              return rows
+
+          def med(rows, pred, key):
+              vals=[float(r[key]) for r in rows if pred(r)]
+              if not vals:
+                  raise SystemExit(f'no values for {key}')
+              return statistics.median(vals)
+
+          b=parse('/tmp/line-index-baseline-cpu.log','CPU_PROFILE ')
+          c=parse('/tmp/line-index-candidate-cpu.log','CPU_PROFILE ')
+          if len(b)!=15 or len(c)!=15:
+              raise SystemExit(f'CPU rows baseline={len(b)} candidate={len(c)}')
+          for block in (64,128,256):
+              pred=lambda r, block=block: int(r['block'])==block
+              bt=med(b,pred,'tracker_ms'); ct=med(c,pred,'tracker_ms')
+              be=med(b,pred,'engine_ms'); ce=med(c,pred,'engine_ms')
+              bl=med(b,pred,'live_ms'); cl=med(c,pred,'live_ms')
+              print('LINE_INDEX_CPU_MEDIAN',
+                    f'block={block}',
+                    f'baseline_tracker_ms={bt:.3f}',
+                    f'candidate_tracker_ms={ct:.3f}',
+                    f'tracker_reduction_pct={(1-ct/max(bt,1e-9))*100:.2f}',
+                    f'baseline_engine_ms={be:.3f}',
+                    f'candidate_engine_ms={ce:.3f}',
+                    f'engine_reduction_pct={(1-ce/max(be,1e-9))*100:.2f}',
+                    f'baseline_live_ms={bl:.3f}',
+                    f'candidate_live_ms={cl:.3f}',
+                    f'live_reduction_pct={(1-cl/max(bl,1e-9))*100:.2f}')
+
+          bh=parse('/tmp/line-index-baseline-hop.log','HOP_PROFILE ')
+          ch=parse('/tmp/line-index-candidate-hop.log','HOP_PROFILE ')
+          if len(bh)!=20 or len(ch)!=20:
+              raise SystemExit(f'hop rows baseline={len(bh)} candidate={len(ch)}')
+          for name in ('full_only','full_half','full_half_quarter','super_full_half_quarter_eighth'):
+              pred=lambda r, name=name: r['name']==name
+              bp50=med(bh,pred,'p50_us'); cp50=med(ch,pred,'p50_us')
+              bp99=med(bh,pred,'p99_us'); cp99=med(ch,pred,'p99_us')
+              print('LINE_INDEX_HOP_MEDIAN',
+                    f'name={name}',
+                    f'baseline_p50_us={bp50:.3f}',
+                    f'candidate_p50_us={cp50:.3f}',
+                    f'p50_reduction_pct={(1-cp50/max(bp50,1e-9))*100:.2f}',
+                    f'baseline_p99_us={bp99:.3f}',
+                    f'candidate_p99_us={cp99:.3f}',
+                    f'p99_reduction_pct={(1-cp99/max(bp99,1e-9))*100:.2f}')
+
+          bp=parse('/tmp/line-index-baseline-partition.log','PARTITION_CENSUS ')
+          cp=parse('/tmp/line-index-candidate-partition.log','PARTITION_CENSUS ')
+          focus='super_main_full_quarter_worker_half_eighth'
+          bg=[r for r in bp if r.get('name')==focus]
+          cg=[r for r in cp if r.get('name')==focus]
+          if len(bg)!=3 or len(cg)!=3:
+              raise SystemExit(f'partition focus rows baseline={len(bg)} candidate={len(cg)}')
+          for key in ('parallel_p50_us','parallel_p95_us','parallel_p99_us','parallel_max_us'):
+              bv=statistics.median(float(r[key]) for r in bg)
+              cv=statistics.median(float(r[key]) for r in cg)
+              print('LINE_INDEX_BALANCED_PARTITION',
+                    f'metric={key}',
+                    f'baseline_us={bv:.3f}',
+                    f'candidate_us={cv:.3f}',
+                    f'reduction_pct={(1-cv/max(bv,1e-9))*100:.2f}')
+          PY
+          cat /tmp/line-index-summary.log >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Final validation marker
+        run: echo 'RESIDUAL_LINE_CACHE_INDEX_VALIDATION=PASS_NO_PROMOTION'
