@@ -1,0 +1,262 @@
+name: Validate parked low-rate runtime candidate v1
+
+on:
+  push:
+    branches:
+      - cpu-single-parked-runtime-candidate-v1
+    paths:
+      - Source/ModernPitchEngine.cpp
+      - Source/ModernPitchEngine.h
+      - Tests/ParkedRuntimeActivationTest.cpp
+      - Tests/DetectorSuperHopProfile.cpp
+      - .github/workflows/validate-parked-low-rate-runtime-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout runtime candidate
+        uses: actions/checkout@v4
+        with:
+          ref: cpu-single-parked-runtime-candidate-v1
+          fetch-depth: 0
+
+      - name: Guard frozen renderer and candidate scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+          grep -q 'RESIDUAL_ENERGY_EXACT_REUSE_V1' Source/ModernPitchEngine.cpp
+          grep -q 'PARKED_LOW_RATE_WORKER_V1' Source/ModernPitchEngine.cpp
+          git merge-base --is-ancestor 9a06f05ea1b504699eaeed50290fd7eeb4daf182 HEAD
+          echo 'PARKED_RUNTIME_SCOPE_GUARD=PASS'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Configure candidate build
+        run: cmake -S . -B build-candidate -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Preserve historical supervisor source
+        run: cp Tests/SupervisorContinuityTest.cpp /tmp/parked-runtime-supervisor.original.cpp
+
+      - name: Prove parked worker actually starts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/ParkedRuntimeActivationTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-candidate --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-candidate/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/parked-runtime-activation.log
+          grep -q '^PARKED_RUNTIME_WORKER_ACTIVE=PASS ' /tmp/parked-runtime-activation.log
+
+      - name: Verify detector bit-exactness five times
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/GoldenDetectorDeterminismTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-candidate --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          for run in 1 2 3 4 5; do
+            ./build-candidate/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee "/tmp/parked-runtime-detector-$run.log"
+            grep -q '^GOLDEN_DETECTOR_BITWISE_DETERMINISM=PASS observations=12000$' "/tmp/parked-runtime-detector-$run.log"
+            grep -q '^GOLDEN_DETECTOR_TRACE_HASH=58273352d40c5499$' "/tmp/parked-runtime-detector-$run.log"
+          done
+          echo 'PARKED_RUNTIME_DETECTOR_EXACT=PASS'
+
+      - name: Verify end-to-end corpus exact three times
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/GoldenEngineBehaviorCorpusTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-candidate --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          for run in 1 2 3; do
+            ./build-candidate/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee "/tmp/parked-runtime-corpus-$run.log"
+            grep -q '^GOLDEN_ENGINE_BEHAVIOR_CORPUS=PASS scenarios=14$' "/tmp/parked-runtime-corpus-$run.log"
+            grep -q '^GOLDEN_ENGINE_CORPUS_HASH=022ae649ee590533$' "/tmp/parked-runtime-corpus-$run.log"
+          done
+          grep '^GOLDEN_ENGINE_SCENARIO_HASH' /tmp/parked-runtime-corpus-1.log > /tmp/parked-runtime-scenarios-1.log
+          grep '^GOLDEN_ENGINE_SCENARIO_HASH' /tmp/parked-runtime-corpus-2.log > /tmp/parked-runtime-scenarios-2.log
+          grep '^GOLDEN_ENGINE_SCENARIO_HASH' /tmp/parked-runtime-corpus-3.log > /tmp/parked-runtime-scenarios-3.log
+          diff -u /tmp/parked-runtime-scenarios-1.log /tmp/parked-runtime-scenarios-2.log
+          diff -u /tmp/parked-runtime-scenarios-1.log /tmp/parked-runtime-scenarios-3.log
+          echo 'PARKED_RUNTIME_ENGINE_EXACT=PASS'
+
+      - name: Verify authority and renderer contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp /tmp/parked-runtime-supervisor.original.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-candidate --config Release --parallel 2 \
+            --target SupervisorContinuityTest CleanModernPitchEngineTest SingleWetSpectralRendererTest >/dev/null
+          ./build-candidate/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/parked-runtime-supervisor.log
+          ./build-candidate/clean-engine-tests/CleanModernPitchEngineTest 2>&1 | tee /tmp/parked-runtime-engine.log
+          ./build-candidate/clean-engine-tests/SingleWetSpectralRendererTest 2>&1 | tee /tmp/parked-runtime-renderer.log
+          ! grep -q '=FAIL' /tmp/parked-runtime-supervisor.log
+          ! grep -q '=FAIL' /tmp/parked-runtime-engine.log
+          ! grep -q '=FAIL' /tmp/parked-runtime-renderer.log
+          grep -q 'transition_detector_wobble_cannot_move_destination=PASS' /tmp/parked-runtime-supervisor.log
+          grep -q 'periodic_reentry_has_no_click=PASS' /tmp/parked-runtime-renderer.log
+          echo 'PARKED_RUNTIME_CONTRACTS=PASS'
+
+      - name: Materialize frozen golden baseline worktree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach /tmp/neumaton-parked-runtime-baseline 9a06f05ea1b504699eaeed50290fd7eeb4daf182
+          cp Tests/DetectorSuperHopProfile.cpp /tmp/neumaton-parked-runtime-baseline/Tests/DetectorSuperHopProfile.cpp
+          test "$(cd /tmp/neumaton-parked-runtime-baseline && git hash-object Source/ModernPitchEngine.cpp)" = "5702fbc14dfe5d7e2f959096d7e56fff98198cea"
+          test "$(cd /tmp/neumaton-parked-runtime-baseline && git hash-object Source/ModernPitchEngine.h)" = "e4647f124f5b0253eb1216b62816b2c4dc3a0c30"
+
+      - name: Build golden baseline profilers
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/neumaton-parked-runtime-baseline
+          cp Tests/SupervisorContinuityTest.cpp /tmp/parked-runtime-baseline-supervisor.cpp
+
+          cp Tests/CpuHotspotBenchmark.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-cpu -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-cpu --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          cp build-cpu/clean-engine-tests/SupervisorContinuityTest /tmp/parked-runtime-baseline-cpu
+
+          cp Tests/DetectorSuperHopProfile.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-hop -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-hop --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          cp build-hop/clean-engine-tests/SupervisorContinuityTest /tmp/parked-runtime-baseline-hop
+
+          cp /tmp/parked-runtime-baseline-supervisor.cpp Tests/SupervisorContinuityTest.cpp
+
+      - name: Build parked runtime profilers
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp /tmp/parked-runtime-supervisor.original.cpp Tests/SupervisorContinuityTest.cpp
+
+          cp Tests/CpuHotspotBenchmark.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-runtime-cpu -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-runtime-cpu --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          cp build-runtime-cpu/clean-engine-tests/SupervisorContinuityTest /tmp/parked-runtime-candidate-cpu
+
+          cp Tests/DetectorSuperHopProfile.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-runtime-hop -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-runtime-hop --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          cp build-runtime-hop/clean-engine-tests/SupervisorContinuityTest /tmp/parked-runtime-candidate-hop
+
+          cp /tmp/parked-runtime-supervisor.original.cpp Tests/SupervisorContinuityTest.cpp
+
+      - name: Run interleaved CPU profiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > /tmp/parked-runtime-baseline-cpu.log
+          : > /tmp/parked-runtime-candidate-cpu.log
+          for run in 1 2 3 4 5; do
+            if (( run % 2 == 1 )); then
+              /tmp/parked-runtime-baseline-cpu | tee -a /tmp/parked-runtime-baseline-cpu.log
+              /tmp/parked-runtime-candidate-cpu | tee -a /tmp/parked-runtime-candidate-cpu.log
+            else
+              /tmp/parked-runtime-candidate-cpu | tee -a /tmp/parked-runtime-candidate-cpu.log
+              /tmp/parked-runtime-baseline-cpu | tee -a /tmp/parked-runtime-baseline-cpu.log
+            fi
+          done
+
+      - name: Run interleaved hop profiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > /tmp/parked-runtime-baseline-hop.log
+          : > /tmp/parked-runtime-candidate-hop.log
+          for run in 1 2 3 4 5; do
+            if (( run % 2 == 1 )); then
+              NEUMATON_PROFILE_SECONDS=3.0 NEUMATON_PATH_REPS=60 /tmp/parked-runtime-baseline-hop | tee -a /tmp/parked-runtime-baseline-hop.log
+              NEUMATON_PROFILE_SECONDS=3.0 NEUMATON_PATH_REPS=60 /tmp/parked-runtime-candidate-hop | tee -a /tmp/parked-runtime-candidate-hop.log
+            else
+              NEUMATON_PROFILE_SECONDS=3.0 NEUMATON_PATH_REPS=60 /tmp/parked-runtime-candidate-hop | tee -a /tmp/parked-runtime-candidate-hop.log
+              NEUMATON_PROFILE_SECONDS=3.0 NEUMATON_PATH_REPS=60 /tmp/parked-runtime-baseline-hop | tee -a /tmp/parked-runtime-baseline-hop.log
+            fi
+          done
+
+      - name: Summarize runtime CPU and hop deltas
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee /tmp/parked-runtime-summary.log
+          from pathlib import Path
+          import re, statistics
+
+          def parse(path, prefix):
+              rows=[]
+              for line in Path(path).read_text().splitlines():
+                  if line.startswith(prefix):
+                      rows.append(dict(re.findall(r'(\w+)=([^ ]+)', line)))
+              return rows
+
+          def med(rows, pred, key):
+              vals=[float(r[key]) for r in rows if pred(r)]
+              if not vals:
+                  raise SystemExit(f'no values for {key}')
+              return statistics.median(vals)
+
+          b=parse('/tmp/parked-runtime-baseline-cpu.log','CPU_PROFILE ')
+          c=parse('/tmp/parked-runtime-candidate-cpu.log','CPU_PROFILE ')
+          if len(b)!=15 or len(c)!=15:
+              raise SystemExit(f'CPU rows baseline={len(b)} candidate={len(c)}')
+
+          for block in (64,128,256):
+              pred=lambda r, block=block: int(r['block'])==block
+              bt=med(b,pred,'tracker_ms'); ct=med(c,pred,'tracker_ms')
+              be=med(b,pred,'engine_ms'); ce=med(c,pred,'engine_ms')
+              bl=med(b,pred,'live_ms'); cl=med(c,pred,'live_ms')
+              print('PARKED_RUNTIME_CPU_MEDIAN',
+                    f'block={block}',
+                    f'baseline_tracker_ms={bt:.3f}',
+                    f'candidate_tracker_ms={ct:.3f}',
+                    f'tracker_reduction_pct={(1-ct/max(bt,1e-9))*100:.2f}',
+                    f'baseline_engine_ms={be:.3f}',
+                    f'candidate_engine_ms={ce:.3f}',
+                    f'engine_reduction_pct={(1-ce/max(be,1e-9))*100:.2f}',
+                    f'baseline_live_ms={bl:.3f}',
+                    f'candidate_live_ms={cl:.3f}',
+                    f'live_reduction_pct={(1-cl/max(bl,1e-9))*100:.2f}')
+
+          bh=parse('/tmp/parked-runtime-baseline-hop.log','HOP_PROFILE ')
+          ch=parse('/tmp/parked-runtime-candidate-hop.log','HOP_PROFILE ')
+          if len(bh)!=20 or len(ch)!=20:
+              raise SystemExit(f'hop rows baseline={len(bh)} candidate={len(ch)}')
+
+          for name in ('full_only','full_half','full_half_quarter','super_full_half_quarter_eighth'):
+              pred=lambda r, name=name: r['name']==name
+              bp50=med(bh,pred,'p50_us'); cp50=med(ch,pred,'p50_us')
+              bp95=med(bh,pred,'p95_us'); cp95=med(ch,pred,'p95_us')
+              bp99=med(bh,pred,'p99_us'); cp99=med(ch,pred,'p99_us')
+              bmax=med(bh,pred,'max_us'); cmax=med(ch,pred,'max_us')
+              print('PARKED_RUNTIME_HOP_MEDIAN',
+                    f'name={name}',
+                    f'baseline_p50_us={bp50:.3f}',
+                    f'candidate_p50_us={cp50:.3f}',
+                    f'p50_reduction_pct={(1-cp50/max(bp50,1e-9))*100:.2f}',
+                    f'baseline_p95_us={bp95:.3f}',
+                    f'candidate_p95_us={cp95:.3f}',
+                    f'p95_reduction_pct={(1-cp95/max(bp95,1e-9))*100:.2f}',
+                    f'baseline_p99_us={bp99:.3f}',
+                    f'candidate_p99_us={cp99:.3f}',
+                    f'p99_reduction_pct={(1-cp99/max(bp99,1e-9))*100:.2f}',
+                    f'baseline_max_us={bmax:.3f}',
+                    f'candidate_max_us={cmax:.3f}',
+                    f'max_reduction_pct={(1-cmax/max(bmax,1e-9))*100:.2f}')
+          PY
+          cat /tmp/parked-runtime-summary.log >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Final marker
+        run: echo 'PARKED_LOW_RATE_RUNTIME_VALIDATION=PASS_NO_PROMOTION'
