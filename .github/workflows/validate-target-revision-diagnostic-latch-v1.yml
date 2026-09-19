@@ -1,0 +1,134 @@
+name: Validate target revision diagnostic latch v1
+
+on:
+  push:
+    branches:
+      - voice-aware-f0-parallel-golden-v1
+    paths:
+      - Tests/ApplyTargetRevisionDiagnosticLatch.py
+      - Tests/TargetRevisionDiagnosticLatchTest.cpp
+      - .github/workflows/validate-target-revision-diagnostic-latch-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout experiment
+        uses: actions/checkout@v4
+        with:
+          ref: voice-aware-f0-parallel-golden-v1
+          fetch-depth: 0
+
+      - name: Guard fa40 validated baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/ModernPitchEngine.cpp)" = "0f81530ea2d0ac7fd02d7ee8f7f6afa13e668535"
+          test "$(git hash-object Source/ModernPitchEngine.h)" = "f6a10ad1134c3672d9d7706f6cc5ab7598d424b1"
+          test "$(git hash-object Source/ControlRoomPage.cpp)" = "9695c760b3d21c9865c27a47c19d08ee32d55514"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          grep -q 'RESIDUAL_HANN_LAZY_MEMOIZATION_V1' Source/ModernPitchEngine.cpp
+          grep -q 'TERMINAL_TAIL_STABLE_TRANSPORT_REBASE_V1' Source/ModernPitchEngine.cpp
+          ! grep -q 'TARGET_REVISION_DIAGNOSTIC_LATCH_V1' Source/ModernPitchEngine.cpp
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Apply passive diagnostic candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 Tests/ApplyTargetRevisionDiagnosticLatch.py
+          changed="$(git diff --name-only)"
+          test "$changed" = $'Source/ControlRoomPage.cpp\nSource/ModernPitchEngine.cpp\nSource/ModernPitchEngine.h'
+          grep -q 'TARGET_REVISION_DIAGNOSTIC_LATCH_V1' Source/ModernPitchEngine.cpp
+          grep -q 'TARGET_REVISION_DIAGNOSTIC_LATCH_V1' Source/ModernPitchEngine.h
+          grep -q 'TARGET_REVISION_DIAGNOSTIC_LATCH_V1' Source/ControlRoomPage.cpp
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+
+      - name: Build VST3 including diagnostic UI
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-plugin -DCMAKE_BUILD_TYPE=Release >/dev/null
+          cmake --build build-plugin --config Release --parallel 2 --target Neumaton_VST3 >/dev/null
+          echo 'TARGET_REVISION_DIAGNOSTIC_PLUGIN_BUILD=PASS'
+
+      - name: Verify hidden transition latch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/supervisor-original.cpp
+          cp Tests/TargetRevisionDiagnosticLatchTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-diagnostic -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-diagnostic --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-diagnostic/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/diagnostic.log
+          cp /tmp/supervisor-original.cpp Tests/SupervisorContinuityTest.cpp
+          grep -q '^TARGET_REVISION_DIAGNOSTIC_LATCH=PASS$' /tmp/diagnostic.log
+
+      - name: Verify detector oracle remains exact
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/supervisor-detector.cpp
+          cp Tests/GoldenDetectorDeterminismTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-detector -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-detector --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          for run in 1 2 3; do
+            ./build-detector/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee "/tmp/detector-$run.log"
+            grep -q '^GOLDEN_DETECTOR_TRACE_HASH=58273352d40c5499$' "/tmp/detector-$run.log"
+          done
+          cp /tmp/supervisor-detector.cpp Tests/SupervisorContinuityTest.cpp
+          echo 'TARGET_REVISION_DIAGNOSTIC_DETECTOR_EXACT=PASS'
+
+      - name: Verify end to end corpus remains exact
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/supervisor-corpus.cpp
+          cp Tests/GoldenEngineBehaviorCorpusTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-corpus -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-corpus --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          for run in 1 2; do
+            ./build-corpus/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee "/tmp/corpus-$run.log"
+            grep -q '^GOLDEN_ENGINE_CORPUS_HASH=022ae649ee590533$' "/tmp/corpus-$run.log"
+          done
+          cp /tmp/supervisor-corpus.cpp Tests/SupervisorContinuityTest.cpp
+          echo 'TARGET_REVISION_DIAGNOSTIC_END_TO_END_EXACT=PASS'
+
+      - name: Verify authority renderer and tail contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-contracts -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-contracts --config Release --parallel 2 \
+            --target SupervisorContinuityTest CleanModernPitchEngineTest SingleWetSpectralRendererTest >/dev/null
+          ./build-contracts/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/supervisor.log
+          ./build-contracts/clean-engine-tests/CleanModernPitchEngineTest 2>&1 | tee /tmp/engine.log
+          ./build-contracts/clean-engine-tests/SingleWetSpectralRendererTest 2>&1 | tee /tmp/renderer.log
+          ! grep -q '=FAIL' /tmp/supervisor.log
+          ! grep -q '=FAIL' /tmp/engine.log
+          ! grep -q '=FAIL' /tmp/renderer.log
+
+          cp Tests/SupervisorContinuityTest.cpp /tmp/supervisor-tail.cpp
+          cp Tests/TerminalTailStableAuthorityTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-tail -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-tail --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-tail/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/tail.log
+          cp /tmp/supervisor-tail.cpp Tests/SupervisorContinuityTest.cpp
+          grep -q '^TERMINAL_TAIL_STABLE_AUTHORITY=PASS$' /tmp/tail.log
+          echo 'TARGET_REVISION_DIAGNOSTIC_CONTRACTS=PASS'
+
+      - name: Finish
+        run: echo 'TARGET_REVISION_DIAGNOSTIC_VALIDATION=PASS_NO_PROMOTION'
