@@ -2572,82 +2572,189 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
     ++quarterRateCandidate_.ageInHops;
     ++eighthRateCandidate_.ageInHops;
 
-    const float fullMinimum = std::max(160.0f, minimumPitchHz_);
-    const float fullMaximum = std::min(maximumPitchHz_, 2600.0f);
-    if (fullMinimum < fullMaximum)
+    // PARKED_LOW_RATE_WORKER_V1
+    // Launch half/eighth from this exact hop, compute full/quarter on the audio
+    // thread, then rendezvous before touching CandidateSlot/decoder state. The
+    // four results are committed in the original 0 -> 1 -> 2 -> 3 order.
+    if (analysisWorker_ != nullptr)
     {
-        fullRateCandidate_.candidate = analyse(fullRateRing_,
-                                               fullRateWritePosition_,
-                                               fullRateAvailableSamples_,
-                                               sampleRate_,
-                                               fullMinimum,
-                                               fullMaximum,
-                                               standardAnalysisSize,
-                                               analysisWorkspace_);
-        fullRateCandidate_.candidate.pathIndex = 0;
-        fullRateCandidate_.candidate.ageInHops = 0;
-        fullRateCandidate_.ageInHops = 0;
-    }
+        const bool halfDue = (analysisHopCounter_ & 1) == 0;
+        const bool quarterDue = (analysisHopCounter_ & 3) == 0;
+        const bool eighthDue = (analysisHopCounter_ & 7) == 0;
 
-    if ((analysisHopCounter_ & 1) == 0)
-    {
+        const float fullMinimum = std::max(160.0f, minimumPitchHz_);
+        const float fullMaximum = std::min(maximumPitchHz_, 2600.0f);
         const float halfMinimum = std::max(78.0f, minimumPitchHz_);
         const float halfMaximum = std::min(maximumPitchHz_, 900.0f);
-        if (halfMinimum < halfMaximum)
-        {
-            halfRateCandidate_.candidate = analyse(halfRateRing_,
-                                                   halfRateWritePosition_,
-                                                   halfRateAvailableSamples_,
-                                                   sampleRate_ * 0.5,
-                                                   halfMinimum,
-                                                   halfMaximum,
-                                                   standardAnalysisSize,
-                                                   analysisWorkspace_);
-            halfRateCandidate_.candidate.pathIndex = 1;
-            halfRateCandidate_.candidate.ageInHops = 0;
-            halfRateCandidate_.ageInHops = 0;
-        }
-    }
-
-    if ((analysisHopCounter_ & 3) == 0)
-    {
         const float quarterMinimum = std::max(35.0f, minimumPitchHz_);
         const float quarterMaximum = std::min(maximumPitchHz_, 460.0f);
-        if (quarterMinimum < quarterMaximum)
-        {
-            quarterRateCandidate_.candidate = analyse(quarterRateRing_,
-                                                      quarterRateWritePosition_,
-                                                      quarterRateAvailableSamples_,
-                                                      sampleRate_ * 0.25,
-                                                      quarterMinimum,
-                                                      quarterMaximum,
-                                                      384,
-                                                      analysisWorkspace_);
-            quarterRateCandidate_.candidate.pathIndex = 2;
-            quarterRateCandidate_.candidate.ageInHops = 0;
-            quarterRateCandidate_.ageInHops = 0;
-        }
-    }
-
-    if ((analysisHopCounter_ & 7) == 0)
-    {
         const float eighthMinimum = std::max(25.0f, minimumPitchHz_);
         const float eighthMaximum = std::min(maximumPitchHz_, 230.0f);
-        if (eighthMinimum < eighthMaximum)
+
+        AnalysisWorker::Job workerJob;
+        workerJob.runHalf = halfDue && halfMinimum < halfMaximum;
+        workerJob.runEighth = eighthDue && eighthMinimum < eighthMaximum;
+        workerJob.halfWritePosition = halfRateWritePosition_;
+        workerJob.halfAvailableSamples = halfRateAvailableSamples_;
+        workerJob.halfSampleRate = sampleRate_ * 0.5;
+        workerJob.halfMinimum = halfMinimum;
+        workerJob.halfMaximum = halfMaximum;
+        workerJob.eighthWritePosition = eighthRateWritePosition_;
+        workerJob.eighthAvailableSamples = eighthRateAvailableSamples_;
+        workerJob.eighthSampleRate = sampleRate_ * 0.125;
+        workerJob.eighthMinimum = eighthMinimum;
+        workerJob.eighthMaximum = eighthMaximum;
+
+        const bool workerSubmitted = workerJob.runHalf || workerJob.runEighth;
+        std::uint64_t workerTicket = 0;
+        if (workerSubmitted)
+            workerTicket = analysisWorker_->submit(workerJob);
+
+        PitchCandidate fullResult {};
+        PitchCandidate quarterResult {};
+        bool fullComputed = false;
+        bool quarterComputed = false;
+
+        if (fullMinimum < fullMaximum)
         {
-            eighthRateCandidate_.candidate = analyse(eighthRateRing_,
-                                                     eighthRateWritePosition_,
-                                                     eighthRateAvailableSamples_,
-                                                     sampleRate_ * 0.125,
-                                                     eighthMinimum,
-                                                     eighthMaximum,
-                                                     maxAnalysisSize,
-                                                     analysisWorkspace_);
-            eighthRateCandidate_.candidate.pathIndex = 3;
-            eighthRateCandidate_.candidate.ageInHops = 0;
+            fullResult = analyse(fullRateRing_,
+                                 fullRateWritePosition_,
+                                 fullRateAvailableSamples_,
+                                 sampleRate_,
+                                 fullMinimum,
+                                 fullMaximum,
+                                 standardAnalysisSize,
+                                 analysisWorkspace_);
+            fullResult.pathIndex = 0;
+            fullResult.ageInHops = 0;
+            fullComputed = true;
+        }
+
+        if (quarterDue && quarterMinimum < quarterMaximum)
+        {
+            quarterResult = analyse(quarterRateRing_,
+                                    quarterRateWritePosition_,
+                                    quarterRateAvailableSamples_,
+                                    sampleRate_ * 0.25,
+                                    quarterMinimum,
+                                    quarterMaximum,
+                                    384,
+                                    analysisWorkspace_);
+            quarterResult.pathIndex = 2;
+            quarterResult.ageInHops = 0;
+            quarterComputed = true;
+        }
+
+        AnalysisWorker::Result workerResult;
+        if (workerSubmitted)
+            workerResult = analysisWorker_->wait(workerTicket);
+
+        // Do not expose partially-computed paths to provisional measurement,
+        // consensus, octave confirmation, quantizer or renderer supervision.
+        if (fullComputed)
+        {
+            fullRateCandidate_.candidate = fullResult;
+            fullRateCandidate_.ageInHops = 0;
+        }
+
+        if (workerResult.halfComputed)
+        {
+            halfRateCandidate_.candidate = workerResult.half;
+            halfRateCandidate_.ageInHops = 0;
+        }
+
+        if (quarterComputed)
+        {
+            quarterRateCandidate_.candidate = quarterResult;
+            quarterRateCandidate_.ageInHops = 0;
+        }
+
+        if (workerResult.eighthComputed)
+        {
+            eighthRateCandidate_.candidate = workerResult.eighth;
             eighthRateCandidate_.ageInHops = 0;
         }
     }
+    else
+    {
+        const float fullMinimum = std::max(160.0f, minimumPitchHz_);
+        const float fullMaximum = std::min(maximumPitchHz_, 2600.0f);
+        if (fullMinimum < fullMaximum)
+        {
+            fullRateCandidate_.candidate = analyse(fullRateRing_,
+                                                   fullRateWritePosition_,
+                                                   fullRateAvailableSamples_,
+                                                   sampleRate_,
+                                                   fullMinimum,
+                                                   fullMaximum,
+                                                   standardAnalysisSize,
+                                                   analysisWorkspace_);
+            fullRateCandidate_.candidate.pathIndex = 0;
+            fullRateCandidate_.candidate.ageInHops = 0;
+            fullRateCandidate_.ageInHops = 0;
+        }
+    
+        if ((analysisHopCounter_ & 1) == 0)
+        {
+            const float halfMinimum = std::max(78.0f, minimumPitchHz_);
+            const float halfMaximum = std::min(maximumPitchHz_, 900.0f);
+            if (halfMinimum < halfMaximum)
+            {
+                halfRateCandidate_.candidate = analyse(halfRateRing_,
+                                                       halfRateWritePosition_,
+                                                       halfRateAvailableSamples_,
+                                                       sampleRate_ * 0.5,
+                                                       halfMinimum,
+                                                       halfMaximum,
+                                                       standardAnalysisSize,
+                                                       analysisWorkspace_);
+                halfRateCandidate_.candidate.pathIndex = 1;
+                halfRateCandidate_.candidate.ageInHops = 0;
+                halfRateCandidate_.ageInHops = 0;
+            }
+        }
+    
+        if ((analysisHopCounter_ & 3) == 0)
+        {
+            const float quarterMinimum = std::max(35.0f, minimumPitchHz_);
+            const float quarterMaximum = std::min(maximumPitchHz_, 460.0f);
+            if (quarterMinimum < quarterMaximum)
+            {
+                quarterRateCandidate_.candidate = analyse(quarterRateRing_,
+                                                          quarterRateWritePosition_,
+                                                          quarterRateAvailableSamples_,
+                                                          sampleRate_ * 0.25,
+                                                          quarterMinimum,
+                                                          quarterMaximum,
+                                                          384,
+                                                          analysisWorkspace_);
+                quarterRateCandidate_.candidate.pathIndex = 2;
+                quarterRateCandidate_.candidate.ageInHops = 0;
+                quarterRateCandidate_.ageInHops = 0;
+            }
+        }
+    
+        if ((analysisHopCounter_ & 7) == 0)
+        {
+            const float eighthMinimum = std::max(25.0f, minimumPitchHz_);
+            const float eighthMaximum = std::min(maximumPitchHz_, 230.0f);
+            if (eighthMinimum < eighthMaximum)
+            {
+                eighthRateCandidate_.candidate = analyse(eighthRateRing_,
+                                                         eighthRateWritePosition_,
+                                                         eighthRateAvailableSamples_,
+                                                         sampleRate_ * 0.125,
+                                                         eighthMinimum,
+                                                         eighthMaximum,
+                                                         maxAnalysisSize,
+                                                         analysisWorkspace_);
+                eighthRateCandidate_.candidate.pathIndex = 3;
+                eighthRateCandidate_.candidate.ageInHops = 0;
+                eighthRateCandidate_.ageInHops = 0;
+            }
+        }
+    
+        }
 
     const auto chooseProvisionalMeasurement = [this]() noexcept
     {
