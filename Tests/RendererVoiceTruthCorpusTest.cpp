@@ -259,6 +259,7 @@ WindowStats analyseWindows(const std::vector<float>& output,
 void printStats(const char* type,
                 int frameSize,
                 const char* vowelName,
+                double formantPreservation,
                 double sourceF0,
                 double correctionCents,
                 double expectedF0,
@@ -268,6 +269,7 @@ void printStats(const char* type,
               << " type=" << type
               << " frame=" << frameSize
               << " vowel=" << vowelName
+              << " formant=" << formantPreservation
               << " source_f0=" << sourceF0
               << " correction_cents=" << correctionCents
               << " expected_f0=" << expectedF0
@@ -294,14 +296,18 @@ int main()
         double sourceF0;
         double correctionCents;
     };
-    const std::array<StaticCase, 6> staticCases {{
+    // Focused decomposition census:
+    //  - 0 cents: reconstruction truth without pitch transport.
+    //  - +37 cents at low F0: strongest observed cents bias.
+    //  - +700 cents: strongest octave-evidence ambiguity.
+    //  - -34 cents at 277 Hz: known-good control.
+    const std::array<StaticCase, 4> staticCases {{
+        { 118.0,   0.0 },
         { 118.0,  37.0 },
-        { 173.0, -63.0 },
-        { 219.0,  91.0 },
-        { 277.0, -34.0 },
         { 196.0, 700.0 },
-        { 247.0, -500.0 }
+        { 277.0, -34.0 }
     }};
+    const std::array<float, 2> formantAmounts {{ 0.0f, 0.92f }};
 
     bool broadContractPass = true;
 
@@ -309,50 +315,55 @@ int main()
     {
         for (const auto& vowel : vowels)
         {
-            for (const auto& testCase : staticCases)
+            for (const float formantAmount : formantAmounts)
             {
-                const double expectedF0 = testCase.sourceF0
-                    * std::exp2(testCase.correctionCents / 1200.0);
-                const auto output = renderStaticVowel(
-                    frameSize,
-                    testCase.sourceF0,
-                    testCase.correctionCents,
-                    vowel,
-                    0.92f);
-                const auto stats = analyseWindows(output, expectedF0, 12000);
+                for (const auto& testCase : staticCases)
+                {
+                    const double expectedF0 = testCase.sourceF0
+                        * std::exp2(testCase.correctionCents / 1200.0);
+                    const auto output = renderStaticVowel(
+                        frameSize,
+                        testCase.sourceF0,
+                        testCase.correctionCents,
+                        vowel,
+                        formantAmount);
+                    const auto stats = analyseWindows(output, expectedF0, 12000);
 
-                printStats("static",
+                    printStats("static",
+                               frameSize,
+                               vowel.name,
+                               formantAmount,
+                               testCase.sourceF0,
+                               testCase.correctionCents,
+                               expectedF0,
+                               stats);
+
+                    broadContractPass &= std::abs(stats.medianErrorCents) < 5.0;
+                    broadContractPass &= stats.maxAbsErrorCents < 14.0;
+                    broadContractPass &= stats.errorSpanCents < 18.0;
+                }
+
+                const double sourceCentre = 196.0;
+                const double target = 220.0;
+                const double nominalCorrection =
+                    1200.0 * std::log2(target / sourceCentre);
+                const auto moving = renderCompensatedVibratoVowel(
+                    frameSize, sourceCentre, target, vowel, formantAmount);
+                const auto movingStats = analyseWindows(moving, target, 12000);
+
+                printStats("compensated_vibrato",
                            frameSize,
                            vowel.name,
-                           testCase.sourceF0,
-                           testCase.correctionCents,
-                           expectedF0,
-                           stats);
+                           formantAmount,
+                           sourceCentre,
+                           nominalCorrection,
+                           target,
+                           movingStats);
 
-                broadContractPass &= std::abs(stats.medianErrorCents) < 5.0;
-                broadContractPass &= stats.maxAbsErrorCents < 14.0;
-                broadContractPass &= stats.errorSpanCents < 18.0;
+                broadContractPass &= std::abs(movingStats.medianErrorCents) < 7.0;
+                broadContractPass &= movingStats.maxAbsErrorCents < 22.0;
+                broadContractPass &= movingStats.errorSpanCents < 28.0;
             }
-
-            const double sourceCentre = 196.0;
-            const double target = 220.0;
-            const double nominalCorrection =
-                1200.0 * std::log2(target / sourceCentre);
-            const auto moving = renderCompensatedVibratoVowel(
-                frameSize, sourceCentre, target, vowel, 0.92f);
-            const auto movingStats = analyseWindows(moving, target, 12000);
-
-            printStats("compensated_vibrato",
-                       frameSize,
-                       vowel.name,
-                       sourceCentre,
-                       nominalCorrection,
-                       target,
-                       movingStats);
-
-            broadContractPass &= std::abs(movingStats.medianErrorCents) < 7.0;
-            broadContractPass &= movingStats.maxAbsErrorCents < 22.0;
-            broadContractPass &= movingStats.errorSpanCents < 28.0;
         }
     }
 
