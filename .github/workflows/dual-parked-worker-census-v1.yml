@@ -1,0 +1,143 @@
+name: Dual parked worker census v1
+
+on:
+  push:
+    branches:
+      - cpu-dual-parked-worker-census-v1
+    paths:
+      - Tests/DualParkedWorkerCensusTest.cpp
+      - .github/workflows/dual-parked-worker-census-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  census:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout census branch
+        uses: actions/checkout@v4
+        with:
+          ref: cpu-dual-parked-worker-census-v1
+          fetch-depth: 1
+
+      - name: Guard promoted golden DSP
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/ModernPitchEngine.cpp)" = "5702fbc14dfe5d7e2f959096d7e56fff98198cea"
+          test "$(git hash-object Source/ModernPitchEngine.h)" = "e4647f124f5b0253eb1216b62816b2c4dc3a0c30"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          grep -q 'RESIDUAL_ENERGY_EXACT_REUSE_V1' Source/ModernPitchEngine.cpp
+          echo 'DUAL_PARKED_GOLDEN_GUARD=PASS'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Configure Release build
+        run: cmake -S . -B build-dual-parked -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Preserve historical test source
+        run: cp Tests/SupervisorContinuityTest.cpp /tmp/dual-parked-supervisor.original.cpp
+
+      - name: Verify golden detector oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/GoldenDetectorDeterminismTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-dual-parked --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-dual-parked/clean-engine-tests/SupervisorContinuityTest | tee /tmp/dual-parked-golden.log
+          grep -q '^GOLDEN_DETECTOR_BITWISE_DETERMINISM=PASS observations=12000$' /tmp/dual-parked-golden.log
+          grep -q '^GOLDEN_DETECTOR_TRACE_HASH=58273352d40c5499$' /tmp/dual-parked-golden.log
+
+      - name: Build dual parked worker census
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/DualParkedWorkerCensusTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-dual-parked --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          cp build-dual-parked/clean-engine-tests/SupervisorContinuityTest /tmp/DualParkedWorkerCensusTest
+
+      - name: Run census five times
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > /tmp/dual-parked-census.log
+          for run in 1 2 3 4 5; do
+            echo "DUAL_PARKED_RUN=$run" | tee -a /tmp/dual-parked-census.log
+            if (( run % 2 == 0 )); then
+              NEUMATON_PARKED_FIRST=1 /tmp/DualParkedWorkerCensusTest | tee -a /tmp/dual-parked-census.log
+            else
+              /tmp/DualParkedWorkerCensusTest | tee -a /tmp/dual-parked-census.log
+            fi
+          done
+          test "$(grep -c '^PARKED_WORKER_BIT_EQUIVALENCE=PASS repetitions=300$' /tmp/dual-parked-census.log)" = "5"
+          test "$(grep -c '^DUAL_PARKED_WORKER_BIT_EQUIVALENCE=PASS repetitions=300$' /tmp/dual-parked-census.log)" = "5"
+
+      - name: Summarize medians
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee /tmp/dual-parked-summary.log
+          from pathlib import Path
+          import re, statistics
+
+          metrics=[]
+          dual=[]
+          for line in Path('/tmp/dual-parked-census.log').read_text().splitlines():
+              if line.startswith('PARKED_WORKER_METRIC '):
+                  metrics.append(dict(re.findall(r'(\w+)=([^ ]+)', line)))
+              elif line.startswith('DUAL_PARKED_COMPARISON '):
+                  dual.append(dict(re.findall(r'(\w+)=([^ ]+)', line)))
+
+          if len(metrics) != 15:
+              raise SystemExit(f'expected 15 metric rows, got {len(metrics)}')
+          if len(dual) != 5:
+              raise SystemExit(f'expected 5 dual comparison rows, got {len(dual)}')
+
+          def med(rows,key):
+              return statistics.median(float(r[key]) for r in rows)
+
+          for worker in ('hot','parked','dual_parked'):
+              group=[r for r in metrics if r['worker']==worker]
+              if len(group)!=5:
+                  raise SystemExit(f'{worker}: expected 5 rows, got {len(group)}')
+              print('DUAL_PARKED_MEDIAN',
+                    f'worker={worker}',
+                    f'burst_p50_us={med(group,"burst_p50_us"):.3f}',
+                    f'burst_p95_us={med(group,"burst_p95_us"):.3f}',
+                    f'burst_p99_us={med(group,"burst_p99_us"):.3f}',
+                    f'burst_max_us={med(group,"burst_max_us"):.3f}',
+                    f'cadence_p50_us={med(group,"cadence_p50_us"):.3f}',
+                    f'cadence_p95_us={med(group,"cadence_p95_us"):.3f}',
+                    f'cadence_p99_us={med(group,"cadence_p99_us"):.3f}',
+                    f'cadence_max_us={med(group,"cadence_max_us"):.3f}',
+                    f'cadence_cpu_ratio={med(group,"cadence_cpu_ratio"):.4f}')
+
+          print('DUAL_PARKED_COMPARISON_MEDIAN',
+                f'cadence_p99_reduction_vs_single_pct={med(dual,"cadence_p99_reduction_vs_single_pct"):.2f}',
+                f'cadence_max_reduction_vs_single_pct={med(dual,"cadence_max_reduction_vs_single_pct"):.2f}',
+                f'process_cpu_ratio_delta_vs_single_pct={med(dual,"process_cpu_ratio_delta_vs_single_pct"):.2f}',
+                f'single_cpu_ratio={med(dual,"single_cpu_ratio"):.4f}',
+                f'dual_cpu_ratio={med(dual,"dual_cpu_ratio"):.4f}')
+          PY
+          cat /tmp/dual-parked-summary.log >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Restore historical test source
+        if: always()
+        shell: bash
+        run: |
+          if [ -f /tmp/dual-parked-supervisor.original.cpp ]; then
+            cp /tmp/dual-parked-supervisor.original.cpp Tests/SupervisorContinuityTest.cpp
+          fi
+
+      - name: Final marker
+        run: echo 'DUAL_PARKED_WORKER_CENSUS=PASS_TEST_ONLY_NO_PROMOTION'
