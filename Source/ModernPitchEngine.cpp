@@ -539,6 +539,15 @@ ModernPitchEngine::MultiRatePitchTracker::analyse(
     // accumulation is moved or precomputed.
     bool residualHannReady = false;
 
+    // RESIDUAL_ENERGY_EXACT_REUSE_V1
+    // signalEnergy and windowEnergy are independent of cyclesPerSample.
+    // The first unique spectral line still computes them at the exact golden
+    // points and in the exact golden order. Later unique lines reuse only the
+    // already-rounded double results from that first line.
+    bool residualEnergyReady = false;
+    double residualSignalEnergy = 0.0;
+    double residualWindowEnergy = 0.0;
+
     const auto residualLineCoherence = [&](double cyclesPerSample) noexcept
     {
         if (!std::isfinite(cyclesPerSample)
@@ -560,8 +569,8 @@ ModernPitchEngine::MultiRatePitchTracker::analyse(
 
         double real = 0.0;
         double imag = 0.0;
-        double signalEnergy = 0.0;
-        double windowEnergy = 0.0;
+        double signalEnergy = residualEnergyReady ? residualSignalEnergy : 0.0;
+        double windowEnergy = residualEnergyReady ? residualWindowEnergy : 0.0;
         const double denominatorN = static_cast<double>(std::max(1, analysisLength - 1));
         for (int index = 0; index < analysisLength; ++index)
         {
@@ -582,8 +591,17 @@ ModernPitchEngine::MultiRatePitchTracker::analyse(
             const double phase = twoPi * cyclesPerSample * static_cast<double>(index);
             real += sample * std::cos(phase);
             imag -= sample * std::sin(phase);
-            signalEnergy += sample * sample;
-            windowEnergy += window * window;
+            if (!residualEnergyReady)
+            {
+                signalEnergy += sample * sample;
+                windowEnergy += window * window;
+            }
+        }
+        if (!residualEnergyReady)
+        {
+            residualSignalEnergy = signalEnergy;
+            residualWindowEnergy = windowEnergy;
+            residualEnergyReady = true;
         }
         residualHannReady = true;
         const double normaliser = std::max(1.0e-20, signalEnergy * windowEnergy);
