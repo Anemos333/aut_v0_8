@@ -1,0 +1,48 @@
+name: Census renderer resolution isolation v1
+
+on:
+  push:
+    branches:
+      - voice-aware-f0-parallel-golden-v1
+    paths:
+      - Tests/RendererResolutionIsolationTest.cpp
+      - .github/workflows/census-renderer-resolution-isolation-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  census:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout experiment
+        uses: actions/checkout@v4
+        with:
+          ref: voice-aware-f0-parallel-golden-v1
+          fetch-depth: 0
+
+      - name: Guard frozen reconstruction baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/ModernPitchEngine.cpp)" = "bc99c8895c570d3ee434667fb0aa6ebf356f7a20"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          ! grep -q 'STRUCTURED_IDENTITY_AUTHORITY_V1' Source/ModernPitchEngine.cpp
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y             libasound2-dev libjack-jackd2-dev ladspa-sdk             libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev             libx11-dev libxcomposite-dev libxcursor-dev libxext-dev             libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev             libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Build and run resolution isolation census
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SingleWetSpectralRendererTest.cpp /tmp/renderer-original.cpp
+          cp Tests/RendererResolutionIsolationTest.cpp Tests/SingleWetSpectralRendererTest.cpp
+          cmake -S . -B build-resolution-isolation -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-resolution-isolation --config Release --parallel 2 --target SingleWetSpectralRendererTest >/dev/null
+          ./build-resolution-isolation/clean-engine-tests/SingleWetSpectralRendererTest 2>&1 | tee /tmp/resolution-isolation.log
+          cp /tmp/renderer-original.cpp Tests/SingleWetSpectralRendererTest.cpp
+          grep '^RENDERER_RESOLUTION_ISOLATION' /tmp/resolution-isolation.log
