@@ -1,0 +1,56 @@
+name: Promote validated target revision diagnostic latch v2
+
+on:
+  push:
+    branches:
+      - voice-aware-f0-parallel-golden-v1
+    paths:
+      - .github/workflows/promote-validated-target-revision-diagnostic-latch-v2.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  promote:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout experiment
+        uses: actions/checkout@v4
+        with:
+          ref: voice-aware-f0-parallel-golden-v1
+          fetch-depth: 0
+
+      - name: Guard diagnostic v1 source baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/ModernPitchEngine.cpp)" = "b8581dd3455e88cb7942d46102d29acb1a846def"
+          test "$(git hash-object Source/ModernPitchEngine.h)" = "41e6ab65ac5779cfc1c0995613868b9649967459"
+          test "$(git hash-object Source/ControlRoomPage.cpp)" = "b5c14e05d8f6468b0fb22a7d0d5dc72f21c5af4c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          grep -q 'TARGET_REVISION_DIAGNOSTIC_LATCH_V1' Source/ModernPitchEngine.cpp
+          grep -q 'RESIDUAL_HANN_LAZY_MEMOIZATION_V1' Source/ModernPitchEngine.cpp
+          ! grep -q 'TARGET_REVISION_DIAGNOSTIC_LATCH_V2' Source/ModernPitchEngine.cpp
+
+      - name: Apply validated detailed diagnostic v2
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 Tests/ApplyTargetRevisionDiagnosticLatchV2.py
+          changed="$(git diff --name-only)"
+          test "$changed" = $'Source/ControlRoomPage.cpp\nSource/ModernPitchEngine.cpp\nSource/ModernPitchEngine.h'
+          grep -q 'TARGET_REVISION_DIAGNOSTIC_LATCH_V2' Source/ModernPitchEngine.cpp
+          grep -q 'TARGET_REVISION_DIAGNOSTIC_LATCH_V2' Source/ModernPitchEngine.h
+          grep -q 'TARGET_REVISION_DIAGNOSTIC_LATCH_V2' Source/ControlRoomPage.cpp
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+
+      - name: Commit validated detailed diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Source/ModernPitchEngine.cpp Source/ModernPitchEngine.h Source/ControlRoomPage.cpp
+          git commit -m 'Expose detailed target revision diagnostics [skip ci]'
+          git push origin HEAD:voice-aware-f0-parallel-golden-v1
