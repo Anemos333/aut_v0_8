@@ -38,7 +38,9 @@ new_rescue = r'''    const bool rescueBodyFrame = richEvidence
     // source transport remain fully live, so a real legato can commit as soon
     // as coherent body structure returns. When rich evidence is unavailable,
     // preserve the legacy detector-only authority path.
-    const bool structuredIdentityAuthority = !richEvidence\n        || state.trackingState != TrackingState::stable\n        || rescueBodyFrame;
+    const bool structuredIdentityAuthority = !richEvidence
+        || state.trackingState != TrackingState::stable
+        || rescueBodyFrame;
 '''
 if source.count(old_rescue) != 1:
     raise SystemExit(f"rescue anchor count {source.count(old_rescue)}")
