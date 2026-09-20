@@ -120,10 +120,12 @@ public:
         float outputSelectiveReconstructionNeed = 0.0f;
 
         // OLA_ACCUMULATION_DIAGNOSTIC_V1: diagnostic-only renderer readback.
-        float outputOlaCoherence = 100.0f;
+        float outputOlaEnergyRatio = 100.0f;
+        float outputOlaFrameCorrelation = 100.0f;
         float outputOlaCoverage = 100.0f;
         int outputOlaContributionCount = 4;
         bool outputOlaDiagnosticValid = false;
+        bool outputOlaFrameCorrelationValid = false;
 
         // RENDERER_PHASE_DIAGNOSTIC_EVENT_LATCH_V1: diagnostic-only sticky
         // event data. Never consumed by DSP.
@@ -132,7 +134,8 @@ public:
         float rendererPhaseDiagnosticHeldPh = 100.0f;
         float rendererPhaseDiagnosticHeldBin = 100.0f;
         float rendererPhaseDiagnosticHeldRidge = 0.0f;
-        float rendererPhaseDiagnosticHeldOla = 100.0f;
+        float rendererPhaseDiagnosticHeldOlaEnergy = 100.0f;
+        float rendererPhaseDiagnosticHeldFrameCorrelation = 100.0f;
         float rendererPhaseDiagnosticHeldCoverage = 100.0f;
         int rendererPhaseDiagnosticHeldCount = 4;
 
@@ -734,7 +737,8 @@ private:
     float rendererPhaseDiagnosticWorstPh_ = 100.0f;
     float rendererPhaseDiagnosticWorstBin_ = 100.0f;
     float rendererPhaseDiagnosticWorstRidge_ = 0.0f;
-    float rendererPhaseDiagnosticWorstOla_ = 100.0f;
+    float rendererPhaseDiagnosticWorstOlaEnergy_ = 100.0f;
+    float rendererPhaseDiagnosticWorstFrameCorrelation_ = 100.0f;
     float rendererPhaseDiagnosticWorstCoverage_ = 100.0f;
     int rendererPhaseDiagnosticWorstCount_ = 4;
 
@@ -757,17 +761,20 @@ private:
     std::atomic<float> meterRendererPreIfftCoherence_ { 1.0f };
     std::atomic<float> meterRendererStrongBinCoherence_ { 1.0f };
     std::atomic<float> meterRendererRidgeSpreadBins_ { 0.0f };
-    std::atomic<float> meterRendererOlaCoherence_ { 1.0f };
+    std::atomic<float> meterRendererOlaEnergyRatio_ { 1.0f };
+    std::atomic<float> meterRendererFrameOverlapCorrelation_ { 1.0f };
     std::atomic<float> meterRendererOlaCoverageRatio_ { 1.0f };
     std::atomic<int> meterRendererOlaContributionCount_ { 4 };
     std::atomic<bool> meterRendererOlaValid_ { false };
+    std::atomic<bool> meterRendererFrameOverlapCorrelationValid_ { false };
     std::atomic<bool> meterRendererDiagnosticsValid_ { false };
     std::atomic<std::uint32_t> meterRendererPhaseDiagnosticSerial_ { 0 };
     std::atomic<bool> meterRendererPhaseDiagnosticAlert_ { false };
     std::atomic<float> meterRendererPhaseDiagnosticHeldPh_ { 100.0f };
     std::atomic<float> meterRendererPhaseDiagnosticHeldBin_ { 100.0f };
     std::atomic<float> meterRendererPhaseDiagnosticHeldRidge_ { 0.0f };
-    std::atomic<float> meterRendererPhaseDiagnosticHeldOla_ { 100.0f };
+    std::atomic<float> meterRendererPhaseDiagnosticHeldOlaEnergy_ { 100.0f };
+    std::atomic<float> meterRendererPhaseDiagnosticHeldFrameCorrelation_ { 100.0f };
     std::atomic<float> meterRendererPhaseDiagnosticHeldCoverage_ { 100.0f };
     std::atomic<int> meterRendererPhaseDiagnosticHeldCount_ { 4 };
 
