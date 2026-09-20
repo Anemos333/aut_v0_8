@@ -95,6 +95,7 @@ jobs:
           cmake --build build-render-hop --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
           ./build-render-hop/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/render-hop-contract.log
           grep -q '^RENDERER_INCOHERENT_HOP_HOLD=PASS ' /tmp/render-hop-contract.log
+          grep -q '^RENDERER_PERSISTENT_CHANGE_RELEASE=PASS ' /tmp/render-hop-contract.log
 
       - name: Verify existing authority and renderer contracts
         shell: bash
