@@ -1324,6 +1324,15 @@ void MicrotonalAutotuneAudioProcessorEditor::paint (juce::Graphics& g)
         g.fillEllipse (static_cast<float> (dotX - 7), static_cast<float> (dotY - 7), 14.0f, 14.0f);
     }
 
+
+}
+
+void MicrotonalAutotuneAudioProcessorEditor::paintOverChildren (
+    juce::Graphics& g)
+{
+    if (showingScaleEditor || showingControlRoom || showingTempoPage)
+        return;
+
     // RENDERER_DIAGNOSTIC_STRIP_V1
     // Always-visible diagnostic overlay for this experimental branch only.
     // Values are read from metering and never feed audio processing.
