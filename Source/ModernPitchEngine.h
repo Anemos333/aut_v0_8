@@ -649,6 +649,19 @@ private:
         const CreativeTempo::Metering& tempoMeter,
         const SingleWetSpectralRenderer::Diagnostics& rendererDiagnostics) noexcept;
 
+    // TEST_COMPAT_METERING_OVERLOAD_V1: historical supervisor tests exercise
+    // metering directly. The 4-argument contract remains valid and simply
+    // supplies an empty renderer diagnostic snapshot.
+    void publishMetering(
+        const PitchObservation& observation,
+        const CorrectionState& state,
+        double audibleCents,
+        const CreativeTempo::Metering& tempoMeter) noexcept
+    {
+        publishMetering(observation, state, audibleCents, tempoMeter,
+                        SingleWetSpectralRenderer::Diagnostics {});
+    }
+
     double sampleRate_ = 48000.0;
     int maximumBlockSize_ = 512;
     int channelCount_ = 1;
