@@ -1,0 +1,192 @@
+name: Validate v1 lean architecture pass1
+
+on:
+  push:
+    branches:
+      - v1-lean-architecture-pass1
+    paths:
+      - Source/ObservationOwnershipPolicy.h
+      - Source/ModernPitchEngine.cpp
+      - Source/ModernPitchEngine.h
+      - Source/SingleWetSpectralRenderer.cpp
+      - Source/SingleWetSpectralRenderer.h
+      - Tests/ObservationOwnershipPolicyTest.cpp
+      - Tests/CorrectionTrajectoryGoldenTest.cpp
+      - Tests/GoldenDetectorDeterminismTest.cpp
+      - Tests/GoldenEngineBehaviorCorpusTest.cpp
+      - Tests/RendererDiagnosticTransparencyTest.cpp
+      - Tests/RendererIncoherentHopHoldTest.cpp
+      - .github/workflows/validate-v1-lean-architecture-pass1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout lean experiment
+        uses: actions/checkout@v4
+        with:
+          ref: v1-lean-architecture-pass1
+          fetch-depth: 0
+
+      - name: Guard scope and ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor ca3e21e998b986f1d9a8a4c323da9cb49db5b228 HEAD
+          grep -q 'OBSERVATION_OWNERSHIP_POLICY_V1' Source/ObservationOwnershipPolicy.h
+          grep -q 'ObservationOwnershipPolicy::evaluate' Source/ModernPitchEngine.cpp
+          ! grep -q 'previousMagnitudes_' Source/SingleWetSpectralRenderer.cpp
+          ! grep -q 'previousMagnitudes_' Source/SingleWetSpectralRenderer.h
+          echo 'LEAN_PASS1_SCOPE=PASS'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y             libasound2-dev libjack-jackd2-dev ladspa-sdk             libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev             libx11-dev libxcomposite-dev libxcursor-dev libxext-dev             libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev             libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Unit-test ownership policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          c++ -std=c++17 -Wall -Wextra -Wpedantic             Tests/ObservationOwnershipPolicyTest.cpp             -o /tmp/ownership-policy-test
+          /tmp/ownership-policy-test | tee /tmp/ownership-policy.log
+          grep -q '^OBSERVATION_OWNERSHIP_POLICY=PASS cases=8$' /tmp/ownership-policy.log
+
+      - name: Configure and build candidate
+        run: |
+          cmake -S . -B build-lean-pass1             -DCMAKE_BUILD_TYPE=Release             -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-lean-pass1 --config Release --parallel 2 --target Neumaton >/dev/null
+
+      - name: Preserve candidate test slots
+        shell: bash
+        run: |
+          cp Tests/SupervisorContinuityTest.cpp /tmp/lean-supervisor-original.cpp
+          cp Tests/SingleWetSpectralRendererTest.cpp /tmp/lean-renderer-original.cpp
+
+      - name: Candidate detector oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/GoldenDetectorDeterminismTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-lean-pass1 --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          for run in 1 2 3; do
+            ./build-lean-pass1/clean-engine-tests/SupervisorContinuityTest               2>&1 | tee "/tmp/lean-detector-$run.log"
+            grep -q '^GOLDEN_DETECTOR_TRACE_HASH=58273352d40c5499$' "/tmp/lean-detector-$run.log"
+          done
+          echo 'LEAN_PASS1_DETECTOR_BIT_EXACT=PASS'
+
+      - name: Candidate correction trajectory oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/CorrectionTrajectoryGoldenTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-lean-pass1 --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-lean-pass1/clean-engine-tests/SupervisorContinuityTest             2>&1 | tee /tmp/lean-trajectory.log
+          grep -q '^CORRECTION_TRAJECTORY_GOLDEN=PASS$' /tmp/lean-trajectory.log
+          grep '^CORRECTION_TRAJECTORY_HASH=' /tmp/lean-trajectory.log             > /tmp/lean-trajectory-hash.txt
+
+      - name: Candidate end-to-end golden corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/GoldenEngineBehaviorCorpusTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-lean-pass1 --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-lean-pass1/clean-engine-tests/SupervisorContinuityTest             2>&1 | tee /tmp/lean-engine-corpus.log
+          grep -q '^GOLDEN_ENGINE_BEHAVIOR_CORPUS=PASS scenarios=14$' /tmp/lean-engine-corpus.log
+          grep '^GOLDEN_ENGINE_SCENARIO_HASH' /tmp/lean-engine-corpus.log             > /tmp/lean-engine-scenarios.txt
+          grep '^GOLDEN_ENGINE_CORPUS_HASH=' /tmp/lean-engine-corpus.log             > /tmp/lean-engine-hash.txt
+
+      - name: Candidate renderer transparency
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/RendererDiagnosticTransparencyTest.cpp Tests/SingleWetSpectralRendererTest.cpp
+          cmake --build build-lean-pass1 --config Release --parallel 2 --target SingleWetSpectralRendererTest >/dev/null
+          ./build-lean-pass1/clean-engine-tests/SingleWetSpectralRendererTest             2>&1 | tee /tmp/lean-renderer-transparency.log
+          grep '^RENDERER_TRANSPARENCY_HASH_' /tmp/lean-renderer-transparency.log             > /tmp/lean-renderer-hashes.txt
+          test "$(wc -l < /tmp/lean-renderer-hashes.txt)" -eq 2
+
+      - name: Build exact parent reference
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach /tmp/neumaton-lean-parent             ca3e21e998b986f1d9a8a4c323da9cb49db5b228
+          cd /tmp/neumaton-lean-parent
+          cp "$GITHUB_WORKSPACE/Tests/CorrectionTrajectoryGoldenTest.cpp"             Tests/CorrectionTrajectoryGoldenTest.cpp
+          cp "$GITHUB_WORKSPACE/Tests/GoldenEngineBehaviorCorpusTest.cpp"             Tests/GoldenEngineBehaviorCorpusTest.cpp
+          cp "$GITHUB_WORKSPACE/Tests/RendererDiagnosticTransparencyTest.cpp"             Tests/RendererDiagnosticTransparencyTest.cpp
+          cmake -S . -B build-parent             -DCMAKE_BUILD_TYPE=Release             -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+
+      - name: Parent correction trajectory oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/neumaton-lean-parent
+          cp Tests/CorrectionTrajectoryGoldenTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-parent --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-parent/clean-engine-tests/SupervisorContinuityTest             2>&1 | tee /tmp/parent-trajectory.log
+          grep '^CORRECTION_TRAJECTORY_HASH=' /tmp/parent-trajectory.log             > /tmp/parent-trajectory-hash.txt
+          diff -u /tmp/parent-trajectory-hash.txt /tmp/lean-trajectory-hash.txt
+          echo 'LEAN_PASS1_TRAJECTORY_EXACT_EQUIVALENCE=PASS'
+
+      - name: Parent end-to-end golden corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/neumaton-lean-parent
+          cp Tests/GoldenEngineBehaviorCorpusTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-parent --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-parent/clean-engine-tests/SupervisorContinuityTest             2>&1 | tee /tmp/parent-engine-corpus.log
+          grep '^GOLDEN_ENGINE_SCENARIO_HASH' /tmp/parent-engine-corpus.log             > /tmp/parent-engine-scenarios.txt
+          grep '^GOLDEN_ENGINE_CORPUS_HASH=' /tmp/parent-engine-corpus.log             > /tmp/parent-engine-hash.txt
+          diff -u /tmp/parent-engine-scenarios.txt /tmp/lean-engine-scenarios.txt
+          diff -u /tmp/parent-engine-hash.txt /tmp/lean-engine-hash.txt
+          echo 'LEAN_PASS1_ENGINE_EXACT_EQUIVALENCE=PASS'
+
+      - name: Parent renderer transparency
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/neumaton-lean-parent
+          cp Tests/RendererDiagnosticTransparencyTest.cpp Tests/SingleWetSpectralRendererTest.cpp
+          cmake --build build-parent --config Release --parallel 2 --target SingleWetSpectralRendererTest >/dev/null
+          ./build-parent/clean-engine-tests/SingleWetSpectralRendererTest             2>&1 | tee /tmp/parent-renderer-transparency.log
+          grep '^RENDERER_TRANSPARENCY_HASH_' /tmp/parent-renderer-transparency.log             > /tmp/parent-renderer-hashes.txt
+          diff -u /tmp/parent-renderer-hashes.txt /tmp/lean-renderer-hashes.txt
+          echo 'LEAN_PASS1_RENDERER_BIT_TRANSPARENT=PASS'
+
+      - name: Existing supervisor and renderer contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp /tmp/lean-supervisor-original.cpp Tests/SupervisorContinuityTest.cpp
+          cp /tmp/lean-renderer-original.cpp Tests/SingleWetSpectralRendererTest.cpp
+          cmake --build build-lean-pass1 --config Release --parallel 2             --target SupervisorContinuityTest CleanModernPitchEngineTest SingleWetSpectralRendererTest >/dev/null
+
+          ./build-lean-pass1/clean-engine-tests/SupervisorContinuityTest             2>&1 | tee /tmp/lean-supervisor.log
+          ./build-lean-pass1/clean-engine-tests/CleanModernPitchEngineTest             2>&1 | tee /tmp/lean-clean-engine.log
+          ./build-lean-pass1/clean-engine-tests/SingleWetSpectralRendererTest             2>&1 | tee /tmp/lean-renderer.log
+
+          ! grep -q '=FAIL' /tmp/lean-supervisor.log
+          ! grep -q '=FAIL' /tmp/lean-clean-engine.log
+          ! grep -q '=FAIL' /tmp/lean-renderer.log
+
+      - name: Explicit ownership integration contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/RendererIncoherentHopHoldTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-lean-pass1 --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-lean-pass1/clean-engine-tests/SupervisorContinuityTest             2>&1 | tee /tmp/lean-ownership-integration.log
+          grep -q '^RENDERER_INCOHERENT_HOP_HOLD=PASS ' /tmp/lean-ownership-integration.log
+          grep -q '^RENDERER_PERSISTENT_CHANGE_RELEASE=PASS ' /tmp/lean-ownership-integration.log
+          echo 'LEAN_PASS1_OWNERSHIP_INTEGRATION=PASS'
+
+      - name: Final marker
+        run: |
+          echo 'V1_LEAN_ARCHITECTURE_PASS1=PASS_EXACT_BEHAVIOR'
+          echo 'V1_LEAN_ARCHITECTURE_PROMOTION=NOT_YET'
