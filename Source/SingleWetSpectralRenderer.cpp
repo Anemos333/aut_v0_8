@@ -529,96 +529,13 @@ void SingleWetSpectralRenderer::synthesiseLayer(
     }
 }
 
-void SingleWetSpectralRenderer::processFrame(
-    std::int64_t frameEndSample,
-    double correctionCents,
-    float formantPreservation) noexcept
+void SingleWetSpectralRenderer::stabiliseTrueSourceBins(
+    int positiveBins,
+    bool resetAnalysis,
+    float framePeakMagnitude) noexcept
 {
-    const std::int64_t frameStartSample = frameEndSample - frameSize_ + 1;
-    double frameEnergy = 0.0;
-    for (int index = 0; index < frameSize_; ++index)
-    {
-        const float input = readInputSample(frameStartSample + index);
-        frameEnergy += static_cast<double>(input) * static_cast<double>(input);
-        fftBuffer_[static_cast<std::size_t>(index)] = Complex(
-            input * window_[static_cast<std::size_t>(index)], 0.0f);
-    }
-    fft(fftBuffer_, false);
-
-    // SILENCE_REENTRY_RESEEDS_PHASE_AND_ENVELOPE_V1: silence is not a second
-    // audio path and never changes correction authority. It only invalidates
-    // phase/envelope history that cannot meaningfully describe the next physical
-    // emission. Keep OLA/output state intact: no mute, no dry crossfade, no gap.
-    // The threshold is deliberately below normal recorded noise so an ordinary
-    // weak vowel or breath is never itself declared silence.
-    const double frameRms = std::sqrt(frameEnergy
-        / static_cast<double>(std::max(1, frameSize_)));
-    constexpr double reentrySilenceRms = 2.0e-5;
-    const bool reentrySilenceFrame = frameRms <= reentrySilenceRms;
-    if (reentrySilenceFrame)
-    {
-        phaseResetPending_ = true;
-        envelopeInitialised_ = false;
-        envelopeFrameCounter_ = 0;
-    }
-
-    const int positiveBins = frameSize_ / 2;
-    float framePeakMagnitude = 0.0f;
-    for (int bin = 0; bin <= positiveBins; ++bin)
-    {
-        const Complex value = fftBuffer_[static_cast<std::size_t>(bin)];
-        const float magnitude = std::abs(value);
-        magnitudes_[static_cast<std::size_t>(bin)] = magnitude;
-        analysisPhases_[static_cast<std::size_t>(bin)] =
-            std::atan2(value.imag(), value.real());
-        framePeakMagnitude = std::max(framePeakMagnitude, magnitude);
-    }
-
-    // Do not learn a spectral envelope from silence. The first energetic
-    // frame after the gap becomes the fresh envelope reference instead of being
-    // warped through the previous vowel/formant history.
-    if (!reentrySilenceFrame
-        && (!envelopeInitialised_
-            || ++envelopeFrameCounter_ >= envelopeUpdateInterval_))
-    {
-        envelopeFrameCounter_ = 0;
-        calculateEnvelope(positiveBins);
-    }
-
-    const bool resetAnalysis = phaseResetPending_ || !analysisPhaseInitialised_;
-    // Keep the reset armed for the complete silent interval. It is consumed only
-    // by the first energetic frame, where analysis and synthesis phases are both
-    // seeded from that frame. No accumulation ring is cleared.
-    if (!reentrySilenceFrame)
-        phaseResetPending_ = false;
-    const double expectedPhaseScale = twoPi * static_cast<double>(hopSize_)
-                                    / static_cast<double>(frameSize_);
-    const double binFromPhaseScale = static_cast<double>(frameSize_)
-                                   / (twoPi * static_cast<double>(hopSize_));
-    // PHASE_RELIABILITY_GATE_V2
-    // First compute the exact legacy instantaneous-frequency estimate for every
-    // bin. A second pass may reduce only an isolated, weak estimate whose local
-    // ridge does not support the same physical frequency. Strong bins and
-    // coherent leakage ridges keep the legacy phase law unchanged.
     const float phaseMagnitudeFloor = std::max(
         1.0e-9f, 0.0010f * framePeakMagnitude);
-
-    for (int sourceBin = 0; sourceBin <= positiveBins; ++sourceBin)
-    {
-        const std::size_t sourceIndex = static_cast<std::size_t>(sourceBin);
-        double rawTrueSourceBin = static_cast<double>(sourceBin);
-        if (!resetAnalysis)
-        {
-            const double expectedAdvance = expectedPhaseScale
-                                         * static_cast<double>(sourceBin);
-            const double phaseDeviation = wrapPhase(
-                static_cast<double>(analysisPhases_[sourceIndex])
-                - static_cast<double>(previousAnalysisPhases_[sourceIndex])
-                - expectedAdvance);
-            rawTrueSourceBin += phaseDeviation * binFromPhaseScale;
-        }
-        rawTrueSourceBins_[sourceIndex] = rawTrueSourceBin;
-    }
 
     for (int sourceBin = 0; sourceBin <= positiveBins; ++sourceBin)
     {
@@ -690,6 +607,94 @@ void SingleWetSpectralRenderer::processFrame(
             + phaseReliability
                 * (rawTrueSourceBin - static_cast<double>(sourceBin));
     }
+}
+
+void SingleWetSpectralRenderer::processFrame(
+    std::int64_t frameEndSample,
+    double correctionCents,
+    float formantPreservation) noexcept
+{
+    const std::int64_t frameStartSample = frameEndSample - frameSize_ + 1;
+    double frameEnergy = 0.0;
+    for (int index = 0; index < frameSize_; ++index)
+    {
+        const float input = readInputSample(frameStartSample + index);
+        frameEnergy += static_cast<double>(input) * static_cast<double>(input);
+        fftBuffer_[static_cast<std::size_t>(index)] = Complex(
+            input * window_[static_cast<std::size_t>(index)], 0.0f);
+    }
+    fft(fftBuffer_, false);
+
+    // SILENCE_REENTRY_RESEEDS_PHASE_AND_ENVELOPE_V1: silence is not a second
+    // audio path and never changes correction authority. It only invalidates
+    // phase/envelope history that cannot meaningfully describe the next physical
+    // emission. Keep OLA/output state intact: no mute, no dry crossfade, no gap.
+    // The threshold is deliberately below normal recorded noise so an ordinary
+    // weak vowel or breath is never itself declared silence.
+    const double frameRms = std::sqrt(frameEnergy
+        / static_cast<double>(std::max(1, frameSize_)));
+    constexpr double reentrySilenceRms = 2.0e-5;
+    const bool reentrySilenceFrame = frameRms <= reentrySilenceRms;
+    if (reentrySilenceFrame)
+    {
+        phaseResetPending_ = true;
+        envelopeInitialised_ = false;
+        envelopeFrameCounter_ = 0;
+    }
+
+    const int positiveBins = frameSize_ / 2;
+    float framePeakMagnitude = 0.0f;
+    for (int bin = 0; bin <= positiveBins; ++bin)
+    {
+        const Complex value = fftBuffer_[static_cast<std::size_t>(bin)];
+        const float magnitude = std::abs(value);
+        magnitudes_[static_cast<std::size_t>(bin)] = magnitude;
+        analysisPhases_[static_cast<std::size_t>(bin)] =
+            std::atan2(value.imag(), value.real());
+        framePeakMagnitude = std::max(framePeakMagnitude, magnitude);
+    }
+
+    // Do not learn a spectral envelope from silence. The first energetic
+    // frame after the gap becomes the fresh envelope reference instead of being
+    // warped through the previous vowel/formant history.
+    if (!reentrySilenceFrame
+        && (!envelopeInitialised_
+            || ++envelopeFrameCounter_ >= envelopeUpdateInterval_))
+    {
+        envelopeFrameCounter_ = 0;
+        calculateEnvelope(positiveBins);
+    }
+
+    const bool resetAnalysis = phaseResetPending_ || !analysisPhaseInitialised_;
+    // Keep the reset armed for the complete silent interval. It is consumed only
+    // by the first energetic frame, where analysis and synthesis phases are both
+    // seeded from that frame. No accumulation ring is cleared.
+    if (!reentrySilenceFrame)
+        phaseResetPending_ = false;
+    const double expectedPhaseScale = twoPi * static_cast<double>(hopSize_)
+                                    / static_cast<double>(frameSize_);
+    const double binFromPhaseScale = static_cast<double>(frameSize_)
+                                   / (twoPi * static_cast<double>(hopSize_));
+    // PHASE_RELIABILITY_GATE_V2
+    // Compute the exact legacy instantaneous-frequency estimate first, then
+    // stabilise only weak isolated phase velocities.
+    for (int sourceBin = 0; sourceBin <= positiveBins; ++sourceBin)
+    {
+        const std::size_t sourceIndex = static_cast<std::size_t>(sourceBin);
+        double rawTrueSourceBin = static_cast<double>(sourceBin);
+        if (!resetAnalysis)
+        {
+            const double expectedAdvance = expectedPhaseScale
+                                         * static_cast<double>(sourceBin);
+            const double phaseDeviation = wrapPhase(
+                static_cast<double>(analysisPhases_[sourceIndex])
+                - static_cast<double>(previousAnalysisPhases_[sourceIndex])
+                - expectedAdvance);
+            rawTrueSourceBin += phaseDeviation * binFromPhaseScale;
+        }
+        rawTrueSourceBins_[sourceIndex] = rawTrueSourceBin;
+    }
+    stabiliseTrueSourceBins(positiveBins, resetAnalysis, framePeakMagnitude);
 
     synthesiseLayer(layer_, frameEndSample, correctionCents,
                     formantPreservation, resetAnalysis, positiveBins);
