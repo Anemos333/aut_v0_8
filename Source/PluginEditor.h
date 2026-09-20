@@ -176,6 +176,9 @@ private:
     float rendererPhaseHeldPh_ = 100.0f;
     float rendererPhaseHeldBin_ = 100.0f;
     float rendererPhaseHeldRidge_ = 0.0f;
+    float rendererPhaseHeldOla_ = 100.0f;
+    float rendererPhaseHeldCoverage_ = 100.0f;
+    int rendererPhaseHeldCount_ = 4;
 
     // No placebo controls: this guard changes UI applicability only. It never
     // rewrites parameter values, sensor authority or correction depth.
