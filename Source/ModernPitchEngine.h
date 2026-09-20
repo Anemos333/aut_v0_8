@@ -119,6 +119,12 @@ public:
         float outputPreIfftConsensus = 0.0f;
         float outputSelectiveReconstructionNeed = 0.0f;
 
+        // OLA_ACCUMULATION_DIAGNOSTIC_V1: diagnostic-only renderer readback.
+        float outputOlaCoherence = 100.0f;
+        float outputOlaCoverage = 100.0f;
+        int outputOlaContributionCount = 4;
+        bool outputOlaDiagnosticValid = false;
+
         // RENDERER_PHASE_DIAGNOSTIC_EVENT_LATCH_V1: diagnostic-only sticky
         // event data. Never consumed by DSP.
         std::uint32_t rendererPhaseDiagnosticSerial = 0;
@@ -126,6 +132,9 @@ public:
         float rendererPhaseDiagnosticHeldPh = 100.0f;
         float rendererPhaseDiagnosticHeldBin = 100.0f;
         float rendererPhaseDiagnosticHeldRidge = 0.0f;
+        float rendererPhaseDiagnosticHeldOla = 100.0f;
+        float rendererPhaseDiagnosticHeldCoverage = 100.0f;
+        int rendererPhaseDiagnosticHeldCount = 4;
 
         int shadowRidgeObservationCount = 0;
         int shadowRidgeActiveCount = 0;
@@ -725,6 +734,9 @@ private:
     float rendererPhaseDiagnosticWorstPh_ = 100.0f;
     float rendererPhaseDiagnosticWorstBin_ = 100.0f;
     float rendererPhaseDiagnosticWorstRidge_ = 0.0f;
+    float rendererPhaseDiagnosticWorstOla_ = 100.0f;
+    float rendererPhaseDiagnosticWorstCoverage_ = 100.0f;
+    int rendererPhaseDiagnosticWorstCount_ = 4;
 
     std::atomic<std::uint32_t> meterSequence_ { 0 };
     std::atomic<float> meterPitchHz_ { 0.0f };
@@ -745,12 +757,19 @@ private:
     std::atomic<float> meterRendererPreIfftCoherence_ { 1.0f };
     std::atomic<float> meterRendererStrongBinCoherence_ { 1.0f };
     std::atomic<float> meterRendererRidgeSpreadBins_ { 0.0f };
+    std::atomic<float> meterRendererOlaCoherence_ { 1.0f };
+    std::atomic<float> meterRendererOlaCoverageRatio_ { 1.0f };
+    std::atomic<int> meterRendererOlaContributionCount_ { 4 };
+    std::atomic<bool> meterRendererOlaValid_ { false };
     std::atomic<bool> meterRendererDiagnosticsValid_ { false };
     std::atomic<std::uint32_t> meterRendererPhaseDiagnosticSerial_ { 0 };
     std::atomic<bool> meterRendererPhaseDiagnosticAlert_ { false };
     std::atomic<float> meterRendererPhaseDiagnosticHeldPh_ { 100.0f };
     std::atomic<float> meterRendererPhaseDiagnosticHeldBin_ { 100.0f };
     std::atomic<float> meterRendererPhaseDiagnosticHeldRidge_ { 0.0f };
+    std::atomic<float> meterRendererPhaseDiagnosticHeldOla_ { 100.0f };
+    std::atomic<float> meterRendererPhaseDiagnosticHeldCoverage_ { 100.0f };
+    std::atomic<int> meterRendererPhaseDiagnosticHeldCount_ { 4 };
 
     std::atomic<int> meterDetectorSupport_ { 0 };
     std::atomic<int> meterOctaveState_ { 0 };
