@@ -65,12 +65,51 @@ int main()
         return 4;
     }
 
+    if (!d.olaValid)
+    {
+        std::cerr << "RENDERER_OLA_DIAGNOSTICS=FAIL reason=no_ola_samples\n";
+        return 5;
+    }
+
+    if (!bounded01(d.minimumOlaCoherence)
+        || !std::isfinite(d.minimumOlaCoverageRatio)
+        || d.minimumOlaCoverageRatio < 0.0f
+        || !std::isfinite(d.worstOlaSignedSum)
+        || !std::isfinite(d.worstOlaAbsoluteSum)
+        || d.worstOlaAbsoluteSum + 1.0e-7f < std::abs(d.worstOlaSignedSum))
+    {
+        std::cerr << "RENDERER_OLA_DIAGNOSTICS=FAIL reason=invalid_metrics\n";
+        return 6;
+    }
+
+    // With sqrt-Hann and N/4 hop, the established OLA stream must always have
+    // the full four-frame window coverage. This is a geometry contract, not a
+    // judgement about how much phase cancellation is perceptually acceptable.
+    if (d.minimumOlaCoverageRatio < 0.995f
+        || d.minimumOlaContributionCount < 4)
+    {
+        std::cerr << "RENDERER_OLA_DIAGNOSTICS=FAIL"
+                  << " reason=coverage_or_frame_count"
+                  << " coverage=" << d.minimumOlaCoverageRatio
+                  << " count=" << d.minimumOlaContributionCount << "\n";
+        return 7;
+    }
+
     std::cout << "RENDERER_PHASE_DIAGNOSTICS=PASS"
               << " frames=" << d.frameCount
               << " pre_ifft=" << d.minimumPreIfftCoherence
               << " strong_bin=" << d.minimumStrongBinCoherence
               << " ridge_spread_bins=" << d.maximumDominantRidgeSpreadBins
               << " worst_frame_end_sample=" << d.worstFrameEndSample
+              << "\n";
+
+    std::cout << "RENDERER_OLA_DIAGNOSTICS=PASS"
+              << " ola_coherence=" << d.minimumOlaCoherence
+              << " coverage=" << d.minimumOlaCoverageRatio
+              << " count=" << d.minimumOlaContributionCount
+              << " signed_sum=" << d.worstOlaSignedSum
+              << " abs_sum=" << d.worstOlaAbsoluteSum
+              << " worst_sample=" << d.worstOlaSample
               << "\n";
     return 0;
 }
