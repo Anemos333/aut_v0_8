@@ -25,16 +25,26 @@ public:
         float minimumStrongBinCoherence = 1.0f;
         float maximumDominantRidgeSpreadBins = 0.0f;
 
-        // OLA_ACCUMULATION_DIAGNOSTIC_V1
-        // Shadow-only measurements of the already-produced overlap/add stream.
-        // They never alter outputAccumulationRing or synthesis.
+        // OLA_ACCUMULATION_DIAGNOSTIC_V2
+        // Shadow-only measurements. No value here has synthesis authority.
         bool olaValid = false;
-        std::int64_t worstOlaSample = 0;
-        float minimumOlaCoherence = 1.0f;
+        std::int64_t worstOlaHopEndSample = 0;
+
+        // Hop-energy ratio: E(sum of overlapping frames) / sum(E(each frame)).
+        // Unlike the old sample-wise ratio this cannot false-trigger merely at
+        // an ordinary zero crossing. Values below 1 mean net cancellation;
+        // values above 1 mean net reinforcement.
+        float minimumOlaEnergyRatio = 4.0f;
+
         float minimumOlaCoverageRatio = 1.0f;
         int minimumOlaContributionCount = 4;
-        float worstOlaSignedSum = 0.0f;
-        float worstOlaAbsoluteSum = 0.0f;
+
+        // Correlation of a newly synthesised frame with the OLA that was already
+        // scheduled before that frame was added. -1 is fully antagonistic,
+        // 0 unrelated, +1 aligned.
+        bool frameOverlapCorrelationValid = false;
+        float minimumFrameOverlapCorrelation = 1.0f;
+        std::int64_t worstFrameCorrelationEndSample = 0;
     };
 
     // Diagnostic-only readback. Called by ModernPitchEngine on the audio thread
@@ -54,8 +64,8 @@ private:
         std::vector<double> synthesisPhases;
         std::vector<float> outputAccumulationRing;
 
-        // OLA_ACCUMULATION_DIAGNOSTIC_V1: shadow rings only.
-        std::vector<float> diagnosticAbsoluteContributionRing;
+        // OLA_ACCUMULATION_DIAGNOSTIC_V2: shadow rings only.
+        std::vector<float> diagnosticContributionEnergyRing;
         std::vector<float> diagnosticCoverageRing;
         std::vector<std::uint8_t> diagnosticContributionCountRing;
 
@@ -121,6 +131,13 @@ private:
     int envelopeUpdateInterval_ = 2;
     float synthesisGain_ = 0.5f;
     float expectedOlaCoverage_ = 1.0f;
+
+    // OLA_ACCUMULATION_DIAGNOSTIC_V2 hop-energy accumulator.
+    double diagnosticHopOutputEnergy_ = 0.0;
+    double diagnosticHopContributionEnergy_ = 0.0;
+    double diagnosticHopCoverageSum_ = 0.0;
+    int diagnosticHopSampleCount_ = 0;
+    int diagnosticHopMinimumContributionCount_ = 4;
 
     float envelopeAttackCoefficient_ = 1.0f;
     float envelopeReleaseCoefficient_ = 1.0f;
