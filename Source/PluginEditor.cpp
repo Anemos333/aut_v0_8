@@ -1244,7 +1244,7 @@ void MicrotonalAutotuneAudioProcessorEditor::paint (juce::Graphics& g)
             .getUnion (vibratoPreserveLabel.getBounds());
 
     drawPanel (scaleLockPanel.expanded (14, 10));
-    drawMeterPanel (outputStagePanel.expanded (24, 10));
+    drawMeterPanel (g, getLocalBounds());
 
     // Output stage: separate from the musical lock controls.
     // This will later become a distinct final valve / output module.
