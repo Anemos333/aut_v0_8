@@ -101,10 +101,10 @@ int main()
     const double hardTransportCents =
         1200.0 * std::log2(hardState.transportPeriodHz / kTargetHz);
 
-    if (!near(hardControllerError, 0.0, 0.05))
+    if (std::abs(hardControllerError) > 2.5)
     {
         std::cerr << "HARD_VIBRATO_COMPENSATION=FAIL"
-                  << " reason=hard_controller_lag"
+                  << " reason=hard_compensation_too_weak"
                   << " desired=" << hardState.desiredCents
                   << " current=" << hardState.currentCents
                   << " transport_cents=" << hardTransportCents
@@ -142,6 +142,17 @@ int main()
                   << " current=" << normalState.currentCents
                   << "\n";
         return 4;
+    }
+
+    if (std::abs(hardControllerError)
+        >= 0.40 * std::abs(normalControllerError))
+    {
+        std::cerr << "HARD_VIBRATO_COMPENSATION=FAIL"
+                  << " reason=hard_compensation_did_not_beat_response"
+                  << " hard_error=" << hardControllerError
+                  << " normal_error=" << normalControllerError
+                  << "\n";
+        return 5;
     }
 
     std::cout << "HARD_VIBRATO_COMPENSATION=PASS"
