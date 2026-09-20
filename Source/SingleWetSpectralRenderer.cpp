@@ -561,12 +561,15 @@ void SingleWetSpectralRenderer::processFrame(
     }
 
     const int positiveBins = frameSize_ / 2;
+    float framePeakMagnitude = 0.0f;
     for (int bin = 0; bin <= positiveBins; ++bin)
     {
         const Complex value = fftBuffer_[static_cast<std::size_t>(bin)];
-        magnitudes_[static_cast<std::size_t>(bin)] = std::abs(value);
+        const float magnitude = std::abs(value);
+        magnitudes_[static_cast<std::size_t>(bin)] = magnitude;
         analysisPhases_[static_cast<std::size_t>(bin)] =
             std::atan2(value.imag(), value.real());
+        framePeakMagnitude = std::max(framePeakMagnitude, magnitude);
     }
 
     // Do not learn a spectral envelope from silence. The first energetic
@@ -590,10 +593,20 @@ void SingleWetSpectralRenderer::processFrame(
                                     / static_cast<double>(frameSize_);
     const double binFromPhaseScale = static_cast<double>(frameSize_)
                                    / (twoPi * static_cast<double>(hopSize_));
+    // PHASE_RELIABILITY_GATE_V1
+    // Instantaneous frequency is trustworthy only while a spectral component
+    // has enough energy and enough inter-frame magnitude continuity for phase
+    // to describe the same physical component. A bin that is appearing,
+    // disappearing or living deep in the numerical/noise floor still keeps its
+    // magnitude and remains in the single wet path; only its phase-derived
+    // velocity is blended toward the nominal FFT-bin motion for this frame.
+    const float phaseMagnitudeFloor = std::max(
+        1.0e-9f, 0.0010f * framePeakMagnitude);
+
     for (int sourceBin = 0; sourceBin <= positiveBins; ++sourceBin)
     {
-        const double analysisPhase =
-            analysisPhases_[static_cast<std::size_t>(sourceBin)];
+        const std::size_t sourceIndex = static_cast<std::size_t>(sourceBin);
+        const double analysisPhase = analysisPhases_[sourceIndex];
         double trueSourceBin = static_cast<double>(sourceBin);
         if (!resetAnalysis)
         {
@@ -601,12 +614,31 @@ void SingleWetSpectralRenderer::processFrame(
                                          * static_cast<double>(sourceBin);
             const double phaseDeviation = wrapPhase(
                 analysisPhase
-                - static_cast<double>(previousAnalysisPhases_[
-                    static_cast<std::size_t>(sourceBin)])
+                - static_cast<double>(previousAnalysisPhases_[sourceIndex])
                 - expectedAdvance);
-            trueSourceBin += phaseDeviation * binFromPhaseScale;
+
+            const float currentMagnitude = magnitudes_[sourceIndex];
+            const float previousMagnitude = previousMagnitudes_[sourceIndex];
+            const float weakerMagnitude =
+                std::min(currentMagnitude, previousMagnitude);
+            const float strongerMagnitude =
+                std::max(currentMagnitude, previousMagnitude);
+            const float magnitudeContinuity = strongerMagnitude > 1.0e-12f
+                ? weakerMagnitude / strongerMagnitude : 0.0f;
+
+            const float energyReliability = smoothStep(
+                phaseMagnitudeFloor,
+                6.0f * phaseMagnitudeFloor,
+                weakerMagnitude);
+            const float continuityReliability = smoothStep(
+                0.08f, 0.35f, magnitudeContinuity);
+            const double phaseReliability = static_cast<double>(
+                energyReliability * continuityReliability);
+
+            trueSourceBin += phaseReliability
+                * phaseDeviation * binFromPhaseScale;
         }
-        trueSourceBins_[static_cast<std::size_t>(sourceBin)] = trueSourceBin;
+        trueSourceBins_[sourceIndex] = trueSourceBin;
     }
 
     synthesiseLayer(layer_, frameEndSample, correctionCents,
