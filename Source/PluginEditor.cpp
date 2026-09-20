@@ -987,6 +987,19 @@ void MicrotonalAutotuneAudioProcessorEditor::drawMeterPanel (
         status += "   Hold: "
                + juce::String (displayedMetering.sustainedNoteSeconds, 1)
                + " s";
+
+    // RENDERER_PHASE_COHERENCE_DIAGNOSTIC_V1: display-only. These values are
+    // computed after the renderer has already formed the frame and never feed
+    // any audio decision.
+    if (displayedMetering.outputMeterValid > 0.5f)
+    {
+        status += "   Ph:"
+               + juce::String (displayedMetering.outputPhaseCoherence, 0)
+               + " Bin:"
+               + juce::String (displayedMetering.outputPreIfftConsensus, 0)
+               + " Rg:"
+               + juce::String (displayedMetering.outputReconstructionNeed, 0);
+    }
     g.drawText (status, statusRow, juce::Justification::centredLeft);
 
     const auto drawBar = [&g](juce::Rectangle<int> area,
