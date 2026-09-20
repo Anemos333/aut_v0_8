@@ -16,6 +16,21 @@ public:
     [[nodiscard]] float processBypassedSample(float inputSample) noexcept;
     [[nodiscard]] int getLatencySamples() const noexcept { return frameSize_; }
 
+    struct Diagnostics
+    {
+        bool valid = false;
+        int frameCount = 0;
+        std::int64_t worstFrameEndSample = 0;
+        float minimumPreIfftCoherence = 1.0f;
+        float minimumStrongBinCoherence = 1.0f;
+        float maximumDominantRidgeSpreadBins = 0.0f;
+    };
+
+    // Diagnostic-only readback. Called by ModernPitchEngine on the audio thread
+    // after a block; it has no authority over synthesis and resets only the
+    // diagnostic block accumulator.
+    [[nodiscard]] Diagnostics consumeDiagnostics() noexcept;
+
 private:
     using Complex = std::complex<float>;
     static constexpr int sineTableSize = 4096;
@@ -73,6 +88,7 @@ private:
     std::vector<float> previousAnalysisPhases_;
     std::vector<double> trueSourceBins_;
     std::vector<double> propagatedPhases_;
+    std::vector<float> depositedMagnitudeSums_;
 
     std::vector<float> logMagnitudes_;
     std::vector<float> rawSpectralEnvelope_;
@@ -93,4 +109,6 @@ private:
     float smoothedFormantPreservation_ = 0.0f;
     float formantReductionCoefficient_ = 1.0f;
     float formantRecoveryCoefficient_ = 1.0f;
+
+    Diagnostics diagnosticBlock_ {};
 };
