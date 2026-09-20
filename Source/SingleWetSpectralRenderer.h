@@ -71,6 +71,7 @@ private:
     std::vector<float> analysisPhases_;
     std::vector<float> previousMagnitudes_;
     std::vector<float> previousAnalysisPhases_;
+    std::vector<double> rawTrueSourceBins_;
     std::vector<double> trueSourceBins_;
     std::vector<double> propagatedPhases_;
 
