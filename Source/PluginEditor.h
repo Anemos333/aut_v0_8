@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 #include <JuceHeader.h>
 #include "PluginProcessor.h"
 #include "CustomScaleEditor.h"
