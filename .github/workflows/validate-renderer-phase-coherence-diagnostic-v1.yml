@@ -34,6 +34,8 @@ jobs:
           set -euo pipefail
           git merge-base --is-ancestor c0992d60905f67d5cf4533b3f4a9500fc99dec1b HEAD
           grep -q 'RENDERER_PHASE_COHERENCE_DIAGNOSTIC_V1' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'OLA_ACCUMULATION_DIAGNOSTIC_V1' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'RENDERER_DIAGNOSTIC_STRIP_V1' Source/PluginEditor.cpp
           grep -q 'PARKED_LOW_RATE_WORKER_V1' Source/ModernPitchEngine.cpp
           grep -q 'HARD_TUNE_STABLE_MICROMOTION_COMPENSATION_V1' Source/ModernPitchEngine.cpp
           grep -q 'RENDERER_STABLE_HOP_AUTHORITY_V1' Source/ModernPitchEngine.cpp
@@ -92,6 +94,7 @@ jobs:
           cmake --build build-phase-diag --config Release --parallel 2 --target SingleWetSpectralRendererTest >/dev/null
           ./build-phase-diag/clean-engine-tests/SingleWetSpectralRendererTest 2>&1 | tee /tmp/phase-diag-metrics.log
           grep -q '^RENDERER_PHASE_DIAGNOSTICS=PASS ' /tmp/phase-diag-metrics.log
+          grep -q '^RENDERER_OLA_DIAGNOSTICS=PASS ' /tmp/phase-diag-metrics.log
 
       - name: Verify existing renderer contracts
         shell: bash
@@ -146,4 +149,6 @@ jobs:
           test ! -f /tmp/phase-diag-supervisor.original.cpp || cp /tmp/phase-diag-supervisor.original.cpp Tests/SupervisorContinuityTest.cpp
 
       - name: Final marker
-        run: echo 'RENDERER_PHASE_COHERENCE_DIAGNOSTIC=PASS_NO_AUDIO_CHANGE'
+        run: |
+          echo 'RENDERER_PHASE_COHERENCE_DIAGNOSTIC=PASS_NO_AUDIO_CHANGE'
+          echo 'RENDERER_OLA_ACCUMULATION_DIAGNOSTIC=PASS_NO_AUDIO_CHANGE'
