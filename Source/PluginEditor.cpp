@@ -866,6 +866,40 @@ void MicrotonalAutotuneAudioProcessorEditor::timerCallback()
 if (showingControlRoom)
        controlRoomPage.setMetering (displayedMetering);    
     displayedMetering = processorRef.getPitchMetering();
+
+    // RENDERER_PHASE_ALERT_LATCH_V1: GUI-only heuristic. The renderer metrics
+    // can change faster than a human can read them, so hold a symptomatic frame
+    // for ~2 seconds (60 ticks at 30 Hz). These thresholds are diagnostic, not
+    // DSP policy and have no authority over the signal.
+    const bool rendererPhaseSymptom =
+        displayedMetering.outputMeterValid > 0.5f
+        && (displayedMetering.outputPhaseCoherence < 65.0f
+            || displayedMetering.outputPreIfftConsensus < 55.0f
+            || displayedMetering.outputReconstructionNeed > 70.0f);
+    if (rendererPhaseSymptom)
+    {
+        if (rendererPhaseAlertHoldTicks_ <= 0)
+        {
+            rendererPhaseHeldPh_ = displayedMetering.outputPhaseCoherence;
+            rendererPhaseHeldBin_ = displayedMetering.outputPreIfftConsensus;
+            rendererPhaseHeldRidge_ = displayedMetering.outputReconstructionNeed;
+        }
+        else
+        {
+            rendererPhaseHeldPh_ = std::min(
+                rendererPhaseHeldPh_, displayedMetering.outputPhaseCoherence);
+            rendererPhaseHeldBin_ = std::min(
+                rendererPhaseHeldBin_, displayedMetering.outputPreIfftConsensus);
+            rendererPhaseHeldRidge_ = std::max(
+                rendererPhaseHeldRidge_, displayedMetering.outputReconstructionNeed);
+        }
+        rendererPhaseAlertHoldTicks_ = 60;
+    }
+    else if (rendererPhaseAlertHoldTicks_ > 0)
+    {
+        --rendererPhaseAlertHoldTicks_;
+    }
+
     const auto smoothTowards = [] (float current, float target, float amount)
 {
     if (! std::isfinite (target))
@@ -934,6 +968,15 @@ void MicrotonalAutotuneAudioProcessorEditor::drawMeterPanel (
     g.setColour (juce::Colour (0x507F8CFF));
     g.drawRoundedRectangle (panel.reduced (0.5f), 8.0f, 1.0f);
 
+    // Two-second peak-hold lamp for transient renderer coherence anomalies.
+    const bool rendererPhaseAlert = rendererPhaseAlertHoldTicks_ > 0;
+    const auto lampBounds = juce::Rectangle<float>(
+        panel.getRight() - 18.0f, panel.getY() + 7.0f, 8.0f, 8.0f);
+    g.setColour (rendererPhaseAlert
+        ? juce::Colour (0xFFFF3B30)
+        : juce::Colour (0xFF2D5A3D));
+    g.fillEllipse (lampBounds);
+
     auto content = bounds.reduced (12, 8);
     auto valueRow = content.removeFromTop (24);
     auto statusRow = content.removeFromTop (20);
@@ -993,12 +1036,18 @@ void MicrotonalAutotuneAudioProcessorEditor::drawMeterPanel (
     // any audio decision.
     if (displayedMetering.outputMeterValid > 0.5f)
     {
-        status += "   Ph:"
-               + juce::String (displayedMetering.outputPhaseCoherence, 0)
-               + " Bin:"
-               + juce::String (displayedMetering.outputPreIfftConsensus, 0)
-               + " Rg:"
-               + juce::String (displayedMetering.outputReconstructionNeed, 0);
+        const float phaseDisplay = rendererPhaseAlert
+            ? rendererPhaseHeldPh_ : displayedMetering.outputPhaseCoherence;
+        const float binDisplay = rendererPhaseAlert
+            ? rendererPhaseHeldBin_ : displayedMetering.outputPreIfftConsensus;
+        const float ridgeDisplay = rendererPhaseAlert
+            ? rendererPhaseHeldRidge_ : displayedMetering.outputReconstructionNeed;
+        status += rendererPhaseAlert ? "   PHASE! " : "   Ph:";
+        if (rendererPhaseAlert)
+            status += "Ph:";
+        status += juce::String (phaseDisplay, 0)
+               + " Bin:" + juce::String (binDisplay, 0)
+               + " Rg:" + juce::String (ridgeDisplay, 0);
     }
     g.drawText (status, statusRow, juce::Justification::centredLeft);
 
