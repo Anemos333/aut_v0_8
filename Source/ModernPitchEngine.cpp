@@ -4438,15 +4438,15 @@ void ModernPitchEngine::updateCorrectionState(
     state.targetLog2 = newTarget;
     state.targetValid = true;
 
-    // Preserve the pre-update transport coordinate only for the stable terminal
-    // tail rebase below. It is not a detector fallback and never reaches the
+    // Preserve the source coordinate that owned the renderer before this hop.
+    // It is used only after target identity has already been resolved. Capturing
+    // it here never changes detector/quantizer evidence and never reaches the
     // renderer directly.
-    double preTailTransportSourceLog2 = correctionObservedLog2;
-    if (terminalTailStableCompensation
-        && state.transportPeriodHz > 0.0
+    double preTransportSourceLog2 = correctionObservedLog2;
+    if (state.transportPeriodHz > 0.0
         && std::isfinite(state.transportPeriodHz))
     {
-        preTailTransportSourceLog2 = safeLog2(state.transportPeriodHz);
+        preTransportSourceLog2 = safeLog2(state.transportPeriodHz);
     }
 
     // LOCAL_TRAJECTORY_V1: the audible source coordinate is a persistent
@@ -4598,6 +4598,23 @@ void ModernPitchEngine::updateCorrectionState(
     // law. Softer controls enlarge a bounded cage around the selected degree;
     // they never multiply correction toward unity and never create a dry zone.
     const double amount = static_cast<double>(clamp01(parameters.amount));
+
+    // HARD_TUNE_STABLE_MICROMOTION_COMPENSATION_V1
+    // Extreme correction settings mean the user is explicitly asking the
+    // already-owned scale degree to remain rigid. Keep detector/transport fully
+    // live, but remove Response lag from small within-note source motion by
+    // preserving the controller's pre-existing desired-current error. The
+    // authority fades continuously to zero before ordinary Humanize/Vibrato
+    // settings, so this is not a second correction law or a hidden dry zone.
+    const float hardAmountAuthority = smoothStep(
+        0.90f, 0.99f, static_cast<float>(amount));
+    const float lowHumanizeAuthority = 1.0f - smoothStep(
+        0.04f, 0.16f, humanize);
+    const float lowVibratoAuthority = 1.0f - smoothStep(
+        0.03f, 0.18f, requestedVibrato);
+    const float stableMicroMotionAuthority = clamp01(
+        hardAmountAuthority * lowHumanizeAuthority * lowVibratoAuthority);
+
     const double softness = std::clamp(
         0.72 * (1.0 - amount) + 0.20 * static_cast<double>(humanize),
         0.0, 0.88);
@@ -4641,17 +4658,41 @@ void ModernPitchEngine::updateCorrectionState(
         0.0, 48.0);
     errorCents = std::clamp(errorCents, -maximumCents, maximumCents);
 
-    if (terminalTailStableCompensation
+    float stableTransportCompensation = 0.0f;
+    if (terminalTailStableCompensation)
+    {
+        // Preserve the existing terminal-tail behaviour exactly.
+        stableTransportCompensation = 1.0f;
+    }
+    else if (state.trackingState == TrackingState::stable
+             && state.noteBodyLatched
+             && validPitch
+             && !musicalOnset
+             && !targetIdentityChanged
+             && stableMicroMotionAuthority > 0.0f)
+    {
+        const double transportDeltaCents =
+            (audibleSourceLog2 - preTransportSourceLog2) * 1200.0;
+        const double microMotionLimitCents = std::clamp(
+            0.18 * minimumStep, 4.0, 18.0);
+        if (std::isfinite(transportDeltaCents)
+            && std::abs(transportDeltaCents) <= microMotionLimitCents)
+        {
+            stableTransportCompensation = stableMicroMotionAuthority;
+        }
+    }
+
+    if (stableTransportCompensation > 0.0f
         && state.trackingState == TrackingState::stable
         && !targetIdentityChanged)
     {
         // Re-evaluate only the same target-owned law at the previous transport
         // coordinate. The difference to the new desired value is therefore the
         // correction delta caused by source transport, not a target/Response
-        // change. Shift current by exactly that delta so the pre-existing
-        // desired-current Response error is preserved rather than snapped.
+        // change. At hard-tune authority=1 this keeps the existing Response
+        // error unchanged while cancelling stable vibrato immediately.
         const double priorSourceOffsetCents =
-            (preTailTransportSourceLog2 - state.targetLog2) * 1200.0;
+            (preTransportSourceLog2 - state.targetLog2) * 1200.0;
         const double priorTargetOwnedSourceResidual =
             residualBudgetCents > 1.0e-9
             ? residualBudgetCents
@@ -4669,7 +4710,7 @@ void ModernPitchEngine::updateCorrectionState(
         const double priorCorrectedLog2 = state.targetLog2
             + priorTargetOwnedOffsetCents / 1200.0;
         const double priorDesiredAtCurrentControls = std::clamp(
-            (priorCorrectedLog2 - preTailTransportSourceLog2) * 1200.0,
+            (priorCorrectedLog2 - preTransportSourceLog2) * 1200.0,
             -maximumCents,
             maximumCents);
         const double transportCorrectionDelta =
@@ -4678,7 +4719,9 @@ void ModernPitchEngine::updateCorrectionState(
         if (std::isfinite(transportCorrectionDelta))
         {
             state.currentCents = std::clamp(
-                state.currentCents + transportCorrectionDelta,
+                state.currentCents
+                    + static_cast<double>(stableTransportCompensation)
+                        * transportCorrectionDelta,
                 -maximumCents,
                 maximumCents);
         }
