@@ -3288,6 +3288,11 @@ void ModernPitchEngine::reset() noexcept
     meterRendererStrongBinCoherence_.store(1.0f, std::memory_order_relaxed);
     meterRendererRidgeSpreadBins_.store(0.0f, std::memory_order_relaxed);
     meterRendererDiagnosticsValid_.store(false, std::memory_order_relaxed);
+    meterRendererPhaseDiagnosticSerial_.store(0, std::memory_order_relaxed);
+    meterRendererPhaseDiagnosticAlert_.store(false, std::memory_order_relaxed);
+    meterRendererPhaseDiagnosticHeldPh_.store(100.0f, std::memory_order_relaxed);
+    meterRendererPhaseDiagnosticHeldBin_.store(100.0f, std::memory_order_relaxed);
+    meterRendererPhaseDiagnosticHeldRidge_.store(0.0f, std::memory_order_relaxed);
 
     targetRevisionDiagnosticSerial_ = 0;
     targetRevisionBeforeHz_ = 0.0f;
@@ -3313,6 +3318,10 @@ void ModernPitchEngine::reset() noexcept
     targetRevisionCorrectionBeforeCents_ = 0.0f;
     targetRevisionCorrectionAfterCents_ = 0.0f;
     targetRevisionCorrectionDeltaCents_ = 0.0f;
+    rendererPhaseDiagnosticSerial_ = 0;
+    rendererPhaseDiagnosticWorstPh_ = 100.0f;
+    rendererPhaseDiagnosticWorstBin_ = 100.0f;
+    rendererPhaseDiagnosticWorstRidge_ = 0.0f;
     meterTargetRevisionDiagnosticSerial_.store(0, std::memory_order_relaxed);
     meterTargetRevisionBeforeHz_.store(0.0f, std::memory_order_relaxed);
     meterTargetRevisionAfterHz_.store(0.0f, std::memory_order_relaxed);
@@ -5286,6 +5295,47 @@ void ModernPitchEngine::publishMetering(
             rendererDiagnostics.maximumDominantRidgeSpreadBins,
             std::memory_order_relaxed);
         meterRendererDiagnosticsValid_.store(true, std::memory_order_relaxed);
+
+        // RENDERER_PHASE_DIAGNOSTIC_EVENT_LATCH_V1
+        // Latch only established note-body frames so startup/re-entry does not
+        // create false alarms. This is observation only, after audio rendering.
+        if (state.trackingState == TrackingState::stable
+            && state.noteBodyLatched
+            && state.stableObservations >= 5)
+        {
+            const float diagnosticPh = 100.0f
+                * rendererDiagnostics.minimumPreIfftCoherence;
+            const float diagnosticBin = 100.0f
+                * rendererDiagnostics.minimumStrongBinCoherence;
+            const float diagnosticRidge = 100.0f * std::clamp(
+                rendererDiagnostics.maximumDominantRidgeSpreadBins / 1.5f,
+                0.0f, 1.0f);
+            const bool symptomatic = diagnosticPh < 65.0f
+                || diagnosticBin < 55.0f
+                || diagnosticRidge > 70.0f;
+
+            if (symptomatic)
+            {
+                ++rendererPhaseDiagnosticSerial_;
+                rendererPhaseDiagnosticWorstPh_ = std::min(
+                    rendererPhaseDiagnosticWorstPh_, diagnosticPh);
+                rendererPhaseDiagnosticWorstBin_ = std::min(
+                    rendererPhaseDiagnosticWorstBin_, diagnosticBin);
+                rendererPhaseDiagnosticWorstRidge_ = std::max(
+                    rendererPhaseDiagnosticWorstRidge_, diagnosticRidge);
+
+                meterRendererPhaseDiagnosticSerial_.store(
+                    rendererPhaseDiagnosticSerial_, std::memory_order_relaxed);
+                meterRendererPhaseDiagnosticAlert_.store(
+                    true, std::memory_order_relaxed);
+                meterRendererPhaseDiagnosticHeldPh_.store(
+                    rendererPhaseDiagnosticWorstPh_, std::memory_order_relaxed);
+                meterRendererPhaseDiagnosticHeldBin_.store(
+                    rendererPhaseDiagnosticWorstBin_, std::memory_order_relaxed);
+                meterRendererPhaseDiagnosticHeldRidge_.store(
+                    rendererPhaseDiagnosticWorstRidge_, std::memory_order_relaxed);
+            }
+        }
     }
     meterDetectorSupport_.store(observation.detectorSupport, std::memory_order_relaxed);
     meterOctaveState_.store(observation.octaveState, std::memory_order_relaxed);
@@ -5394,6 +5444,16 @@ ModernPitchEngine::Metering ModernPitchEngine::getMetering() const noexcept
             ? 100.0f * ridgeStress : 0.0f;
         result.outputMemoryReliability = rendererDiagnosticsValid
             ? 100.0f * (1.0f - ridgeStress) : 0.0f;
+        result.rendererPhaseDiagnosticSerial =
+            meterRendererPhaseDiagnosticSerial_.load(std::memory_order_relaxed);
+        result.rendererPhaseDiagnosticAlert =
+            meterRendererPhaseDiagnosticAlert_.load(std::memory_order_relaxed);
+        result.rendererPhaseDiagnosticHeldPh =
+            meterRendererPhaseDiagnosticHeldPh_.load(std::memory_order_relaxed);
+        result.rendererPhaseDiagnosticHeldBin =
+            meterRendererPhaseDiagnosticHeldBin_.load(std::memory_order_relaxed);
+        result.rendererPhaseDiagnosticHeldRidge =
+            meterRendererPhaseDiagnosticHeldRidge_.load(std::memory_order_relaxed);
         result.outputMeterValid = (rendererDiagnosticsValid
             || result.detectedPitchHz > 0.0f) ? 1.0f : 0.0f;
         result.outputTemporalStability = 100.0f * result.maskStability;
