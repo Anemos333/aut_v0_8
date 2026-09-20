@@ -1,0 +1,149 @@
+name: Validate renderer phase coherence diagnostic v1
+
+on:
+  push:
+    branches:
+      - renderer-phase-coherence-diagnostic-v1
+    paths:
+      - Source/SingleWetSpectralRenderer.cpp
+      - Source/SingleWetSpectralRenderer.h
+      - Source/ModernPitchEngine.cpp
+      - Source/ModernPitchEngine.h
+      - Source/PluginEditor.cpp
+      - Tests/RendererDiagnosticTransparencyTest.cpp
+      - Tests/RendererPhaseCoherenceDiagnosticTest.cpp
+      - .github/workflows/validate-renderer-phase-coherence-diagnostic-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout diagnostic branch
+        uses: actions/checkout@v4
+        with:
+          ref: renderer-phase-coherence-diagnostic-v1
+          fetch-depth: 0
+
+      - name: Guard ancestry and diagnostic-only markers
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor c0992d60905f67d5cf4533b3f4a9500fc99dec1b HEAD
+          grep -q 'RENDERER_PHASE_COHERENCE_DIAGNOSTIC_V1' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'PARKED_LOW_RATE_WORKER_V1' Source/ModernPitchEngine.cpp
+          grep -q 'HARD_TUNE_STABLE_MICROMOTION_COMPENSATION_V1' Source/ModernPitchEngine.cpp
+          grep -q 'RENDERER_STABLE_HOP_AUTHORITY_V1' Source/ModernPitchEngine.cpp
+          echo 'RENDERER_PHASE_DIAGNOSTIC_SCOPE=PASS'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Configure candidate
+        run: cmake -S . -B build-phase-diag -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Preserve test sources
+        run: |
+          cp Tests/SingleWetSpectralRendererTest.cpp /tmp/phase-diag-renderer.original.cpp
+          cp Tests/SupervisorContinuityTest.cpp /tmp/phase-diag-supervisor.original.cpp
+
+      - name: Build full plugin
+        run: cmake --build build-phase-diag --config Release --parallel 2 --target Neumaton
+
+      - name: Build candidate transparency corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/RendererDiagnosticTransparencyTest.cpp Tests/SingleWetSpectralRendererTest.cpp
+          cmake --build build-phase-diag --config Release --parallel 2 --target SingleWetSpectralRendererTest >/dev/null
+          ./build-phase-diag/clean-engine-tests/SingleWetSpectralRendererTest 2>&1 | tee /tmp/phase-diag-candidate-hash.log
+          grep '^RENDERER_TRANSPARENCY_HASH_' /tmp/phase-diag-candidate-hash.log > /tmp/phase-diag-candidate-hashes.txt
+          test "$(wc -l < /tmp/phase-diag-candidate-hashes.txt)" -eq 2
+
+      - name: Build parent transparency corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach /tmp/neumaton-phase-diag-parent c0992d60905f67d5cf4533b3f4a9500fc99dec1b
+          cd /tmp/neumaton-phase-diag-parent
+          cp "$GITHUB_WORKSPACE/Tests/RendererDiagnosticTransparencyTest.cpp" Tests/SingleWetSpectralRendererTest.cpp
+          cmake -S . -B build-transparency -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-transparency --config Release --parallel 2 --target SingleWetSpectralRendererTest >/dev/null
+          ./build-transparency/clean-engine-tests/SingleWetSpectralRendererTest 2>&1 | tee /tmp/phase-diag-parent-hash.log
+          grep '^RENDERER_TRANSPARENCY_HASH_' /tmp/phase-diag-parent-hash.log > /tmp/phase-diag-parent-hashes.txt
+          diff -u /tmp/phase-diag-parent-hashes.txt /tmp/phase-diag-candidate-hashes.txt
+          echo 'RENDERER_DIAGNOSTIC_BIT_TRANSPARENT=PASS'
+
+      - name: Verify diagnostic metrics
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/RendererPhaseCoherenceDiagnosticTest.cpp Tests/SingleWetSpectralRendererTest.cpp
+          cmake --build build-phase-diag --config Release --parallel 2 --target SingleWetSpectralRendererTest >/dev/null
+          ./build-phase-diag/clean-engine-tests/SingleWetSpectralRendererTest 2>&1 | tee /tmp/phase-diag-metrics.log
+          grep -q '^RENDERER_PHASE_DIAGNOSTICS=PASS ' /tmp/phase-diag-metrics.log
+
+      - name: Verify existing renderer contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp /tmp/phase-diag-renderer.original.cpp Tests/SingleWetSpectralRendererTest.cpp
+          cmake --build build-phase-diag --config Release --parallel 2 --target SingleWetSpectralRendererTest >/dev/null
+          ./build-phase-diag/clean-engine-tests/SingleWetSpectralRendererTest 2>&1 | tee /tmp/phase-diag-renderer.log
+          ! grep -q '=FAIL' /tmp/phase-diag-renderer.log
+          grep -q 'quality_realizes_commanded_pitch_ratio=PASS' /tmp/phase-diag-renderer.log
+          grep -q 'live_realizes_commanded_pitch_ratio=PASS' /tmp/phase-diag-renderer.log
+          grep -q 'periodic_reentry_has_no_click=PASS' /tmp/phase-diag-renderer.log
+          echo 'RENDERER_PHASE_DIAGNOSTIC_RENDERER_CONTRACTS=PASS'
+
+      - name: Verify detector oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/GoldenDetectorDeterminismTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-phase-diag --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          for run in 1 2 3; do
+            ./build-phase-diag/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee "/tmp/phase-diag-detector-$run.log"
+            grep -q '^GOLDEN_DETECTOR_TRACE_HASH=58273352d40c5499$' "/tmp/phase-diag-detector-$run.log"
+          done
+          echo 'RENDERER_PHASE_DIAGNOSTIC_DETECTOR_UNCHANGED=PASS'
+
+      - name: Verify controller and renderer-hop contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp /tmp/phase-diag-supervisor.original.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-phase-diag --config Release --parallel 2 \
+            --target SupervisorContinuityTest CleanModernPitchEngineTest >/dev/null
+          ./build-phase-diag/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/phase-diag-supervisor.log
+          ./build-phase-diag/clean-engine-tests/CleanModernPitchEngineTest 2>&1 | tee /tmp/phase-diag-engine.log
+          ! grep -q '=FAIL' /tmp/phase-diag-supervisor.log
+          ! grep -q '=FAIL' /tmp/phase-diag-engine.log
+          grep -q 'speed_changes_post_lock_transition=PASS' /tmp/phase-diag-engine.log
+
+          cp Tests/RendererIncoherentHopHoldTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-phase-diag --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-phase-diag/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/phase-diag-hop.log
+          grep -q '^RENDERER_INCOHERENT_HOP_HOLD=PASS ' /tmp/phase-diag-hop.log
+          grep -q '^RENDERER_PERSISTENT_CHANGE_RELEASE=PASS ' /tmp/phase-diag-hop.log
+          echo 'RENDERER_PHASE_DIAGNOSTIC_UPSTREAM_CONTRACTS=PASS'
+
+      - name: Restore test sources
+        if: always()
+        shell: bash
+        run: |
+          test ! -f /tmp/phase-diag-renderer.original.cpp || cp /tmp/phase-diag-renderer.original.cpp Tests/SingleWetSpectralRendererTest.cpp
+          test ! -f /tmp/phase-diag-supervisor.original.cpp || cp /tmp/phase-diag-supervisor.original.cpp Tests/SupervisorContinuityTest.cpp
+
+      - name: Final marker
+        run: echo 'RENDERER_PHASE_COHERENCE_DIAGNOSTIC=PASS_NO_AUDIO_CHANGE'
