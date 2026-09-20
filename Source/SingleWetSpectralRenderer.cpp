@@ -108,6 +108,7 @@ void SingleWetSpectralRenderer::prepare(double sampleRate,
     analysisPhases_.assign(static_cast<std::size_t>(positiveBinCount), 0.0f);
     previousMagnitudes_.assign(static_cast<std::size_t>(positiveBinCount), 0.0f);
     previousAnalysisPhases_.assign(static_cast<std::size_t>(positiveBinCount), 0.0f);
+    rawTrueSourceBins_.assign(static_cast<std::size_t>(positiveBinCount), 0.0);
     trueSourceBins_.assign(static_cast<std::size_t>(positiveBinCount), 0.0);
     propagatedPhases_.assign(static_cast<std::size_t>(positiveBinCount), 0.0);
     logMagnitudes_.assign(static_cast<std::size_t>(positiveBinCount), 0.0f);
@@ -148,6 +149,7 @@ void SingleWetSpectralRenderer::reset() noexcept
     std::fill(analysisPhases_.begin(), analysisPhases_.end(), 0.0f);
     std::fill(previousMagnitudes_.begin(), previousMagnitudes_.end(), 0.0f);
     std::fill(previousAnalysisPhases_.begin(), previousAnalysisPhases_.end(), 0.0f);
+    std::fill(rawTrueSourceBins_.begin(), rawTrueSourceBins_.end(), 0.0);
     std::fill(trueSourceBins_.begin(), trueSourceBins_.end(), 0.0);
     std::fill(propagatedPhases_.begin(), propagatedPhases_.end(), 0.0);
     std::fill(logMagnitudes_.begin(), logMagnitudes_.end(), 0.0f);
@@ -593,52 +595,100 @@ void SingleWetSpectralRenderer::processFrame(
                                     / static_cast<double>(frameSize_);
     const double binFromPhaseScale = static_cast<double>(frameSize_)
                                    / (twoPi * static_cast<double>(hopSize_));
-    // PHASE_RELIABILITY_GATE_V1
-    // Instantaneous frequency is trustworthy only while a spectral component
-    // has enough energy and enough inter-frame magnitude continuity for phase
-    // to describe the same physical component. A bin that is appearing,
-    // disappearing or living deep in the numerical/noise floor still keeps its
-    // magnitude and remains in the single wet path; only its phase-derived
-    // velocity is blended toward the nominal FFT-bin motion for this frame.
+    // PHASE_RELIABILITY_GATE_V2
+    // First compute the exact legacy instantaneous-frequency estimate for every
+    // bin. A second pass may reduce only an isolated, weak estimate whose local
+    // ridge does not support the same physical frequency. Strong bins and
+    // coherent leakage ridges keep the legacy phase law unchanged.
     const float phaseMagnitudeFloor = std::max(
         1.0e-9f, 0.0010f * framePeakMagnitude);
 
     for (int sourceBin = 0; sourceBin <= positiveBins; ++sourceBin)
     {
         const std::size_t sourceIndex = static_cast<std::size_t>(sourceBin);
-        const double analysisPhase = analysisPhases_[sourceIndex];
-        double trueSourceBin = static_cast<double>(sourceBin);
+        double rawTrueSourceBin = static_cast<double>(sourceBin);
         if (!resetAnalysis)
         {
             const double expectedAdvance = expectedPhaseScale
                                          * static_cast<double>(sourceBin);
             const double phaseDeviation = wrapPhase(
-                analysisPhase
+                static_cast<double>(analysisPhases_[sourceIndex])
                 - static_cast<double>(previousAnalysisPhases_[sourceIndex])
                 - expectedAdvance);
+            rawTrueSourceBin += phaseDeviation * binFromPhaseScale;
+        }
+        rawTrueSourceBins_[sourceIndex] = rawTrueSourceBin;
+    }
 
+    for (int sourceBin = 0; sourceBin <= positiveBins; ++sourceBin)
+    {
+        const std::size_t sourceIndex = static_cast<std::size_t>(sourceBin);
+        const double rawTrueSourceBin = rawTrueSourceBins_[sourceIndex];
+        double phaseReliability = 1.0;
+
+        if (!resetAnalysis)
+        {
             const float currentMagnitude = magnitudes_[sourceIndex];
             const float previousMagnitude = previousMagnitudes_[sourceIndex];
-            const float weakerMagnitude =
+            const float persistentMagnitude =
                 std::min(currentMagnitude, previousMagnitude);
-            const float strongerMagnitude =
-                std::max(currentMagnitude, previousMagnitude);
-            const float magnitudeContinuity = strongerMagnitude > 1.0e-12f
-                ? weakerMagnitude / strongerMagnitude : 0.0f;
+            const float strongEnergyReliability = smoothStep(
+                2.0f * phaseMagnitudeFloor,
+                8.0f * phaseMagnitudeFloor,
+                persistentMagnitude);
 
-            const float energyReliability = smoothStep(
-                phaseMagnitudeFloor,
-                6.0f * phaseMagnitudeFloor,
-                weakerMagnitude);
-            const float continuityReliability = smoothStep(
-                0.08f, 0.35f, magnitudeContinuity);
-            const double phaseReliability = static_cast<double>(
-                energyReliability * continuityReliability);
+            double weightedMean = 0.0;
+            double weightSum = 0.0;
+            for (int neighbour = std::max(0, sourceBin - 2);
+                 neighbour <= std::min(positiveBins, sourceBin + 2);
+                 ++neighbour)
+            {
+                const std::size_t neighbourIndex =
+                    static_cast<std::size_t>(neighbour);
+                const double weight = std::sqrt(std::max(
+                    0.0,
+                    static_cast<double>(magnitudes_[neighbourIndex])
+                    * static_cast<double>(previousMagnitudes_[neighbourIndex])));
+                weightedMean += weight * rawTrueSourceBins_[neighbourIndex];
+                weightSum += weight;
+            }
 
-            trueSourceBin += phaseReliability
-                * phaseDeviation * binFromPhaseScale;
+            double localSpreadBins = 2.0;
+            if (weightSum > 1.0e-12)
+            {
+                weightedMean /= weightSum;
+                double weightedVariance = 0.0;
+                for (int neighbour = std::max(0, sourceBin - 2);
+                     neighbour <= std::min(positiveBins, sourceBin + 2);
+                     ++neighbour)
+                {
+                    const std::size_t neighbourIndex =
+                        static_cast<std::size_t>(neighbour);
+                    const double weight = std::sqrt(std::max(
+                        0.0,
+                        static_cast<double>(magnitudes_[neighbourIndex])
+                        * static_cast<double>(previousMagnitudes_[neighbourIndex])));
+                    const double delta =
+                        rawTrueSourceBins_[neighbourIndex] - weightedMean;
+                    weightedVariance += weight * delta * delta;
+                }
+                localSpreadBins = std::sqrt(
+                    weightedVariance / weightSum);
+            }
+
+            const float ridgeReliability = 1.0f - smoothStep(
+                0.30f, 0.85f, static_cast<float>(localSpreadBins));
+
+            // Strong energy is sufficient on its own. Weak bins need a coherent
+            // local ridge before their phase deviation receives full authority.
+            phaseReliability = static_cast<double>(std::max(
+                strongEnergyReliability, ridgeReliability));
         }
-        trueSourceBins_[sourceIndex] = trueSourceBin;
+
+        trueSourceBins_[sourceIndex] =
+            static_cast<double>(sourceBin)
+            + phaseReliability
+                * (rawTrueSourceBin - static_cast<double>(sourceBin));
     }
 
     synthesiseLayer(layer_, frameEndSample, correctionCents,
