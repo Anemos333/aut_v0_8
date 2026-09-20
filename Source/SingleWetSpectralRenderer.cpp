@@ -98,6 +98,8 @@ void SingleWetSpectralRenderer::prepare(double sampleRate,
         const double value = window_[static_cast<std::size_t>(index)];
         overlapNormalisation += value * value;
     }
+    expectedOlaCoverage_ = static_cast<float>(
+        std::max(1.0e-9, overlapNormalisation));
     synthesisGain_ = static_cast<float>(1.0
         / std::max(1.0e-9, overlapNormalisation));
     envelopeUpdateInterval_ = 2;
@@ -119,6 +121,12 @@ void SingleWetSpectralRenderer::prepare(double sampleRate,
     layer_.spectrum.assign(static_cast<std::size_t>(frameSize_), Complex {});
     layer_.synthesisPhases.assign(static_cast<std::size_t>(positiveBinCount), 0.0);
     layer_.outputAccumulationRing.assign(static_cast<std::size_t>(outputRingSize), 0.0f);
+    layer_.diagnosticAbsoluteContributionRing.assign(
+        static_cast<std::size_t>(outputRingSize), 0.0f);
+    layer_.diagnosticCoverageRing.assign(
+        static_cast<std::size_t>(outputRingSize), 0.0f);
+    layer_.diagnosticContributionCountRing.assign(
+        static_cast<std::size_t>(outputRingSize), 0u);
     layer_.phaseInitialised = false;
 
     // FULL_SPECTRUM_SINGLE_TRANSPORT_V1
@@ -140,7 +148,17 @@ void SingleWetSpectralRenderer::prepare(double sampleRate,
     reset();
 }
 
-void SingleWetSpectralRenderer::clearLayerOutput(SynthesisLayer& layer) noexcept { std::fill(layer.outputAccumulationRing.begin(),layer.outputAccumulationRing.end(),0.0f); }
+void SingleWetSpectralRenderer::clearLayerOutput(SynthesisLayer& layer) noexcept
+{
+    std::fill(layer.outputAccumulationRing.begin(),
+              layer.outputAccumulationRing.end(), 0.0f);
+    std::fill(layer.diagnosticAbsoluteContributionRing.begin(),
+              layer.diagnosticAbsoluteContributionRing.end(), 0.0f);
+    std::fill(layer.diagnosticCoverageRing.begin(),
+              layer.diagnosticCoverageRing.end(), 0.0f);
+    std::fill(layer.diagnosticContributionCountRing.begin(),
+              layer.diagnosticContributionCountRing.end(), 0u);
+}
 void SingleWetSpectralRenderer::reset() noexcept
 {
     std::fill(inputRing_.begin(), inputRing_.end(), 0.0f);
@@ -628,8 +646,22 @@ void SingleWetSpectralRenderer::synthesiseLayer(
                            * synthesisWindow;
         const int outputIndex = static_cast<int>((outputStartSample + index)
                                                   & outputRingMask_);
-        layer.outputAccumulationRing[static_cast<std::size_t>(outputIndex)] +=
-            output;
+        const std::size_t outputRingIndex =
+            static_cast<std::size_t>(outputIndex);
+        layer.outputAccumulationRing[outputRingIndex] += output;
+
+        // OLA_ACCUMULATION_DIAGNOSTIC_V1
+        // Shadow the contribution geometry only. These rings are never read by
+        // synthesis and therefore cannot change the audible overlap/add sum.
+        layer.diagnosticAbsoluteContributionRing[outputRingIndex] +=
+            std::abs(output);
+        layer.diagnosticCoverageRing[outputRingIndex] +=
+            synthesisWindow * synthesisWindow;
+        if (layer.diagnosticContributionCountRing[outputRingIndex]
+            < std::numeric_limits<std::uint8_t>::max())
+        {
+            ++layer.diagnosticContributionCountRing[outputRingIndex];
+        }
     }
 }
 
@@ -742,7 +774,52 @@ float SingleWetSpectralRenderer::consumeLayerOutput(
     const int outputIndex = static_cast<int>(sample & outputRingMask_);
     const std::size_t index = static_cast<std::size_t>(outputIndex);
     const float accumulated = layer.outputAccumulationRing[index];
+
+    // OLA_ACCUMULATION_DIAGNOSTIC_V1
+    // Inspect the exact sample that is about to be heard, before clearing its
+    // ring slot. Ignore startup and vanishingly small samples so zero crossings
+    // cannot masquerade as destructive overlap cancellation.
+    const float absoluteContributionSum =
+        layer.diagnosticAbsoluteContributionRing[index];
+    const float coverage = layer.diagnosticCoverageRing[index];
+    const int contributionCount = static_cast<int>(
+        layer.diagnosticContributionCountRing[index]);
+
+    if (sample >= static_cast<std::int64_t>(2 * frameSize_)
+        && absoluteContributionSum > 1.0e-5f
+        && expectedOlaCoverage_ > 1.0e-9f)
+    {
+        const float olaCoherence = std::clamp(
+            std::abs(accumulated) / absoluteContributionSum, 0.0f, 1.0f);
+        const float coverageRatio = std::clamp(
+            coverage / expectedOlaCoverage_, 0.0f, 1.5f);
+
+        diagnosticBlock_.olaValid = true;
+        const bool worse =
+            olaCoherence < diagnosticBlock_.minimumOlaCoherence
+            || coverageRatio < diagnosticBlock_.minimumOlaCoverageRatio
+            || contributionCount < diagnosticBlock_.minimumOlaContributionCount;
+
+        diagnosticBlock_.minimumOlaCoherence = std::min(
+            diagnosticBlock_.minimumOlaCoherence, olaCoherence);
+        diagnosticBlock_.minimumOlaCoverageRatio = std::min(
+            diagnosticBlock_.minimumOlaCoverageRatio, coverageRatio);
+        diagnosticBlock_.minimumOlaContributionCount = std::min(
+            diagnosticBlock_.minimumOlaContributionCount, contributionCount);
+
+        if (worse)
+        {
+            diagnosticBlock_.worstOlaSample = sample;
+            diagnosticBlock_.worstOlaSignedSum = accumulated;
+            diagnosticBlock_.worstOlaAbsoluteSum =
+                absoluteContributionSum;
+        }
+    }
+
     layer.outputAccumulationRing[index] = 0.0f;
+    layer.diagnosticAbsoluteContributionRing[index] = 0.0f;
+    layer.diagnosticCoverageRing[index] = 0.0f;
+    layer.diagnosticContributionCountRing[index] = 0u;
     return accumulated * synthesisGain_;
 }
 
@@ -775,6 +852,15 @@ float SingleWetSpectralRenderer::processBypassedSample(float inputSample) noexce
 {
     inputSample=sanitiseAudioSample(inputSample); if(frameSize_<=0||inputRing_.empty()) return inputSample;
     const std::int64_t currentSample=inputSampleCounter_; inputRing_[static_cast<std::size_t>(currentSample & inputRingMask_)]=inputSample;
-    const float delayed=readInputSample(currentSample-frameSize_); if(!layer_.outputAccumulationRing.empty()) layer_.outputAccumulationRing[static_cast<std::size_t>(currentSample & outputRingMask_)]=0.0f;
+    const float delayed=readInputSample(currentSample-frameSize_);
+    if(!layer_.outputAccumulationRing.empty())
+    {
+        const std::size_t index = static_cast<std::size_t>(
+            currentSample & outputRingMask_);
+        layer_.outputAccumulationRing[index]=0.0f;
+        layer_.diagnosticAbsoluteContributionRing[index]=0.0f;
+        layer_.diagnosticCoverageRing[index]=0.0f;
+        layer_.diagnosticContributionCountRing[index]=0u;
+    }
     ++inputSampleCounter_; return sanitiseAudioSample(delayed);
 }
