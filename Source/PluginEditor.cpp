@@ -867,32 +867,20 @@ if (showingControlRoom)
        controlRoomPage.setMetering (displayedMetering);    
     displayedMetering = processorRef.getPitchMetering();
 
-    // RENDERER_PHASE_ALERT_LATCH_V1: GUI-only heuristic. The renderer metrics
-    // can change faster than a human can read them, so hold a symptomatic frame
-    // for ~2 seconds (60 ticks at 30 Hz). These thresholds are diagnostic, not
-    // DSP policy and have no authority over the signal.
-    const bool rendererPhaseSymptom =
-        displayedMetering.outputMeterValid > 0.5f
-        && (displayedMetering.outputPhaseCoherence < 65.0f
-            || displayedMetering.outputPreIfftConsensus < 55.0f
-            || displayedMetering.outputReconstructionNeed > 70.0f);
-    if (rendererPhaseSymptom)
+    // RENDERER_PHASE_ALERT_LATCH_V2: the audio-thread diagnostic event serial
+    // is sticky, so even a one-block anomaly cannot be missed by the 30 Hz GUI.
+    // The GUI merely holds the lamp for readability; it has no DSP authority.
+    if (displayedMetering.rendererPhaseDiagnosticSerial
+        != lastRendererPhaseDiagnosticSerial_)
     {
-        if (rendererPhaseAlertHoldTicks_ <= 0)
-        {
-            rendererPhaseHeldPh_ = displayedMetering.outputPhaseCoherence;
-            rendererPhaseHeldBin_ = displayedMetering.outputPreIfftConsensus;
-            rendererPhaseHeldRidge_ = displayedMetering.outputReconstructionNeed;
-        }
-        else
-        {
-            rendererPhaseHeldPh_ = std::min(
-                rendererPhaseHeldPh_, displayedMetering.outputPhaseCoherence);
-            rendererPhaseHeldBin_ = std::min(
-                rendererPhaseHeldBin_, displayedMetering.outputPreIfftConsensus);
-            rendererPhaseHeldRidge_ = std::max(
-                rendererPhaseHeldRidge_, displayedMetering.outputReconstructionNeed);
-        }
+        lastRendererPhaseDiagnosticSerial_ =
+            displayedMetering.rendererPhaseDiagnosticSerial;
+        rendererPhaseHeldPh_ =
+            displayedMetering.rendererPhaseDiagnosticHeldPh;
+        rendererPhaseHeldBin_ =
+            displayedMetering.rendererPhaseDiagnosticHeldBin;
+        rendererPhaseHeldRidge_ =
+            displayedMetering.rendererPhaseDiagnosticHeldRidge;
         rendererPhaseAlertHoldTicks_ = 60;
     }
     else if (rendererPhaseAlertHoldTicks_ > 0)
