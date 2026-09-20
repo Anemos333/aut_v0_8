@@ -4681,7 +4681,15 @@ void ModernPitchEngine::updateCorrectionState(
         if (std::isfinite(transportDeltaCents)
             && std::abs(transportDeltaCents) <= microMotionLimitCents)
         {
-            stableTransportCompensation = stableMicroMotionAuthority;
+            // RESPONSE_AND_COMPENSATION_COMPETE_V1
+            // Stable hard-tune micro-motion may pre-compensate most of the
+            // source motion, but never 100% of it. Response always retains a
+            // real share of the trajectory, so a monotonic within-cell move
+            // still differentiates fast and slow settings instead of being
+            // silently promoted to an instantaneous correction.
+            constexpr float maximumImmediateCompensation = 0.85f;
+            stableTransportCompensation = maximumImmediateCompensation
+                * stableMicroMotionAuthority;
         }
     }
 
