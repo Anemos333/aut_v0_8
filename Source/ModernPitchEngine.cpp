@@ -3600,6 +3600,12 @@ void ModernPitchEngine::updateCorrectionState(
     const PitchObservation& observation,
     const Parameters& parameters) noexcept
 {
+    // RENDERER_STABLE_HOP_AUTHORITY_V1
+    // Normal hops may replace the renderer command. Existing supervisor vetoes
+    // below can revoke only audible authority while preserving analysis,
+    // quantizer and controller history.
+    state.rendererAcceptCurrentHop = true;
+
     const int hopSamples = MultiRatePitchTracker::hopSize();
     const double hopSeconds = static_cast<double>(hopSamples) / sampleRate_;
     // TARGET_REVISION_DIAGNOSTIC_LATCH_V2
@@ -4565,6 +4571,22 @@ void ModernPitchEngine::updateCorrectionState(
         }
     }
 
+    // RENDERER_STABLE_HOP_AUTHORITY_V1
+    // Keep the measurement and controller state, but deny this hop direct
+    // renderer authority when the existing supervisor has already classified
+    // it as an uncommitted tail/outlier. A committed note change is explicitly
+    // allowed so Response can travel normally toward the new stable endpoint.
+    const bool uncommittedLargeInnovation =
+        state.trackingState == TrackingState::stable
+        && state.transportChallengerHops > 0
+        && !targetIdentityChanged;
+    if (terminalTailIdentityVeto
+        || provisionalOctaveIdentityVeto
+        || uncommittedLargeInnovation)
+    {
+        state.rendererAcceptCurrentHop = false;
+    }
+
     const double audibleSourceLog2 = state.transportPeriodHz > 0.0
         && std::isfinite(state.transportPeriodHz)
         ? safeLog2(state.transportPeriodHz)
@@ -4875,6 +4897,28 @@ double ModernPitchEngine::advanceCorrection(CorrectionState& state) noexcept
     return state.currentCents;
 }
 
+double ModernPitchEngine::selectRendererCorrection(
+    CorrectionState& state,
+    double controllerCents) noexcept
+{
+    const double safeController = std::isfinite(controllerCents)
+        ? controllerCents : 0.0;
+
+    // No previous stable audible command exists at startup, so seed from the
+    // controller once. Thereafter a rejected hop cannot overwrite that command.
+    if (!state.rendererCommandValid)
+    {
+        state.rendererCommandCents = safeController;
+        state.rendererCommandValid = true;
+        return state.rendererCommandCents;
+    }
+
+    if (state.rendererAcceptCurrentHop)
+        state.rendererCommandCents = safeController;
+
+    return state.rendererCommandCents;
+}
+
 void ModernPitchEngine::process(
     juce::AudioBuffer<float>& buffer,
     const double* scaleRatios,
@@ -5067,7 +5111,8 @@ void ModernPitchEngine::process(
                     correction.currentCents = decision.controllerCents;
                     correction.velocityCentsPerSecond = 0.0;
                 }
-                const double audible = decision.controllerCents;
+                const double audible = selectRendererCorrection(
+                    correction, decision.controllerCents);
                 const float rendered =
                     wetRenderers_[static_cast<std::size_t>(channel)].processSample(
                         data[static_cast<std::size_t>(channel)][sample], audible,
@@ -5127,7 +5172,8 @@ void ModernPitchEngine::process(
                 linkedCorrection_.currentCents = decision.controllerCents;
                 linkedCorrection_.velocityCentsPerSecond = 0.0;
             }
-            audibleCorrectionCents_ = decision.controllerCents;
+            audibleCorrectionCents_ = selectRendererCorrection(
+                linkedCorrection_, decision.controllerCents);
             for (int channel = 0; channel < channels; ++channel)
             {
                 const float rendered =
