@@ -181,12 +181,93 @@ int main()
         return 7;
     }
 
+    // A genuinely persistent adjacent-note move must not be hidden forever.
+    // Early uncommitted hops may be held, but the exact hop that commits the new
+    // target must immediately restore renderer authority so Response can travel
+    // toward the new stable note.
+    ModernPitchEngine::ScaleQuantizer transitionQuantizer;
+    transitionQuantizer.setScale(
+        ratios.data(), static_cast<int>(ratios.size()), kTargetHz);
+    auto transitionState = makeStableState();
+    transitionState.rendererAcceptCurrentHop = true;
+    static_cast<void>(engine.selectRendererCorrection(
+        transitionState, transitionState.currentCents));
+
+    const auto newNoteObservation = makeObservation(100.0);
+    auto transitionParameters = makeStableParameters();
+    transitionParameters.lockHysteresis = 0.0f;
+
+    bool sawHeldChallenger = false;
+    bool committed = false;
+    bool commitRestoredAuthority = false;
+    double committedTargetHz = kTargetHz;
+
+    for (int hop = 0; hop < 20 && !committed; ++hop)
+    {
+        const double beforeTarget = transitionState.targetLog2;
+        engine.updateCorrectionState(
+            transitionState,
+            transitionQuantizer,
+            newNoteObservation,
+            transitionParameters);
+
+        const bool targetMoved =
+            std::abs(transitionState.targetLog2 - beforeTarget) * 1200.0 > 0.5;
+
+        if (!targetMoved && !transitionState.rendererAcceptCurrentHop)
+            sawHeldChallenger = true;
+
+        if (targetMoved)
+        {
+            committed = true;
+            commitRestoredAuthority =
+                transitionState.rendererAcceptCurrentHop;
+            committedTargetHz = std::exp2(transitionState.targetLog2);
+        }
+    }
+
+    if (!sawHeldChallenger)
+    {
+        std::cerr << "RENDERER_PERSISTENT_CHANGE_RELEASE=FAIL"
+                  << " reason=no_uncommitted_hold_observed\n";
+        return 8;
+    }
+
+    if (!committed)
+    {
+        std::cerr << "RENDERER_PERSISTENT_CHANGE_RELEASE=FAIL"
+                  << " reason=real_change_never_committed\n";
+        return 9;
+    }
+
+    if (!commitRestoredAuthority)
+    {
+        std::cerr << "RENDERER_PERSISTENT_CHANGE_RELEASE=FAIL"
+                  << " reason=commit_remained_hidden\n";
+        return 10;
+    }
+
+    const double committedController = transitionState.desiredCents;
+    const double committedAudible = engine.selectRendererCorrection(
+        transitionState, committedController);
+    if (!near(committedAudible, committedController, 1.0e-9))
+    {
+        std::cerr << "RENDERER_PERSISTENT_CHANGE_RELEASE=FAIL"
+                  << " reason=committed_command_not_released\n";
+        return 11;
+    }
+
     std::cout << "RENDERER_INCOHERENT_HOP_HOLD=PASS"
               << " initial_audible=" << initialAudible
               << " tail_controller=" << controllerDuringTail
               << " tail_audible=" << tailAudible
               << " resumed_controller=" << resumedController
               << " resumed_audible=" << resumedAudible
+              << "\n";
+    std::cout << "RENDERER_PERSISTENT_CHANGE_RELEASE=PASS"
+              << " committed_target_hz=" << committedTargetHz
+              << " committed_controller=" << committedController
+              << " committed_audible=" << committedAudible
               << "\n";
     return 0;
 }
