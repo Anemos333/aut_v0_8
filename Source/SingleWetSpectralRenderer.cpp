@@ -121,7 +121,7 @@ void SingleWetSpectralRenderer::prepare(double sampleRate,
     layer_.spectrum.assign(static_cast<std::size_t>(frameSize_), Complex {});
     layer_.synthesisPhases.assign(static_cast<std::size_t>(positiveBinCount), 0.0);
     layer_.outputAccumulationRing.assign(static_cast<std::size_t>(outputRingSize), 0.0f);
-    layer_.diagnosticAbsoluteContributionRing.assign(
+    layer_.diagnosticContributionEnergyRing.assign(
         static_cast<std::size_t>(outputRingSize), 0.0f);
     layer_.diagnosticCoverageRing.assign(
         static_cast<std::size_t>(outputRingSize), 0.0f);
@@ -152,8 +152,8 @@ void SingleWetSpectralRenderer::clearLayerOutput(SynthesisLayer& layer) noexcept
 {
     std::fill(layer.outputAccumulationRing.begin(),
               layer.outputAccumulationRing.end(), 0.0f);
-    std::fill(layer.diagnosticAbsoluteContributionRing.begin(),
-              layer.diagnosticAbsoluteContributionRing.end(), 0.0f);
+    std::fill(layer.diagnosticContributionEnergyRing.begin(),
+              layer.diagnosticContributionEnergyRing.end(), 0.0f);
     std::fill(layer.diagnosticCoverageRing.begin(),
               layer.diagnosticCoverageRing.end(), 0.0f);
     std::fill(layer.diagnosticContributionCountRing.begin(),
@@ -184,6 +184,11 @@ void SingleWetSpectralRenderer::reset() noexcept
     envelopeInitialised_ = false;
     envelopeFrameCounter_ = 0;
     smoothedFormantPreservation_ = 0.0f;
+    diagnosticHopOutputEnergy_ = 0.0;
+    diagnosticHopContributionEnergy_ = 0.0;
+    diagnosticHopCoverageSum_ = 0.0;
+    diagnosticHopSampleCount_ = 0;
+    diagnosticHopMinimumContributionCount_ = 4;
     diagnosticBlock_ = {};
 }
 
@@ -639,6 +644,10 @@ void SingleWetSpectralRenderer::synthesiseLayer(
     fft(layer.spectrum, true);
 
     const std::int64_t outputStartSample = frameEndSample + 1;
+    double frameOverlapDot = 0.0;
+    double frameOutputEnergy = 0.0;
+    double existingOlaEnergy = 0.0;
+
     for (int index = 0; index < frameSize_; ++index)
     {
         const float synthesisWindow = window_[static_cast<std::size_t>(index)];
@@ -648,19 +657,49 @@ void SingleWetSpectralRenderer::synthesiseLayer(
                                                   & outputRingMask_);
         const std::size_t outputRingIndex =
             static_cast<std::size_t>(outputIndex);
+
+        // OLA_FRAME_CORRELATION_DIAGNOSTIC_V1
+        // Observe the relationship between this new frame and the already
+        // scheduled OLA before changing the audible accumulator.
+        const float existingOla =
+            layer.outputAccumulationRing[outputRingIndex];
+        frameOverlapDot += static_cast<double>(output)
+                         * static_cast<double>(existingOla);
+        frameOutputEnergy += static_cast<double>(output)
+                           * static_cast<double>(output);
+        existingOlaEnergy += static_cast<double>(existingOla)
+                           * static_cast<double>(existingOla);
+
         layer.outputAccumulationRing[outputRingIndex] += output;
 
-        // OLA_ACCUMULATION_DIAGNOSTIC_V1
-        // Shadow the contribution geometry only. These rings are never read by
-        // synthesis and therefore cannot change the audible overlap/add sum.
-        layer.diagnosticAbsoluteContributionRing[outputRingIndex] +=
-            std::abs(output);
+        // OLA_ACCUMULATION_DIAGNOSTIC_V2
+        // Shadow energy/coverage only. These rings never feed synthesis.
+        layer.diagnosticContributionEnergyRing[outputRingIndex] +=
+            output * output;
         layer.diagnosticCoverageRing[outputRingIndex] +=
             synthesisWindow * synthesisWindow;
         if (layer.diagnosticContributionCountRing[outputRingIndex]
             < std::numeric_limits<std::uint8_t>::max())
         {
             ++layer.diagnosticContributionCountRing[outputRingIndex];
+        }
+    }
+
+    if (frameEndSample >= static_cast<std::int64_t>(2 * frameSize_)
+        && frameOutputEnergy > 1.0e-12
+        && existingOlaEnergy > 1.0e-12)
+    {
+        const double denominator =
+            std::sqrt(frameOutputEnergy * existingOlaEnergy);
+        const float correlation = static_cast<float>(std::clamp(
+            frameOverlapDot / denominator, -1.0, 1.0));
+
+        diagnosticBlock_.frameOverlapCorrelationValid = true;
+        if (correlation < diagnosticBlock_.minimumFrameOverlapCorrelation)
+        {
+            diagnosticBlock_.minimumFrameOverlapCorrelation = correlation;
+            diagnosticBlock_.worstFrameCorrelationEndSample =
+                frameEndSample;
         }
     }
 }
@@ -774,50 +813,69 @@ float SingleWetSpectralRenderer::consumeLayerOutput(
     const int outputIndex = static_cast<int>(sample & outputRingMask_);
     const std::size_t index = static_cast<std::size_t>(outputIndex);
     const float accumulated = layer.outputAccumulationRing[index];
-
-    // OLA_ACCUMULATION_DIAGNOSTIC_V1
-    // Inspect the exact sample that is about to be heard, before clearing its
-    // ring slot. Ignore startup and vanishingly small samples so zero crossings
-    // cannot masquerade as destructive overlap cancellation.
-    const float absoluteContributionSum =
-        layer.diagnosticAbsoluteContributionRing[index];
+    const float contributionEnergy =
+        layer.diagnosticContributionEnergyRing[index];
     const float coverage = layer.diagnosticCoverageRing[index];
     const int contributionCount = static_cast<int>(
         layer.diagnosticContributionCountRing[index]);
 
-    if (sample >= static_cast<std::int64_t>(2 * frameSize_)
-        && absoluteContributionSum > 1.0e-5f
-        && expectedOlaCoverage_ > 1.0e-9f)
+    // OLA_ACCUMULATION_DIAGNOSTIC_V2
+    // Integrate over one complete hop, eliminating ordinary sample zero-crossing
+    // false positives. outputEnergy is the energy actually heard; partEnergy is
+    // the sum of the energies of the four individual overlapping frame pieces.
+    if (sample >= static_cast<std::int64_t>(2 * frameSize_))
     {
-        const float olaCoherence = std::clamp(
-            std::abs(accumulated) / absoluteContributionSum, 0.0f, 1.0f);
-        const float coverageRatio = std::clamp(
-            coverage / expectedOlaCoverage_, 0.0f, 1.5f);
+        diagnosticHopOutputEnergy_ +=
+            static_cast<double>(accumulated) * static_cast<double>(accumulated);
+        diagnosticHopContributionEnergy_ +=
+            static_cast<double>(contributionEnergy);
+        diagnosticHopCoverageSum_ += static_cast<double>(coverage);
+        diagnosticHopMinimumContributionCount_ = std::min(
+            diagnosticHopMinimumContributionCount_, contributionCount);
+        ++diagnosticHopSampleCount_;
 
-        diagnosticBlock_.olaValid = true;
-        const bool worse =
-            olaCoherence < diagnosticBlock_.minimumOlaCoherence
-            || coverageRatio < diagnosticBlock_.minimumOlaCoverageRatio
-            || contributionCount < diagnosticBlock_.minimumOlaContributionCount;
-
-        diagnosticBlock_.minimumOlaCoherence = std::min(
-            diagnosticBlock_.minimumOlaCoherence, olaCoherence);
-        diagnosticBlock_.minimumOlaCoverageRatio = std::min(
-            diagnosticBlock_.minimumOlaCoverageRatio, coverageRatio);
-        diagnosticBlock_.minimumOlaContributionCount = std::min(
-            diagnosticBlock_.minimumOlaContributionCount, contributionCount);
-
-        if (worse)
+        if (diagnosticHopSampleCount_ >= hopSize_)
         {
-            diagnosticBlock_.worstOlaSample = sample;
-            diagnosticBlock_.worstOlaSignedSum = accumulated;
-            diagnosticBlock_.worstOlaAbsoluteSum =
-                absoluteContributionSum;
+            if (diagnosticHopContributionEnergy_ > 1.0e-12
+                && expectedOlaCoverage_ > 1.0e-9f)
+            {
+                const float energyRatio = static_cast<float>(
+                    diagnosticHopOutputEnergy_
+                    / diagnosticHopContributionEnergy_);
+                const float coverageRatio = static_cast<float>(
+                    diagnosticHopCoverageSum_
+                    / (static_cast<double>(diagnosticHopSampleCount_)
+                       * static_cast<double>(expectedOlaCoverage_)));
+
+                diagnosticBlock_.olaValid = true;
+                const bool worse =
+                    energyRatio < diagnosticBlock_.minimumOlaEnergyRatio
+                    || coverageRatio < diagnosticBlock_.minimumOlaCoverageRatio
+                    || diagnosticHopMinimumContributionCount_
+                        < diagnosticBlock_.minimumOlaContributionCount;
+
+                diagnosticBlock_.minimumOlaEnergyRatio = std::min(
+                    diagnosticBlock_.minimumOlaEnergyRatio, energyRatio);
+                diagnosticBlock_.minimumOlaCoverageRatio = std::min(
+                    diagnosticBlock_.minimumOlaCoverageRatio, coverageRatio);
+                diagnosticBlock_.minimumOlaContributionCount = std::min(
+                    diagnosticBlock_.minimumOlaContributionCount,
+                    diagnosticHopMinimumContributionCount_);
+
+                if (worse)
+                    diagnosticBlock_.worstOlaHopEndSample = sample;
+            }
+
+            diagnosticHopOutputEnergy_ = 0.0;
+            diagnosticHopContributionEnergy_ = 0.0;
+            diagnosticHopCoverageSum_ = 0.0;
+            diagnosticHopSampleCount_ = 0;
+            diagnosticHopMinimumContributionCount_ = 4;
         }
     }
 
     layer.outputAccumulationRing[index] = 0.0f;
-    layer.diagnosticAbsoluteContributionRing[index] = 0.0f;
+    layer.diagnosticContributionEnergyRing[index] = 0.0f;
     layer.diagnosticCoverageRing[index] = 0.0f;
     layer.diagnosticContributionCountRing[index] = 0u;
     return accumulated * synthesisGain_;
@@ -858,7 +916,7 @@ float SingleWetSpectralRenderer::processBypassedSample(float inputSample) noexce
         const std::size_t index = static_cast<std::size_t>(
             currentSample & outputRingMask_);
         layer_.outputAccumulationRing[index]=0.0f;
-        layer_.diagnosticAbsoluteContributionRing[index]=0.0f;
+        layer_.diagnosticContributionEnergyRing[index]=0.0f;
         layer_.diagnosticCoverageRing[index]=0.0f;
         layer_.diagnosticContributionCountRing[index]=0u;
     }
