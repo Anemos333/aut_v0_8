@@ -1244,7 +1244,7 @@ void MicrotonalAutotuneAudioProcessorEditor::paint (juce::Graphics& g)
             .getUnion (vibratoPreserveLabel.getBounds());
 
     drawPanel (scaleLockPanel.expanded (14, 10));
-    drawMeterPanel (g, getLocalBounds());
+   
 
     // Output stage: separate from the musical lock controls.
     // This will later become a distinct final valve / output module.
@@ -1288,6 +1288,7 @@ void MicrotonalAutotuneAudioProcessorEditor::paint (juce::Graphics& g)
     consensusArea,
     static_cast<float> (displayedMetering.consensus),
     visualConsensusGlow_);
+     drawMeterPage (g, getLocalBounds());
 
     g.setColour (juce::Colours::white);
     g.setFont (juce::FontOptions (24.0f, juce::Font::bold));
