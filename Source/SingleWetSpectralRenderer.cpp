@@ -7,7 +7,6 @@ constexpr double pi=3.1415926535897932384626433832795, twoPi=2.0*pi;
 int nextPowerOfTwo(int v) noexcept { int r=1; while(r<v) r<<=1; return r; }
 float clamp01(float v) noexcept { return std::clamp(std::isfinite(v)?v:0.0f,0.0f,1.0f); }
 float sanitiseAudioSample(float v) noexcept { if(!std::isfinite(v)||std::fpclassify(v)==FP_SUBNORMAL) return 0.0f; return std::clamp(v,-32.0f,32.0f); }
-float smoothStep(float a,float b,float v) noexcept { if(b<=a) return v>=b?1.0f:0.0f; const float x=std::clamp((v-a)/(b-a),0.0f,1.0f); return x*x*(3.0f-2.0f*x); }
 double sanitiseCorrectionCents(double c) noexcept { return std::clamp(std::isfinite(c) ? c : 0.0, -2400.0, 2400.0); }
 }
 
@@ -108,7 +107,6 @@ void SingleWetSpectralRenderer::prepare(double sampleRate,
     fftBuffer_.assign(static_cast<std::size_t>(frameSize_), Complex {});
     magnitudes_.assign(static_cast<std::size_t>(positiveBinCount), 0.0f);
     analysisPhases_.assign(static_cast<std::size_t>(positiveBinCount), 0.0f);
-    previousMagnitudes_.assign(static_cast<std::size_t>(positiveBinCount), 0.0f);
     previousAnalysisPhases_.assign(static_cast<std::size_t>(positiveBinCount), 0.0f);
     trueSourceBins_.assign(static_cast<std::size_t>(positiveBinCount), 0.0);
     propagatedPhases_.assign(static_cast<std::size_t>(positiveBinCount), 0.0);
@@ -165,7 +163,6 @@ void SingleWetSpectralRenderer::reset() noexcept
     std::fill(fftBuffer_.begin(), fftBuffer_.end(), Complex {});
     std::fill(magnitudes_.begin(), magnitudes_.end(), 0.0f);
     std::fill(analysisPhases_.begin(), analysisPhases_.end(), 0.0f);
-    std::fill(previousMagnitudes_.begin(), previousMagnitudes_.end(), 0.0f);
     std::fill(previousAnalysisPhases_.begin(), previousAnalysisPhases_.end(), 0.0f);
     std::fill(trueSourceBins_.begin(), trueSourceBins_.end(), 0.0);
     std::fill(propagatedPhases_.begin(), propagatedPhases_.end(), 0.0);
@@ -790,8 +787,6 @@ void SingleWetSpectralRenderer::processFrame(
                     formantPreservation, resetAnalysis, positiveBins);
     for (int bin = 0; bin <= positiveBins; ++bin)
     {
-        previousMagnitudes_[static_cast<std::size_t>(bin)] =
-            magnitudes_[static_cast<std::size_t>(bin)];
         previousAnalysisPhases_[static_cast<std::size_t>(bin)] =
             analysisPhases_[static_cast<std::size_t>(bin)];
     }
