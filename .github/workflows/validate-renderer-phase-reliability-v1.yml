@@ -1,0 +1,103 @@
+name: Validate renderer phase reliability gate v1
+
+on:
+  push:
+    branches:
+      - renderer-phase-reliability-gate-v1
+    paths:
+      - Source/SingleWetSpectralRenderer.cpp
+      - Source/SingleWetSpectralRenderer.h
+      - Tests/RendererPhaseReliabilityTest.cpp
+      - .github/workflows/validate-renderer-phase-reliability-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          ref: renderer-phase-reliability-gate-v1
+          fetch-depth: 0
+
+      - name: Guard upstream DSP boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/ModernPitchEngine.cpp)" = "637f1da85bc2528ca752d91586373523d24ee7f6"
+          test "$(git hash-object Source/ModernPitchEngine.h)" = "83d873baea66410498010fb5ba13d39649d5c242"
+          grep -q 'PHASE_RELIABILITY_GATE_V2' Source/SingleWetSpectralRenderer.cpp
+          echo 'PHASE_RELIABILITY_SCOPE_GUARD=PASS'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Configure candidate build
+        run: cmake -S . -B build-phase-reliability -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Preserve renderer test
+        run: cp Tests/SingleWetSpectralRendererTest.cpp /tmp/renderer-test.original.cpp
+
+      - name: Verify phase reliability contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/RendererPhaseReliabilityTest.cpp Tests/SingleWetSpectralRendererTest.cpp
+          cmake --build build-phase-reliability --config Release --parallel 2 --target SingleWetSpectralRendererTest >/dev/null
+          ./build-phase-reliability/clean-engine-tests/SingleWetSpectralRendererTest 2>&1 | tee /tmp/phase-reliability-contract.log
+          grep -q '^PHASE_RELIABILITY_COHERENT_RIDGE=PASS$' /tmp/phase-reliability-contract.log
+          grep -q '^PHASE_RELIABILITY_WEAK_ISOLATED=PASS$' /tmp/phase-reliability-contract.log
+          grep -q '^PHASE_RELIABILITY_STRONG_COMPONENT=PASS$' /tmp/phase-reliability-contract.log
+          grep -q '^PHASE_RELIABILITY_AMPLITUDE_TRANSIENT=PASS ' /tmp/phase-reliability-contract.log
+
+      - name: Verify existing renderer contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp /tmp/renderer-test.original.cpp Tests/SingleWetSpectralRendererTest.cpp
+          cmake --build build-phase-reliability --config Release --parallel 2 --target SingleWetSpectralRendererTest >/dev/null
+          ./build-phase-reliability/clean-engine-tests/SingleWetSpectralRendererTest 2>&1 | tee /tmp/phase-reliability-renderer.log
+          ! grep -q '=FAIL' /tmp/phase-reliability-renderer.log
+          grep -q 'quality_realizes_commanded_pitch_ratio=PASS' /tmp/phase-reliability-renderer.log
+          grep -q 'live_realizes_commanded_pitch_ratio=PASS' /tmp/phase-reliability-renderer.log
+          grep -q 'periodic_reentry_has_no_click=PASS' /tmp/phase-reliability-renderer.log
+          grep -q 'periodic_reentry_has_no_interruption_when_signal_exists=PASS' /tmp/phase-reliability-renderer.log
+          echo 'PHASE_RELIABILITY_EXISTING_RENDERER_CONTRACTS=PASS'
+
+      - name: Verify inherited post-detector contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build build-phase-reliability --config Release --parallel 2 \
+            --target SupervisorContinuityTest CleanModernPitchEngineTest >/dev/null
+          ./build-phase-reliability/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/phase-reliability-supervisor.log
+          ./build-phase-reliability/clean-engine-tests/CleanModernPitchEngineTest 2>&1 | tee /tmp/phase-reliability-engine.log
+          ! grep -q '=FAIL' /tmp/phase-reliability-supervisor.log
+          ! grep -q '=FAIL' /tmp/phase-reliability-engine.log
+          grep -q 'transition_detector_wobble_cannot_move_destination=PASS' /tmp/phase-reliability-supervisor.log
+          grep -q 'speed_changes_post_lock_transition=PASS' /tmp/phase-reliability-engine.log
+          echo 'PHASE_RELIABILITY_POST_DETECTOR_CONTRACTS=PASS'
+
+      - name: Verify renderer-hop authority contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/RendererIncoherentHopHoldTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-phase-reliability --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-phase-reliability/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/phase-reliability-hop.log
+          grep -q '^RENDERER_INCOHERENT_HOP_HOLD=PASS ' /tmp/phase-reliability-hop.log
+          grep -q '^RENDERER_PERSISTENT_CHANGE_RELEASE=PASS ' /tmp/phase-reliability-hop.log
+
+      - name: Final marker
+        run: echo 'RENDERER_PHASE_RELIABILITY_VALIDATION=PASS_NO_PROMOTION'
