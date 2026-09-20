@@ -51,6 +51,9 @@ private:
     [[nodiscard]] float readInputSample(std::int64_t absoluteSample) const noexcept;
     [[nodiscard]] float interpolateEnvelope(double binPosition) const noexcept;
     void calculateEnvelope(int positiveBins) noexcept;
+    void stabiliseTrueSourceBins(int positiveBins,
+                                 bool resetAnalysis,
+                                 float framePeakMagnitude) noexcept;
 
     double sampleRate_ = 48000.0;
     int frameSize_ = 0;
