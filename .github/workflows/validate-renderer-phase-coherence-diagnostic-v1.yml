@@ -34,7 +34,7 @@ jobs:
           set -euo pipefail
           git merge-base --is-ancestor c0992d60905f67d5cf4533b3f4a9500fc99dec1b HEAD
           grep -q 'RENDERER_PHASE_COHERENCE_DIAGNOSTIC_V1' Source/SingleWetSpectralRenderer.cpp
-          grep -q 'OLA_ACCUMULATION_DIAGNOSTIC_V1' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'OLA_ACCUMULATION_DIAGNOSTIC_V2' Source/SingleWetSpectralRenderer.cpp
           grep -q 'RENDERER_DIAGNOSTIC_STRIP_V1' Source/PluginEditor.cpp
           grep -q 'PARKED_LOW_RATE_WORKER_V1' Source/ModernPitchEngine.cpp
           grep -q 'HARD_TUNE_STABLE_MICROMOTION_COMPENSATION_V1' Source/ModernPitchEngine.cpp
