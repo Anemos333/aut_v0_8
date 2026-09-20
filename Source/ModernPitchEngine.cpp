@@ -1,4 +1,5 @@
 #include "ModernPitchEngine.h"
+#include "ObservationOwnershipPolicy.h"
 
 #include <algorithm>
 #include <cmath>
@@ -4607,12 +4608,14 @@ void ModernPitchEngine::updateCorrectionState(
         state.trackingState == TrackingState::stable
         && state.transportChallengerHops > 0
         && !targetIdentityChanged;
-    if (terminalTailIdentityVeto
-        || provisionalOctaveIdentityVeto
-        || uncommittedLargeInnovation)
-    {
-        state.rendererAcceptCurrentHop = false;
-    }
+
+    const auto ownershipDecision = ObservationOwnershipPolicy::evaluate({
+        terminalTailIdentityVeto,
+        provisionalOctaveIdentityVeto,
+        uncommittedLargeInnovation
+    });
+    state.rendererAcceptCurrentHop =
+        ownershipDecision.acceptCurrentObservation;
 
     const double audibleSourceLog2 = state.transportPeriodHz > 0.0
         && std::isfinite(state.transportPeriodHz)
