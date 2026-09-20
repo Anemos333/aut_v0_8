@@ -110,6 +110,7 @@ void SingleWetSpectralRenderer::prepare(double sampleRate,
     previousAnalysisPhases_.assign(static_cast<std::size_t>(positiveBinCount), 0.0f);
     trueSourceBins_.assign(static_cast<std::size_t>(positiveBinCount), 0.0);
     propagatedPhases_.assign(static_cast<std::size_t>(positiveBinCount), 0.0);
+    depositedMagnitudeSums_.assign(static_cast<std::size_t>(positiveBinCount), 0.0f);
     logMagnitudes_.assign(static_cast<std::size_t>(positiveBinCount), 0.0f);
     rawSpectralEnvelope_.assign(static_cast<std::size_t>(positiveBinCount), 1.0f);
     spectralEnvelope_.assign(static_cast<std::size_t>(positiveBinCount), 1.0f);
@@ -150,6 +151,7 @@ void SingleWetSpectralRenderer::reset() noexcept
     std::fill(previousAnalysisPhases_.begin(), previousAnalysisPhases_.end(), 0.0f);
     std::fill(trueSourceBins_.begin(), trueSourceBins_.end(), 0.0);
     std::fill(propagatedPhases_.begin(), propagatedPhases_.end(), 0.0);
+    std::fill(depositedMagnitudeSums_.begin(), depositedMagnitudeSums_.end(), 0.0f);
     std::fill(logMagnitudes_.begin(), logMagnitudes_.end(), 0.0f);
     std::fill(rawSpectralEnvelope_.begin(), rawSpectralEnvelope_.end(), 1.0f);
     std::fill(spectralEnvelope_.begin(), spectralEnvelope_.end(), 1.0f);
@@ -164,6 +166,7 @@ void SingleWetSpectralRenderer::reset() noexcept
     envelopeInitialised_ = false;
     envelopeFrameCounter_ = 0;
     smoothedFormantPreservation_ = 0.0f;
+    diagnosticBlock_ = {};
 }
 
 double SingleWetSpectralRenderer::wrapPhase(double phase) noexcept
@@ -385,6 +388,8 @@ void SingleWetSpectralRenderer::synthesiseLayer(
     int positiveBins) noexcept
 {
     std::fill(layer.spectrum.begin(), layer.spectrum.end(), Complex {});
+    std::fill(depositedMagnitudeSums_.begin(),
+              depositedMagnitudeSums_.end(), 0.0f);
 
     // Correction authority comes from the musical trajectory. The renderer
     // must not reinterpret register or reduce the requested interval.
@@ -490,15 +495,116 @@ void SingleWetSpectralRenderer::synthesiseLayer(
 
         if (targetBin0 >= 0 && targetBin0 <= positiveBins)
         {
-            layer.spectrum[static_cast<std::size_t>(targetBin0)] +=
-                polar * lowerWeight;
+            const std::size_t targetIndex0 =
+                static_cast<std::size_t>(targetBin0);
+            layer.spectrum[targetIndex0] += polar * lowerWeight;
+            depositedMagnitudeSums_[targetIndex0] +=
+                outputMagnitude * std::abs(lowerWeight);
         }
 
         const int targetBin1 = targetBin0 + 1;
         if (targetBin1 >= 0 && targetBin1 <= positiveBins)
-            layer.spectrum[static_cast<std::size_t>(targetBin1)] +=
-                polar * upperWeight;
+        {
+            const std::size_t targetIndex1 =
+                static_cast<std::size_t>(targetBin1);
+            layer.spectrum[targetIndex1] += polar * upperWeight;
+            depositedMagnitudeSums_[targetIndex1] +=
+                outputMagnitude * std::abs(upperWeight);
+        }
     }
+
+    // RENDERER_PHASE_COHERENCE_DIAGNOSTIC_V1
+    // Observe only: none of these values feeds synthesis or transport.
+    double depositedSum = 0.0;
+    double coherentSum = 0.0;
+    float maximumDeposit = 0.0f;
+    for (int bin = 0; bin <= positiveBins; ++bin)
+    {
+        const std::size_t index = static_cast<std::size_t>(bin);
+        const float deposited = depositedMagnitudeSums_[index];
+        depositedSum += static_cast<double>(deposited);
+        coherentSum += static_cast<double>(std::abs(layer.spectrum[index]));
+        maximumDeposit = std::max(maximumDeposit, deposited);
+    }
+
+    const float preIfftCoherence = depositedSum > 1.0e-12
+        ? static_cast<float>(std::clamp(coherentSum / depositedSum, 0.0, 1.0))
+        : 1.0f;
+
+    float strongBinCoherence = 1.0f;
+    const float strongDepositFloor = 0.04f * maximumDeposit;
+    if (maximumDeposit > 1.0e-12f)
+    {
+        for (int bin = 0; bin <= positiveBins; ++bin)
+        {
+            const std::size_t index = static_cast<std::size_t>(bin);
+            const float deposited = depositedMagnitudeSums_[index];
+            if (deposited < strongDepositFloor)
+                continue;
+            const float coherence = deposited > 1.0e-12f
+                ? std::clamp(std::abs(layer.spectrum[index]) / deposited,
+                             0.0f, 1.0f)
+                : 1.0f;
+            strongBinCoherence = std::min(strongBinCoherence, coherence);
+        }
+    }
+
+    int dominantBin = 0;
+    float dominantMagnitude = 0.0f;
+    for (int bin = 0; bin <= positiveBins; ++bin)
+    {
+        const float magnitude = magnitudes_[static_cast<std::size_t>(bin)];
+        if (magnitude > dominantMagnitude)
+        {
+            dominantMagnitude = magnitude;
+            dominantBin = bin;
+        }
+    }
+
+    double ridgeWeight = 0.0;
+    double ridgeMean = 0.0;
+    for (int bin = std::max(0, dominantBin - 2);
+         bin <= std::min(positiveBins, dominantBin + 2);
+         ++bin)
+    {
+        const std::size_t index = static_cast<std::size_t>(bin);
+        const double weight = static_cast<double>(magnitudes_[index]);
+        ridgeWeight += weight;
+        ridgeMean += weight * trueSourceBins_[index];
+    }
+
+    float ridgeSpreadBins = 0.0f;
+    if (ridgeWeight > 1.0e-12)
+    {
+        ridgeMean /= ridgeWeight;
+        double variance = 0.0;
+        for (int bin = std::max(0, dominantBin - 2);
+             bin <= std::min(positiveBins, dominantBin + 2);
+             ++bin)
+        {
+            const std::size_t index = static_cast<std::size_t>(bin);
+            const double weight = static_cast<double>(magnitudes_[index]);
+            const double delta = trueSourceBins_[index] - ridgeMean;
+            variance += weight * delta * delta;
+        }
+        ridgeSpreadBins = static_cast<float>(std::sqrt(
+            std::max(0.0, variance / ridgeWeight)));
+    }
+
+    ++diagnosticBlock_.frameCount;
+    diagnosticBlock_.valid = true;
+    const bool newWorstFrame =
+        preIfftCoherence < diagnosticBlock_.minimumPreIfftCoherence
+        || strongBinCoherence < diagnosticBlock_.minimumStrongBinCoherence
+        || ridgeSpreadBins > diagnosticBlock_.maximumDominantRidgeSpreadBins;
+    diagnosticBlock_.minimumPreIfftCoherence = std::min(
+        diagnosticBlock_.minimumPreIfftCoherence, preIfftCoherence);
+    diagnosticBlock_.minimumStrongBinCoherence = std::min(
+        diagnosticBlock_.minimumStrongBinCoherence, strongBinCoherence);
+    diagnosticBlock_.maximumDominantRidgeSpreadBins = std::max(
+        diagnosticBlock_.maximumDominantRidgeSpreadBins, ridgeSpreadBins);
+    if (newWorstFrame)
+        diagnosticBlock_.worstFrameEndSample = frameEndSample;
 
     layer.phaseInitialised = true;
     layer.spectrum[0] = Complex(layer.spectrum[0].real(), 0.0f);
@@ -619,6 +725,14 @@ void SingleWetSpectralRenderer::processFrame(
             analysisPhases_[static_cast<std::size_t>(bin)];
     }
     analysisPhaseInitialised_ = true;
+}
+
+SingleWetSpectralRenderer::Diagnostics
+SingleWetSpectralRenderer::consumeDiagnostics() noexcept
+{
+    Diagnostics result = diagnosticBlock_;
+    diagnosticBlock_ = {};
+    return result;
 }
 
 float SingleWetSpectralRenderer::consumeLayerOutput(
