@@ -881,8 +881,10 @@ if (showingControlRoom)
             displayedMetering.rendererPhaseDiagnosticHeldBin;
         rendererPhaseHeldRidge_ =
             displayedMetering.rendererPhaseDiagnosticHeldRidge;
-        rendererPhaseHeldOla_ =
-            displayedMetering.rendererPhaseDiagnosticHeldOla;
+        rendererPhaseHeldOlaEnergy_ =
+            displayedMetering.rendererPhaseDiagnosticHeldOlaEnergy;
+        rendererPhaseHeldFrameCorrelation_ =
+            displayedMetering.rendererPhaseDiagnosticHeldFrameCorrelation;
         rendererPhaseHeldCoverage_ =
             displayedMetering.rendererPhaseDiagnosticHeldCoverage;
         rendererPhaseHeldCount_ =
@@ -1343,8 +1345,11 @@ void MicrotonalAutotuneAudioProcessorEditor::paintOverChildren (
         ? rendererPhaseHeldBin_ : displayedMetering.outputPreIfftConsensus;
     const float displayRidge = rendererDiagnosticAlert
         ? rendererPhaseHeldRidge_ : displayedMetering.outputReconstructionNeed;
-    const float displayOla = rendererDiagnosticAlert
-        ? rendererPhaseHeldOla_ : displayedMetering.outputOlaCoherence;
+    const float displayOlaEnergy = rendererDiagnosticAlert
+        ? rendererPhaseHeldOlaEnergy_ : displayedMetering.outputOlaEnergyRatio;
+    const float displayFrameCorrelation = rendererDiagnosticAlert
+        ? rendererPhaseHeldFrameCorrelation_
+        : displayedMetering.outputOlaFrameCorrelation;
     const float displayCoverage = rendererDiagnosticAlert
         ? rendererPhaseHeldCoverage_ : displayedMetering.outputOlaCoverage;
     const int displayCount = rendererDiagnosticAlert
@@ -1366,7 +1371,8 @@ void MicrotonalAutotuneAudioProcessorEditor::paintOverChildren (
     diagnosticText += "Ph:" + juce::String (displayPh, 0)
         + " Bin:" + juce::String (displayBin, 0)
         + " Rg:" + juce::String (displayRidge, 0)
-        + " OLA:" + juce::String (displayOla, 0)
+        + " E:" + juce::String (displayOlaEnergy, 0)
+        + " Corr:" + juce::String (displayFrameCorrelation, 0)
         + " Cov:" + juce::String (displayCoverage, 0)
         + " N:" + juce::String (displayCount);
 
