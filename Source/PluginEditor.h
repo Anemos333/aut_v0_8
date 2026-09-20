@@ -170,6 +170,7 @@ private:
     // Diagnostic UI only. A one-frame renderer anomaly remains visible long
     // enough to read without feeding any value back into audio processing.
     int rendererPhaseAlertHoldTicks_ = 0;
+    std::uint32_t lastRendererPhaseDiagnosticSerial_ = 0;
     float rendererPhaseHeldPh_ = 100.0f;
     float rendererPhaseHeldBin_ = 100.0f;
     float rendererPhaseHeldRidge_ = 0.0f;
