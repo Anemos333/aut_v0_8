@@ -3287,12 +3287,19 @@ void ModernPitchEngine::reset() noexcept
     meterRendererPreIfftCoherence_.store(1.0f, std::memory_order_relaxed);
     meterRendererStrongBinCoherence_.store(1.0f, std::memory_order_relaxed);
     meterRendererRidgeSpreadBins_.store(0.0f, std::memory_order_relaxed);
+    meterRendererOlaCoherence_.store(1.0f, std::memory_order_relaxed);
+    meterRendererOlaCoverageRatio_.store(1.0f, std::memory_order_relaxed);
+    meterRendererOlaContributionCount_.store(4, std::memory_order_relaxed);
+    meterRendererOlaValid_.store(false, std::memory_order_relaxed);
     meterRendererDiagnosticsValid_.store(false, std::memory_order_relaxed);
     meterRendererPhaseDiagnosticSerial_.store(0, std::memory_order_relaxed);
     meterRendererPhaseDiagnosticAlert_.store(false, std::memory_order_relaxed);
     meterRendererPhaseDiagnosticHeldPh_.store(100.0f, std::memory_order_relaxed);
     meterRendererPhaseDiagnosticHeldBin_.store(100.0f, std::memory_order_relaxed);
     meterRendererPhaseDiagnosticHeldRidge_.store(0.0f, std::memory_order_relaxed);
+    meterRendererPhaseDiagnosticHeldOla_.store(100.0f, std::memory_order_relaxed);
+    meterRendererPhaseDiagnosticHeldCoverage_.store(100.0f, std::memory_order_relaxed);
+    meterRendererPhaseDiagnosticHeldCount_.store(4, std::memory_order_relaxed);
 
     targetRevisionDiagnosticSerial_ = 0;
     targetRevisionBeforeHz_ = 0.0f;
@@ -3322,6 +3329,9 @@ void ModernPitchEngine::reset() noexcept
     rendererPhaseDiagnosticWorstPh_ = 100.0f;
     rendererPhaseDiagnosticWorstBin_ = 100.0f;
     rendererPhaseDiagnosticWorstRidge_ = 0.0f;
+    rendererPhaseDiagnosticWorstOla_ = 100.0f;
+    rendererPhaseDiagnosticWorstCoverage_ = 100.0f;
+    rendererPhaseDiagnosticWorstCount_ = 4;
     meterTargetRevisionDiagnosticSerial_.store(0, std::memory_order_relaxed);
     meterTargetRevisionBeforeHz_.store(0.0f, std::memory_order_relaxed);
     meterTargetRevisionAfterHz_.store(0.0f, std::memory_order_relaxed);
@@ -5295,46 +5305,94 @@ void ModernPitchEngine::publishMetering(
             rendererDiagnostics.maximumDominantRidgeSpreadBins,
             std::memory_order_relaxed);
         meterRendererDiagnosticsValid_.store(true, std::memory_order_relaxed);
+    }
 
-        // RENDERER_PHASE_DIAGNOSTIC_EVENT_LATCH_V1
-        // Latch only established note-body frames so startup/re-entry does not
-        // create false alarms. This is observation only, after audio rendering.
-        if (state.trackingState == TrackingState::stable
-            && state.noteBodyLatched
-            && state.stableObservations >= 5)
-        {
-            const float diagnosticPh = 100.0f
-                * rendererDiagnostics.minimumPreIfftCoherence;
-            const float diagnosticBin = 100.0f
-                * rendererDiagnostics.minimumStrongBinCoherence;
-            const float diagnosticRidge = 100.0f * std::clamp(
+    if (rendererDiagnostics.olaValid)
+    {
+        meterRendererOlaCoherence_.store(
+            rendererDiagnostics.minimumOlaCoherence,
+            std::memory_order_relaxed);
+        meterRendererOlaCoverageRatio_.store(
+            rendererDiagnostics.minimumOlaCoverageRatio,
+            std::memory_order_relaxed);
+        meterRendererOlaContributionCount_.store(
+            rendererDiagnostics.minimumOlaContributionCount,
+            std::memory_order_relaxed);
+        meterRendererOlaValid_.store(true, std::memory_order_relaxed);
+    }
+
+    // RENDERER_PHASE_DIAGNOSTIC_EVENT_LATCH_V2
+    // Sticky observation only. Phase/pre-IFFT and OLA/accumulation symptoms
+    // share one serial so a one-block anomaly cannot be missed by the GUI.
+    if ((rendererDiagnostics.valid || rendererDiagnostics.olaValid)
+        && state.trackingState == TrackingState::stable
+        && state.noteBodyLatched
+        && state.stableObservations >= 5)
+    {
+        const float diagnosticPh = rendererDiagnostics.valid
+            ? 100.0f * rendererDiagnostics.minimumPreIfftCoherence
+            : 100.0f;
+        const float diagnosticBin = rendererDiagnostics.valid
+            ? 100.0f * rendererDiagnostics.minimumStrongBinCoherence
+            : 100.0f;
+        const float diagnosticRidge = rendererDiagnostics.valid
+            ? 100.0f * std::clamp(
                 rendererDiagnostics.maximumDominantRidgeSpreadBins / 1.5f,
-                0.0f, 1.0f);
-            const bool symptomatic = diagnosticPh < 65.0f
+                0.0f, 1.0f)
+            : 0.0f;
+
+        const float diagnosticOla = rendererDiagnostics.olaValid
+            ? 100.0f * rendererDiagnostics.minimumOlaCoherence
+            : 100.0f;
+        const float diagnosticCoverage = rendererDiagnostics.olaValid
+            ? 100.0f * std::clamp(
+                rendererDiagnostics.minimumOlaCoverageRatio, 0.0f, 1.0f)
+            : 100.0f;
+        const int diagnosticCount = rendererDiagnostics.olaValid
+            ? rendererDiagnostics.minimumOlaContributionCount : 4;
+
+        const bool phaseSymptom = rendererDiagnostics.valid
+            && (diagnosticPh < 65.0f
                 || diagnosticBin < 55.0f
-                || diagnosticRidge > 70.0f;
+                || diagnosticRidge > 70.0f);
+        const bool olaSymptom = rendererDiagnostics.olaValid
+            && (diagnosticOla < 55.0f
+                || diagnosticCoverage < 90.0f
+                || diagnosticCount < 4);
+        const bool symptomatic = phaseSymptom || olaSymptom;
 
-            if (symptomatic)
-            {
-                ++rendererPhaseDiagnosticSerial_;
-                rendererPhaseDiagnosticWorstPh_ = std::min(
-                    rendererPhaseDiagnosticWorstPh_, diagnosticPh);
-                rendererPhaseDiagnosticWorstBin_ = std::min(
-                    rendererPhaseDiagnosticWorstBin_, diagnosticBin);
-                rendererPhaseDiagnosticWorstRidge_ = std::max(
-                    rendererPhaseDiagnosticWorstRidge_, diagnosticRidge);
+        if (symptomatic)
+        {
+            ++rendererPhaseDiagnosticSerial_;
+            rendererPhaseDiagnosticWorstPh_ = std::min(
+                rendererPhaseDiagnosticWorstPh_, diagnosticPh);
+            rendererPhaseDiagnosticWorstBin_ = std::min(
+                rendererPhaseDiagnosticWorstBin_, diagnosticBin);
+            rendererPhaseDiagnosticWorstRidge_ = std::max(
+                rendererPhaseDiagnosticWorstRidge_, diagnosticRidge);
+            rendererPhaseDiagnosticWorstOla_ = std::min(
+                rendererPhaseDiagnosticWorstOla_, diagnosticOla);
+            rendererPhaseDiagnosticWorstCoverage_ = std::min(
+                rendererPhaseDiagnosticWorstCoverage_, diagnosticCoverage);
+            rendererPhaseDiagnosticWorstCount_ = std::min(
+                rendererPhaseDiagnosticWorstCount_, diagnosticCount);
 
-                meterRendererPhaseDiagnosticSerial_.store(
-                    rendererPhaseDiagnosticSerial_, std::memory_order_relaxed);
-                meterRendererPhaseDiagnosticAlert_.store(
-                    true, std::memory_order_relaxed);
-                meterRendererPhaseDiagnosticHeldPh_.store(
-                    rendererPhaseDiagnosticWorstPh_, std::memory_order_relaxed);
-                meterRendererPhaseDiagnosticHeldBin_.store(
-                    rendererPhaseDiagnosticWorstBin_, std::memory_order_relaxed);
-                meterRendererPhaseDiagnosticHeldRidge_.store(
-                    rendererPhaseDiagnosticWorstRidge_, std::memory_order_relaxed);
-            }
+            meterRendererPhaseDiagnosticSerial_.store(
+                rendererPhaseDiagnosticSerial_, std::memory_order_relaxed);
+            meterRendererPhaseDiagnosticAlert_.store(
+                true, std::memory_order_relaxed);
+            meterRendererPhaseDiagnosticHeldPh_.store(
+                rendererPhaseDiagnosticWorstPh_, std::memory_order_relaxed);
+            meterRendererPhaseDiagnosticHeldBin_.store(
+                rendererPhaseDiagnosticWorstBin_, std::memory_order_relaxed);
+            meterRendererPhaseDiagnosticHeldRidge_.store(
+                rendererPhaseDiagnosticWorstRidge_, std::memory_order_relaxed);
+            meterRendererPhaseDiagnosticHeldOla_.store(
+                rendererPhaseDiagnosticWorstOla_, std::memory_order_relaxed);
+            meterRendererPhaseDiagnosticHeldCoverage_.store(
+                rendererPhaseDiagnosticWorstCoverage_, std::memory_order_relaxed);
+            meterRendererPhaseDiagnosticHeldCount_.store(
+                rendererPhaseDiagnosticWorstCount_, std::memory_order_relaxed);
         }
     }
     meterDetectorSupport_.store(observation.detectorSupport, std::memory_order_relaxed);
@@ -5432,6 +5490,14 @@ ModernPitchEngine::Metering ModernPitchEngine::getMetering() const noexcept
             std::memory_order_relaxed);
         const float rendererRidgeSpread = meterRendererRidgeSpreadBins_.load(
             std::memory_order_relaxed);
+        const bool rendererOlaValid =
+            meterRendererOlaValid_.load(std::memory_order_relaxed);
+        const float rendererOlaCoherence = meterRendererOlaCoherence_.load(
+            std::memory_order_relaxed);
+        const float rendererOlaCoverage = meterRendererOlaCoverageRatio_.load(
+            std::memory_order_relaxed);
+        const int rendererOlaCount = meterRendererOlaContributionCount_.load(
+            std::memory_order_relaxed);
         result.outputPhaseCoherence = rendererDiagnosticsValid
             ? 100.0f * rendererPreIfft
             : 100.0f * result.harmonicity;
@@ -5444,6 +5510,12 @@ ModernPitchEngine::Metering ModernPitchEngine::getMetering() const noexcept
             ? 100.0f * ridgeStress : 0.0f;
         result.outputMemoryReliability = rendererDiagnosticsValid
             ? 100.0f * (1.0f - ridgeStress) : 0.0f;
+        result.outputOlaCoherence = rendererOlaValid
+            ? 100.0f * rendererOlaCoherence : 100.0f;
+        result.outputOlaCoverage = rendererOlaValid
+            ? 100.0f * std::clamp(rendererOlaCoverage, 0.0f, 1.5f) : 100.0f;
+        result.outputOlaContributionCount = rendererOlaCount;
+        result.outputOlaDiagnosticValid = rendererOlaValid;
         result.rendererPhaseDiagnosticSerial =
             meterRendererPhaseDiagnosticSerial_.load(std::memory_order_relaxed);
         result.rendererPhaseDiagnosticAlert =
@@ -5454,7 +5526,14 @@ ModernPitchEngine::Metering ModernPitchEngine::getMetering() const noexcept
             meterRendererPhaseDiagnosticHeldBin_.load(std::memory_order_relaxed);
         result.rendererPhaseDiagnosticHeldRidge =
             meterRendererPhaseDiagnosticHeldRidge_.load(std::memory_order_relaxed);
+        result.rendererPhaseDiagnosticHeldOla =
+            meterRendererPhaseDiagnosticHeldOla_.load(std::memory_order_relaxed);
+        result.rendererPhaseDiagnosticHeldCoverage =
+            meterRendererPhaseDiagnosticHeldCoverage_.load(std::memory_order_relaxed);
+        result.rendererPhaseDiagnosticHeldCount =
+            meterRendererPhaseDiagnosticHeldCount_.load(std::memory_order_relaxed);
         result.outputMeterValid = (rendererDiagnosticsValid
+            || rendererOlaValid
             || result.detectedPitchHz > 0.0f) ? 1.0f : 0.0f;
         result.outputTemporalStability = 100.0f * result.maskStability;
         result.outputTargetJumpCents = meterTargetJumpCents_.load(std::memory_order_relaxed);
