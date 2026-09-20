@@ -881,6 +881,12 @@ if (showingControlRoom)
             displayedMetering.rendererPhaseDiagnosticHeldBin;
         rendererPhaseHeldRidge_ =
             displayedMetering.rendererPhaseDiagnosticHeldRidge;
+        rendererPhaseHeldOla_ =
+            displayedMetering.rendererPhaseDiagnosticHeldOla;
+        rendererPhaseHeldCoverage_ =
+            displayedMetering.rendererPhaseDiagnosticHeldCoverage;
+        rendererPhaseHeldCount_ =
+            displayedMetering.rendererPhaseDiagnosticHeldCount;
         rendererPhaseAlertHoldTicks_ = 60;
     }
     else if (rendererPhaseAlertHoldTicks_ > 0)
@@ -1317,6 +1323,49 @@ void MicrotonalAutotuneAudioProcessorEditor::paint (juce::Graphics& g)
         g.setColour (dotColour.withAlpha (0.3f));
         g.fillEllipse (static_cast<float> (dotX - 7), static_cast<float> (dotY - 7), 14.0f, 14.0f);
     }
+
+    // RENDERER_DIAGNOSTIC_STRIP_V1
+    // Always-visible diagnostic overlay for this experimental branch only.
+    // Values are read from metering and never feed audio processing.
+    const bool rendererDiagnosticAlert = rendererPhaseAlertHoldTicks_ > 0;
+    const float displayPh = rendererDiagnosticAlert
+        ? rendererPhaseHeldPh_ : displayedMetering.outputPhaseCoherence;
+    const float displayBin = rendererDiagnosticAlert
+        ? rendererPhaseHeldBin_ : displayedMetering.outputPreIfftConsensus;
+    const float displayRidge = rendererDiagnosticAlert
+        ? rendererPhaseHeldRidge_ : displayedMetering.outputReconstructionNeed;
+    const float displayOla = rendererDiagnosticAlert
+        ? rendererPhaseHeldOla_ : displayedMetering.outputOlaCoherence;
+    const float displayCoverage = rendererDiagnosticAlert
+        ? rendererPhaseHeldCoverage_ : displayedMetering.outputOlaCoverage;
+    const int displayCount = rendererDiagnosticAlert
+        ? rendererPhaseHeldCount_ : displayedMetering.outputOlaContributionCount;
+
+    auto diagnosticStrip = getLocalBounds().removeFromTop (26)
+        .removeFromRight (430).reduced (6, 3);
+    g.setColour (juce::Colour (0xD0101422));
+    g.fillRoundedRectangle (diagnosticStrip.toFloat(), 5.0f);
+    g.setColour (rendererDiagnosticAlert
+        ? juce::Colour (0xFFFF3B30)
+        : juce::Colour (0xFF2D8A4B));
+    g.fillEllipse (static_cast<float> (diagnosticStrip.getX() + 6),
+                   static_cast<float> (diagnosticStrip.getCentreY() - 4),
+                   8.0f, 8.0f);
+
+    juce::String diagnosticText = rendererDiagnosticAlert
+        ? "RENDER! " : "DBG ";
+    diagnosticText += "Ph:" + juce::String (displayPh, 0)
+        + " Bin:" + juce::String (displayBin, 0)
+        + " Rg:" + juce::String (displayRidge, 0)
+        + " OLA:" + juce::String (displayOla, 0)
+        + " Cov:" + juce::String (displayCoverage, 0)
+        + " N:" + juce::String (displayCount);
+
+    g.setColour (juce::Colours::white);
+    g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+    g.drawText (diagnosticText,
+                diagnosticStrip.withTrimmedLeft (20),
+                juce::Justification::centredLeft);
 }
 
 void MicrotonalAutotuneAudioProcessorEditor::resized()
