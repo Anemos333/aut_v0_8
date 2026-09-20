@@ -177,7 +177,8 @@ private:
     float rendererPhaseHeldPh_ = 100.0f;
     float rendererPhaseHeldBin_ = 100.0f;
     float rendererPhaseHeldRidge_ = 0.0f;
-    float rendererPhaseHeldOla_ = 100.0f;
+    float rendererPhaseHeldOlaEnergy_ = 100.0f;
+    float rendererPhaseHeldFrameCorrelation_ = 100.0f;
     float rendererPhaseHeldCoverage_ = 100.0f;
     int rendererPhaseHeldCount_ = 4;
 
