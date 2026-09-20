@@ -24,6 +24,17 @@ public:
         float minimumPreIfftCoherence = 1.0f;
         float minimumStrongBinCoherence = 1.0f;
         float maximumDominantRidgeSpreadBins = 0.0f;
+
+        // OLA_ACCUMULATION_DIAGNOSTIC_V1
+        // Shadow-only measurements of the already-produced overlap/add stream.
+        // They never alter outputAccumulationRing or synthesis.
+        bool olaValid = false;
+        std::int64_t worstOlaSample = 0;
+        float minimumOlaCoherence = 1.0f;
+        float minimumOlaCoverageRatio = 1.0f;
+        int minimumOlaContributionCount = 4;
+        float worstOlaSignedSum = 0.0f;
+        float worstOlaAbsoluteSum = 0.0f;
     };
 
     // Diagnostic-only readback. Called by ModernPitchEngine on the audio thread
@@ -42,6 +53,12 @@ private:
         std::vector<Complex> spectrum;
         std::vector<double> synthesisPhases;
         std::vector<float> outputAccumulationRing;
+
+        // OLA_ACCUMULATION_DIAGNOSTIC_V1: shadow rings only.
+        std::vector<float> diagnosticAbsoluteContributionRing;
+        std::vector<float> diagnosticCoverageRing;
+        std::vector<std::uint8_t> diagnosticContributionCountRing;
+
         bool phaseInitialised = false;
     };
 
@@ -103,6 +120,7 @@ private:
     int envelopeFrameCounter_ = 0;
     int envelopeUpdateInterval_ = 2;
     float synthesisGain_ = 0.5f;
+    float expectedOlaCoverage_ = 1.0f;
 
     float envelopeAttackCoefficient_ = 1.0f;
     float envelopeReleaseCoefficient_ = 1.0f;
