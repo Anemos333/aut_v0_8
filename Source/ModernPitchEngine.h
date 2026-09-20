@@ -119,6 +119,14 @@ public:
         float outputPreIfftConsensus = 0.0f;
         float outputSelectiveReconstructionNeed = 0.0f;
 
+        // RENDERER_PHASE_DIAGNOSTIC_EVENT_LATCH_V1: diagnostic-only sticky
+        // event data. Never consumed by DSP.
+        std::uint32_t rendererPhaseDiagnosticSerial = 0;
+        bool rendererPhaseDiagnosticAlert = false;
+        float rendererPhaseDiagnosticHeldPh = 100.0f;
+        float rendererPhaseDiagnosticHeldBin = 100.0f;
+        float rendererPhaseDiagnosticHeldRidge = 0.0f;
+
         int shadowRidgeObservationCount = 0;
         int shadowRidgeActiveCount = 0;
         int shadowRidgeBirthCount = 0;
@@ -712,6 +720,12 @@ private:
     float targetRevisionCorrectionAfterCents_ = 0.0f;
     float targetRevisionCorrectionDeltaCents_ = 0.0f;
 
+    // Diagnostic event latch only. Updated after rendering, never read by DSP.
+    std::uint32_t rendererPhaseDiagnosticSerial_ = 0;
+    float rendererPhaseDiagnosticWorstPh_ = 100.0f;
+    float rendererPhaseDiagnosticWorstBin_ = 100.0f;
+    float rendererPhaseDiagnosticWorstRidge_ = 0.0f;
+
     std::atomic<std::uint32_t> meterSequence_ { 0 };
     std::atomic<float> meterPitchHz_ { 0.0f };
     std::atomic<float> meterTargetHz_ { 0.0f };
@@ -732,6 +746,11 @@ private:
     std::atomic<float> meterRendererStrongBinCoherence_ { 1.0f };
     std::atomic<float> meterRendererRidgeSpreadBins_ { 0.0f };
     std::atomic<bool> meterRendererDiagnosticsValid_ { false };
+    std::atomic<std::uint32_t> meterRendererPhaseDiagnosticSerial_ { 0 };
+    std::atomic<bool> meterRendererPhaseDiagnosticAlert_ { false };
+    std::atomic<float> meterRendererPhaseDiagnosticHeldPh_ { 100.0f };
+    std::atomic<float> meterRendererPhaseDiagnosticHeldBin_ { 100.0f };
+    std::atomic<float> meterRendererPhaseDiagnosticHeldRidge_ { 0.0f };
 
     std::atomic<int> meterDetectorSupport_ { 0 };
     std::atomic<int> meterOctaveState_ { 0 };
