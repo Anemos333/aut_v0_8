@@ -1,0 +1,184 @@
+name: Validate renderer stable-hop authority v1
+
+on:
+  push:
+    branches:
+      - post-detector-renderer-hop-authority-v1
+    paths:
+      - Source/ModernPitchEngine.cpp
+      - Source/ModernPitchEngine.h
+      - Tests/RendererIncoherentHopHoldTest.cpp
+      - .github/workflows/validate-renderer-stable-hop-authority-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          ref: post-detector-renderer-hop-authority-v1
+          fetch-depth: 0
+
+      - name: Guard detector and renderer boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Source/SingleWetSpectralRenderer.cpp)" = "051721f1d740e95e23f740353ad5df9dc6fefb3c"
+          test "$(git hash-object Source/SingleWetSpectralRenderer.h)" = "2b68b3b3d5dc0579cdab94f4969203ef876ef058"
+          grep -q 'PARKED_LOW_RATE_WORKER_V1' Source/ModernPitchEngine.cpp
+          grep -q 'HARD_TUNE_STABLE_MICROMOTION_COMPENSATION_V1' Source/ModernPitchEngine.cpp
+          grep -q 'RENDERER_STABLE_HOP_AUTHORITY_V1' Source/ModernPitchEngine.cpp
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          anchor = 'void ModernPitchEngine::updateCorrectionState('
+          current = Path('Source/ModernPitchEngine.cpp').read_text()
+          parent = subprocess.check_output(
+              ['git','show','269c7eefb4104af08b6080c046b002c5524c26e7:Source/ModernPitchEngine.cpp'],
+              text=True)
+          if anchor not in current or anchor not in parent:
+              raise SystemExit('updateCorrectionState anchor missing')
+          if current.split(anchor,1)[0] != parent.split(anchor,1)[0]:
+              raise SystemExit('detector prefix changed')
+          print('RENDERER_HOP_DETECTOR_PREFIX_GUARD=PASS')
+          PY
+          echo 'RENDERER_HOP_SCOPE_GUARD=PASS'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y \
+            libasound2-dev libjack-jackd2-dev ladspa-sdk \
+            libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev \
+            libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Configure candidate build
+        run: cmake -S . -B build-render-hop -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+
+      - name: Preserve supervisor source
+        run: cp Tests/SupervisorContinuityTest.cpp /tmp/render-hop-supervisor.original.cpp
+
+      - name: Verify detector oracle three times
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/GoldenDetectorDeterminismTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-render-hop --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          for run in 1 2 3; do
+            ./build-render-hop/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee "/tmp/render-hop-detector-$run.log"
+            grep -q '^GOLDEN_DETECTOR_BITWISE_DETERMINISM=PASS observations=12000$' "/tmp/render-hop-detector-$run.log"
+            grep -q '^GOLDEN_DETECTOR_TRACE_HASH=58273352d40c5499$' "/tmp/render-hop-detector-$run.log"
+          done
+          echo 'RENDERER_HOP_DETECTOR_UNCHANGED=PASS'
+
+      - name: Verify hard-vibrato contract remains valid
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/HardTuneStableMicroMotionTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-render-hop --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-render-hop/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/render-hop-hard-vibrato.log
+          grep -q '^HARD_VIBRATO_COMPENSATION=PASS ' /tmp/render-hop-hard-vibrato.log
+
+      - name: Verify stable-incoherent-stable renderer hold
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/RendererIncoherentHopHoldTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-render-hop --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-render-hop/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/render-hop-contract.log
+          grep -q '^RENDERER_INCOHERENT_HOP_HOLD=PASS ' /tmp/render-hop-contract.log
+
+      - name: Verify existing authority and renderer contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp /tmp/render-hop-supervisor.original.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-render-hop --config Release --parallel 2 \
+            --target SupervisorContinuityTest CleanModernPitchEngineTest SingleWetSpectralRendererTest >/dev/null
+          ./build-render-hop/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/render-hop-supervisor.log
+          ./build-render-hop/clean-engine-tests/CleanModernPitchEngineTest 2>&1 | tee /tmp/render-hop-engine.log
+          ./build-render-hop/clean-engine-tests/SingleWetSpectralRendererTest 2>&1 | tee /tmp/render-hop-renderer.log
+          ! grep -q '=FAIL' /tmp/render-hop-supervisor.log
+          ! grep -q '=FAIL' /tmp/render-hop-engine.log
+          ! grep -q '=FAIL' /tmp/render-hop-renderer.log
+          grep -q 'speed_changes_post_lock_transition=PASS' /tmp/render-hop-engine.log
+          grep -q 'transition_detector_wobble_cannot_move_destination=PASS' /tmp/render-hop-supervisor.log
+          grep -q 'periodic_reentry_has_no_click=PASS' /tmp/render-hop-renderer.log
+          echo 'RENDERER_HOP_EXISTING_CONTRACTS=PASS'
+
+      - name: Build candidate corpus runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/GoldenEngineBehaviorCorpusTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-render-hop --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          cp build-render-hop/clean-engine-tests/SupervisorContinuityTest /tmp/render-hop-candidate-corpus
+
+      - name: Build parent corpus runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach /tmp/neumaton-render-hop-parent 269c7eefb4104af08b6080c046b002c5524c26e7
+          cd /tmp/neumaton-render-hop-parent
+          cp Tests/GoldenEngineBehaviorCorpusTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-corpus -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-corpus --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          cp build-corpus/clean-engine-tests/SupervisorContinuityTest /tmp/render-hop-parent-corpus
+
+      - name: Compare corpus scenarios
+        shell: bash
+        run: |
+          set -euo pipefail
+          /tmp/render-hop-parent-corpus 2>&1 | tee /tmp/render-hop-parent-corpus.log
+          /tmp/render-hop-candidate-corpus 2>&1 | tee /tmp/render-hop-candidate-corpus.log
+          grep -q '^GOLDEN_ENGINE_BEHAVIOR_CORPUS=PASS scenarios=14$' /tmp/render-hop-parent-corpus.log
+          grep -q '^GOLDEN_ENGINE_BEHAVIOR_CORPUS=PASS scenarios=14$' /tmp/render-hop-candidate-corpus.log
+          python3 - <<'PY' | tee /tmp/render-hop-corpus-diff.log
+          from pathlib import Path
+          import re
+
+          def scenarios(path):
+              out = {}
+              for line in Path(path).read_text().splitlines():
+                  if not line.startswith('GOLDEN_ENGINE_SCENARIO_HASH '):
+                      continue
+                  fields = dict(re.findall(r'(\w+)=([^ ]+)', line))
+                  out[(fields['name'], fields['block'])] = fields['hash']
+              return out
+
+          parent = scenarios('/tmp/render-hop-parent-corpus.log')
+          candidate = scenarios('/tmp/render-hop-candidate-corpus.log')
+          if parent.keys() != candidate.keys():
+              raise SystemExit('corpus scenario set changed')
+
+          changed = []
+          for key in sorted(parent):
+              if parent[key] != candidate[key]:
+                  changed.append((key, parent[key], candidate[key]))
+
+          print(f'RENDERER_HOP_CORPUS_CHANGED_SCENARIOS={len(changed)}')
+          for (name, block), before, after in changed:
+              print('RENDERER_HOP_CORPUS_CHANGE',
+                    f'name={name}', f'block={block}',
+                    f'parent={before}', f'candidate={after}')
+          PY
+          cat /tmp/render-hop-corpus-diff.log >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Restore supervisor source
+        if: always()
+        shell: bash
+        run: |
+          if [ -f /tmp/render-hop-supervisor.original.cpp ]; then
+            cp /tmp/render-hop-supervisor.original.cpp Tests/SupervisorContinuityTest.cpp
+          fi
+
+      - name: Final marker
+        run: echo 'RENDERER_STABLE_HOP_AUTHORITY_VALIDATION=PASS_NO_PROMOTION'
