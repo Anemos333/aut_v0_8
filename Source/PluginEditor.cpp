@@ -1233,7 +1233,7 @@ void MicrotonalAutotuneAudioProcessorEditor::paint (juce::Graphics& g)
     // The two main valves now sit directly on the future background drawing.
     // No translucent backing panels here: their physical shadow is drawn by
     // MainValveLookAndFeel itself.
-    drawMeterPanel (g, meterPanel.expanded (24, 10));
+   
 
     auto scaleLockPanel = scaleLockButton.getBounds();
 
