@@ -71,12 +71,14 @@ int main()
         return 5;
     }
 
-    if (!bounded01(d.minimumOlaCoherence)
+    if (!std::isfinite(d.minimumOlaEnergyRatio)
+        || d.minimumOlaEnergyRatio < 0.0f
         || !std::isfinite(d.minimumOlaCoverageRatio)
         || d.minimumOlaCoverageRatio < 0.0f
-        || !std::isfinite(d.worstOlaSignedSum)
-        || !std::isfinite(d.worstOlaAbsoluteSum)
-        || d.worstOlaAbsoluteSum + 1.0e-7f < std::abs(d.worstOlaSignedSum))
+        || !d.frameOverlapCorrelationValid
+        || !std::isfinite(d.minimumFrameOverlapCorrelation)
+        || d.minimumFrameOverlapCorrelation < -1.0f
+        || d.minimumFrameOverlapCorrelation > 1.0f)
     {
         std::cerr << "RENDERER_OLA_DIAGNOSTICS=FAIL reason=invalid_metrics\n";
         return 6;
@@ -104,12 +106,13 @@ int main()
               << "\n";
 
     std::cout << "RENDERER_OLA_DIAGNOSTICS=PASS"
-              << " ola_coherence=" << d.minimumOlaCoherence
+              << " energy_ratio=" << d.minimumOlaEnergyRatio
+              << " frame_correlation=" << d.minimumFrameOverlapCorrelation
               << " coverage=" << d.minimumOlaCoverageRatio
               << " count=" << d.minimumOlaContributionCount
-              << " signed_sum=" << d.worstOlaSignedSum
-              << " abs_sum=" << d.worstOlaAbsoluteSum
-              << " worst_sample=" << d.worstOlaSample
+              << " worst_hop_end_sample=" << d.worstOlaHopEndSample
+              << " worst_frame_end_sample="
+              << d.worstFrameCorrelationEndSample
               << "\n";
     return 0;
 }
