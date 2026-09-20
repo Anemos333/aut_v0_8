@@ -3284,6 +3284,10 @@ void ModernPitchEngine::reset() noexcept
     meterOnsetStrength_.store(0.0f, std::memory_order_relaxed);
     meterTargetJumpCents_.store(0.0f, std::memory_order_relaxed);
     meterSustainedSeconds_.store(0.0f, std::memory_order_relaxed);
+    meterRendererPreIfftCoherence_.store(1.0f, std::memory_order_relaxed);
+    meterRendererStrongBinCoherence_.store(1.0f, std::memory_order_relaxed);
+    meterRendererRidgeSpreadBins_.store(0.0f, std::memory_order_relaxed);
+    meterRendererDiagnosticsValid_.store(false, std::memory_order_relaxed);
 
     targetRevisionDiagnosticSerial_ = 0;
     targetRevisionBeforeHz_ = 0.0f;
@@ -5199,8 +5203,9 @@ void ModernPitchEngine::process(
     const auto tempoMeter = dualMono
         ? channelTempoControllers_[0].getMetering()
         : tempoController_.getMetering();
+    const auto rendererDiagnostics = wetRenderers_[0].consumeDiagnostics();
     publishMetering(latestObservation_, linkedCorrection_,
-                    audibleCorrectionCents_, tempoMeter);
+                    audibleCorrectionCents_, tempoMeter, rendererDiagnostics);
 }
 
 void ModernPitchEngine::process(
@@ -5247,7 +5252,8 @@ void ModernPitchEngine::publishMetering(
     const PitchObservation& observation,
     const CorrectionState& state,
     double audibleCents,
-    const CreativeTempo::Metering& tempoMeter) noexcept
+    const CreativeTempo::Metering& tempoMeter,
+    const SingleWetSpectralRenderer::Diagnostics& rendererDiagnostics) noexcept
 {
     meterSequence_.fetch_add(1u, std::memory_order_acq_rel);
     meterPitchHz_.store(observation.frequencyHz, std::memory_order_relaxed);
@@ -5268,6 +5274,19 @@ void ModernPitchEngine::publishMetering(
     meterSustainedSeconds_.store(static_cast<float>(
         std::min(12.0, static_cast<double>(sustainedSamples_) / sampleRate_)),
         std::memory_order_relaxed);
+    if (rendererDiagnostics.valid)
+    {
+        meterRendererPreIfftCoherence_.store(
+            rendererDiagnostics.minimumPreIfftCoherence,
+            std::memory_order_relaxed);
+        meterRendererStrongBinCoherence_.store(
+            rendererDiagnostics.minimumStrongBinCoherence,
+            std::memory_order_relaxed);
+        meterRendererRidgeSpreadBins_.store(
+            rendererDiagnostics.maximumDominantRidgeSpreadBins,
+            std::memory_order_relaxed);
+        meterRendererDiagnosticsValid_.store(true, std::memory_order_relaxed);
+    }
     meterDetectorSupport_.store(observation.detectorSupport, std::memory_order_relaxed);
     meterOctaveState_.store(observation.octaveState, std::memory_order_relaxed);
     meterTrackingState_.store(static_cast<int>(state.trackingState),
@@ -5355,13 +5374,32 @@ ModernPitchEngine::Metering ModernPitchEngine::getMetering() const noexcept
         result.outputSourceCorrespondence = 100.0f * result.spectralReliability;
         result.outputTargetCoherence = 100.0f * result.confidence;
         result.outputPhysicalHarmonicFit = 100.0f * result.harmonicity;
-        result.outputPhaseCoherence = 100.0f * result.harmonicity;
-        result.outputMeterValid = result.detectedPitchHz > 0.0f ? 1.0f : 0.0f;
+        const bool rendererDiagnosticsValid =
+            meterRendererDiagnosticsValid_.load(std::memory_order_relaxed);
+        const float rendererPreIfft = meterRendererPreIfftCoherence_.load(
+            std::memory_order_relaxed);
+        const float rendererStrongBin = meterRendererStrongBinCoherence_.load(
+            std::memory_order_relaxed);
+        const float rendererRidgeSpread = meterRendererRidgeSpreadBins_.load(
+            std::memory_order_relaxed);
+        result.outputPhaseCoherence = rendererDiagnosticsValid
+            ? 100.0f * rendererPreIfft
+            : 100.0f * result.harmonicity;
+        result.outputPreIfftConsensus = rendererDiagnosticsValid
+            ? 100.0f * rendererStrongBin
+            : 100.0f * result.consensus;
+        const float ridgeStress = std::clamp(
+            rendererRidgeSpread / 1.5f, 0.0f, 1.0f);
+        result.outputReconstructionNeed = rendererDiagnosticsValid
+            ? 100.0f * ridgeStress : 0.0f;
+        result.outputMemoryReliability = rendererDiagnosticsValid
+            ? 100.0f * (1.0f - ridgeStress) : 0.0f;
+        result.outputMeterValid = (rendererDiagnosticsValid
+            || result.detectedPitchHz > 0.0f) ? 1.0f : 0.0f;
         result.outputTemporalStability = 100.0f * result.maskStability;
         result.outputTargetJumpCents = meterTargetJumpCents_.load(std::memory_order_relaxed);
         result.outputCorrectionVelocityCentsPerSecond
             = meterCorrectionVelocity_.load(std::memory_order_relaxed);
-        result.outputPreIfftConsensus = 100.0f * result.consensus;
         result.detectorSupport = meterDetectorSupport_.load(std::memory_order_relaxed);
         result.octaveState = meterOctaveState_.load(std::memory_order_relaxed);
         result.pendingOctaveObservations = meterPendingOctave_.load(std::memory_order_relaxed);
