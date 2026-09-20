@@ -577,6 +577,13 @@ private:
         double transportChallengerLog2 = 0.0;
         int transportChallengerHops = 0;
 
+        // RENDERER_STABLE_HOP_AUTHORITY_V1: analysis/controller history keeps
+        // every detector hop. This flag only decides whether the current hop's
+        // controller command may replace the last command heard by the renderer.
+        bool rendererAcceptCurrentHop = true;
+        bool rendererCommandValid = false;
+        double rendererCommandCents = 0.0;
+
         // LATENT_SCALE_CANDIDATE_V2: a detector coordinate that points outside
         // the currently owned scale cell is analysis only until the same exact
         // destination degree persists.  While pending it has zero audible
@@ -632,6 +639,9 @@ private:
         const Parameters& parameters,
         bool bodyLikeFrame) noexcept;
     [[nodiscard]] double advanceCorrection(CorrectionState& state) noexcept;
+    [[nodiscard]] double selectRendererCorrection(
+        CorrectionState& state,
+        double controllerCents) noexcept;
     void publishMetering(const PitchObservation& observation,
                          const CorrectionState& state,
                          double audibleCents,
