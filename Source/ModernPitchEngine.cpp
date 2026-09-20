@@ -4613,7 +4613,10 @@ void ModernPitchEngine::updateCorrectionState(
     const float lowVibratoAuthority = 1.0f - smoothStep(
         0.03f, 0.18f, requestedVibrato);
     const float stableMicroMotionAuthority = clamp01(
-        hardAmountAuthority * lowHumanizeAuthority * lowVibratoAuthority);
+        hardAmountAuthority
+        * lowHumanizeAuthority
+        * lowVibratoAuthority
+        * boundarySafety);
 
     const double softness = std::clamp(
         0.72 * (1.0 - amount) + 0.20 * static_cast<double>(humanize),
