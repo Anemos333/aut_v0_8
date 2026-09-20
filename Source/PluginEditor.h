@@ -167,6 +167,13 @@ private:
     float visualCorrectionGlowCents_ = 0.0f;
     float visualConsensusGlow_ = 0.0f;
 
+    // Diagnostic UI only. A one-frame renderer anomaly remains visible long
+    // enough to read without feeding any value back into audio processing.
+    int rendererPhaseAlertHoldTicks_ = 0;
+    float rendererPhaseHeldPh_ = 100.0f;
+    float rendererPhaseHeldBin_ = 100.0f;
+    float rendererPhaseHeldRidge_ = 0.0f;
+
     // No placebo controls: this guard changes UI applicability only. It never
     // rewrites parameter values, sensor authority or correction depth.
     class AudioControlAvailabilityGuard final : private juce::Timer
