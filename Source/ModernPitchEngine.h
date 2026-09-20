@@ -642,10 +642,12 @@ private:
     [[nodiscard]] double selectRendererCorrection(
         CorrectionState& state,
         double controllerCents) noexcept;
-    void publishMetering(const PitchObservation& observation,
-                         const CorrectionState& state,
-                         double audibleCents,
-                         const CreativeTempo::Metering& tempoMeter) noexcept;
+    void publishMetering(
+        const PitchObservation& observation,
+        const CorrectionState& state,
+        double audibleCents,
+        const CreativeTempo::Metering& tempoMeter,
+        const SingleWetSpectralRenderer::Diagnostics& rendererDiagnostics) noexcept;
 
     double sampleRate_ = 48000.0;
     int maximumBlockSize_ = 512;
@@ -709,6 +711,15 @@ private:
     std::atomic<float> meterOnsetStrength_ { 0.0f };
     std::atomic<float> meterTargetJumpCents_ { 0.0f };
     std::atomic<float> meterSustainedSeconds_ { 0.0f };
+
+    // RENDERER_PHASE_COHERENCE_DIAGNOSTIC_V1: metering only. These values are
+    // written after the renderer has already produced the block and never feed
+    // detector, controller or synthesis decisions.
+    std::atomic<float> meterRendererPreIfftCoherence_ { 1.0f };
+    std::atomic<float> meterRendererStrongBinCoherence_ { 1.0f };
+    std::atomic<float> meterRendererRidgeSpreadBins_ { 0.0f };
+    std::atomic<bool> meterRendererDiagnosticsValid_ { false };
+
     std::atomic<int> meterDetectorSupport_ { 0 };
     std::atomic<int> meterOctaveState_ { 0 };
     std::atomic<int> meterPendingOctave_ { 0 };
