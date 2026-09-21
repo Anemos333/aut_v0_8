@@ -72,9 +72,6 @@ public:
         bool scaleLock = false;
         float lockHysteresis = 24.0f;
         float vibratoPreserve = 0.0f;
-        int scaleSize = 12;
-        float minScaleStepCents = 100.0f;
-        int latencyMode = 1;
         float lockStrictness = 0.0f;
         bool hardLockActive = false;
 
