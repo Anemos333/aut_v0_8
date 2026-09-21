@@ -1,0 +1,148 @@
+name: Validate scale generation ablation v1
+
+on:
+  push:
+    branches:
+      - v1-lean-scale-generation-ablation-v1
+    paths:
+      - Source/ModernPitchEngine.h
+      - Source/ModernPitchEngine.cpp
+      - Source/LivePitchProcessor.h
+      - Source/PluginProcessor.cpp
+      - Tests/LinkedOnlyStereoEquivalenceTest.cpp
+      - Tests/CleanModernPitchEngineTest.cpp
+      - Tests/GuiAudioControlContractTest.cpp
+      - Tests/SupervisorContinuityTest.cpp
+      - Tests/CorpusAudioDiffRunner.cpp
+      - Tests/RealWorldRegression.cpp
+      - Tests/CommercialRegression.cpp
+      - .github/workflows/validate-scale-generation-ablation-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          ref: v1-lean-scale-generation-ablation-v1
+          fetch-depth: 0
+
+      - name: Guard scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor fa53b972273dda05e31911dca89f9411c4dd53bd HEAD
+          grep -q 'LINKED_ONLY_PRODUCT_PATH_V1' Source/ModernPitchEngine.h
+          grep -q 'LINKED_ONLY_PRODUCT_PATH_V1' Source/ModernPitchEngine.cpp
+          ! grep -q 'dualMono' Source/ModernPitchEngine.h Source/ModernPitchEngine.cpp Source/LivePitchProcessor.h Source/PluginProcessor.cpp
+          ! grep -q 'channelTrackers_' Source/ModernPitchEngine.h Source/ModernPitchEngine.cpp
+          ! grep -q 'channelQuantizers_' Source/ModernPitchEngine.h Source/ModernPitchEngine.cpp
+          ! grep -q 'channelTempoControllers_' Source/ModernPitchEngine.h Source/ModernPitchEngine.cpp
+          ! grep -q 'channelCorrections_' Source/ModernPitchEngine.h Source/ModernPitchEngine.cpp
+          ! grep -q 'latestChannelObservation_' Source/ModernPitchEngine.h Source/ModernPitchEngine.cpp
+          grep -q 'scaleSnapshot.generation' Source/PluginProcessor.cpp
+          grep -q 'std::uint64_t scaleGeneration' Source/LivePitchProcessor.h
+          grep -q 'SCALE_GENERATION_OWNS_GEOMETRY_V1' Source/ModernPitchEngine.cpp
+          grep -q 'generation == generation_' Source/ModernPitchEngine.cpp
+          echo 'SCALE_GENERATION_SCOPE=PASS'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y             libasound2-dev libjack-jackd2-dev ladspa-sdk             libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev             libx11-dev libxcomposite-dev libxcursor-dev libxext-dev             libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev             libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Configure and build full candidate
+        run: |
+          cmake -S . -B build-scale-generation             -DCMAKE_BUILD_TYPE=Release             -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-scale-generation --config Release --parallel 2 --target Neumaton >/dev/null
+
+      - name: Preserve test slots
+        run: |
+          cp Tests/SupervisorContinuityTest.cpp /tmp/scale-generation-supervisor.cpp
+          cp Tests/SingleWetSpectralRendererTest.cpp /tmp/scale-generation-renderer.cpp
+
+      - name: Candidate linked stereo corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/LinkedOnlyStereoEquivalenceTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-scale-generation --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-scale-generation/clean-engine-tests/SupervisorContinuityTest             2>&1 | tee /tmp/scale-generation-candidate.log
+          grep '^LINKED_ONLY_STEREO_HASH=' /tmp/scale-generation-candidate.log             > /tmp/scale-generation-candidate-hash.txt
+
+      - name: Exact linked-only parent corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach /tmp/neumaton-linked-parent             fa53b972273dda05e31911dca89f9411c4dd53bd
+          cd /tmp/neumaton-linked-parent
+          cp "$GITHUB_WORKSPACE/Tests/LinkedOnlyStereoEquivalenceTest.cpp"             Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-parent             -DCMAKE_BUILD_TYPE=Release             -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-parent --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-parent/clean-engine-tests/SupervisorContinuityTest             2>&1 | tee /tmp/scale-generation-parent.log
+          grep '^LINKED_ONLY_STEREO_HASH=' /tmp/scale-generation-parent.log             > /tmp/scale-generation-parent-hash.txt
+          diff -u /tmp/scale-generation-parent-hash.txt /tmp/scale-generation-candidate-hash.txt
+          echo 'SCALE_GENERATION_STEREO_EXACT=PASS'
+
+      - name: Detector oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          cp Tests/GoldenDetectorDeterminismTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-scale-generation --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          for run in 1 2 3; do
+            ./build-scale-generation/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee "/tmp/linked-detector-$run.log"
+            grep -q '^GOLDEN_DETECTOR_TRACE_HASH=58273352d40c5499$' "/tmp/linked-detector-$run.log"
+          done
+          echo 'LINKED_ONLY_DETECTOR_BIT_EXACT=PASS'
+
+      - name: Trajectory and engine corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/CorrectionTrajectoryGoldenTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-scale-generation --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-scale-generation/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/linked-trajectory.log
+          grep -q '^CORRECTION_TRAJECTORY_HASH=3c958f8178c118a3$' /tmp/linked-trajectory.log
+
+          cp Tests/GoldenEngineBehaviorCorpusTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-scale-generation --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-scale-generation/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/linked-engine.log
+          grep -q '^GOLDEN_ENGINE_BEHAVIOR_CORPUS=PASS scenarios=14$' /tmp/linked-engine.log
+          grep -q '^GOLDEN_ENGINE_CORPUS_HASH=982b4ad85accdd75$' /tmp/linked-engine.log
+          echo 'LINKED_ONLY_CORE_EXACT=PASS'
+
+      - name: Renderer oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/RendererDiagnosticTransparencyTest.cpp Tests/SingleWetSpectralRendererTest.cpp
+          cmake --build build-scale-generation --config Release --parallel 2 --target SingleWetSpectralRendererTest >/dev/null
+          ./build-scale-generation/clean-engine-tests/SingleWetSpectralRendererTest 2>&1 | tee /tmp/linked-renderer.log
+          grep -q '^RENDERER_TRANSPARENCY_HASH_256=ce9950c8dec7364$' /tmp/linked-renderer.log
+          grep -q '^RENDERER_TRANSPARENCY_HASH_512=685aa631a64ef991$' /tmp/linked-renderer.log
+          echo 'LINKED_ONLY_RENDERER_EXACT=PASS'
+
+      - name: Normal product contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp /tmp/scale-generation-supervisor.cpp Tests/SupervisorContinuityTest.cpp
+          cp /tmp/scale-generation-renderer.cpp Tests/SingleWetSpectralRendererTest.cpp
+          cmake --build build-scale-generation --config Release --parallel 2             --target SupervisorContinuityTest CleanModernPitchEngineTest                      VoiceEvidenceAnalyzerTest GuiAudibilityTest GuiAudioControlContractTest                      SingleWetSpectralRendererTest >/dev/null
+          for exe in SupervisorContinuityTest CleanModernPitchEngineTest VoiceEvidenceAnalyzerTest GuiAudibilityTest GuiAudioControlContractTest SingleWetSpectralRendererTest; do
+            ./build-scale-generation/clean-engine-tests/"$exe" 2>&1 | tee "/tmp/linked-$exe.log"
+            ! grep -q '=FAIL' "/tmp/linked-$exe.log"
+          done
+          echo 'LINKED_ONLY_NORMAL_CONTRACTS=PASS'
+
+      - name: Final marker
+        run: |
+          echo 'V1_LEAN_SCALE_GENERATION_ABLATION=PASS_PRODUCT_EXACT'
+          echo 'PER_BLOCK_SCALE_HASH_BYPASSED_ON_PRODUCT_PATH=PASS'
