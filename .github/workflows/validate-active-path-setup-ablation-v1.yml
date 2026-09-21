@@ -1,0 +1,111 @@
+name: Validate active path setup ablation v1
+
+on:
+  push:
+    branches:
+      - v1-lean-active-path-setup-ablation-v1
+    paths:
+      - Source/ModernPitchEngine.cpp
+      - Tests/ActivePathSetupEquivalenceTest.cpp
+      - .github/workflows/validate-active-path-setup-ablation-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          ref: v1-lean-active-path-setup-ablation-v1
+          fetch-depth: 0
+
+      - name: Guard scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor 8cb931d9ff38eecd4113cf5a94e667a4d437736c HEAD
+          grep -q 'ACTIVE_PATH_SETUP_ONLY_V1' Source/ModernPitchEngine.cpp
+          echo 'ACTIVE_PATH_SETUP_SCOPE=PASS'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y             libasound2-dev libjack-jackd2-dev ladspa-sdk             libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev             libx11-dev libxcomposite-dev libxcursor-dev libxext-dev             libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev             libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Configure and build candidate
+        run: |
+          cmake -S . -B build-active-path             -DCMAKE_BUILD_TYPE=Release             -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-active-path --config Release --parallel 2 --target Neumaton >/dev/null
+
+      - name: Preserve supervisor slot
+        run: cp Tests/SupervisorContinuityTest.cpp /tmp/active-path-supervisor.cpp
+
+      - name: Candidate linked-dual-mode corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/ActivePathSetupEquivalenceTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-active-path --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-active-path/clean-engine-tests/SupervisorContinuityTest             2>&1 | tee /tmp/active-path-candidate.log
+          grep '^ACTIVE_PATH_SETUP_HASH=' /tmp/active-path-candidate.log             > /tmp/active-path-candidate-hash.txt
+
+      - name: Exact pass6 parent corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach /tmp/neumaton-active-path-parent             8cb931d9ff38eecd4113cf5a94e667a4d437736c
+          cd /tmp/neumaton-active-path-parent
+          cp "$GITHUB_WORKSPACE/Tests/ActivePathSetupEquivalenceTest.cpp"             Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-parent             -DCMAKE_BUILD_TYPE=Release             -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-parent --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-parent/clean-engine-tests/SupervisorContinuityTest             2>&1 | tee /tmp/active-path-parent.log
+          grep '^ACTIVE_PATH_SETUP_HASH=' /tmp/active-path-parent.log             > /tmp/active-path-parent-hash.txt
+          diff -u /tmp/active-path-parent-hash.txt /tmp/active-path-candidate-hash.txt
+          echo 'ACTIVE_PATH_SETUP_MODE_SWITCH_EXACT=PASS'
+
+      - name: Detector oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          cp Tests/GoldenDetectorDeterminismTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-active-path --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          for run in 1 2 3; do
+            ./build-active-path/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee "/tmp/active-detector-$run.log"
+            grep -q '^GOLDEN_DETECTOR_TRACE_HASH=58273352d40c5499$' "/tmp/active-detector-$run.log"
+          done
+          echo 'ACTIVE_PATH_SETUP_DETECTOR_EXACT=PASS'
+
+      - name: Trajectory and engine corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/CorrectionTrajectoryGoldenTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-active-path --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-active-path/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/active-trajectory.log
+          grep -q '^CORRECTION_TRAJECTORY_HASH=3c958f8178c118a3$' /tmp/active-trajectory.log
+
+          cp Tests/GoldenEngineBehaviorCorpusTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-active-path --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-active-path/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/active-engine.log
+          grep -q '^GOLDEN_ENGINE_CORPUS_HASH=982b4ad85accdd75$' /tmp/active-engine.log
+          echo 'ACTIVE_PATH_SETUP_CORE_EXACT=PASS'
+
+      - name: Existing contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp /tmp/active-path-supervisor.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-active-path --config Release --parallel 2             --target SupervisorContinuityTest CleanModernPitchEngineTest >/dev/null
+          ./build-active-path/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/active-supervisor.log
+          ./build-active-path/clean-engine-tests/CleanModernPitchEngineTest 2>&1 | tee /tmp/active-clean.log
+          ! grep -q '=FAIL' /tmp/active-supervisor.log
+          ! grep -q '=FAIL' /tmp/active-clean.log
+          echo 'ACTIVE_PATH_SETUP_EXISTING_CONTRACTS=PASS'
+
+      - name: Final marker
+        run: echo 'V1_LEAN_ACTIVE_PATH_SETUP_ABLATION=PASS_EXACT_BEHAVIOR'
