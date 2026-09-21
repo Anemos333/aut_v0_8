@@ -96,23 +96,20 @@ public:
         activeModeIndex_.store(modeIndex, std::memory_order_release);
     }
 
+    // LEGACY_AUDIO_POLICY_ARGS_REMOVED_V1:
+    // obsolete soft-path arguments are not part of the active V1 DSP contract.
     void setAdvancedParameters(float transitionMs,
-                               float preserveVibrato,
                                float humanize,
                                float formantPreservation,
-                               float transientProtection,
                                float detectorSensitivity,
                                float maximumCorrectionSemitones,
                                float minimumPitchHz,
                                float maximumPitchHz,
-                               StereoMode stereoMode,
-                               float breathReduction = 0.50f) noexcept
+                               StereoMode stereoMode) noexcept
     {
         parameters_.transitionTimeMs = transitionMs;
-        parameters_.preserveVibrato = preserveVibrato;
         parameters_.humanize = humanize;
         parameters_.formantPreservation = formantPreservation;
-        parameters_.transientProtection = transientProtection;
         parameters_.detectorSensitivity = detectorSensitivity;
 
         parameters_.maximumCorrectionSemitones = std::clamp(
@@ -121,7 +118,6 @@ public:
         parameters_.minimumPitchHz = minimumPitchHz;
         parameters_.maximumPitchHz = maximumPitchHz;
         parameters_.stereoMode = stereoMode;
-        parameters_.breathReduction = std::clamp(breathReduction, 0.0f, 1.0f);
     }
 
     void setTempoSettings(const CreativeTempo::Settings& settings) noexcept
@@ -136,16 +132,8 @@ public:
         parameters_.scaleLock = scaleLock;
         parameters_.lockHysteresis = std::clamp(lockHysteresis, 0.0f, 80.0f);
         parameters_.vibratoPreserve = std::clamp(vibratoPreserve, 0.0f, 1.0f);
-        parameters_.preserveVibrato = parameters_.vibratoPreserve;
-
-        const float h = parameters_.lockHysteresis / 80.0f;
-        const float hysteresisStrictness = h * h * (3.0f - 2.0f * h); // smoothstep
-
-        // AUTHORITY_CONTROLS_EXPLICIT_V1: Hold owns target-hold prudence.
-        // No latency mode may add hidden strictness when the visible Hold control
-        // is at zero. This does not alter the renderer or correction depth.
-        parameters_.lockStrictness = scaleLock ? hysteresisStrictness : 0.0f;
-        parameters_.hardLockActive = scaleLock;
+        // HOLD_SINGLE_OWNER_V1: Hold is passed literally. There is no hidden
+        // hard-lock/strictness alias and no legacy preserveVibrato mirror.
     }
 
     void setTempoHostPosition(const CreativeTempo::HostPosition& position) noexcept
