@@ -592,17 +592,10 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
     const float humanizeVal = humanizePct / 100.0f;
     const float outGain = juce::Decibels::decibelsToGain(outVolumeDb);
 
-    for (int channel = 0; channel < totalNumInputChannels; ++channel)
-    {
-        float* data = buffer.getWritePointer (channel);
-        for (int sample = 0; sample < numSamples; ++sample)
-        {
-            float value = data[sample];
-            value = (! std::isfinite (value) || std::fpclassify (value) == FP_SUBNORMAL)
-                ? 0.0f : juce::jlimit (-32.0f, 32.0f, value);
-            data[sample] = value;
-        }
-    }
+    // PLUGIN_INPUT_SANITIZE_OWNED_DOWNSTREAM_V1:
+    // LivePitchProcessor's analysis path and ModernPitchEngine's public DSP
+    // boundary both sanitise independently. Do not scan and rewrite the whole
+    // host buffer a third time before entering that single path.
 
     const int snapshotIndex = acquireScaleSnapshot();
     const auto& scaleSnapshot = scaleSnapshotSlots_[static_cast<std::size_t> (snapshotIndex)].value;
