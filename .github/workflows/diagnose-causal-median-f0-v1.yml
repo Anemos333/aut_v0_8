@@ -1,0 +1,26 @@
+name: Diagnose causal median F0 v1
+on:
+  push:
+    branches: [v1-continuous-f0-contract-v1]
+    paths:
+      - Tests/CausalMedianF0Diagnostic.cpp
+      - .github/workflows/diagnose-causal-median-f0-v1.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: v1-continuous-f0-contract-v1 }
+      - run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y libasound2-dev libjack-jackd2-dev ladspa-sdk libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev >/dev/null
+      - run: |
+          cp Tests/CausalMedianF0Diagnostic.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-median -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-median --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-median/clean-engine-tests/SupervisorContinuityTest | tee /tmp/median.log
+          grep -q '^CAUSAL_MEDIAN_PRECISION ' /tmp/median.log
+          grep -q '^CAUSAL_MEDIAN_MOTION ' /tmp/median.log
