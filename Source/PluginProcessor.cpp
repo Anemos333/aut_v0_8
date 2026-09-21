@@ -617,6 +617,7 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
                                 scaleSnapshot.ratios.data(),
                                 scaleSnapshot.count,
                                 scaleSnapshot.rootFrequency,
+                                scaleSnapshot.generation,
                                 speedMs,
                                 amount);
     releaseScaleSnapshot (snapshotIndex);
