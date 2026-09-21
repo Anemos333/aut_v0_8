@@ -200,19 +200,8 @@ public:
                  int numberOfScaleRatios,
                  double rootFrequency,
                  float speedMs,
-                 float amount)
-    {
-        process(buffer, scaleRatios, numberOfScaleRatios, rootFrequency,
-                0, speedMs, amount);
-    }
-
-    void process(juce::AudioBuffer<float>& buffer,
-                 const double* scaleRatios,
-                 int numberOfScaleRatios,
-                 double rootFrequency,
-                 std::uint64_t scaleGeneration,
-                 float speedMs,
-                 float amount)
+                 float amount,
+                 std::uint64_t scaleGeneration = 0)
     {
         parameters_.retuneTimeMs = speedMs;
         parameters_.amount = amount;
@@ -231,8 +220,8 @@ public:
                                      numberOfScaleRatios,
                                      rootFrequency,
                                      conditioned,
-                                     scaleGeneration,
-                                     tempoHostPosition_);
+                                     tempoHostPosition_,
+                                     scaleGeneration);
     }
 
     void process(juce::AudioBuffer<float>& buffer,
@@ -245,7 +234,6 @@ public:
                 scaleRatios.empty() ? nullptr : scaleRatios.data(),
                 static_cast<int>(scaleRatios.size()),
                 rootFrequency,
-                0,
                 speedMs,
                 amount);
     }
