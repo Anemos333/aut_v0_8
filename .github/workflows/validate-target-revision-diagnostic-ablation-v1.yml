@@ -1,0 +1,96 @@
+name: Validate target revision diagnostic ablation v1
+
+on:
+  push:
+    branches:
+      - v1-lean-target-revision-diagnostic-ablation-v1
+    paths:
+      - Source/ModernPitchEngine.h
+      - Source/ModernPitchEngine.cpp
+      - .github/workflows/validate-target-revision-diagnostic-ablation-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          ref: v1-lean-target-revision-diagnostic-ablation-v1
+          fetch-depth: 0
+
+      - name: Guard scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor 465c7a601895483b405028367b6ac94bcefb5dde HEAD
+          grep -q 'TARGET_REVISION_DIAGNOSTICS_REMOVED_V1' Source/ModernPitchEngine.cpp
+          ! grep -q 'targetRevisionDiagnostic' Source/ModernPitchEngine.h Source/ModernPitchEngine.cpp
+          ! grep -q 'meterTargetRevision' Source/ModernPitchEngine.h Source/ModernPitchEngine.cpp
+          echo 'TARGET_REVISION_DIAGNOSTIC_SCOPE=PASS'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y             libasound2-dev libjack-jackd2-dev ladspa-sdk             libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev             libx11-dev libxcomposite-dev libxcursor-dev libxext-dev             libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev             libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Configure and build
+        run: |
+          cmake -S . -B build-target-revision             -DCMAKE_BUILD_TYPE=Release             -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-target-revision --config Release --parallel 2 --target Neumaton >/dev/null
+
+      - name: Preserve supervisor
+        run: cp Tests/SupervisorContinuityTest.cpp /tmp/target-revision-supervisor.cpp
+
+      - name: Detector exactness
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/GoldenDetectorDeterminismTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-target-revision --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          for run in 1 2 3; do
+            ./build-target-revision/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee "/tmp/tr-detector-$run.log"
+            grep -q '^GOLDEN_DETECTOR_TRACE_HASH=58273352d40c5499$' "/tmp/tr-detector-$run.log"
+          done
+          echo 'TARGET_REVISION_DETECTOR_EXACT=PASS'
+
+      - name: Trajectory exactness
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/CorrectionTrajectoryGoldenTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-target-revision --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-target-revision/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/tr-trajectory.log
+          grep -q '^CORRECTION_TRAJECTORY_HASH=3c958f8178c118a3$' /tmp/tr-trajectory.log
+          echo 'TARGET_REVISION_TRAJECTORY_EXACT=PASS'
+
+      - name: Engine corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/GoldenEngineBehaviorCorpusTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-target-revision --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-target-revision/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/tr-engine.log
+          grep -q '^GOLDEN_ENGINE_CORPUS_HASH=982b4ad85accdd75$' /tmp/tr-engine.log
+          echo 'TARGET_REVISION_ENGINE_EXACT=PASS'
+
+      - name: Existing contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp /tmp/target-revision-supervisor.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-target-revision --config Release --parallel 2             --target SupervisorContinuityTest CleanModernPitchEngineTest GuiAudibilityTest >/dev/null
+          ./build-target-revision/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/tr-supervisor.log
+          ./build-target-revision/clean-engine-tests/CleanModernPitchEngineTest 2>&1 | tee /tmp/tr-clean.log
+          ./build-target-revision/clean-engine-tests/GuiAudibilityTest 2>&1 | tee /tmp/tr-gui.log
+          ! grep -q '=FAIL' /tmp/tr-supervisor.log
+          ! grep -q '=FAIL' /tmp/tr-clean.log
+          ! grep -q '=FAIL' /tmp/tr-gui.log
+          echo 'TARGET_REVISION_EXISTING_CONTRACTS=PASS'
+
+      - name: Final marker
+        run: echo 'V1_LEAN_TARGET_REVISION_DIAGNOSTIC_ABLATION=PASS_EXACT_BEHAVIOR'
