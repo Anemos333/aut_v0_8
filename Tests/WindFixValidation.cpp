@@ -150,7 +150,6 @@ void testScaleSystemAllModes()
             params.amount = 1.0f;
             params.retuneTimeMs = 5.0f;
             params.transitionTimeMs = 25.0f;
-            params.preserveVibrato = 0.0f;
             params.humanize = 0.0f;
             params.formantPreservation = 0.9f;
             params.minimumPitchHz = 45.0f;
@@ -227,7 +226,6 @@ void testOctaveSafety()
         params.amount = 1.0f;
         params.retuneTimeMs = 3.0f;
         params.transitionTimeMs = 20.0f;
-        params.preserveVibrato = 0.0f;
         params.humanize = 0.0f;
         params.formantPreservation = 0.9f;
         params.minimumPitchHz = 45.0f;
@@ -515,7 +513,6 @@ void testRealVoice(const std::string& path, const std::string& name)
         params.retuneTimeMs = 8.0f;
         params.transitionTimeMs = 35.0f;
         params.formantPreservation = 0.9f;
-        params.transientProtection = 0.85f;
 
         int blockSize = 512;
         int nonFiniteCount = 0;
