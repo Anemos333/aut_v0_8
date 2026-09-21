@@ -12,6 +12,9 @@ on:
       - Source/ScaleLockPitchEngine.cpp
       - Tests/SupervisorContinuityTest.cpp
       - Tests/CleanModernPitchEngineTest.cpp
+      - Tests/GoldenEngineBehaviorCorpusTest.cpp
+      - Tests/CorrectionTrajectoryGoldenTest.cpp
+      - Tests/GuiAudibilityTest.cpp
       - .github/workflows/validate-quantizer-api-ablation-v1.yml
   workflow_dispatch:
 
