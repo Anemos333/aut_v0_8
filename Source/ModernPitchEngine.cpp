@@ -337,7 +337,6 @@ void ModernPitchEngine::MultiRatePitchTracker::reset() noexcept
     voiceAuthorityBreathiness_ = 0.0f;
     voiceAuthorityBodyEnergy_ = 0.0f;
     voiceAuthoritySpectralReliability_ = 0.0f;
-    voiceAuthorityEventStrength_ = 0.0f;
     voiceAuthorityFormantStability_ = 0.0f;
     voiceAuthorityLowerFamilyEvidence_ = 0.0f;
 
@@ -369,7 +368,7 @@ void ModernPitchEngine::MultiRatePitchTracker::setVoiceAuthorityContext(
     float breathiness,
     float bodyEnergy,
     float spectralReliability,
-    float eventStrength,
+    float /*eventStrength*/,
     float formantStability,
     float lowerFamilyEvidence) noexcept
 {
@@ -378,7 +377,6 @@ void ModernPitchEngine::MultiRatePitchTracker::setVoiceAuthorityContext(
     voiceAuthorityBreathiness_ = clamp01(breathiness);
     voiceAuthorityBodyEnergy_ = clamp01(bodyEnergy);
     voiceAuthoritySpectralReliability_ = clamp01(spectralReliability);
-    voiceAuthorityEventStrength_ = clamp01(eventStrength);
     voiceAuthorityFormantStability_ = clamp01(formantStability);
     voiceAuthorityLowerFamilyEvidence_ = clamp01(lowerFamilyEvidence);
 }
@@ -2968,7 +2966,6 @@ void ModernPitchEngine::ScaleQuantizer::reset() noexcept
     targetValid_ = false;
     targetLog2_ = 0.0;
     pendingValid_ = false;
-    pendingLog2_ = 0.0;
     pendingCount_ = 0;
 }
 
@@ -3238,7 +3235,7 @@ void ModernPitchEngine::prepare(double sampleRate,
                                 LatencyMode latencyMode)
 {
     sampleRate_ = std::max(8000.0, finiteOr(sampleRate, 48000.0));
-    maximumBlockSize_ = std::max(1, maximumExpectedSamplesPerBlock);
+    static_cast<void>(maximumExpectedSamplesPerBlock);
     channelCount_ = std::clamp(numberOfChannels, 1, maxSupportedChannels);
     latencyMode_ = latencyMode;
     latencySamples_ = latencyForMode(latencyMode_);
@@ -3282,7 +3279,6 @@ void ModernPitchEngine::reset() noexcept
     meterConsensus_.store(0.0f, std::memory_order_relaxed);
     meterCorrectionCents_.store(0.0f, std::memory_order_relaxed);
     meterCorrectionVelocity_.store(0.0f, std::memory_order_relaxed);
-    meterOnsetStrength_.store(0.0f, std::memory_order_relaxed);
     meterTargetJumpCents_.store(0.0f, std::memory_order_relaxed);
     meterSustainedSeconds_.store(0.0f, std::memory_order_relaxed);
     meterRendererPreIfftCoherence_.store(1.0f, std::memory_order_relaxed);
@@ -5294,7 +5290,6 @@ void ModernPitchEngine::publishMetering(
                                 std::memory_order_relaxed);
     meterCorrectionVelocity_.store(static_cast<float>(state.velocityCentsPerSecond),
                                    std::memory_order_relaxed);
-    meterOnsetStrength_.store(observation.onsetStrength, std::memory_order_relaxed);
     meterTargetJumpCents_.store(static_cast<float>(state.lastTargetJumpCents),
                                 std::memory_order_relaxed);
     meterSustainedSeconds_.store(static_cast<float>(
