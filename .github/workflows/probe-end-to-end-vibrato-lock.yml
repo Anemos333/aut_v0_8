@@ -68,7 +68,6 @@ jobs:
               p.retuneTimeMs = 0.0f;
               p.humanize = 0.0f;
               p.vibratoPreserve = 0.0f;
-              p.preserveVibrato = 0.0f;
               p.formantPreservation = 0.9f;
               p.maximumCorrectionSemitones = 12.0f;
               p.minimumPitchHz = 70.0f;
