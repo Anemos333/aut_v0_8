@@ -44,11 +44,13 @@ struct Metrics
     int periodicHopsAfterGrace = 0;
     int periodicMeasuredAfterGrace = 0;
     int periodicWrong = 0;
+    int holesAfterFirstCorrect = 0;
     int familyErrors = 0;
     int nonPeriodicHops = 0;
     int nonPeriodicHallucinations = 0;
     double maxAbsCents = 0.0;
     std::array<double, 3> acquisitionMs { -1.0, -1.0, -1.0 };
+    std::array<bool, 3> acquired { false, false, false };
 };
 
 float vocalSample(double phase) noexcept
@@ -90,10 +92,12 @@ void observe(Metrics& m,
             if (absError <= kEpsilonCents)
             {
                 if (episodeIndex >= 0
-                    && episodeIndex < static_cast<int>(m.acquisitionMs.size())
-                    && m.acquisitionMs[static_cast<std::size_t>(episodeIndex)] < 0.0)
+                    && episodeIndex < static_cast<int>(m.acquisitionMs.size()))
                 {
-                    m.acquisitionMs[static_cast<std::size_t>(episodeIndex)] = elapsedMs;
+                    const auto episode = static_cast<std::size_t>(episodeIndex);
+                    if (m.acquisitionMs[episode] < 0.0)
+                        m.acquisitionMs[episode] = elapsedMs;
+                    m.acquired[episode] = true;
                 }
             }
             else
@@ -110,6 +114,14 @@ void observe(Metrics& m,
                     ++m.familyErrors;
                 }
             }
+        }
+
+        if (!measured
+            && episodeIndex >= 0
+            && episodeIndex < static_cast<int>(m.acquired.size())
+            && m.acquired[static_cast<std::size_t>(episodeIndex)])
+        {
+            ++m.holesAfterFirstCorrect;
         }
 
         if (elapsedMs >= kAcquireLimitMs)
@@ -258,7 +270,8 @@ bool checkCase(double hz, double snr, std::uint32_t seed)
         acquisitionPass &= ms >= 0.0 && ms < kAcquireLimitMs;
 
     const bool continuumPass =
-        m.periodicMeasuredAfterGrace == m.periodicHopsAfterGrace;
+        m.periodicMeasuredAfterGrace == m.periodicHopsAfterGrace
+        && m.holesAfterFirstCorrect == 0;
     const bool epsilonPass =
         m.periodicWrong == 0 && m.maxAbsCents <= kEpsilonCents;
     const bool familyPass = m.familyErrors == 0;
@@ -279,6 +292,7 @@ bool checkCase(double hz, double snr, std::uint32_t seed)
               << " measured_after_grace=" << m.periodicMeasuredAfterGrace
               << " coverage=" << coverage
               << " wrong=" << m.periodicWrong
+              << " holes_after_first_correct=" << m.holesAfterFirstCorrect
               << " max_abs_cents=" << m.maxAbsCents
               << " family_errors=" << m.familyErrors
               << " acquire0_ms=" << m.acquisitionMs[0]
