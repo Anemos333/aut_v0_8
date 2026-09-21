@@ -1,0 +1,139 @@
+name: Validate v1 lean architecture pass7
+
+on:
+  push:
+    branches:
+      - v1-lean-architecture-pass7
+    paths:
+      - Source/ModernPitchEngine.cpp
+      - Source/ModernPitchEngine.h
+      - Source/SingleWetSpectralRenderer.cpp
+      - Source/ControlRoomPage.cpp
+      - Tests/**
+      - .github/workflows/probe-end-to-end-vibrato-lock.yml
+      - .github/workflows/validate-v1-lean-architecture-pass7.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout pass7
+        uses: actions/checkout@v4
+        with:
+          ref: v1-lean-architecture-pass7
+          fetch-depth: 0
+
+      - name: Guard dead API removal
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor 465c7a601895483b405028367b6ac94bcefb5dde HEAD
+          grep -q 'LEAN_PARAMETERS_V1' Source/ModernPitchEngine.h
+          grep -q 'TARGET_REVISION_DIAGNOSTICS_REMOVED_V1' Source/ModernPitchEngine.cpp
+          grep -q 'BIQUAD_INPUT_SANITIZE_OWNED_UPSTREAM_V1' Source/ModernPitchEngine.cpp
+          grep -q 'RENDERER_ACTIVE_INPUT_SANITIZE_OWNED_UPSTREAM_V1' Source/SingleWetSpectralRenderer.cpp
+          ! grep -q 'targetRevisionDiagnostic' Source/ModernPitchEngine.h Source/ModernPitchEngine.cpp Source/ControlRoomPage.cpp
+          ! grep -q 'meterTargetRevision' Source/ModernPitchEngine.h Source/ModernPitchEngine.cpp
+          ! grep -q 'preserveVibrato' Source/ModernPitchEngine.h Source/ModernPitchEngine.cpp Source/LivePitchProcessor.h Source/PluginProcessor.cpp
+          ! grep -q 'transientProtection' Source/ModernPitchEngine.h Source/ModernPitchEngine.cpp Source/LivePitchProcessor.h Source/PluginProcessor.cpp
+          ! grep -q 'breathReduction' Source/ModernPitchEngine.h Source/ModernPitchEngine.cpp Source/LivePitchProcessor.h Source/PluginProcessor.cpp
+          ! grep -q 'wrapToNearestOctave' Source/ModernPitchEngine.h Source/ModernPitchEngine.cpp
+          ! grep -q 'asymmetry_' Source/ModernPitchEngine.h Source/ModernPitchEngine.cpp
+          ! grep -q 'asymmetry()' Source/ModernPitchEngine.h
+          echo 'LEAN_PASS7_DEAD_API_SCOPE=PASS'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y             libasound2-dev libjack-jackd2-dev ladspa-sdk             libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev             libx11-dev libxcomposite-dev libxcursor-dev libxext-dev             libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev             libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Configure and build full plugin
+        run: |
+          cmake -S . -B build-pass7             -DCMAKE_BUILD_TYPE=Release             -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-pass7 --config Release --parallel 2 --target Neumaton >/dev/null
+
+      - name: Preserve test slots
+        run: |
+          cp Tests/SupervisorContinuityTest.cpp /tmp/pass7-supervisor.cpp
+          cp Tests/SingleWetSpectralRendererTest.cpp /tmp/pass7-renderer.cpp
+
+      - name: Detector oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/GoldenDetectorDeterminismTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-pass7 --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          for run in 1 2 3; do
+            ./build-pass7/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee "/tmp/pass7-detector-$run.log"
+            grep -q '^GOLDEN_DETECTOR_TRACE_HASH=58273352d40c5499$' "/tmp/pass7-detector-$run.log"
+          done
+          echo 'LEAN_PASS7_DETECTOR_BIT_EXACT=PASS'
+
+      - name: Trajectory oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/CorrectionTrajectoryGoldenTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-pass7 --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-pass7/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/pass7-trajectory.log
+          grep -q '^CORRECTION_TRAJECTORY_HASH=3c958f8178c118a3$' /tmp/pass7-trajectory.log
+          echo 'LEAN_PASS7_TRAJECTORY_EXACT=PASS'
+
+      - name: End-to-end corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/GoldenEngineBehaviorCorpusTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-pass7 --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-pass7/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/pass7-engine.log
+          grep -q '^GOLDEN_ENGINE_BEHAVIOR_CORPUS=PASS scenarios=14$' /tmp/pass7-engine.log
+          grep -q '^GOLDEN_ENGINE_CORPUS_HASH=982b4ad85accdd75$' /tmp/pass7-engine.log
+          echo 'LEAN_PASS7_ENGINE_EXACT=PASS'
+
+      - name: Renderer oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/RendererDiagnosticTransparencyTest.cpp Tests/SingleWetSpectralRendererTest.cpp
+          cmake --build build-pass7 --config Release --parallel 2 --target SingleWetSpectralRendererTest >/dev/null
+          ./build-pass7/clean-engine-tests/SingleWetSpectralRendererTest 2>&1 | tee /tmp/pass7-renderer.log
+          grep -q '^RENDERER_TRANSPARENCY_HASH_256=ce9950c8dec7364$' /tmp/pass7-renderer.log
+          grep -q '^RENDERER_TRANSPARENCY_HASH_512=685aa631a64ef991$' /tmp/pass7-renderer.log
+          echo 'LEAN_PASS7_RENDERER_EXACT=PASS'
+
+      - name: Sanitizer smoke with reduced parameter API
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SanitizerSmoke.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-pass7 --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-pass7/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/pass7-sanitizer.log
+          grep -q '^Sanitizer smoke passed\.$' /tmp/pass7-sanitizer.log
+          echo 'LEAN_PASS7_SANITIZER=PASS'
+
+      - name: Normal contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp /tmp/pass7-supervisor.cpp Tests/SupervisorContinuityTest.cpp
+          cp /tmp/pass7-renderer.cpp Tests/SingleWetSpectralRendererTest.cpp
+          cmake --build build-pass7 --config Release --parallel 2             --target SupervisorContinuityTest CleanModernPitchEngineTest                      VoiceEvidenceAnalyzerTest GuiAudibilityTest GuiAudioControlContractTest                      SingleWetSpectralRendererTest >/dev/null
+
+          for exe in SupervisorContinuityTest CleanModernPitchEngineTest VoiceEvidenceAnalyzerTest GuiAudibilityTest GuiAudioControlContractTest SingleWetSpectralRendererTest; do
+            ./build-pass7/clean-engine-tests/"$exe" 2>&1 | tee "/tmp/pass7-$exe.log"
+            ! grep -q '=FAIL' "/tmp/pass7-$exe.log"
+          done
+          grep -q 'visible_vibrato_zero_has_no_hidden_nonlock_preserve_state=PASS' /tmp/pass7-SupervisorContinuityTest.log
+          echo 'LEAN_PASS7_NORMAL_CONTRACTS=PASS'
+
+      - name: Final marker
+        run: |
+          echo 'V1_LEAN_ARCHITECTURE_PASS7=PASS_EXACT_BEHAVIOR'
+          echo 'OBSOLETE_SOFT_PATH_API_REMOVED=PASS'
+          echo 'DEAD_QUANTIZER_METRICS_REMOVED=PASS'
+          echo 'TARGET_REVISION_DIAGNOSTICS_REMOVED=PASS'
+          echo 'DUPLICATE_INTERNAL_SANITIZERS_REMOVED=PASS'
