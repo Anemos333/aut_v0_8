@@ -199,6 +199,17 @@ public:
                  const double* scaleRatios,
                  int numberOfScaleRatios,
                  double rootFrequency,
+                 float speedMs,
+                 float amount)
+    {
+        process(buffer, scaleRatios, numberOfScaleRatios, rootFrequency,
+                0, speedMs, amount);
+    }
+
+    void process(juce::AudioBuffer<float>& buffer,
+                 const double* scaleRatios,
+                 int numberOfScaleRatios,
+                 double rootFrequency,
                  std::uint64_t scaleGeneration,
                  float speedMs,
                  float amount)
