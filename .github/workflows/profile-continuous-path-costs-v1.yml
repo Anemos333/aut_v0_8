@@ -1,0 +1,45 @@
+name: Profile continuous measurement path costs v1
+
+on:
+  push:
+    branches:
+      - v1-continuous-f0-recomposition-v1
+    paths:
+      - Tests/ContinuousPathCostBenchmark.cpp
+      - .github/workflows/profile-continuous-path-costs-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  profile:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          ref: v1-continuous-f0-recomposition-v1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y             libasound2-dev libjack-jackd2-dev ladspa-sdk             libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev             libx11-dev libxcomposite-dev libxcursor-dev libxext-dev             libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev             libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Build benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/ContinuousPathCostBenchmark.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-continuous-path-cost             -DCMAKE_BUILD_TYPE=Release             -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-continuous-path-cost --config Release --parallel 2             --target SupervisorContinuityTest >/dev/null
+
+      - name: Measure
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > /tmp/continuous-path-cost.log
+          for round in 1 2 3 4 5; do
+            ./build-continuous-path-cost/clean-engine-tests/SupervisorContinuityTest               | tee -a /tmp/continuous-path-cost.log
+          done
+          grep -q '^CONTINUOUS_PATH_COST ' /tmp/continuous-path-cost.log
