@@ -1,0 +1,87 @@
+name: Validate plugin input sanitize ablation v1
+
+on:
+  push:
+    branches:
+      - v1-lean-plugin-input-sanitize-ablation-v1
+    paths:
+      - Source/PluginProcessor.cpp
+      - Tests/PluginInputSanitizeEquivalenceTest.cpp
+      - .github/workflows/validate-plugin-input-sanitize-ablation-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          ref: v1-lean-plugin-input-sanitize-ablation-v1
+          fetch-depth: 0
+
+      - name: Guard scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor cfdbd4eede7955ca4f01570f857a965c216acd8f HEAD
+          grep -q 'PLUGIN_INPUT_SANITIZE_OWNED_DOWNSTREAM_V1' Source/PluginProcessor.cpp
+          echo 'PLUGIN_INPUT_SANITIZE_SCOPE=PASS'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y             libasound2-dev libjack-jackd2-dev ladspa-sdk             libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev             libx11-dev libxcomposite-dev libxcursor-dev libxext-dev             libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev             libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Configure and build full plugin
+        run: |
+          cmake -S . -B build-plugin-sanitize             -DCMAKE_BUILD_TYPE=Release             -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-plugin-sanitize --config Release --parallel 2 --target Neumaton >/dev/null
+
+      - name: Preserve supervisor slot
+        run: cp Tests/SupervisorContinuityTest.cpp /tmp/plugin-sanitize-supervisor.cpp
+
+      - name: Raw vs old pre-sanitized live path
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/PluginInputSanitizeEquivalenceTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-plugin-sanitize --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-plugin-sanitize/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/plugin-sanitize-equivalence.log
+          grep -q '^PLUGIN_INPUT_SANITIZE_EQUIVALENCE=PASS$' /tmp/plugin-sanitize-equivalence.log
+          echo 'PLUGIN_INPUT_SANITIZE_LIVE_EXACT=PASS'
+
+      - name: Detector and engine oracles
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/GoldenDetectorDeterminismTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-plugin-sanitize --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-plugin-sanitize/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/plugin-detector.log
+          grep -q '^GOLDEN_DETECTOR_TRACE_HASH=58273352d40c5499$' /tmp/plugin-detector.log
+
+          cp Tests/GoldenEngineBehaviorCorpusTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-plugin-sanitize --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-plugin-sanitize/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/plugin-engine.log
+          grep -q '^GOLDEN_ENGINE_CORPUS_HASH=982b4ad85accdd75$' /tmp/plugin-engine.log
+          echo 'PLUGIN_INPUT_SANITIZE_CORE_ORACLES=PASS'
+
+      - name: Existing contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp /tmp/plugin-sanitize-supervisor.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-plugin-sanitize --config Release --parallel 2             --target SupervisorContinuityTest CleanModernPitchEngineTest >/dev/null
+          ./build-plugin-sanitize/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/plugin-supervisor.log
+          ./build-plugin-sanitize/clean-engine-tests/CleanModernPitchEngineTest 2>&1 | tee /tmp/plugin-clean.log
+          ! grep -q '=FAIL' /tmp/plugin-supervisor.log
+          ! grep -q '=FAIL' /tmp/plugin-clean.log
+          echo 'PLUGIN_INPUT_SANITIZE_EXISTING_CONTRACTS=PASS'
+
+      - name: Final marker
+        run: |
+          echo 'V1_LEAN_PLUGIN_INPUT_SANITIZE_ABLATION=PASS_EXACT_BEHAVIOR'
+          echo 'THIRD_INPUT_SANITIZER_REMOVED=PASS'
