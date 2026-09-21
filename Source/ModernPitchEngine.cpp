@@ -3065,26 +3065,6 @@ double ModernPitchEngine::ScaleQuantizer::nearestTargetLog2(
     return nearest;
 }
 
-double ModernPitchEngine::ScaleQuantizer::chooseTargetLog2(
-    double inputLog2,
-    float hysteresisCents,
-    float strictness,
-    float confidence,
-    bool hardLock,
-    bool onset,
-    int& pendingObservations) noexcept
-{
-    // QUANTIZER_STATE_ABLATION_V1
-    // Experimental: the quantizer is geometry only. It no longer owns a second
-    // copy of note identity or Hold state. Ownership remains upstream.
-    pendingObservations = 0;
-    (void) hysteresisCents;
-    (void) strictness;
-    (void) confidence;
-    (void) hardLock;
-    (void) onset;
-    return nearestTargetLog2(inputLog2);
-}
 
 double ModernPitchEngine::ScaleQuantizer::adjacentTargetLog2(
     double currentTargetLog2,
@@ -3140,17 +3120,6 @@ double ModernPitchEngine::wrapToNearestOctave(double cents) noexcept
     return cents - 1200.0 * std::nearbyint(cents / 1200.0);
 }
 
-// AUTHORITY_CONTROLS_EXPLICIT_V1: only visible user controls define musical
-// softness. Internal confidence, mode and strictness may improve measurement or
-// identity safety, but they are not permission to weaken the requested lock.
-bool ModernPitchEngine::zeroPrudenceAuthority(const Parameters& parameters) noexcept
-{
-    // HOLD_IS_EXPLICIT_EVERYWHERE_V1: Hold alone owns target-retention
-    // prudence. Scale Lock may change trajectory timing, never secretly create
-    // or remove hysteresis. Hold=0 therefore means exactly zero in every mode.
-    return std::clamp(static_cast<double>(finiteOr(parameters.lockHysteresis, 24.0f)),
-                      0.0, 80.0) <= 0.00001;
-}
 
 int ModernPitchEngine::latencyForMode(LatencyMode mode) noexcept
 {
@@ -3551,7 +3520,6 @@ void ModernPitchEngine::updateCorrectionState(
     const std::uint32_t diagnosticRevisionSerialBeforeUpdate =
         targetRevisionDiagnosticSerial_;
     const float humanize = clamp01(parameters.humanize);
-    const bool zeroPrudence = zeroPrudenceAuthority(parameters); // AUTHORITY_CONTROLS_EXPLICIT_V1
     const bool richEvidence = parameters.voiceEvidenceValid;
     const bool trustedPitch = observation.valid
         && std::isfinite(observation.frequencyHz)
@@ -4273,35 +4241,15 @@ void ModernPitchEngine::updateCorrectionState(
         }
     }
 
-    const float hysteresis = holdRadiusCents;
-    // QUALIFIED_NOTE_BYPASSES_HOLD_V2: Hold defines the ordinary same-note
-    // radius. Once independent supervisor evidence has already qualified a new
-    // identity (persistent same-side boundary exit or detector-scale commit),
-    // Hold must not turn a real new note into an eternal old fundamental.
-    const float selectionHoldCents = forceTargetSwitch ? 0.0f : hysteresis;
-    int pending = 0;
-    // SCALE_OWNS_IDENTITY_V1: ordinary selection follows the persistent
-    // musical centre. Only after that centre has proven a cell exit may the
-    // current observation choose the nearest exact destination degree.
+    // QUANTIZER_GEOMETRY_ONLY_V2: ownership has already decided whether a
+    // target change is allowed. The quantizer only nominates the nearest scale
+    // degree; it has no confidence, Hold, hard-lock or pending-note semantics.
     const double targetSelectionLog2 = forceTargetSwitch
         ? observedLog2 : state.pitchCentreLog2;
-    const float targetStrictness = zeroPrudence
-        ? 0.0f : parameters.lockStrictness;
-    const float targetConfidence = zeroPrudence
-        ? 1.0f : observation.confidence;
     double newTarget = state.targetLog2;
     if (!state.targetValid || musicalOnset || forceTargetSwitch)
     {
-        newTarget = quantizer.chooseTargetLog2(
-            targetSelectionLog2,
-            selectionHoldCents,
-            targetStrictness,
-            targetConfidence,
-            parameters.scaleLock && parameters.hardLockActive,
-            // Onset is explicit new-note evidence. forceTargetSwitch above is
-            // the equivalent bounded legato/new-identity evidence.
-            musicalOnset,
-            pending);
+        newTarget = quantizer.nearestTargetLog2(targetSelectionLog2);
         newTarget += std::round(state.pitchCentreLog2 - newTarget);
     }
 
@@ -4897,7 +4845,6 @@ void ModernPitchEngine::process(
     safe.voiceLowerFamilyEvidence = clamp01(finiteOr(safe.voiceLowerFamilyEvidence, 0.0f));
     safe.lockHysteresis = std::clamp(finiteOr(safe.lockHysteresis, 24.0f), 0.0f, 80.0f);
     safe.vibratoPreserve = clamp01(finiteOr(safe.vibratoPreserve, 0.0f));
-    safe.lockStrictness = clamp01(finiteOr(safe.lockStrictness, 0.0f));
     safe.minimumPitchHz = std::clamp(finiteOr(safe.minimumPitchHz, 45.0f), 25.0f, 500.0f);
     safe.maximumPitchHz = std::clamp(finiteOr(safe.maximumPitchHz, 1600.0f),
                                      safe.minimumPitchHz + 20.0f, 3000.0f);
