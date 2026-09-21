@@ -313,7 +313,6 @@ int main()
     };
     auto lowHysteresis = base;
     lowHysteresis.scaleLock = true;
-    lowHysteresis.hardLockActive = true;
     lowHysteresis.lockHysteresis = 0.0f;
     lowHysteresis.retuneTimeMs = 0.0f;
     auto highHysteresis = lowHysteresis;
