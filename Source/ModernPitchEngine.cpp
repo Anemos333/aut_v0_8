@@ -4733,44 +4733,38 @@ void ModernPitchEngine::process(
     if (channels <= 0 || samples <= 0)
         return;
 
-    const bool linkedScaleChanged = linkedQuantizer_.setScale(
-        scaleRatios, numberOfScaleRatios, rootFrequency);
-    for (int channel = 0; channel < channels; ++channel)
+    const bool dualMono = safe.stereoMode == StereoMode::dualMono && channels > 1;
+
+    // ACTIVE_PATH_SETUP_ONLY_V1:
+    // Configure only the detector/quantizer family that will actually run in
+    // this block. A dormant family is fully refreshed before any later mode
+    // switch can make it active.
+    if (dualMono)
     {
-        const bool changed = channelQuantizers_[static_cast<std::size_t>(channel)].setScale(
-            scaleRatios, numberOfScaleRatios, rootFrequency);
-        if (changed)
+        for (int channel = 0; channel < channels; ++channel)
         {
-            // SCALE_CHANGE_PRESERVES_AUDIO_CONTINUITY_V1: a UI scale/root
-            // change resets the quantizer's identity, not the audible transport.
-            // The previous owned correction remains continuous until the next
-            // accepted coordinate is immediately quantized in the new scale.
+            channelQuantizers_[static_cast<std::size_t>(channel)].setScale(
+                scaleRatios, numberOfScaleRatios, rootFrequency);
+            auto& tracker = channelTrackers_[static_cast<std::size_t>(channel)];
+            tracker.setRange(safe.minimumPitchHz, safe.maximumPitchHz);
+            tracker.setSensitivity(safe.detectorSensitivity);
+            tracker.setVoiceAuthorityContext(
+                safe.voiceEvidenceValid,
+                safe.voiceHarmonicity,
+                safe.voiceBreathiness,
+                safe.voiceBodyEnergy,
+                safe.voiceSpectralReliability,
+                safe.voiceEventStrength,
+                safe.voiceFormantStability,
+                safe.voiceLowerFamilyEvidence);
         }
     }
-    if (linkedScaleChanged)
+    else
     {
-        // SCALE_CHANGE_PRESERVES_AUDIO_CONTINUITY_V1: never manufacture an
-        // audio hole merely because the selected scale changed between blocks.
-    }
-
-    linkedTracker_.setRange(safe.minimumPitchHz, safe.maximumPitchHz);
-    linkedTracker_.setSensitivity(safe.detectorSensitivity);
-    linkedTracker_.setVoiceAuthorityContext(
-        safe.voiceEvidenceValid,
-        safe.voiceHarmonicity,
-        safe.voiceBreathiness,
-        safe.voiceBodyEnergy,
-        safe.voiceSpectralReliability,
-        safe.voiceEventStrength,
-        safe.voiceFormantStability,
-        safe.voiceLowerFamilyEvidence);
-    for (int channel = 0; channel < channels; ++channel)
-    {
-        channelTrackers_[static_cast<std::size_t>(channel)].setRange(
-            safe.minimumPitchHz, safe.maximumPitchHz);
-        channelTrackers_[static_cast<std::size_t>(channel)].setSensitivity(
-            safe.detectorSensitivity);
-        channelTrackers_[static_cast<std::size_t>(channel)].setVoiceAuthorityContext(
+        linkedQuantizer_.setScale(scaleRatios, numberOfScaleRatios, rootFrequency);
+        linkedTracker_.setRange(safe.minimumPitchHz, safe.maximumPitchHz);
+        linkedTracker_.setSensitivity(safe.detectorSensitivity);
+        linkedTracker_.setVoiceAuthorityContext(
             safe.voiceEvidenceValid,
             safe.voiceHarmonicity,
             safe.voiceBreathiness,
@@ -4797,7 +4791,6 @@ void ModernPitchEngine::process(
                 = sanitiseAudioSample(data[static_cast<std::size_t>(channel)][sample]);
     }
 
-    const bool dualMono = safe.stereoMode == StereoMode::dualMono && channels > 1;
 
     // SOUND_EQUALS_CORRECTION_V1: linked pitch analysis must not average L+R.
     // Anti-phase or side-heavy vocals can cancel in that sum and make a clearly
