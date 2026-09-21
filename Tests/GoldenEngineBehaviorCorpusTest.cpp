@@ -235,10 +235,8 @@ std::uint64_t runScenario(const Scenario& scenario, int blockSize)
     parameters.retuneTimeMs = scenario.retuneMs;
     parameters.transitionTimeMs = scenario.transitionMs;
     parameters.humanize = scenario.humanize;
-    parameters.preserveVibrato = scenario.vibratoPreserve;
     parameters.vibratoPreserve = scenario.vibratoPreserve;
     parameters.formantPreservation = 0.90f;
-    parameters.transientProtection = 0.85f;
     parameters.detectorSensitivity = scenario.detectorSensitivity;
     parameters.maximumCorrectionSemitones = 12.0f;
     parameters.minimumPitchHz = 45.0f;
