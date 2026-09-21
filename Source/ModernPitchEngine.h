@@ -344,6 +344,19 @@ private:
                   int& writePosition,
                   int& availableSamples,
                   float sample) noexcept;
+        // CONTINUOUS_F0_MEASUREMENT_V1: measurement core composed only from
+        // already validated detector primitives. A finite physical coordinate is
+        // published independently of confidence/cleanliness authority.
+        [[nodiscard]] PitchCandidate measureCoordinate(
+            const std::array<float, ringSize>& ring,
+            int writePosition,
+            int availableSamples,
+            double effectiveSampleRate,
+            float minimumFrequency,
+            float maximumFrequency,
+            int analysisLength,
+            AnalysisWorkspace& workspace) noexcept;
+
         [[nodiscard]] PitchCandidate analyse(
             const std::array<float, ringSize>& ring,
             int writePosition,
