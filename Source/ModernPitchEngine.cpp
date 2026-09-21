@@ -4963,7 +4963,6 @@ void ModernPitchEngine::process(
     safe.minimumPitchHz = std::clamp(finiteOr(safe.minimumPitchHz, 45.0f), 25.0f, 500.0f);
     safe.maximumPitchHz = std::clamp(finiteOr(safe.maximumPitchHz, 1600.0f),
                                      safe.minimumPitchHz + 20.0f, 3000.0f);
-    safe.latencyMode = static_cast<int>(latencyMode_);
 
     const int channels = std::min({buffer.getNumChannels(), channelCount_, maxSupportedChannels});
     const int samples = buffer.getNumSamples();
