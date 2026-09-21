@@ -103,7 +103,6 @@ ModernPitchEngine::Parameters parameters(bool strongBody)
     p.amount = 1.0f;
     p.humanize = 0.0f;
     p.vibratoPreserve = 0.0f;
-    p.preserveVibrato = 0.0f;
     p.retuneTimeMs = 24.0f;
     p.transitionTimeMs = 24.0f;
     p.maximumCorrectionSemitones = 12.0f;
