@@ -72,8 +72,6 @@ public:
         bool scaleLock = false;
         float lockHysteresis = 24.0f;
         float vibratoPreserve = 0.0f;
-        float lockStrictness = 0.0f;
-        bool hardLockActive = false;
 
         CreativeTempo::Settings tempo;
     };
@@ -509,13 +507,6 @@ private:
         void reset() noexcept;
         bool setScale(const double* ratios, int ratioCount,
                       double rootFrequency) noexcept;
-        [[nodiscard]] double chooseTargetLog2(double inputLog2,
-                                              float hysteresisCents,
-                                              float strictness,
-                                              float confidence,
-                                              bool hardLock,
-                                              bool onset,
-                                              int& pendingObservations) noexcept;
         [[nodiscard]] float minimumStepCents() const noexcept { return minStepCents_; }
         [[nodiscard]] float asymmetry() const noexcept { return asymmetry_; }
         [[nodiscard]] double nearestTargetLog2(double inputLog2) const noexcept;
@@ -606,7 +597,6 @@ private:
     [[nodiscard]] static float clamp01(float value) noexcept;
     [[nodiscard]] static double safeLog2(double value) noexcept;
     [[nodiscard]] static double wrapToNearestOctave(double cents) noexcept;
-    [[nodiscard]] static bool zeroPrudenceAuthority(const Parameters& parameters) noexcept;
     [[nodiscard]] static int latencyForMode(LatencyMode mode) noexcept;
     [[nodiscard]] float adaptiveHysteresis(const Parameters& parameters,
                                            const ScaleQuantizer& quantizer,
