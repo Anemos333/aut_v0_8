@@ -378,6 +378,9 @@ private:
         // authority says how useful it is for deciding whether that F0 belongs to
         // tonal voice rather than aperiodic/formant/background material.
         [[nodiscard]] float pathPitchAuthority(int pathIndex, float frequencyHz) const noexcept;
+        // Family evidence and coordinate ownership are deliberately distinct.
+        // Direct-band boundaries reuse the existing 230/460/900 Hz path limits.
+        [[nodiscard]] float pathCoordinateAuthority(int pathIndex, float frequencyHz) const noexcept;
         [[nodiscard]] float pathCleanlinessAuthority(int pathIndex, float frequencyHz) const noexcept;
         [[nodiscard]] float candidateBaseScore(const PitchCandidate& candidate) const noexcept;
         [[nodiscard]] float voiceBodyAuthorityV67() const noexcept;
