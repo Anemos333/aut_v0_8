@@ -207,7 +207,7 @@ double refine(const ScoreBank& bank,
               double proposal,
               double radiusCents)
 {
-    constexpr double stepCents = 0.25;
+    constexpr double stepCents = 0.5;
     double bestHz = proposal;
     double bestScore = -std::numeric_limits<double>::infinity();
 
@@ -306,7 +306,7 @@ void run(double targetHz, double snrDb, std::uint32_t seed)
                 const double proposal = shifted(targetHz, proposalError);
 
                 const auto begin = std::chrono::steady_clock::now();
-                constexpr int repeats = 8;
+                constexpr int repeats = 1;
                 double refined = proposal;
                 for (int rep = 0; rep < repeats; ++rep)
                     refined = refine(bank, metric, proposal, radius);
