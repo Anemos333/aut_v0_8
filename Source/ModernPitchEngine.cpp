@@ -75,7 +75,11 @@ void ModernPitchEngine::BiquadLowPass::reset() noexcept
 
 float ModernPitchEngine::BiquadLowPass::process(float input) noexcept
 {
-    const double x = static_cast<double>(sanitiseAudioSample(input));
+    // BIQUAD_INPUT_SANITIZE_OWNED_UPSTREAM_V1:
+    // anti-alias filters are private tracker stages fed only by the tracker's
+    // already-sanitized finite stream; do not repeat finite/subnormal/clamp
+    // checks on each decimation filter invocation.
+    const double x = static_cast<double>(input);
     const double output = b0_ * x + z1_;
     z1_ = b1_ * x - a1_ * output + z2_;
     z2_ = b2_ * x - a2_ * output;
