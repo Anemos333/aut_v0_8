@@ -40,10 +40,10 @@ int main()
     raw.prepare(sampleRate, blockSize, 1, ModernPitchEngine::LatencyMode::live);
     presanitised.prepare(sampleRate, blockSize, 1, ModernPitchEngine::LatencyMode::live);
 
-    raw.setAdvancedParameters(35.0f, 0.20f, 0.25f, 0.90f, 0.85f, 0.70f,
+    raw.setAdvancedParameters(35.0f, 0.25f, 0.90f, 0.70f,
                               12.0f, 45.0f, 1600.0f,
                               ModernPitchEngine::StereoMode::linkedMidSide);
-    presanitised.setAdvancedParameters(35.0f, 0.20f, 0.25f, 0.90f, 0.85f, 0.70f,
+    presanitised.setAdvancedParameters(35.0f, 0.25f, 0.90f, 0.70f,
                                        12.0f, 45.0f, 1600.0f,
                                        ModernPitchEngine::StereoMode::linkedMidSide);
     raw.setScaleLockParameters(true, 24.0f, 0.20f);
