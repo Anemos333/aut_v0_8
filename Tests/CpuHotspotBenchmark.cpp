@@ -98,7 +98,6 @@ double benchmarkModernEngine(int blockSize, double seconds)
     parameters.maximumPitchHz = 1600.0f;
     parameters.detectorSensitivity = 0.70f;
     parameters.scaleLock = true;
-    parameters.hardLockActive = true;
     parameters.voiceEvidenceValid = true;
     parameters.voiceHarmonicity = 0.88f;
     parameters.voiceBreathiness = 0.10f;
@@ -138,9 +137,8 @@ double benchmarkLiveProcessor(int blockSize, double seconds)
 {
     LivePitchProcessor processor;
     processor.prepare(kSampleRate, blockSize, 1, ModernPitchEngine::LatencyMode::live);
-    processor.setAdvancedParameters(35.0f, 0.70f, 0.20f, 0.90f, 0.85f,
-                                    0.70f, 12.0f, 45.0f, 1600.0f,
-                                    ModernPitchEngine::StereoMode::linkedMidSide, 0.50f);
+    processor.setAdvancedParameters(35.0f, 0.20f, 0.90f, 0.70f,
+                                    12.0f, 45.0f, 1600.0f);
     processor.setScaleLockParameters(true, 24.0f, 0.0f);
     auto scale = makeScale();
 
