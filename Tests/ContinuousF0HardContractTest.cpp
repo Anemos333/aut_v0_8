@@ -39,19 +39,14 @@ double centsError(double measured, double target)
 
 struct Metrics
 {
-    int periodicHops = 0;
-    int periodicMeasured = 0;
-    int periodicCorrect = 0;
+    int periodicHopsAfterGrace = 0;
+    int periodicMeasuredAfterGrace = 0;
     int periodicWrong = 0;
-    int octaveErrors = 0;
-    int noiseHops = 0;
-    int noiseHallucinations = 0;
+    int familyErrors = 0;
+    int nonPeriodicHops = 0;
+    int nonPeriodicHallucinations = 0;
     double maxAbsCents = 0.0;
-    double firstCorrectMs = -1.0;
-    double reacquireMs = -1.0;
-    bool seenFirst = false;
-    bool awaitingReacquire = false;
-    int resumeSample = -1;
+    std::array<double, 3> acquisitionMs { -1.0, -1.0, -1.0 };
 };
 
 float vocalSample(double phase) noexcept
@@ -67,40 +62,36 @@ float vocalSample(double phase) noexcept
 void observe(Metrics& m,
              const ModernPitchEngine::PitchObservation& o,
              bool periodicExpected,
-             bool noiseOnlyExpected,
+             bool nonPeriodicExpected,
              double targetHz,
              int sampleIndex,
-             int segmentStart)
+             int episodeStart,
+             int episodeIndex)
 {
+    const bool measured =
+        o.measurementAvailable
+        && std::isfinite(o.correctionFrequencyHz)
+        && o.correctionFrequencyHz > 0.0f;
+
     if (periodicExpected)
     {
-        ++m.periodicHops;
-        if (o.measurementAvailable
-            && std::isfinite(o.correctionFrequencyHz)
-            && o.correctionFrequencyHz > 0.0f)
+        const double elapsedMs =
+            1000.0 * static_cast<double>(sampleIndex - episodeStart)
+            / kSampleRate;
+
+        if (measured)
         {
-            ++m.periodicMeasured;
             const double error = centsError(o.correctionFrequencyHz, targetHz);
             const double absError = std::abs(error);
             m.maxAbsCents = std::max(m.maxAbsCents, absError);
 
             if (absError <= kEpsilonCents)
             {
-                ++m.periodicCorrect;
-                const double elapsedMs =
-                    1000.0 * static_cast<double>(sampleIndex - segmentStart)
-                    / kSampleRate;
-                if (!m.seenFirst)
+                if (episodeIndex >= 0
+                    && episodeIndex < static_cast<int>(m.acquisitionMs.size())
+                    && m.acquisitionMs[static_cast<std::size_t>(episodeIndex)] < 0.0)
                 {
-                    m.firstCorrectMs = elapsedMs;
-                    m.seenFirst = true;
-                }
-                if (m.awaitingReacquire)
-                {
-                    m.reacquireMs = 1000.0
-                        * static_cast<double>(sampleIndex - m.resumeSample)
-                        / kSampleRate;
-                    m.awaitingReacquire = false;
+                    m.acquisitionMs[static_cast<std::size_t>(episodeIndex)] = elapsedMs;
                 }
             }
             else
@@ -114,21 +105,24 @@ void observe(Metrics& m,
                     || std::abs(1200.0 * std::log2(ratio / 4.0)) <= 35.0
                     || std::abs(1200.0 * std::log2(ratio * 4.0)) <= 35.0)
                 {
-                    ++m.octaveErrors;
+                    ++m.familyErrors;
                 }
             }
         }
+
+        if (elapsedMs >= kAcquireLimitMs)
+        {
+            ++m.periodicHopsAfterGrace;
+            if (measured)
+                ++m.periodicMeasuredAfterGrace;
+        }
     }
 
-    if (noiseOnlyExpected)
+    if (nonPeriodicExpected)
     {
-        ++m.noiseHops;
-        if (o.measurementAvailable
-            && std::isfinite(o.correctionFrequencyHz)
-            && o.correctionFrequencyHz > 0.0f)
-        {
-            ++m.noiseHallucinations;
-        }
+        ++m.nonPeriodicHops;
+        if (measured)
+            ++m.nonPeriodicHallucinations;
     }
 }
 
@@ -174,25 +168,30 @@ Metrics runCase(double targetHz, double snrDb, std::uint32_t seed)
     }};
 
     int absoluteSample = 0;
+    int currentEpisode = -1;
+    int episodeStart = -1;
 
     for (const auto& segment : plan)
     {
         const int count = static_cast<int>(std::lround(
             segment.milliseconds * 0.001 * kSampleRate));
-        const int segmentStart = absoluteSample;
 
-        if (segment.kind == Segment::resumedTone
-            || segment.kind == Segment::finalTone)
+        const bool beginsPeriodicEpisode =
+            segment.kind == Segment::tone
+            || segment.kind == Segment::resumedTone
+            || segment.kind == Segment::finalTone;
+
+        if (beginsPeriodicEpisode)
         {
-            metrics.awaitingReacquire = true;
-            metrics.resumeSample = absoluteSample;
+            ++currentEpisode;
+            episodeStart = absoluteSample;
         }
 
         for (int i = 0; i < count; ++i, ++absoluteSample)
         {
             float sample = 0.0f;
             bool periodicExpected = false;
-            bool noiseOnlyExpected = false;
+            bool nonPeriodicExpected = false;
 
             const bool isTone =
                 segment.kind == Segment::tone
@@ -208,9 +207,7 @@ Metrics runCase(double targetHz, double snrDb, std::uint32_t seed)
                     phase -= 2.0 * kPi;
 
                 sample = static_cast<float>(toneAmp) * vocalSample(phase);
-
-                const float white = rng.next();
-                sample += static_cast<float>(noiseAmp) * white;
+                sample += static_cast<float>(noiseAmp) * rng.next();
 
                 if (segment.kind == Segment::toneWithBurst)
                 {
@@ -221,10 +218,11 @@ Metrics runCase(double targetHz, double snrDb, std::uint32_t seed)
                         sample += static_cast<float>(toneAmp * 4.0) * rng.next();
                 }
             }
-            else if (segment.kind == Segment::whiteNoise)
+            else
             {
-                noiseOnlyExpected = true;
-                sample = static_cast<float>(toneAmp * 1.2) * rng.next();
+                nonPeriodicExpected = true;
+                if (segment.kind == Segment::whiteNoise)
+                    sample = static_cast<float>(toneAmp * 1.2) * rng.next();
             }
 
             ModernPitchEngine::PitchObservation observation;
@@ -232,10 +230,11 @@ Metrics runCase(double targetHz, double snrDb, std::uint32_t seed)
             {
                 observe(metrics, observation,
                         periodicExpected,
-                        noiseOnlyExpected,
+                        nonPeriodicExpected,
                         targetHz,
                         absoluteSample,
-                        segmentStart);
+                        episodeStart,
+                        currentEpisode);
             }
         }
     }
@@ -247,50 +246,50 @@ bool checkCase(double hz, double snr, std::uint32_t seed)
 {
     const auto m = runCase(hz, snr, seed);
 
-    const double coverage = m.periodicHops > 0
-        ? static_cast<double>(m.periodicMeasured)
-            / static_cast<double>(m.periodicHops)
+    const double coverage = m.periodicHopsAfterGrace > 0
+        ? static_cast<double>(m.periodicMeasuredAfterGrace)
+            / static_cast<double>(m.periodicHopsAfterGrace)
         : 0.0;
 
-    const bool acquisitionPass =
-        m.firstCorrectMs >= 0.0 && m.firstCorrectMs < kAcquireLimitMs;
-    const bool reacquisitionPass =
-        m.reacquireMs >= 0.0 && m.reacquireMs < kAcquireLimitMs;
+    bool acquisitionPass = true;
+    for (double ms : m.acquisitionMs)
+        acquisitionPass &= ms >= 0.0 && ms < kAcquireLimitMs;
+
     const bool continuumPass =
-        m.periodicMeasured == m.periodicHops;
+        m.periodicMeasuredAfterGrace == m.periodicHopsAfterGrace;
     const bool epsilonPass =
         m.periodicWrong == 0 && m.maxAbsCents <= kEpsilonCents;
-    const bool familyPass = m.octaveErrors == 0;
-    const bool noisePass = m.noiseHallucinations == 0;
+    const bool familyPass = m.familyErrors == 0;
+    const bool nonPeriodicPass = m.nonPeriodicHallucinations == 0;
 
     const bool pass = acquisitionPass
-        && reacquisitionPass
         && continuumPass
         && epsilonPass
         && familyPass
-        && noisePass;
+        && nonPeriodicPass;
 
     std::cout << std::fixed << std::setprecision(4)
               << "F0_HARD_CONTRACT"
               << " hz=" << hz
               << " snr=" << snr
               << " seed=" << seed
-              << " periodic_hops=" << m.periodicHops
-              << " measured=" << m.periodicMeasured
+              << " periodic_hops_after_grace=" << m.periodicHopsAfterGrace
+              << " measured_after_grace=" << m.periodicMeasuredAfterGrace
               << " coverage=" << coverage
               << " wrong=" << m.periodicWrong
               << " max_abs_cents=" << m.maxAbsCents
-              << " family_errors=" << m.octaveErrors
-              << " first_correct_ms=" << m.firstCorrectMs
-              << " reacquire_ms=" << m.reacquireMs
-              << " noise_hops=" << m.noiseHops
-              << " noise_hallucinations=" << m.noiseHallucinations
+              << " family_errors=" << m.familyErrors
+              << " acquire0_ms=" << m.acquisitionMs[0]
+              << " acquire1_ms=" << m.acquisitionMs[1]
+              << " acquire2_ms=" << m.acquisitionMs[2]
+              << " nonperiodic_hops=" << m.nonPeriodicHops
+              << " nonperiodic_hallucinations=" << m.nonPeriodicHallucinations
               << " pass=" << (pass ? 1 : 0)
               << '\n';
 
     return pass;
 }
-}
+
 
 int main()
 {
