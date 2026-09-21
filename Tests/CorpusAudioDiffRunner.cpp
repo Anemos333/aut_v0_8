@@ -418,16 +418,13 @@ ModernPitchEngine::Parameters makeParameters(const ParamSet& set)
     p.retuneTimeMs = set.speedMs;
     p.amount = juce::jlimit(0.0f, 1.0f, set.amountPct / 100.0f);
     p.transitionTimeMs = 35.0f;
-    p.preserveVibrato = 0.70f;
     p.humanize = juce::jlimit(0.0f, 1.0f, set.humanizePct / 100.0f);
     p.formantPreservation = 0.90f;
-    p.transientProtection = 0.85f;
     p.detectorSensitivity = 0.70f;
     p.maximumCorrectionSemitones = 12.0f;
     p.minimumPitchHz = 45.0f;
     p.maximumPitchHz = 1600.0f;
     p.stereoMode = ModernPitchEngine::StereoMode::linkedMidSide;
-    p.breathReduction = 0.50f;
     return p;
 }
 
