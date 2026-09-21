@@ -1,0 +1,124 @@
+name: Validate quantizer API ablation v1
+
+on:
+  push:
+    branches:
+      - v1-lean-quantizer-api-ablation-v1
+    paths:
+      - Source/ModernPitchEngine.cpp
+      - Source/ModernPitchEngine.h
+      - Source/LivePitchProcessor.h
+      - Source/ScaleLockPitchEngine.h
+      - Source/ScaleLockPitchEngine.cpp
+      - Tests/SupervisorContinuityTest.cpp
+      - Tests/CleanModernPitchEngineTest.cpp
+      - .github/workflows/validate-quantizer-api-ablation-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          ref: v1-lean-quantizer-api-ablation-v1
+          fetch-depth: 0
+
+      - name: Guard architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor cfdbd4eede7955ca4f01570f857a965c216acd8f HEAD
+          grep -q 'QUANTIZER_GEOMETRY_ONLY_V2' Source/ModernPitchEngine.cpp
+          grep -q 'HOLD_SINGLE_OWNER_V1' Source/LivePitchProcessor.h
+          ! grep -q 'chooseTargetLog2' Source/ModernPitchEngine.h Source/ModernPitchEngine.cpp
+          ! grep -q 'zeroPrudenceAuthority' Source/ModernPitchEngine.h Source/ModernPitchEngine.cpp
+          ! grep -q 'lockStrictness' Source/ModernPitchEngine.h Source/ModernPitchEngine.cpp Source/LivePitchProcessor.h
+          ! grep -q 'hardLockActive' Source/ModernPitchEngine.h Source/ModernPitchEngine.cpp Source/LivePitchProcessor.h
+          test ! -e Source/ScaleLockPitchEngine.h
+          test ! -e Source/ScaleLockPitchEngine.cpp
+          echo 'QUANTIZER_API_ABLATION_SCOPE=PASS'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y             libasound2-dev libjack-jackd2-dev ladspa-sdk             libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev             libx11-dev libxcomposite-dev libxcursor-dev libxext-dev             libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev             libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Configure and build full plugin
+        run: |
+          cmake -S . -B build-quantizer-api             -DCMAKE_BUILD_TYPE=Release             -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-quantizer-api --config Release --parallel 2 --target Neumaton >/dev/null
+
+      - name: Preserve test slots
+        run: |
+          cp Tests/SupervisorContinuityTest.cpp /tmp/qapi-supervisor.cpp
+          cp Tests/SingleWetSpectralRendererTest.cpp /tmp/qapi-renderer.cpp
+
+      - name: Detector oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/GoldenDetectorDeterminismTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-quantizer-api --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          for run in 1 2 3; do
+            ./build-quantizer-api/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee "/tmp/qapi-detector-$run.log"
+            grep -q '^GOLDEN_DETECTOR_TRACE_HASH=58273352d40c5499$' "/tmp/qapi-detector-$run.log"
+          done
+          echo 'QUANTIZER_API_DETECTOR_BIT_EXACT=PASS'
+
+      - name: Trajectory oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/CorrectionTrajectoryGoldenTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-quantizer-api --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-quantizer-api/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/qapi-trajectory.log
+          grep -q '^CORRECTION_TRAJECTORY_HASH=3c958f8178c118a3$' /tmp/qapi-trajectory.log
+          echo 'QUANTIZER_API_TRAJECTORY_EXACT=PASS'
+
+      - name: End-to-end corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/GoldenEngineBehaviorCorpusTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-quantizer-api --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-quantizer-api/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/qapi-engine.log
+          grep -q '^GOLDEN_ENGINE_BEHAVIOR_CORPUS=PASS scenarios=14$' /tmp/qapi-engine.log
+          grep -q '^GOLDEN_ENGINE_CORPUS_HASH=982b4ad85accdd75$' /tmp/qapi-engine.log
+          echo 'QUANTIZER_API_ENGINE_EXACT=PASS'
+
+      - name: Renderer oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/RendererDiagnosticTransparencyTest.cpp Tests/SingleWetSpectralRendererTest.cpp
+          cmake --build build-quantizer-api --config Release --parallel 2 --target SingleWetSpectralRendererTest >/dev/null
+          ./build-quantizer-api/clean-engine-tests/SingleWetSpectralRendererTest 2>&1 | tee /tmp/qapi-renderer.log
+          grep -q '^RENDERER_TRANSPARENCY_HASH_256=ce9950c8dec7364$' /tmp/qapi-renderer.log
+          grep -q '^RENDERER_TRANSPARENCY_HASH_512=685aa631a64ef991$' /tmp/qapi-renderer.log
+          echo 'QUANTIZER_API_RENDERER_EXACT=PASS'
+
+      - name: Normal contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp /tmp/qapi-supervisor.cpp Tests/SupervisorContinuityTest.cpp
+          cp /tmp/qapi-renderer.cpp Tests/SingleWetSpectralRendererTest.cpp
+          cmake --build build-quantizer-api --config Release --parallel 2             --target SupervisorContinuityTest CleanModernPitchEngineTest SingleWetSpectralRendererTest >/dev/null
+          ./build-quantizer-api/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/qapi-supervisor.log
+          ./build-quantizer-api/clean-engine-tests/CleanModernPitchEngineTest 2>&1 | tee /tmp/qapi-clean.log
+          ./build-quantizer-api/clean-engine-tests/SingleWetSpectralRendererTest 2>&1 | tee /tmp/qapi-renderer-contracts.log
+          ! grep -q '=FAIL' /tmp/qapi-supervisor.log
+          ! grep -q '=FAIL' /tmp/qapi-clean.log
+          ! grep -q '=FAIL' /tmp/qapi-renderer-contracts.log
+          grep -q 'hold_is_owned_by_engine_identity_boundary=PASS' /tmp/qapi-supervisor.log
+          echo 'QUANTIZER_API_NORMAL_CONTRACTS=PASS'
+
+      - name: Final marker
+        run: |
+          echo 'V1_LEAN_QUANTIZER_API_ABLATION=PASS_EXACT_BEHAVIOR'
+          echo 'HIDDEN_STRICTNESS_PATH_REMOVED=PASS'
