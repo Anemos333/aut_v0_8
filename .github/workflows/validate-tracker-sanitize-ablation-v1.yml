@@ -1,0 +1,98 @@
+name: Validate tracker sanitize ablation v1
+
+on:
+  push:
+    branches:
+      - v1-lean-tracker-sanitize-ablation-v1
+    paths:
+      - Source/ModernPitchEngine.cpp
+      - .github/workflows/validate-tracker-sanitize-ablation-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          ref: v1-lean-tracker-sanitize-ablation-v1
+          fetch-depth: 0
+
+      - name: Guard scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor cfdbd4eede7955ca4f01570f857a965c216acd8f HEAD
+          grep -q 'TRACKER_INPUT_SANITIZE_OWNED_UPSTREAM_V1' Source/ModernPitchEngine.cpp
+          echo 'TRACKER_SANITIZE_ABLATION_SCOPE=PASS'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y             libasound2-dev libjack-jackd2-dev ladspa-sdk             libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev             libx11-dev libxcomposite-dev libxcursor-dev libxext-dev             libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev             libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Configure and build full plugin
+        run: |
+          cmake -S . -B build-tracker-sanitize             -DCMAKE_BUILD_TYPE=Release             -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-tracker-sanitize --config Release --parallel 2 --target Neumaton >/dev/null
+
+      - name: Preserve supervisor slot
+        run: cp Tests/SupervisorContinuityTest.cpp /tmp/tracker-sanitize-supervisor.cpp
+
+      - name: Detector must remain bit exact
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/GoldenDetectorDeterminismTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-tracker-sanitize --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          for run in 1 2 3; do
+            ./build-tracker-sanitize/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee "/tmp/tracker-detector-$run.log"
+            grep -q '^GOLDEN_DETECTOR_TRACE_HASH=58273352d40c5499$' "/tmp/tracker-detector-$run.log"
+          done
+          echo 'TRACKER_SANITIZE_DETECTOR_BIT_EXACT=PASS'
+
+      - name: Public engine sanitizer boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SanitizerSmoke.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-tracker-sanitize --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-tracker-sanitize/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/tracker-sanitizer.log
+          grep -q '^Sanitizer smoke passed\.$' /tmp/tracker-sanitizer.log
+          echo 'TRACKER_SANITIZE_PUBLIC_BOUNDARY=PASS'
+
+      - name: Trajectory and engine corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/CorrectionTrajectoryGoldenTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-tracker-sanitize --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-tracker-sanitize/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/tracker-trajectory.log
+          grep -q '^CORRECTION_TRAJECTORY_HASH=3c958f8178c118a3$' /tmp/tracker-trajectory.log
+
+          cp Tests/GoldenEngineBehaviorCorpusTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-tracker-sanitize --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-tracker-sanitize/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/tracker-engine.log
+          grep -q '^GOLDEN_ENGINE_CORPUS_HASH=982b4ad85accdd75$' /tmp/tracker-engine.log
+          echo 'TRACKER_SANITIZE_CORE_EXACT=PASS'
+
+      - name: Existing contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp /tmp/tracker-sanitize-supervisor.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-tracker-sanitize --config Release --parallel 2             --target SupervisorContinuityTest CleanModernPitchEngineTest >/dev/null
+          ./build-tracker-sanitize/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/tracker-supervisor.log
+          ./build-tracker-sanitize/clean-engine-tests/CleanModernPitchEngineTest 2>&1 | tee /tmp/tracker-clean.log
+          ! grep -q '=FAIL' /tmp/tracker-supervisor.log
+          ! grep -q '=FAIL' /tmp/tracker-clean.log
+          echo 'TRACKER_SANITIZE_EXISTING_CONTRACTS=PASS'
+
+      - name: Final marker
+        run: |
+          echo 'V1_LEAN_TRACKER_SANITIZE_ABLATION=PASS_EXACT_BEHAVIOR'
+          echo 'PUBLIC_SANITIZER_OWNERSHIP_PRESERVED=PASS'
