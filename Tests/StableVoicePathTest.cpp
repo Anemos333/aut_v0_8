@@ -85,9 +85,7 @@ std::vector<float> renderWithBlockSize(const std::vector<float>& source,
     parameters.retuneTimeMs = 8.0f;
     parameters.transitionTimeMs = 35.0f;
     parameters.formantPreservation = 0.95f;
-    parameters.transientProtection = 0.90f;
     parameters.detectorSensitivity = 0.80f;
-    parameters.breathReduction = 0.40f;
 
     std::vector<double> chromatic;
     for (int degree = 0; degree < 12; ++degree)
