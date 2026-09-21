@@ -147,15 +147,8 @@ public:
                  int numberOfScaleRatios,
                  double rootFrequency,
                  const Parameters& parameters,
-                 const CreativeTempo::HostPosition& hostTempoPosition);
-
-    void process(juce::AudioBuffer<float>& buffer,
-                 const double* scaleRatios,
-                 int numberOfScaleRatios,
-                 double rootFrequency,
-                 const Parameters& parameters,
-                 std::uint64_t scaleGeneration,
-                 const CreativeTempo::HostPosition& hostTempoPosition);
+                 const CreativeTempo::HostPosition& hostTempoPosition,
+                 std::uint64_t scaleGeneration = 0);
 
     void process(juce::AudioBuffer<float>& buffer,
                  const std::vector<double>& scaleRatios,
@@ -477,10 +470,8 @@ private:
     public:
         void reset() noexcept;
         bool setScale(const double* ratios, int ratioCount,
-                      double rootFrequency) noexcept;
-        bool setScale(const double* ratios, int ratioCount,
                       double rootFrequency,
-                      std::uint64_t generation) noexcept;
+                      std::uint64_t generation = 0) noexcept;
         [[nodiscard]] float minimumStepCents() const noexcept { return minStepCents_; }
         [[nodiscard]] double nearestTargetLog2(double inputLog2) const noexcept;
         [[nodiscard]] double adjacentTargetLog2(double currentTargetLog2,
