@@ -1,0 +1,114 @@
+name: Validate legacy parameter ablation v1
+
+on:
+  push:
+    branches:
+      - v1-lean-legacy-parameter-ablation-v1
+    paths:
+      - Source/ModernPitchEngine.cpp
+      - Source/LivePitchProcessor.h
+      - Source/PluginProcessor.cpp
+      - .github/workflows/validate-legacy-parameter-ablation-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          ref: v1-lean-legacy-parameter-ablation-v1
+          fetch-depth: 0
+
+      - name: Guard active-path removal
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor cfdbd4eede7955ca4f01570f857a965c216acd8f HEAD
+          grep -q 'LEGACY_AUDIO_POLICY_ARGS_REMOVED_V1' Source/LivePitchProcessor.h
+          ! grep -q 'parameters_\.preserveVibrato' Source/LivePitchProcessor.h
+          ! grep -q 'parameters_\.transientProtection' Source/LivePitchProcessor.h
+          ! grep -q 'parameters_\.breathReduction' Source/LivePitchProcessor.h
+          ! grep -q 'safe\.preserveVibrato' Source/ModernPitchEngine.cpp
+          ! grep -q 'safe\.transientProtection' Source/ModernPitchEngine.cpp
+          ! grep -q 'safe\.breathReduction' Source/ModernPitchEngine.cpp
+          ! grep -q 'preserveVibrato: same visible authority' Source/PluginProcessor.cpp
+          ! grep -q 'transientProtection' Source/PluginProcessor.cpp
+          echo 'LEGACY_PARAMETER_ACTIVE_PATH_REMOVAL=PASS'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y             libasound2-dev libjack-jackd2-dev ladspa-sdk             libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev             libx11-dev libxcomposite-dev libxcursor-dev libxext-dev             libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev             libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Configure and build full plugin
+        run: |
+          cmake -S . -B build-legacy-params             -DCMAKE_BUILD_TYPE=Release             -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-legacy-params --config Release --parallel 2 --target Neumaton >/dev/null
+
+      - name: Preserve test slots
+        run: |
+          cp Tests/SupervisorContinuityTest.cpp /tmp/legacy-supervisor.cpp
+          cp Tests/SingleWetSpectralRendererTest.cpp /tmp/legacy-renderer.cpp
+
+      - name: Detector oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/GoldenDetectorDeterminismTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-legacy-params --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          for run in 1 2 3; do
+            ./build-legacy-params/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee "/tmp/legacy-detector-$run.log"
+            grep -q '^GOLDEN_DETECTOR_TRACE_HASH=58273352d40c5499$' "/tmp/legacy-detector-$run.log"
+          done
+          echo 'LEGACY_PARAMETER_DETECTOR_EXACT=PASS'
+
+      - name: Trajectory and engine corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/CorrectionTrajectoryGoldenTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-legacy-params --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-legacy-params/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/legacy-trajectory.log
+          grep -q '^CORRECTION_TRAJECTORY_HASH=3c958f8178c118a3$' /tmp/legacy-trajectory.log
+
+          cp Tests/GoldenEngineBehaviorCorpusTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-legacy-params --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-legacy-params/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/legacy-engine.log
+          grep -q '^GOLDEN_ENGINE_CORPUS_HASH=982b4ad85accdd75$' /tmp/legacy-engine.log
+          echo 'LEGACY_PARAMETER_CORE_EXACT=PASS'
+
+      - name: Renderer oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/RendererDiagnosticTransparencyTest.cpp Tests/SingleWetSpectralRendererTest.cpp
+          cmake --build build-legacy-params --config Release --parallel 2 --target SingleWetSpectralRendererTest >/dev/null
+          ./build-legacy-params/clean-engine-tests/SingleWetSpectralRendererTest 2>&1 | tee /tmp/legacy-renderer.log
+          grep -q '^RENDERER_TRANSPARENCY_HASH_256=ce9950c8dec7364$' /tmp/legacy-renderer.log
+          grep -q '^RENDERER_TRANSPARENCY_HASH_512=685aa631a64ef991$' /tmp/legacy-renderer.log
+          echo 'LEGACY_PARAMETER_RENDERER_EXACT=PASS'
+
+      - name: Normal contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp /tmp/legacy-supervisor.cpp Tests/SupervisorContinuityTest.cpp
+          cp /tmp/legacy-renderer.cpp Tests/SingleWetSpectralRendererTest.cpp
+          cmake --build build-legacy-params --config Release --parallel 2             --target SupervisorContinuityTest CleanModernPitchEngineTest SingleWetSpectralRendererTest >/dev/null
+          ./build-legacy-params/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/legacy-supervisor.log
+          ./build-legacy-params/clean-engine-tests/CleanModernPitchEngineTest 2>&1 | tee /tmp/legacy-clean.log
+          ./build-legacy-params/clean-engine-tests/SingleWetSpectralRendererTest 2>&1 | tee /tmp/legacy-renderer-contracts.log
+          ! grep -q '=FAIL' /tmp/legacy-supervisor.log
+          ! grep -q '=FAIL' /tmp/legacy-clean.log
+          ! grep -q '=FAIL' /tmp/legacy-renderer-contracts.log
+          echo 'LEGACY_PARAMETER_NORMAL_CONTRACTS=PASS'
+
+      - name: Final marker
+        run: |
+          echo 'V1_LEAN_LEGACY_PARAMETER_ABLATION=PASS_EXACT_BEHAVIOR'
+          echo 'OBSOLETE_SOFT_PATH_ARGUMENTS_REMOVED=PASS'
