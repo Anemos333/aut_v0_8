@@ -1,0 +1,119 @@
+name: Validate continuous F0 recomposition v1
+
+on:
+  push:
+    branches:
+      - v1-continuous-f0-recomposition-v1
+    paths:
+      - Source/ModernPitchEngine.h
+      - Source/ModernPitchEngine.cpp
+      - Tests/DetectorExtremeDiagnostic.cpp
+      - Tests/DetectorMotionDiagnostic.cpp
+      - Tests/DetectorPathDiagnostic.cpp
+      - Tests/DetectorHighRangeDiagnostic.cpp
+      - Tests/DetectorMeasurementContinuumDiagnostic.cpp
+      - Tests/CpuHotspotBenchmark.cpp
+      - .github/workflows/validate-continuous-f0-recomposition-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          ref: v1-continuous-f0-recomposition-v1
+
+      - name: Guard scope
+        run: |
+          grep -q 'CONTINUOUS_F0_MEASUREMENT_V1' Source/ModernPitchEngine.h
+          grep -q 'MultiRatePitchTracker::measureCoordinate' Source/ModernPitchEngine.cpp
+          grep -q 'fullResult = measureCoordinate(fullRateRing_' Source/ModernPitchEngine.cpp
+          grep -q 'owner_.measureCoordinate(owner_.halfRateRing_' Source/ModernPitchEngine.cpp
+          echo 'CONTINUOUS_F0_SCOPE=PASS'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y             libasound2-dev libjack-jackd2-dev ladspa-sdk             libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev             libx11-dev libxcomposite-dev libxcursor-dev libxext-dev             libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev             libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Configure and build product
+        run: |
+          cmake -S . -B build-continuous             -DCMAKE_BUILD_TYPE=Release             -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-continuous --config Release --parallel 2 --target Neumaton >/dev/null
+
+      - name: Preserve test slot
+        run: cp Tests/SupervisorContinuityTest.cpp /tmp/supervisor-original.cpp
+
+      - name: Detector stress truth
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/DetectorExtremeDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-continuous --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-continuous/clean-engine-tests/SupervisorContinuityTest | tee /tmp/continuous-extreme.log
+          grep -q '^DETECTOR_STRESS ' /tmp/continuous-extreme.log
+
+      - name: Detector motion truth
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/DetectorMotionDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-continuous --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-continuous/clean-engine-tests/SupervisorContinuityTest | tee /tmp/continuous-motion.log
+          grep -q '^MOTION_STEP ' /tmp/continuous-motion.log
+
+      - name: Detector path truth
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/DetectorPathDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-continuous --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-continuous/clean-engine-tests/SupervisorContinuityTest | tee /tmp/continuous-path.log
+          grep -q '^PATH_STRESS ' /tmp/continuous-path.log
+
+      - name: Detector high range truth
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/DetectorHighRangeDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-continuous --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-continuous/clean-engine-tests/SupervisorContinuityTest | tee /tmp/continuous-high.log
+          grep -q '^PATH_STRESS ' /tmp/continuous-high.log
+
+      - name: Measurement continuum truth
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/DetectorMeasurementContinuumDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-continuous --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-continuous/clean-engine-tests/SupervisorContinuityTest | tee /tmp/continuous-measurement.log
+          grep -q '^MEASUREMENT_CONTINUUM ' /tmp/continuous-measurement.log
+
+      - name: CPU profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/CpuHotspotBenchmark.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-continuous --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          : > /tmp/continuous-cpu.log
+          for round in 1 2 3; do
+            ./build-continuous/clean-engine-tests/SupervisorContinuityTest | tee -a /tmp/continuous-cpu.log
+          done
+          grep -q '^CPU_PROFILE ' /tmp/continuous-cpu.log
+
+      - name: Compile normal contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp /tmp/supervisor-original.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-continuous --config Release --parallel 2             --target CleanModernPitchEngineTest VoiceEvidenceAnalyzerTest                      GuiAudibilityTest GuiAudioControlContractTest                      SingleWetSpectralRendererTest >/dev/null
+          echo 'CONTINUOUS_F0_NORMAL_CONTRACTS_COMPILE=PASS'
+
+      - name: Final marker
+        run: |
+          echo 'CONTINUOUS_F0_RECOMPOSITION_DIAGNOSTICS=PASS'
