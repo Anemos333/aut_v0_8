@@ -33,7 +33,9 @@ struct LineBank
     std::array<double,n> window{};
     double signalEnergy=0.0,windowEnergy=0.0;
 
-    explicit LineBank(const auto& d):data(d) {
+    explicit LineBank(
+        const std::array<float,ModernPitchEngine::MultiRatePitchTracker::maxAnalysisSize>& d)
+        : data(d) {
         for(int i=0;i<n;++i){
             window[size_t(i)]=0.5-0.5*std::cos(2*pi*double(i)/double(n-1));
             const double x=double(data[size_t(i)])*window[size_t(i)];
