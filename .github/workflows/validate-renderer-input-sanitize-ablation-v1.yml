@@ -1,0 +1,97 @@
+name: Validate renderer input sanitize ablation v1
+
+on:
+  push:
+    branches:
+      - v1-lean-renderer-input-sanitize-ablation-v1
+    paths:
+      - Source/SingleWetSpectralRenderer.cpp
+      - .github/workflows/validate-renderer-input-sanitize-ablation-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          ref: v1-lean-renderer-input-sanitize-ablation-v1
+          fetch-depth: 0
+
+      - name: Guard scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor cfdbd4eede7955ca4f01570f857a965c216acd8f HEAD
+          grep -q 'RENDERER_ACTIVE_INPUT_SANITIZE_OWNED_UPSTREAM_V1' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'return sanitiseAudioSample(shifted);' Source/SingleWetSpectralRenderer.cpp
+          grep -q 'processBypassedSample' Source/SingleWetSpectralRenderer.cpp
+          echo 'RENDERER_INPUT_SANITIZE_SCOPE=PASS'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y             libasound2-dev libjack-jackd2-dev ladspa-sdk             libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev             libx11-dev libxcomposite-dev libxcursor-dev libxext-dev             libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev             libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Configure and build
+        run: |
+          cmake -S . -B build-renderer-input             -DCMAKE_BUILD_TYPE=Release             -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-renderer-input --config Release --parallel 2 --target Neumaton >/dev/null
+
+      - name: Preserve slots
+        run: |
+          cp Tests/SupervisorContinuityTest.cpp /tmp/renderer-input-supervisor.cpp
+          cp Tests/SingleWetSpectralRendererTest.cpp /tmp/renderer-input-renderer.cpp
+
+      - name: Renderer exact hash
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/RendererDiagnosticTransparencyTest.cpp Tests/SingleWetSpectralRendererTest.cpp
+          cmake --build build-renderer-input --config Release --parallel 2 --target SingleWetSpectralRendererTest >/dev/null
+          ./build-renderer-input/clean-engine-tests/SingleWetSpectralRendererTest 2>&1 | tee /tmp/renderer-input-hash.log
+          grep -q '^RENDERER_TRANSPARENCY_HASH_256=ce9950c8dec7364$' /tmp/renderer-input-hash.log
+          grep -q '^RENDERER_TRANSPARENCY_HASH_512=685aa631a64ef991$' /tmp/renderer-input-hash.log
+          echo 'RENDERER_INPUT_SANITIZE_RENDERER_EXACT=PASS'
+
+      - name: Public engine sanitizer safety
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SanitizerSmoke.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-renderer-input --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-renderer-input/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/renderer-input-sanitizer.log
+          grep -q '^Sanitizer smoke passed\.$' /tmp/renderer-input-sanitizer.log
+          echo 'RENDERER_INPUT_SANITIZE_PUBLIC_BOUNDARY=PASS'
+
+      - name: Engine corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/GoldenEngineBehaviorCorpusTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-renderer-input --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-renderer-input/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/renderer-input-engine.log
+          grep -q '^GOLDEN_ENGINE_CORPUS_HASH=982b4ad85accdd75$' /tmp/renderer-input-engine.log
+          echo 'RENDERER_INPUT_SANITIZE_ENGINE_EXACT=PASS'
+
+      - name: Normal contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp /tmp/renderer-input-supervisor.cpp Tests/SupervisorContinuityTest.cpp
+          cp /tmp/renderer-input-renderer.cpp Tests/SingleWetSpectralRendererTest.cpp
+          cmake --build build-renderer-input --config Release --parallel 2             --target SupervisorContinuityTest CleanModernPitchEngineTest SingleWetSpectralRendererTest >/dev/null
+          ./build-renderer-input/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/renderer-input-supervisor.log
+          ./build-renderer-input/clean-engine-tests/CleanModernPitchEngineTest 2>&1 | tee /tmp/renderer-input-clean.log
+          ./build-renderer-input/clean-engine-tests/SingleWetSpectralRendererTest 2>&1 | tee /tmp/renderer-input-contracts.log
+          ! grep -q '=FAIL' /tmp/renderer-input-supervisor.log
+          ! grep -q '=FAIL' /tmp/renderer-input-clean.log
+          ! grep -q '=FAIL' /tmp/renderer-input-contracts.log
+          echo 'RENDERER_INPUT_SANITIZE_EXISTING_CONTRACTS=PASS'
+
+      - name: Final marker
+        run: echo 'V1_LEAN_RENDERER_INPUT_SANITIZE_ABLATION=PASS_EXACT_BEHAVIOR'
