@@ -244,9 +244,7 @@ std::uint64_t runScenario(const Scenario& scenario, int blockSize)
     parameters.minimumPitchHz = 45.0f;
     parameters.maximumPitchHz = 1600.0f;
     parameters.scaleLock = scenario.scaleLock;
-    parameters.hardLockActive = scenario.scaleLock;
     parameters.lockHysteresis = 24.0f;
-    parameters.lockStrictness = scenario.scaleLock ? 0.35f : 0.0f;
 
     // Keep voice-analysis context strong and deterministic. Detector coordinate
     // changes remain the only possible source of musical divergence here.
