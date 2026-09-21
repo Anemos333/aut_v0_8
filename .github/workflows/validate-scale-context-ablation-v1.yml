@@ -1,0 +1,103 @@
+name: Validate scale context ablation v1
+
+on:
+  push:
+    branches:
+      - v1-lean-scale-context-ablation-v1
+    paths:
+      - Source/ModernPitchEngine.h
+      - Source/ModernPitchEngine.cpp
+      - Source/LivePitchProcessor.h
+      - Tests/LiveScaleContextEquivalenceTest.cpp
+      - .github/workflows/validate-scale-context-ablation-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          ref: v1-lean-scale-context-ablation-v1
+          fetch-depth: 0
+
+      - name: Guard scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor 1f624bf4edad6a2e65ca29732dd6f8ab0db3a67f HEAD
+          ! grep -q 'minScaleStepCents' Source/ModernPitchEngine.h Source/LivePitchProcessor.h
+          ! grep -q 'scaleSize' Source/ModernPitchEngine.h Source/LivePitchProcessor.h
+          ! grep -q 'calculateMinScaleStepCents' Source/LivePitchProcessor.h
+          ! grep -q 'updateScaleLockContext' Source/LivePitchProcessor.h
+          echo 'SCALE_CONTEXT_ABLATION_SCOPE=PASS'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y             libasound2-dev libjack-jackd2-dev ladspa-sdk             libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev             libx11-dev libxcomposite-dev libxcursor-dev libxext-dev             libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev             libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Configure and build candidate
+        run: |
+          cmake -S . -B build-scale-context             -DCMAKE_BUILD_TYPE=Release             -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-scale-context --config Release --parallel 2 --target Neumaton >/dev/null
+
+      - name: Preserve supervisor slot
+        run: cp Tests/SupervisorContinuityTest.cpp /tmp/scale-context-supervisor.cpp
+
+      - name: Build live candidate corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/LiveScaleContextEquivalenceTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-scale-context --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-scale-context/clean-engine-tests/SupervisorContinuityTest             2>&1 | tee /tmp/scale-context-candidate.log
+          grep '^LIVE_SCALE_CONTEXT_HASH=' /tmp/scale-context-candidate.log             > /tmp/scale-context-candidate-hash.txt
+
+      - name: Build exact pass2 parent
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach /tmp/neumaton-scale-context-parent             1f624bf4edad6a2e65ca29732dd6f8ab0db3a67f
+          cd /tmp/neumaton-scale-context-parent
+          cp "$GITHUB_WORKSPACE/Tests/LiveScaleContextEquivalenceTest.cpp"             Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-parent             -DCMAKE_BUILD_TYPE=Release             -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-parent --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-parent/clean-engine-tests/SupervisorContinuityTest             2>&1 | tee /tmp/scale-context-parent.log
+          grep '^LIVE_SCALE_CONTEXT_HASH=' /tmp/scale-context-parent.log             > /tmp/scale-context-parent-hash.txt
+          diff -u /tmp/scale-context-parent-hash.txt /tmp/scale-context-candidate-hash.txt
+          echo 'SCALE_CONTEXT_LIVE_EXACT_EQUIVALENCE=PASS'
+
+      - name: Detector and engine oracles
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/GoldenDetectorDeterminismTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-scale-context --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-scale-context/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/scale-context-detector.log
+          grep -q '^GOLDEN_DETECTOR_TRACE_HASH=58273352d40c5499$' /tmp/scale-context-detector.log
+
+          cp Tests/GoldenEngineBehaviorCorpusTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-scale-context --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-scale-context/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/scale-context-engine.log
+          grep -q '^GOLDEN_ENGINE_CORPUS_HASH=982b4ad85accdd75$' /tmp/scale-context-engine.log
+          echo 'SCALE_CONTEXT_CORE_ORACLES=PASS'
+
+      - name: Restore and run existing contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp /tmp/scale-context-supervisor.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-scale-context --config Release --parallel 2             --target SupervisorContinuityTest CleanModernPitchEngineTest >/dev/null
+          ./build-scale-context/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/scale-context-supervisor.log
+          ./build-scale-context/clean-engine-tests/CleanModernPitchEngineTest 2>&1 | tee /tmp/scale-context-clean.log
+          ! grep -q '=FAIL' /tmp/scale-context-supervisor.log
+          ! grep -q '=FAIL' /tmp/scale-context-clean.log
+          echo 'SCALE_CONTEXT_EXISTING_CONTRACTS=PASS'
+
+      - name: Final marker
+        run: echo 'V1_LEAN_SCALE_CONTEXT_ABLATION=PASS_EXACT_BEHAVIOR'
