@@ -4693,7 +4693,9 @@ void ModernPitchEngine::updateCorrectionState(
         }
     }
 
-    meterPendingOctave_.store(pending, std::memory_order_relaxed);
+    // Quantizer pending-state no longer exists. Preserve the established
+    // metering contract here; detector octave state is published separately.
+    meterPendingOctave_.store(0, std::memory_order_relaxed);
     meterOctaveState_.store(observation.octaveState, std::memory_order_relaxed);
 }
 
