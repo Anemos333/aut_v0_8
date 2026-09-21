@@ -51,7 +51,6 @@ int main()
                 p.transitionTimeMs = 300.0f * unit(random);
                 p.detectorSensitivity = unit(random);
                 p.formantPreservation = unit(random);
-                p.breathReduction = unit(random);
                 juce::AudioBuffer<float> buffer(ptr.data(), 2, count);
                 engine.process(buffer, scale.data(), static_cast<int>(scale.size()), 261.625565, p);
                 for (int i = 0; i < count; ++i)
