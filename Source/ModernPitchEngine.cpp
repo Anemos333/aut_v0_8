@@ -3136,11 +3136,7 @@ void ModernPitchEngine::prepare(double sampleRate,
     linkedTracker_.prepare(sampleRate_);
     tempoController_.prepare(sampleRate_);
     for (int channel = 0; channel < maxSupportedChannels; ++channel)
-    {
-        channelTrackers_[static_cast<std::size_t>(channel)].prepare(sampleRate_);
         wetRenderers_[static_cast<std::size_t>(channel)].prepare(sampleRate_, latencySamples_);
-        channelTempoControllers_[static_cast<std::size_t>(channel)].prepare(sampleRate_);
-    }
     reset();
 }
 
@@ -3151,15 +3147,8 @@ void ModernPitchEngine::reset() noexcept
     tempoController_.reset();
     linkedCorrection_ = {};
     for (int channel = 0; channel < maxSupportedChannels; ++channel)
-    {
-        channelTrackers_[static_cast<std::size_t>(channel)].reset();
-        channelQuantizers_[static_cast<std::size_t>(channel)].reset();
         wetRenderers_[static_cast<std::size_t>(channel)].reset();
-        channelTempoControllers_[static_cast<std::size_t>(channel)].reset();
-        channelCorrections_[static_cast<std::size_t>(channel)] = {};
-    }
     latestObservation_ = {};
-    latestChannelObservation_.fill(PitchObservation {});
     audibleCorrectionCents_ = 0.0;
     sustainedSamples_ = 0;
 
@@ -4733,26 +4722,9 @@ void ModernPitchEngine::process(
     if (channels <= 0 || samples <= 0)
         return;
 
-    const bool linkedScaleChanged = linkedQuantizer_.setScale(
-        scaleRatios, numberOfScaleRatios, rootFrequency);
-    for (int channel = 0; channel < channels; ++channel)
-    {
-        const bool changed = channelQuantizers_[static_cast<std::size_t>(channel)].setScale(
-            scaleRatios, numberOfScaleRatios, rootFrequency);
-        if (changed)
-        {
-            // SCALE_CHANGE_PRESERVES_AUDIO_CONTINUITY_V1: a UI scale/root
-            // change resets the quantizer's identity, not the audible transport.
-            // The previous owned correction remains continuous until the next
-            // accepted coordinate is immediately quantized in the new scale.
-        }
-    }
-    if (linkedScaleChanged)
-    {
-        // SCALE_CHANGE_PRESERVES_AUDIO_CONTINUITY_V1: never manufacture an
-        // audio hole merely because the selected scale changed between blocks.
-    }
-
+    // LINKED_ONLY_PRODUCT_PATH_V1: one detector/ownership/trajectory family
+    // drives every channel. Rendering remains channel-local.
+    linkedQuantizer_.setScale(scaleRatios, numberOfScaleRatios, rootFrequency);
     linkedTracker_.setRange(safe.minimumPitchHz, safe.maximumPitchHz);
     linkedTracker_.setSensitivity(safe.detectorSensitivity);
     linkedTracker_.setVoiceAuthorityContext(
@@ -4764,30 +4736,10 @@ void ModernPitchEngine::process(
         safe.voiceEventStrength,
         safe.voiceFormantStability,
         safe.voiceLowerFamilyEvidence);
-    for (int channel = 0; channel < channels; ++channel)
-    {
-        channelTrackers_[static_cast<std::size_t>(channel)].setRange(
-            safe.minimumPitchHz, safe.maximumPitchHz);
-        channelTrackers_[static_cast<std::size_t>(channel)].setSensitivity(
-            safe.detectorSensitivity);
-        channelTrackers_[static_cast<std::size_t>(channel)].setVoiceAuthorityContext(
-            safe.voiceEvidenceValid,
-            safe.voiceHarmonicity,
-            safe.voiceBreathiness,
-            safe.voiceBodyEnergy,
-            safe.voiceSpectralReliability,
-            safe.voiceEventStrength,
-            safe.voiceFormantStability,
-            safe.voiceLowerFamilyEvidence);
-    }
 
     tempoController_.beginBlock(hostTempoPosition, safe.tempo, samples);
     if (safe.tempo.mode != CreativeTempo::Mode::off)
         safe.transitionTimeMs = tempoController_.getGlideTimeMs();
-    for (int channel = 0; channel < channels; ++channel)
-        channelTempoControllers_[static_cast<std::size_t>(channel)].beginBlock(
-            hostTempoPosition, safe.tempo, samples);
-
     std::array<float*, maxSupportedChannels> data {};
     for (int channel = 0; channel < channels; ++channel)
     {
@@ -4797,14 +4749,12 @@ void ModernPitchEngine::process(
                 = sanitiseAudioSample(data[static_cast<std::size_t>(channel)][sample]);
     }
 
-    const bool dualMono = safe.stereoMode == StereoMode::dualMono && channels > 1;
-
     // SOUND_EQUALS_CORRECTION_V1: linked pitch analysis must not average L+R.
     // Anti-phase or side-heavy vocals can cancel in that sum and make a clearly
     // audible signal look pitchless. Choose one coherent, highest-energy input
     // channel for this block; this changes analysis authority only, never audio.
     int linkedAnalysisChannel = 0;
-    if (!dualMono && channels > 1)
+    if (channels > 1)
     {
         double bestEnergy = -1.0;
         for (int channel = 0; channel < channels; ++channel)
@@ -4826,130 +4776,56 @@ void ModernPitchEngine::process(
 
     for (int sample = 0; sample < samples; ++sample)
     {
-        if (dualMono)
-        {
-            for (int channel = 0; channel < channels; ++channel)
-            {
-                PitchObservation observation;
-                auto& tracker = channelTrackers_[static_cast<std::size_t>(channel)];
-                auto& correction = channelCorrections_[static_cast<std::size_t>(channel)];
-                if (correction.noteBodyLatched && correction.transportPeriodHz > 0.0)
-                    tracker.setReacquisitionAnchor(static_cast<float>(correction.transportPeriodHz));
-                else
-                    tracker.clearReacquisitionAnchor();
-                const bool rescueSearch = correction.noteBodyLatched
-                    && correction.pitchStaleSamples >= static_cast<int>(0.060 * sampleRate_);
-                const bool detectorWake = correction.trackingState == TrackingState::transition
-                    || (correction.trackingState == TrackingState::acquire
-                        && correction.stateAgeSamples >= static_cast<int>(0.060 * sampleRate_));
-                tracker.setTransitionWake(detectorWake);
-                tracker.setRange(rescueSearch ? std::min(safe.minimumPitchHz, 28.0f) : safe.minimumPitchHz,
-                                 safe.maximumPitchHz);
-                tracker.setSensitivity(rescueSearch ? std::max(safe.detectorSensitivity, 0.98f)
-                                                    : safe.detectorSensitivity);
-                tracker.setRescueMode(rescueSearch); // PITCH_RESCUE_V1
-                if (tracker.processSample(data[static_cast<std::size_t>(channel)][sample],
-                                          observation))
-                {
-                    latestChannelObservation_[static_cast<std::size_t>(channel)] = observation;
-                    updateCorrectionState(
-                        channelCorrections_[static_cast<std::size_t>(channel)],
-                        channelQuantizers_[static_cast<std::size_t>(channel)],
-                        observation, safe);
-                }
-
-                const double controllerCents = advanceCorrection(correction);
-                const auto decision = channelTempoControllers_[static_cast<std::size_t>(channel)]
-                    .processSample(controllerCents,
-                                   correction.desiredCents,
-                                   correction.revision,
-                                   latestChannelObservation_[static_cast<std::size_t>(channel)].onsetStrength,
-                                   correction.targetValid,
-                                   sample,
-                                   safe.tempo,
-                                   static_cast<float>(correction.responseMs));
-                if (decision.waitingForGrid)
-                {
-                    // Freeze the internal trajectory together with the audible
-                    // one. Otherwise it would race to the destination while
-                    // Glide Lock is waiting and jump immediately on release.
-                    correction.currentCents = decision.controllerCents;
-                    correction.velocityCentsPerSecond = 0.0;
-                }
-                const double audible = selectRendererCorrection(
-                    correction, decision.controllerCents);
-                const float rendered =
-                    wetRenderers_[static_cast<std::size_t>(channel)].processSample(
-                        data[static_cast<std::size_t>(channel)][sample], audible,
-                        safe.formantPreservation);
-                // NO_AUDIO_DROPOUT_ON_UNCERTAINTY_V1: detector uncertainty
-                // may delay musical ownership, never audio continuity. Before
-                // the first credible F0 the same single renderer runs at its
-                // current transport (initially 1:1); after first lock, missing
-                // evidence keeps the already-owned correction instead.
-                data[static_cast<std::size_t>(channel)][sample] = rendered;
-                if (channel == 0)
-                {
-                    latestObservation_ = latestChannelObservation_[0];
-                    linkedCorrection_ = correction;
-                    audibleCorrectionCents_ = audible;
-                }
-            }
-        }
+        const float analysis = data[static_cast<std::size_t>(linkedAnalysisChannel)][sample];
+        PitchObservation observation;
+        if (linkedCorrection_.noteBodyLatched && linkedCorrection_.transportPeriodHz > 0.0)
+            linkedTracker_.setReacquisitionAnchor(
+                static_cast<float>(linkedCorrection_.transportPeriodHz));
         else
+            linkedTracker_.clearReacquisitionAnchor();
+        const bool rescueSearch = linkedCorrection_.noteBodyLatched
+            && linkedCorrection_.pitchStaleSamples >= static_cast<int>(0.060 * sampleRate_);
+        const bool detectorWake = linkedCorrection_.trackingState == TrackingState::transition
+            || (linkedCorrection_.trackingState == TrackingState::acquire
+                && linkedCorrection_.stateAgeSamples >= static_cast<int>(0.060 * sampleRate_));
+        linkedTracker_.setTransitionWake(detectorWake);
+        linkedTracker_.setRange(rescueSearch ? std::min(safe.minimumPitchHz, 28.0f) : safe.minimumPitchHz,
+                                safe.maximumPitchHz);
+        linkedTracker_.setSensitivity(rescueSearch ? std::max(safe.detectorSensitivity, 0.98f)
+                                                   : safe.detectorSensitivity);
+        linkedTracker_.setRescueMode(rescueSearch); // PITCH_RESCUE_V1
+        if (linkedTracker_.processSample(analysis, observation))
         {
-            const float analysis = data[static_cast<std::size_t>(linkedAnalysisChannel)][sample];
-            PitchObservation observation;
-            if (linkedCorrection_.noteBodyLatched && linkedCorrection_.transportPeriodHz > 0.0)
-                linkedTracker_.setReacquisitionAnchor(
-                    static_cast<float>(linkedCorrection_.transportPeriodHz));
-            else
-                linkedTracker_.clearReacquisitionAnchor();
-            const bool rescueSearch = linkedCorrection_.noteBodyLatched
-                && linkedCorrection_.pitchStaleSamples >= static_cast<int>(0.060 * sampleRate_);
-            const bool detectorWake = linkedCorrection_.trackingState == TrackingState::transition
-                || (linkedCorrection_.trackingState == TrackingState::acquire
-                    && linkedCorrection_.stateAgeSamples >= static_cast<int>(0.060 * sampleRate_));
-            linkedTracker_.setTransitionWake(detectorWake);
-            linkedTracker_.setRange(rescueSearch ? std::min(safe.minimumPitchHz, 28.0f) : safe.minimumPitchHz,
-                                    safe.maximumPitchHz);
-            linkedTracker_.setSensitivity(rescueSearch ? std::max(safe.detectorSensitivity, 0.98f)
-                                                       : safe.detectorSensitivity);
-            linkedTracker_.setRescueMode(rescueSearch); // PITCH_RESCUE_V1
-            if (linkedTracker_.processSample(analysis, observation))
-            {
-                latestObservation_ = observation;
-                updateCorrectionState(linkedCorrection_, linkedQuantizer_, observation, safe);
-            }
-
-            const double controllerCents = advanceCorrection(linkedCorrection_);
-            const auto decision = tempoController_.processSample(
-                controllerCents,
-                linkedCorrection_.desiredCents,
-                linkedCorrection_.revision,
-                latestObservation_.onsetStrength,
-                linkedCorrection_.targetValid,
-                sample,
-                safe.tempo,
-                static_cast<float>(linkedCorrection_.responseMs));
-            if (decision.waitingForGrid)
-            {
-                linkedCorrection_.currentCents = decision.controllerCents;
-                linkedCorrection_.velocityCentsPerSecond = 0.0;
-            }
-            audibleCorrectionCents_ = selectRendererCorrection(
-                linkedCorrection_, decision.controllerCents);
-            for (int channel = 0; channel < channels; ++channel)
-            {
-                const float rendered =
-                    wetRenderers_[static_cast<std::size_t>(channel)].processSample(
-                        data[static_cast<std::size_t>(channel)][sample], audibleCorrectionCents_,
-                        safe.formantPreservation);
-                // NO_AUDIO_DROPOUT_ON_UNCERTAINTY_V1
-                data[static_cast<std::size_t>(channel)][sample] = rendered;
-            }
+            latestObservation_ = observation;
+            updateCorrectionState(linkedCorrection_, linkedQuantizer_, observation, safe);
         }
 
+        const double controllerCents = advanceCorrection(linkedCorrection_);
+        const auto decision = tempoController_.processSample(
+            controllerCents,
+            linkedCorrection_.desiredCents,
+            linkedCorrection_.revision,
+            latestObservation_.onsetStrength,
+            linkedCorrection_.targetValid,
+            sample,
+            safe.tempo,
+            static_cast<float>(linkedCorrection_.responseMs));
+        if (decision.waitingForGrid)
+        {
+            linkedCorrection_.currentCents = decision.controllerCents;
+            linkedCorrection_.velocityCentsPerSecond = 0.0;
+        }
+        audibleCorrectionCents_ = selectRendererCorrection(
+            linkedCorrection_, decision.controllerCents);
+        for (int channel = 0; channel < channels; ++channel)
+        {
+            const float rendered =
+                wetRenderers_[static_cast<std::size_t>(channel)].processSample(
+                    data[static_cast<std::size_t>(channel)][sample], audibleCorrectionCents_,
+                    safe.formantPreservation);
+            // NO_AUDIO_DROPOUT_ON_UNCERTAINTY_V1
+            data[static_cast<std::size_t>(channel)][sample] = rendered;
+        }
         if (linkedCorrection_.noteBodyLatched
             && linkedCorrection_.trackingState != TrackingState::unvoiced)
         {
@@ -4961,9 +4837,7 @@ void ModernPitchEngine::process(
         }
     }
 
-    const auto tempoMeter = dualMono
-        ? channelTempoControllers_[0].getMetering()
-        : tempoController_.getMetering();
+    const auto tempoMeter = tempoController_.getMetering();
     publishMetering(latestObservation_, linkedCorrection_,
                     audibleCorrectionCents_, tempoMeter);
 }
