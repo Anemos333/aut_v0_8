@@ -1,7 +1,6 @@
 #include "SingleWetSpectralRenderer.h"
 #include <algorithm>
 #include <cmath>
-#include <limits>
 namespace {
 constexpr double pi=3.1415926535897932384626433832795, twoPi=2.0*pi;
 int nextPowerOfTwo(int v) noexcept { int r=1; while(r<v) r<<=1; return r; }
@@ -97,8 +96,6 @@ void SingleWetSpectralRenderer::prepare(double sampleRate,
         const double value = window_[static_cast<std::size_t>(index)];
         overlapNormalisation += value * value;
     }
-    expectedOlaCoverage_ = static_cast<float>(
-        std::max(1.0e-9, overlapNormalisation));
     synthesisGain_ = static_cast<float>(1.0
         / std::max(1.0e-9, overlapNormalisation));
     envelopeUpdateInterval_ = 2;
@@ -110,7 +107,6 @@ void SingleWetSpectralRenderer::prepare(double sampleRate,
     previousAnalysisPhases_.assign(static_cast<std::size_t>(positiveBinCount), 0.0f);
     trueSourceBins_.assign(static_cast<std::size_t>(positiveBinCount), 0.0);
     propagatedPhases_.assign(static_cast<std::size_t>(positiveBinCount), 0.0);
-    depositedMagnitudeSums_.assign(static_cast<std::size_t>(positiveBinCount), 0.0f);
     logMagnitudes_.assign(static_cast<std::size_t>(positiveBinCount), 0.0f);
     rawSpectralEnvelope_.assign(static_cast<std::size_t>(positiveBinCount), 1.0f);
     spectralEnvelope_.assign(static_cast<std::size_t>(positiveBinCount), 1.0f);
@@ -119,12 +115,6 @@ void SingleWetSpectralRenderer::prepare(double sampleRate,
     layer_.spectrum.assign(static_cast<std::size_t>(frameSize_), Complex {});
     layer_.synthesisPhases.assign(static_cast<std::size_t>(positiveBinCount), 0.0);
     layer_.outputAccumulationRing.assign(static_cast<std::size_t>(outputRingSize), 0.0f);
-    layer_.diagnosticContributionEnergyRing.assign(
-        static_cast<std::size_t>(outputRingSize), 0.0f);
-    layer_.diagnosticCoverageRing.assign(
-        static_cast<std::size_t>(outputRingSize), 0.0f);
-    layer_.diagnosticContributionCountRing.assign(
-        static_cast<std::size_t>(outputRingSize), 0u);
     layer_.phaseInitialised = false;
 
     // FULL_SPECTRUM_SINGLE_TRANSPORT_V1
@@ -150,12 +140,6 @@ void SingleWetSpectralRenderer::clearLayerOutput(SynthesisLayer& layer) noexcept
 {
     std::fill(layer.outputAccumulationRing.begin(),
               layer.outputAccumulationRing.end(), 0.0f);
-    std::fill(layer.diagnosticContributionEnergyRing.begin(),
-              layer.diagnosticContributionEnergyRing.end(), 0.0f);
-    std::fill(layer.diagnosticCoverageRing.begin(),
-              layer.diagnosticCoverageRing.end(), 0.0f);
-    std::fill(layer.diagnosticContributionCountRing.begin(),
-              layer.diagnosticContributionCountRing.end(), 0u);
 }
 void SingleWetSpectralRenderer::reset() noexcept
 {
@@ -166,7 +150,6 @@ void SingleWetSpectralRenderer::reset() noexcept
     std::fill(previousAnalysisPhases_.begin(), previousAnalysisPhases_.end(), 0.0f);
     std::fill(trueSourceBins_.begin(), trueSourceBins_.end(), 0.0);
     std::fill(propagatedPhases_.begin(), propagatedPhases_.end(), 0.0);
-    std::fill(depositedMagnitudeSums_.begin(), depositedMagnitudeSums_.end(), 0.0f);
     std::fill(logMagnitudes_.begin(), logMagnitudes_.end(), 0.0f);
     std::fill(rawSpectralEnvelope_.begin(), rawSpectralEnvelope_.end(), 1.0f);
     std::fill(spectralEnvelope_.begin(), spectralEnvelope_.end(), 1.0f);
@@ -181,11 +164,6 @@ void SingleWetSpectralRenderer::reset() noexcept
     envelopeInitialised_ = false;
     envelopeFrameCounter_ = 0;
     smoothedFormantPreservation_ = 0.0f;
-    diagnosticHopOutputEnergy_ = 0.0;
-    diagnosticHopContributionEnergy_ = 0.0;
-    diagnosticHopCoverageSum_ = 0.0;
-    diagnosticHopSampleCount_ = 0;
-    diagnosticHopMinimumContributionCount_ = 4;
     diagnosticBlock_ = {};
 }
 
@@ -408,9 +386,6 @@ void SingleWetSpectralRenderer::synthesiseLayer(
     int positiveBins) noexcept
 {
     std::fill(layer.spectrum.begin(), layer.spectrum.end(), Complex {});
-    std::fill(depositedMagnitudeSums_.begin(),
-              depositedMagnitudeSums_.end(), 0.0f);
-
     // Correction authority comes from the musical trajectory. The renderer
     // must not reinterpret register or reduce the requested interval.
     const double safeCents = sanitiseCorrectionCents(correctionCents);
@@ -518,8 +493,6 @@ void SingleWetSpectralRenderer::synthesiseLayer(
             const std::size_t targetIndex0 =
                 static_cast<std::size_t>(targetBin0);
             layer.spectrum[targetIndex0] += polar * lowerWeight;
-            depositedMagnitudeSums_[targetIndex0] +=
-                outputMagnitude * std::abs(lowerWeight);
         }
 
         const int targetBin1 = targetBin0 + 1;
@@ -528,103 +501,8 @@ void SingleWetSpectralRenderer::synthesiseLayer(
             const std::size_t targetIndex1 =
                 static_cast<std::size_t>(targetBin1);
             layer.spectrum[targetIndex1] += polar * upperWeight;
-            depositedMagnitudeSums_[targetIndex1] +=
-                outputMagnitude * std::abs(upperWeight);
         }
     }
-
-    // RENDERER_PHASE_COHERENCE_DIAGNOSTIC_V1
-    // Observe only: none of these values feeds synthesis or transport.
-    double depositedSum = 0.0;
-    double coherentSum = 0.0;
-    float maximumDeposit = 0.0f;
-    for (int bin = 0; bin <= positiveBins; ++bin)
-    {
-        const std::size_t index = static_cast<std::size_t>(bin);
-        const float deposited = depositedMagnitudeSums_[index];
-        depositedSum += static_cast<double>(deposited);
-        coherentSum += static_cast<double>(std::abs(layer.spectrum[index]));
-        maximumDeposit = std::max(maximumDeposit, deposited);
-    }
-
-    const float preIfftCoherence = depositedSum > 1.0e-12
-        ? static_cast<float>(std::clamp(coherentSum / depositedSum, 0.0, 1.0))
-        : 1.0f;
-
-    float strongBinCoherence = 1.0f;
-    const float strongDepositFloor = 0.04f * maximumDeposit;
-    if (maximumDeposit > 1.0e-12f)
-    {
-        for (int bin = 0; bin <= positiveBins; ++bin)
-        {
-            const std::size_t index = static_cast<std::size_t>(bin);
-            const float deposited = depositedMagnitudeSums_[index];
-            if (deposited < strongDepositFloor)
-                continue;
-            const float coherence = deposited > 1.0e-12f
-                ? std::clamp(std::abs(layer.spectrum[index]) / deposited,
-                             0.0f, 1.0f)
-                : 1.0f;
-            strongBinCoherence = std::min(strongBinCoherence, coherence);
-        }
-    }
-
-    int dominantBin = 0;
-    float dominantMagnitude = 0.0f;
-    for (int bin = 0; bin <= positiveBins; ++bin)
-    {
-        const float magnitude = magnitudes_[static_cast<std::size_t>(bin)];
-        if (magnitude > dominantMagnitude)
-        {
-            dominantMagnitude = magnitude;
-            dominantBin = bin;
-        }
-    }
-
-    double ridgeWeight = 0.0;
-    double ridgeMean = 0.0;
-    for (int bin = std::max(0, dominantBin - 2);
-         bin <= std::min(positiveBins, dominantBin + 2);
-         ++bin)
-    {
-        const std::size_t index = static_cast<std::size_t>(bin);
-        const double weight = static_cast<double>(magnitudes_[index]);
-        ridgeWeight += weight;
-        ridgeMean += weight * trueSourceBins_[index];
-    }
-
-    float ridgeSpreadBins = 0.0f;
-    if (ridgeWeight > 1.0e-12)
-    {
-        ridgeMean /= ridgeWeight;
-        double variance = 0.0;
-        for (int bin = std::max(0, dominantBin - 2);
-             bin <= std::min(positiveBins, dominantBin + 2);
-             ++bin)
-        {
-            const std::size_t index = static_cast<std::size_t>(bin);
-            const double weight = static_cast<double>(magnitudes_[index]);
-            const double delta = trueSourceBins_[index] - ridgeMean;
-            variance += weight * delta * delta;
-        }
-        ridgeSpreadBins = static_cast<float>(std::sqrt(
-            std::max(0.0, variance / ridgeWeight)));
-    }
-
-    ++diagnosticBlock_.frameCount;
-    diagnosticBlock_.valid = true;
-    const bool newWorstFrame =
-        preIfftCoherence < diagnosticBlock_.minimumPreIfftCoherence
-        || strongBinCoherence < diagnosticBlock_.minimumStrongBinCoherence
-        || ridgeSpreadBins > diagnosticBlock_.maximumDominantRidgeSpreadBins;
-    diagnosticBlock_.minimumPreIfftCoherence = std::min(
-        diagnosticBlock_.minimumPreIfftCoherence, preIfftCoherence);
-    diagnosticBlock_.minimumStrongBinCoherence = std::min(
-        diagnosticBlock_.minimumStrongBinCoherence, strongBinCoherence);
-    diagnosticBlock_.maximumDominantRidgeSpreadBins = std::max(
-        diagnosticBlock_.maximumDominantRidgeSpreadBins, ridgeSpreadBins);
-    if (newWorstFrame)
-        diagnosticBlock_.worstFrameEndSample = frameEndSample;
 
     layer.phaseInitialised = true;
     layer.spectrum[0] = Complex(layer.spectrum[0].real(), 0.0f);
@@ -641,10 +519,6 @@ void SingleWetSpectralRenderer::synthesiseLayer(
     fft(layer.spectrum, true);
 
     const std::int64_t outputStartSample = frameEndSample + 1;
-    double frameOverlapDot = 0.0;
-    double frameOutputEnergy = 0.0;
-    double existingOlaEnergy = 0.0;
-
     for (int index = 0; index < frameSize_; ++index)
     {
         const float synthesisWindow = window_[static_cast<std::size_t>(index)];
@@ -655,50 +529,10 @@ void SingleWetSpectralRenderer::synthesiseLayer(
         const std::size_t outputRingIndex =
             static_cast<std::size_t>(outputIndex);
 
-        // OLA_FRAME_CORRELATION_DIAGNOSTIC_V1
-        // Observe the relationship between this new frame and the already
-        // scheduled OLA before changing the audible accumulator.
-        const float existingOla =
-            layer.outputAccumulationRing[outputRingIndex];
-        frameOverlapDot += static_cast<double>(output)
-                         * static_cast<double>(existingOla);
-        frameOutputEnergy += static_cast<double>(output)
-                           * static_cast<double>(output);
-        existingOlaEnergy += static_cast<double>(existingOla)
-                           * static_cast<double>(existingOla);
-
         layer.outputAccumulationRing[outputRingIndex] += output;
-
-        // OLA_ACCUMULATION_DIAGNOSTIC_V2
-        // Shadow energy/coverage only. These rings never feed synthesis.
-        layer.diagnosticContributionEnergyRing[outputRingIndex] +=
-            output * output;
-        layer.diagnosticCoverageRing[outputRingIndex] +=
-            synthesisWindow * synthesisWindow;
-        if (layer.diagnosticContributionCountRing[outputRingIndex]
-            < std::numeric_limits<std::uint8_t>::max())
-        {
-            ++layer.diagnosticContributionCountRing[outputRingIndex];
-        }
     }
 
-    if (frameEndSample >= static_cast<std::int64_t>(2 * frameSize_)
-        && frameOutputEnergy > 1.0e-12
-        && existingOlaEnergy > 1.0e-12)
-    {
-        const double denominator =
-            std::sqrt(frameOutputEnergy * existingOlaEnergy);
-        const float correlation = static_cast<float>(std::clamp(
-            frameOverlapDot / denominator, -1.0, 1.0));
 
-        diagnosticBlock_.frameOverlapCorrelationValid = true;
-        if (correlation < diagnosticBlock_.minimumFrameOverlapCorrelation)
-        {
-            diagnosticBlock_.minimumFrameOverlapCorrelation = correlation;
-            diagnosticBlock_.worstFrameCorrelationEndSample =
-                frameEndSample;
-        }
-    }
 }
 
 void SingleWetSpectralRenderer::processFrame(
@@ -796,9 +630,9 @@ void SingleWetSpectralRenderer::processFrame(
 SingleWetSpectralRenderer::Diagnostics
 SingleWetSpectralRenderer::consumeDiagnostics() noexcept
 {
-    Diagnostics result = diagnosticBlock_;
-    diagnosticBlock_ = {};
-    return result;
+    // LEAN_RENDERER_DIAGNOSTICS_STRIPPED_V1
+    // Full instrumentation remains isolated on the diagnostic branch.
+    return {};
 }
 
 float SingleWetSpectralRenderer::consumeLayerOutput(
@@ -808,71 +642,7 @@ float SingleWetSpectralRenderer::consumeLayerOutput(
     const int outputIndex = static_cast<int>(sample & outputRingMask_);
     const std::size_t index = static_cast<std::size_t>(outputIndex);
     const float accumulated = layer.outputAccumulationRing[index];
-    const float contributionEnergy =
-        layer.diagnosticContributionEnergyRing[index];
-    const float coverage = layer.diagnosticCoverageRing[index];
-    const int contributionCount = static_cast<int>(
-        layer.diagnosticContributionCountRing[index]);
-
-    // OLA_ACCUMULATION_DIAGNOSTIC_V2
-    // Integrate over one complete hop, eliminating ordinary sample zero-crossing
-    // false positives. outputEnergy is the energy actually heard; partEnergy is
-    // the sum of the energies of the four individual overlapping frame pieces.
-    if (sample >= static_cast<std::int64_t>(2 * frameSize_))
-    {
-        diagnosticHopOutputEnergy_ +=
-            static_cast<double>(accumulated) * static_cast<double>(accumulated);
-        diagnosticHopContributionEnergy_ +=
-            static_cast<double>(contributionEnergy);
-        diagnosticHopCoverageSum_ += static_cast<double>(coverage);
-        diagnosticHopMinimumContributionCount_ = std::min(
-            diagnosticHopMinimumContributionCount_, contributionCount);
-        ++diagnosticHopSampleCount_;
-
-        if (diagnosticHopSampleCount_ >= hopSize_)
-        {
-            if (diagnosticHopContributionEnergy_ > 1.0e-12
-                && expectedOlaCoverage_ > 1.0e-9f)
-            {
-                const float energyRatio = static_cast<float>(
-                    diagnosticHopOutputEnergy_
-                    / diagnosticHopContributionEnergy_);
-                const float coverageRatio = static_cast<float>(
-                    diagnosticHopCoverageSum_
-                    / (static_cast<double>(diagnosticHopSampleCount_)
-                       * static_cast<double>(expectedOlaCoverage_)));
-
-                diagnosticBlock_.olaValid = true;
-                const bool worse =
-                    energyRatio < diagnosticBlock_.minimumOlaEnergyRatio
-                    || coverageRatio < diagnosticBlock_.minimumOlaCoverageRatio
-                    || diagnosticHopMinimumContributionCount_
-                        < diagnosticBlock_.minimumOlaContributionCount;
-
-                diagnosticBlock_.minimumOlaEnergyRatio = std::min(
-                    diagnosticBlock_.minimumOlaEnergyRatio, energyRatio);
-                diagnosticBlock_.minimumOlaCoverageRatio = std::min(
-                    diagnosticBlock_.minimumOlaCoverageRatio, coverageRatio);
-                diagnosticBlock_.minimumOlaContributionCount = std::min(
-                    diagnosticBlock_.minimumOlaContributionCount,
-                    diagnosticHopMinimumContributionCount_);
-
-                if (worse)
-                    diagnosticBlock_.worstOlaHopEndSample = sample;
-            }
-
-            diagnosticHopOutputEnergy_ = 0.0;
-            diagnosticHopContributionEnergy_ = 0.0;
-            diagnosticHopCoverageSum_ = 0.0;
-            diagnosticHopSampleCount_ = 0;
-            diagnosticHopMinimumContributionCount_ = 4;
-        }
-    }
-
     layer.outputAccumulationRing[index] = 0.0f;
-    layer.diagnosticContributionEnergyRing[index] = 0.0f;
-    layer.diagnosticCoverageRing[index] = 0.0f;
-    layer.diagnosticContributionCountRing[index] = 0u;
     return accumulated * synthesisGain_;
 }
 
@@ -911,9 +681,6 @@ float SingleWetSpectralRenderer::processBypassedSample(float inputSample) noexce
         const std::size_t index = static_cast<std::size_t>(
             currentSample & outputRingMask_);
         layer_.outputAccumulationRing[index]=0.0f;
-        layer_.diagnosticContributionEnergyRing[index]=0.0f;
-        layer_.diagnosticCoverageRing[index]=0.0f;
-        layer_.diagnosticContributionCountRing[index]=0u;
     }
     ++inputSampleCounter_; return sanitiseAudioSample(delayed);
 }
