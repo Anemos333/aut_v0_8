@@ -764,6 +764,42 @@ ModernPitchEngine::MultiRatePitchTracker::measureCoordinate(
         }
     }
 
+    // DIRECT_HIGH_YIN_FIRST_MINIMUM_V1, recomposed as measurement geometry:
+    // above the existing 900 Hz half-rate limit, the full-rate YIN first
+    // minimum is the native period coordinate. It no longer requires harmonic
+    // cleanliness to be allowed to exist.
+    if (thresholdTau >= 2
+        && effectiveSampleRate >= sampleRate_ * 0.75
+        && effectiveSampleRate / static_cast<double>(thresholdTau) > 900.0)
+    {
+        bestTau = thresholdTau;
+        bestPeriodicity = residualLagCorrelation(bestTau);
+
+        const float yinConfidence = clamp01(
+            1.0f - difference_[static_cast<std::size_t>(bestTau)]);
+        float cycleFamilySum = bestPeriodicity;
+        float cycleFamilyWeight = 1.0f;
+        if (2 * bestTau < analysisLength - 8)
+        {
+            cycleFamilySum += 0.70f * residualLagCorrelation(2 * bestTau);
+            cycleFamilyWeight += 0.70f;
+        }
+        if (3 * bestTau < analysisLength - 8)
+        {
+            cycleFamilySum += 0.45f * residualLagCorrelation(3 * bestTau);
+            cycleFamilyWeight += 0.45f;
+        }
+        const float cycleFamily = clamp01(cycleFamilySum / cycleFamilyWeight);
+        const float periodsInWindow = static_cast<float>(analysisLength)
+                                    / static_cast<float>(bestTau);
+        const float periodSupport = std::clamp(periodsInWindow / 2.2f, 0.55f, 1.0f);
+        bestScore = (0.44f * yinConfidence
+                   + 0.22f * bestPeriodicity
+                   + 0.17f * cycleFamily)
+                  * periodSupport
+                  * (0.82f + 0.18f * snrSupport);
+    }
+
     if (bestTau < 2)
         return result;
 
