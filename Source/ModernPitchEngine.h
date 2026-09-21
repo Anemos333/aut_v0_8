@@ -41,19 +41,17 @@ public:
 
     struct Parameters
     {
+        // LEAN_PARAMETERS_V1: only fields with an active V1 consumer remain.
         float amount = 1.0f;
         float retuneTimeMs = 8.0f;
         float transitionTimeMs = 35.0f;
-        float preserveVibrato = 0.70f;
         float humanize = 0.20f;
         float formantPreservation = 0.90f;
-        float transientProtection = 0.85f;
         float detectorSensitivity = 0.70f;
         float maximumCorrectionSemitones = 12.0f;
         float minimumPitchHz = 45.0f;
         float maximumPitchHz = 1600.0f;
         StereoMode stereoMode = StereoMode::linkedMidSide;
-        float breathReduction = 0.50f;
 
         // Analysis-only voice evidence supplied by LivePitchProcessor. These
         // fields classify note body vs breath; they never scale Amount or mix
@@ -508,7 +506,6 @@ private:
         bool setScale(const double* ratios, int ratioCount,
                       double rootFrequency) noexcept;
         [[nodiscard]] float minimumStepCents() const noexcept { return minStepCents_; }
-        [[nodiscard]] float asymmetry() const noexcept { return asymmetry_; }
         [[nodiscard]] double nearestTargetLog2(double inputLog2) const noexcept;
         [[nodiscard]] double adjacentTargetLog2(double currentTargetLog2,
                                                 int direction) const noexcept;
@@ -522,7 +519,6 @@ private:
         double rootLog2_ = 0.0;
         std::uint64_t hash_ = 0;
         float minStepCents_ = 1200.0f;
-        float asymmetry_ = 0.0f;
     };
 
     struct CorrectionState
@@ -596,7 +592,6 @@ private:
 
     [[nodiscard]] static float clamp01(float value) noexcept;
     [[nodiscard]] static double safeLog2(double value) noexcept;
-    [[nodiscard]] static double wrapToNearestOctave(double cents) noexcept;
     [[nodiscard]] static int latencyForMode(LatencyMode mode) noexcept;
     [[nodiscard]] float adaptiveHysteresis(const Parameters& parameters,
                                            const ScaleQuantizer& quantizer,
