@@ -44,16 +44,13 @@ public:
         float amount = 1.0f;
         float retuneTimeMs = 8.0f;
         float transitionTimeMs = 35.0f;
-        float preserveVibrato = 0.70f;
         float humanize = 0.20f;
         float formantPreservation = 0.90f;
-        float transientProtection = 0.85f;
         float detectorSensitivity = 0.70f;
         float maximumCorrectionSemitones = 12.0f;
         float minimumPitchHz = 45.0f;
         float maximumPitchHz = 1600.0f;
         StereoMode stereoMode = StereoMode::linkedMidSide;
-        float breathReduction = 0.50f;
 
         // Analysis-only voice evidence supplied by LivePitchProcessor. These
         // fields classify note body vs breath; they never scale Amount or mix
