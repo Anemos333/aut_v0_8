@@ -1,0 +1,118 @@
+name: Validate v1 lean architecture pass3
+
+on:
+  push:
+    branches:
+      - v1-lean-architecture-pass3
+    paths:
+      - Source/ModernPitchEngine.cpp
+      - Source/ModernPitchEngine.h
+      - Tests/SupervisorContinuityTest.cpp
+      - .github/workflows/validate-v1-lean-architecture-pass3.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout pass3
+        uses: actions/checkout@v4
+        with:
+          ref: v1-lean-architecture-pass3
+          fetch-depth: 0
+
+      - name: Guard architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor 1f624bf4edad6a2e65ca29732dd6f8ab0db3a67f HEAD
+          grep -q 'QUANTIZER_STATE_ABLATION_V1' Source/ModernPitchEngine.cpp
+          grep -q 'HOLD_OWNERSHIP_BOUNDARY_V1' Tests/SupervisorContinuityTest.cpp
+          ! grep -q 'hold_keeps_owned_degree_inside_user_cent_radius' Tests/SupervisorContinuityTest.cpp
+          ! grep -q 'voiceAuthorityEventStrength_' Source/ModernPitchEngine.h Source/ModernPitchEngine.cpp
+          ! grep -q 'maximumBlockSize_' Source/ModernPitchEngine.h Source/ModernPitchEngine.cpp
+          ! grep -q 'meterOnsetStrength_' Source/ModernPitchEngine.h Source/ModernPitchEngine.cpp
+          echo 'LEAN_PASS3_SCOPE=PASS'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y             libasound2-dev libjack-jackd2-dev ladspa-sdk             libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev             libx11-dev libxcomposite-dev libxcursor-dev libxext-dev             libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev             libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Configure and build full plugin
+        run: |
+          cmake -S . -B build-pass3             -DCMAKE_BUILD_TYPE=Release             -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-pass3 --config Release --parallel 2 --target Neumaton >/dev/null
+
+      - name: Preserve test slots
+        run: |
+          cp Tests/SupervisorContinuityTest.cpp /tmp/pass3-supervisor.cpp
+          cp Tests/SingleWetSpectralRendererTest.cpp /tmp/pass3-renderer.cpp
+
+      - name: Detector oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/GoldenDetectorDeterminismTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-pass3 --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          for run in 1 2 3; do
+            ./build-pass3/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee "/tmp/pass3-detector-$run.log"
+            grep -q '^GOLDEN_DETECTOR_TRACE_HASH=58273352d40c5499$' "/tmp/pass3-detector-$run.log"
+          done
+          echo 'LEAN_PASS3_DETECTOR_BIT_EXACT=PASS'
+
+      - name: Correction trajectory oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/CorrectionTrajectoryGoldenTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-pass3 --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-pass3/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/pass3-trajectory.log
+          grep -q '^CORRECTION_TRAJECTORY_HASH=3c958f8178c118a3$' /tmp/pass3-trajectory.log
+          echo 'LEAN_PASS3_TRAJECTORY_EXACT=PASS'
+
+      - name: End-to-end corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/GoldenEngineBehaviorCorpusTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-pass3 --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-pass3/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/pass3-engine.log
+          grep -q '^GOLDEN_ENGINE_BEHAVIOR_CORPUS=PASS scenarios=14$' /tmp/pass3-engine.log
+          grep -q '^GOLDEN_ENGINE_CORPUS_HASH=982b4ad85accdd75$' /tmp/pass3-engine.log
+          echo 'LEAN_PASS3_ENGINE_EXACT=PASS'
+
+      - name: Renderer audio hash
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/RendererDiagnosticTransparencyTest.cpp Tests/SingleWetSpectralRendererTest.cpp
+          cmake --build build-pass3 --config Release --parallel 2 --target SingleWetSpectralRendererTest >/dev/null
+          ./build-pass3/clean-engine-tests/SingleWetSpectralRendererTest 2>&1 | tee /tmp/pass3-renderer.log
+          grep -q '^RENDERER_TRANSPARENCY_HASH_256=ce9950c8dec7364$' /tmp/pass3-renderer.log
+          grep -q '^RENDERER_TRANSPARENCY_HASH_512=685aa631a64ef991$' /tmp/pass3-renderer.log
+          echo 'LEAN_PASS3_RENDERER_EXACT=PASS'
+
+      - name: Normal supervisor and engine contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp /tmp/pass3-supervisor.cpp Tests/SupervisorContinuityTest.cpp
+          cp /tmp/pass3-renderer.cpp Tests/SingleWetSpectralRendererTest.cpp
+          cmake --build build-pass3 --config Release --parallel 2             --target SupervisorContinuityTest CleanModernPitchEngineTest SingleWetSpectralRendererTest >/dev/null
+          ./build-pass3/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/pass3-supervisor.log
+          ./build-pass3/clean-engine-tests/CleanModernPitchEngineTest 2>&1 | tee /tmp/pass3-clean.log
+          ./build-pass3/clean-engine-tests/SingleWetSpectralRendererTest 2>&1 | tee /tmp/pass3-renderer-contracts.log
+          ! grep -q '=FAIL' /tmp/pass3-supervisor.log
+          ! grep -q '=FAIL' /tmp/pass3-clean.log
+          ! grep -q '=FAIL' /tmp/pass3-renderer-contracts.log
+          grep -q 'hold_is_owned_by_engine_identity_boundary=PASS' /tmp/pass3-supervisor.log
+          echo 'LEAN_PASS3_NORMAL_CONTRACTS=PASS'
+
+      - name: Final marker
+        run: |
+          echo 'V1_LEAN_ARCHITECTURE_PASS3=PASS_EXACT_BEHAVIOR'
+          echo 'QUANTIZER_OWNS_GEOMETRY_ONLY=PASS'
