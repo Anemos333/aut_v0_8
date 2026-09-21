@@ -214,10 +214,8 @@ void MicrotonalAutotuneAudioProcessor::prepareToPlay (double sampleRate, int sam
         apvts.getRawParameterValue ("vibratoPreserve")->load() / 100.0f);
     livePitchProcessor.setAdvancedParameters (
         35.0f,   // transitionMs
-        vibratoPreserve, // preserveVibrato: same visible authority in every mode
         humanizeVal,
         0.90f,   // formantPreservation
-        0.85f,   // transientProtection
         0.70f,   // detectorSensitivity
         12.0f,   // maximumCorrectionSemitones
         45.0f,   // minimumPitchHz
@@ -592,17 +590,8 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
     const float humanizeVal = humanizePct / 100.0f;
     const float outGain = juce::Decibels::decibelsToGain(outVolumeDb);
 
-    for (int channel = 0; channel < totalNumInputChannels; ++channel)
-    {
-        float* data = buffer.getWritePointer (channel);
-        for (int sample = 0; sample < numSamples; ++sample)
-        {
-            float value = data[sample];
-            value = (! std::isfinite (value) || std::fpclassify (value) == FP_SUBNORMAL)
-                ? 0.0f : juce::jlimit (-32.0f, 32.0f, value);
-            data[sample] = value;
-        }
-    }
+    // PLUGIN_INPUT_SANITIZE_OWNED_DOWNSTREAM_V1: avoid a third full-buffer
+    // sanitize pass; analysis and public engine DSP boundaries sanitize independently.
 
     const int snapshotIndex = acquireScaleSnapshot();
     const auto& scaleSnapshot = scaleSnapshotSlots_[static_cast<std::size_t> (snapshotIndex)].value;
@@ -617,10 +606,8 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
 
     livePitchProcessor.setAdvancedParameters (
         35.0f,   // transitionMs
-        vibratoPreserve, // preserveVibrato: same visible authority in every mode
         humanizeVal,
         0.90f,   // formantPreservation
-        0.85f,   // transientProtection
         0.70f,   // detectorSensitivity
         12.0f,   // maximumCorrectionSemitones
         45.0f,   // minimumPitchHz
