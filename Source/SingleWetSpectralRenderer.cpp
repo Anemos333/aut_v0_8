@@ -643,7 +643,9 @@ float SingleWetSpectralRenderer::processSample(
     double correctionCents,
     float formantPreservation) noexcept
 {
-    inputSample = sanitiseAudioSample(inputSample);
+    // RENDERER_ACTIVE_INPUT_SANITIZE_OWNED_UPSTREAM_V1:
+    // Active synthesis receives the already-sanitized ModernPitchEngine buffer.
+    // Keep output and bypass sanitizers: they protect different boundaries.
     if (frameSize_ <= 0 || inputRing_.empty())
     {
         // ACTIVE_PATH_NEVER_DRY_FALLBACK_V1: an invalid lifecycle state
