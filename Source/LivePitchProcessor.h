@@ -138,14 +138,8 @@ public:
         parameters_.vibratoPreserve = std::clamp(vibratoPreserve, 0.0f, 1.0f);
         parameters_.preserveVibrato = parameters_.vibratoPreserve;
 
-        const float h = parameters_.lockHysteresis / 80.0f;
-        const float hysteresisStrictness = h * h * (3.0f - 2.0f * h); // smoothstep
-
-        // AUTHORITY_CONTROLS_EXPLICIT_V1: Hold owns target-hold prudence.
-        // No latency mode may add hidden strictness when the visible Hold control
-        // is at zero. This does not alter the renderer or correction depth.
-        parameters_.lockStrictness = scaleLock ? hysteresisStrictness : 0.0f;
-        parameters_.hardLockActive = scaleLock;
+        // HOLD_SINGLE_OWNER_V1: the visible Hold radius is passed literally.
+        // No derived strictness or hidden hard-lock state exists downstream.
     }
 
     void setTempoHostPosition(const CreativeTempo::HostPosition& position) noexcept
