@@ -223,8 +223,6 @@ int main()
     base.minimumPitchHz = 70.0f;
     base.maximumPitchHz = 1200.0f;
     base.maximumCorrectionSemitones = 12.0f;
-    base.stereoMode = ModernPitchEngine::StereoMode::linkedMidSide;
-
     const std::vector<double> unison { 1.0 };
     const auto steady452 = [](double) { return 452.0; };
 
