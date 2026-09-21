@@ -2487,7 +2487,10 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
     PitchObservation& observation) noexcept
 {
     observation = {};
-    inputSample = sanitiseAudioSample(inputSample);
+    // TRACKER_INPUT_SANITIZE_OWNED_UPSTREAM_V1:
+    // ModernPitchEngine sanitizes every public input sample before the private
+    // tracker sees it. Avoid repeating finite/subnormal/clamp checks on the
+    // detector hot path.
     if (std::abs(inputSample) > numericalPresenceSample)
         presenceSinceLastHop_ = true;
 
