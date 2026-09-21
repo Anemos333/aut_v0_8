@@ -23,12 +23,6 @@ public:
         quality = 2
     };
 
-    enum class StereoMode : int
-    {
-        linkedMidSide = 0,
-        dualMono = 1
-    };
-
     enum class TrackingState : int
     {
         unvoiced = 0,
@@ -41,6 +35,8 @@ public:
 
     struct Parameters
     {
+        // LINKED_ONLY_PRODUCT_PATH_V1: stereo channels share one detector,
+        // ownership state and correction trajectory; rendering remains per-channel.
         // LEAN_PARAMETERS_V1: only fields with an active V1 consumer remain.
         float amount = 1.0f;
         float retuneTimeMs = 8.0f;
@@ -51,7 +47,6 @@ public:
         float maximumCorrectionSemitones = 12.0f;
         float minimumPitchHz = 45.0f;
         float maximumPitchHz = 1600.0f;
-        StereoMode stereoMode = StereoMode::linkedMidSide;
 
         // Analysis-only voice evidence supplied by LivePitchProcessor. These
         // fields classify note body vs breath; they never scale Amount or mix
@@ -595,16 +590,11 @@ private:
     LatencyMode latencyMode_ = LatencyMode::live;
 
     MultiRatePitchTracker linkedTracker_;
-    std::array<MultiRatePitchTracker, maxSupportedChannels> channelTrackers_ {};
     ScaleQuantizer linkedQuantizer_;
-    std::array<ScaleQuantizer, maxSupportedChannels> channelQuantizers_ {};
     std::array<SingleWetSpectralRenderer, maxSupportedChannels> wetRenderers_ {};
     CreativeTempo::Controller tempoController_;
-    std::array<CreativeTempo::Controller, maxSupportedChannels> channelTempoControllers_ {};
     CorrectionState linkedCorrection_;
-    std::array<CorrectionState, maxSupportedChannels> channelCorrections_ {};
     PitchObservation latestObservation_ {};
-    std::array<PitchObservation, maxSupportedChannels> latestChannelObservation_ {};
     double audibleCorrectionCents_ = 0.0;
     std::int64_t sustainedSamples_ = 0;
 
