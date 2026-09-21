@@ -627,13 +627,6 @@ void SingleWetSpectralRenderer::processFrame(
     analysisPhaseInitialised_ = true;
 }
 
-SingleWetSpectralRenderer::Diagnostics
-SingleWetSpectralRenderer::consumeDiagnostics() noexcept
-{
-    // LEAN_RENDERER_DIAGNOSTICS_STRIPPED_V1
-    // Full instrumentation remains isolated on the diagnostic branch.
-    return {};
-}
 
 float SingleWetSpectralRenderer::consumeLayerOutput(
     SynthesisLayer& layer,
