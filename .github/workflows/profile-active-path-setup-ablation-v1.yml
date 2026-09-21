@@ -36,11 +36,11 @@ jobs:
           cmake -S . -B build-candidate             -DCMAKE_BUILD_TYPE=Release             -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
           cmake --build build-candidate --config Release --parallel 2             --target SupervisorContinuityTest >/dev/null
 
-      - name: Build pass4 parent benchmark
+      - name: Build pass6 parent benchmark
         shell: bash
         run: |
           set -euo pipefail
-          git worktree add --detach /tmp/neumaton-parent             cfdbd4eede7955ca4f01570f857a965c216acd8f
+          git worktree add --detach /tmp/neumaton-parent             8cb931d9ff38eecd4113cf5a94e667a4d437736c
           cd /tmp/neumaton-parent
           cp "$GITHUB_WORKSPACE/Tests/CpuHotspotBenchmark.cpp"             Tests/SupervisorContinuityTest.cpp
           cmake -S . -B build-parent             -DCMAKE_BUILD_TYPE=Release             -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
