@@ -120,7 +120,7 @@ double benchmarkModernEngine(int blockSize, double seconds)
     {
         fill();
         engine.process(buffer, scale.data(), static_cast<int>(scale.size()), 440.0,
-                       parameters, 1, CreativeTempo::HostPosition {});
+                       parameters, CreativeTempo::HostPosition {}, 1);
     }
 
     const int blocks = static_cast<int>((seconds * kSampleRate) / blockSize);
@@ -130,7 +130,7 @@ double benchmarkModernEngine(int blockSize, double seconds)
         {
             fill();
             engine.process(buffer, scale.data(), static_cast<int>(scale.size()), 440.0,
-                       parameters, 1, CreativeTempo::HostPosition {});
+                       parameters, CreativeTempo::HostPosition {}, 1);
         }
     });
 }
@@ -158,7 +158,7 @@ double benchmarkLiveProcessor(int blockSize, double seconds)
     {
         fill();
         processor.process(buffer, scale.data(), static_cast<int>(scale.size()), 440.0,
-                          1, 8.0f, 1.0f);
+                          8.0f, 1.0f, 1);
     }
 
     const int blocks = static_cast<int>((seconds * kSampleRate) / blockSize);
@@ -168,7 +168,7 @@ double benchmarkLiveProcessor(int blockSize, double seconds)
         {
             fill();
             processor.process(buffer, scale.data(), static_cast<int>(scale.size()), 440.0,
-                          1, 8.0f, 1.0f);
+                          8.0f, 1.0f, 1);
         }
     });
 }
