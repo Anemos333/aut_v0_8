@@ -2962,7 +2962,6 @@ void ModernPitchEngine::ScaleQuantizer::reset() noexcept
     rootLog2_ = ModernPitchEngine::safeLog2(440.0);
     hash_ = 0;
     minStepCents_ = 1200.0f;
-    asymmetry_ = 0.0f;
 }
 
 bool ModernPitchEngine::ScaleQuantizer::setScale(
@@ -3008,10 +3007,7 @@ bool ModernPitchEngine::ScaleQuantizer::setScale(
 
     std::sort(logRatios_.begin(), logRatios_.begin() + ratioCount_);
 
-    std::array<double, maxScaleRatios> steps {};
-    double mean = 1200.0 / static_cast<double>(std::max(1, ratioCount_));
     minStepCents_ = 1200.0f;
-    double variance = 0.0;
     for (int i = 0; i < ratioCount_; ++i)
     {
         const int next = (i + 1) % ratioCount_;
@@ -3021,17 +3017,8 @@ bool ModernPitchEngine::ScaleQuantizer::setScale(
             : (1.0 + logRatios_[0]
                - logRatios_[static_cast<std::size_t>(i)]) * 1200.0;
         step = std::max(0.1, step);
-        steps[static_cast<std::size_t>(i)] = step;
         minStepCents_ = std::min(minStepCents_, static_cast<float>(step));
     }
-    for (int i = 0; i < ratioCount_; ++i)
-    {
-        const double d = steps[static_cast<std::size_t>(i)] - mean;
-        variance += d * d;
-    }
-    variance /= static_cast<double>(std::max(1, ratioCount_));
-    asymmetry_ = static_cast<float>(std::clamp(
-        std::sqrt(variance) / std::max(1.0, mean), 0.0, 1.0));
 
     return true;
 }
@@ -3111,13 +3098,6 @@ float ModernPitchEngine::clamp01(float value) noexcept
 double ModernPitchEngine::safeLog2(double value) noexcept
 {
     return std::log2(std::max(value, 1.0e-12));
-}
-
-double ModernPitchEngine::wrapToNearestOctave(double cents) noexcept
-{
-    if (!std::isfinite(cents))
-        return 0.0;
-    return cents - 1200.0 * std::nearbyint(cents / 1200.0);
 }
 
 
