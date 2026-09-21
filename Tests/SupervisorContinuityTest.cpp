@@ -826,9 +826,7 @@ int main()
     ModernPitchEngine::CorrectionState denseState;
     ModernPitchEngine::Parameters denseParameters = vibratoParameters;
     denseParameters.scaleLock = true;
-    denseParameters.hardLockActive = false;
     denseParameters.lockHysteresis = 0.0f;
-    denseParameters.lockStrictness = 0.0f;
     denseParameters.humanize = 1.0f;
     auto denseObservation = strongPitch(440.0f);
     for (int hop = 0; hop < 12; ++hop)
@@ -859,9 +857,7 @@ int main()
     // qualified new-note evidence can still override it.
     ModernPitchEngine::Parameters hardDenseParameters = denseParameters;
     hardDenseParameters.scaleLock = true;
-    hardDenseParameters.hardLockActive = true;
     hardDenseParameters.lockHysteresis = 80.0f;
-    hardDenseParameters.lockStrictness = 1.0f;
     hardDenseParameters.humanize = 1.0f;
     hardDenseParameters.vibratoPreserve = 1.0f;
     auto hardDenseObservation = strongPitch(440.0f);
@@ -909,8 +905,6 @@ int main()
     setBodyEvidence(highHoldParameters);
     lowHoldParameters.scaleLock = true;
     highHoldParameters.scaleLock = true;
-    lowHoldParameters.hardLockActive = true;
-    highHoldParameters.hardLockActive = true;
     lowHoldParameters.lockHysteresis = 0.0f;
     highHoldParameters.lockHysteresis = 80.0f;
 
@@ -971,8 +965,6 @@ int main()
     ModernPitchEngine::Parameters absoluteLockParameters;
     setBodyEvidence(absoluteLockParameters);
     absoluteLockParameters.scaleLock = true;
-    absoluteLockParameters.hardLockActive = true;
-    absoluteLockParameters.lockStrictness = 1.0f;
     absoluteLockParameters.lockHysteresis = 80.0f;
     absoluteLockParameters.amount = 1.0f;
     absoluteLockParameters.retuneTimeMs = 0.0f;
@@ -1155,13 +1147,11 @@ int main()
                      "soft_scale_lock_uses_persistent_transport_inside_target_cell");
 
     // AUTHORITY_CONTROLS_EXPLICIT_V1: the six visible controls define the
-    // zero-prudence endpoint. Hidden hardLockActive/lockStrictness values are not
+    // zero-prudence endpoint. No hidden hard-lock/strictness values exist;
     // allowed to withhold exact centering or add a response floor.
     ModernPitchEngine::Parameters explicitAuthorityParameters;
     setBodyEvidence(explicitAuthorityParameters);
     explicitAuthorityParameters.scaleLock = true;
-    explicitAuthorityParameters.hardLockActive = false;
-    explicitAuthorityParameters.lockStrictness = 0.0f;
     explicitAuthorityParameters.lockHysteresis = 0.0f;
     explicitAuthorityParameters.amount = 1.0f;
     explicitAuthorityParameters.retuneTimeMs = 0.0f;
