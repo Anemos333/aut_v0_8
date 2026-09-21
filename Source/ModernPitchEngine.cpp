@@ -2970,13 +2970,21 @@ void ModernPitchEngine::ScaleQuantizer::reset() noexcept
 bool ModernPitchEngine::ScaleQuantizer::setScale(
     const double* ratios,
     int ratioCount,
-    double rootFrequency) noexcept
+    double rootFrequency,
+    std::uint64_t generation) noexcept
 {
+    if (generation != 0 && generation == generation_)
+        return false;
+
     const double safeRoot = std::isfinite(rootFrequency) && rootFrequency > 0.0
         ? rootFrequency : 440.0;
     const int safeCount = std::clamp(ratioCount, 0, maxScaleRatios);
     const auto nextHash = hashScale(ratios, safeCount, safeRoot);
-    generation_ = 0;
+
+    // SCALE_GENERATION_OWNS_GEOMETRY_V1: a versioned immutable snapshot
+    // bypasses all per-block scale inspection. Unversioned callers retain the
+    // previous hash-based contract for tests and compatibility.
+    generation_ = generation;
     if (nextHash == hash_)
         return false;
 
@@ -3025,27 +3033,6 @@ bool ModernPitchEngine::ScaleQuantizer::setScale(
     }
 
     return true;
-}
-
-bool ModernPitchEngine::ScaleQuantizer::setScale(
-    const double* ratios,
-    int ratioCount,
-    double rootFrequency,
-    std::uint64_t generation) noexcept
-{
-    if (generation == 0)
-        return setScale(ratios, ratioCount, rootFrequency);
-
-    if (generation == generation_)
-        return false;
-
-    // SCALE_GENERATION_OWNS_GEOMETRY_V1: the producer already publishes an
-    // immutable scale snapshot with a monotonic generation. Enter the existing
-    // geometry builder only when that generation changes; do not hash the same
-    // ratios on every audio block.
-    const bool changed = setScale(ratios, ratioCount, rootFrequency);
-    generation_ = generation;
-    return changed;
 }
 
 double ModernPitchEngine::ScaleQuantizer::nearestTargetLog2(
@@ -4718,20 +4705,8 @@ void ModernPitchEngine::process(
     int numberOfScaleRatios,
     double rootFrequency,
     const Parameters& parameters,
-    const CreativeTempo::HostPosition& hostTempoPosition)
-{
-    process(buffer, scaleRatios, numberOfScaleRatios, rootFrequency,
-            parameters, 0, hostTempoPosition);
-}
-
-void ModernPitchEngine::process(
-    juce::AudioBuffer<float>& buffer,
-    const double* scaleRatios,
-    int numberOfScaleRatios,
-    double rootFrequency,
-    const Parameters& parameters,
-    std::uint64_t scaleGeneration,
-    const CreativeTempo::HostPosition& hostTempoPosition)
+    const CreativeTempo::HostPosition& hostTempoPosition,
+    std::uint64_t scaleGeneration)
 {
     Parameters safe = parameters;
     safe.amount = clamp01(finiteOr(safe.amount, 1.0f));
