@@ -1,0 +1,97 @@
+name: Validate lean dead state experiment
+
+on:
+  push:
+    branches:
+      - v1-lean-dead-state-experiment
+    paths:
+      - Source/ModernPitchEngine.cpp
+      - Source/ModernPitchEngine.h
+      - .github/workflows/validate-lean-dead-state-experiment.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout experiment
+        uses: actions/checkout@v4
+        with:
+          ref: v1-lean-dead-state-experiment
+          fetch-depth: 0
+
+      - name: Guard exact scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor 0c278f861a34e02718fc6fb71c1c59a057ca95d0 HEAD
+          ! grep -q 'voiceAuthorityEventStrength_' Source/ModernPitchEngine.h Source/ModernPitchEngine.cpp
+          ! grep -q 'pendingLog2_' Source/ModernPitchEngine.h Source/ModernPitchEngine.cpp
+          ! grep -q 'maximumBlockSize_' Source/ModernPitchEngine.h Source/ModernPitchEngine.cpp
+          ! grep -q 'meterOnsetStrength_' Source/ModernPitchEngine.h Source/ModernPitchEngine.cpp
+          grep -q 'OBSERVATION_OWNERSHIP_POLICY_V1' Source/ObservationOwnershipPolicy.h
+          echo 'DEAD_STATE_SCOPE=PASS'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y             libasound2-dev libjack-jackd2-dev ladspa-sdk             libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev             libx11-dev libxcomposite-dev libxcursor-dev libxext-dev             libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev             libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Configure and build full plugin
+        run: |
+          cmake -S . -B build-dead-state             -DCMAKE_BUILD_TYPE=Release             -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-dead-state --config Release --parallel 2 --target Neumaton >/dev/null
+
+      - name: Preserve supervisor test slot
+        run: cp Tests/SupervisorContinuityTest.cpp /tmp/dead-state-supervisor.cpp
+
+      - name: Require golden detector exactness
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/GoldenDetectorDeterminismTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-dead-state --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          for run in 1 2 3; do
+            ./build-dead-state/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee "/tmp/dead-detector-$run.log"
+            grep -q '^GOLDEN_DETECTOR_TRACE_HASH=58273352d40c5499$' "/tmp/dead-detector-$run.log"
+          done
+          echo 'DEAD_STATE_DETECTOR_BIT_EXACT=PASS'
+
+      - name: Require correction trajectory exactness
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/CorrectionTrajectoryGoldenTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-dead-state --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-dead-state/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/dead-trajectory.log
+          grep -q '^CORRECTION_TRAJECTORY_HASH=3c958f8178c118a3$' /tmp/dead-trajectory.log
+          echo 'DEAD_STATE_TRAJECTORY_EXACT=PASS'
+
+      - name: Require end-to-end golden corpus exactness
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/GoldenEngineBehaviorCorpusTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-dead-state --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-dead-state/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/dead-engine.log
+          grep -q '^GOLDEN_ENGINE_BEHAVIOR_CORPUS=PASS scenarios=14$' /tmp/dead-engine.log
+          grep -q '^GOLDEN_ENGINE_CORPUS_HASH=982b4ad85accdd75$' /tmp/dead-engine.log
+          echo 'DEAD_STATE_ENGINE_EXACT=PASS'
+
+      - name: Existing contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp /tmp/dead-state-supervisor.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-dead-state --config Release --parallel 2             --target SupervisorContinuityTest CleanModernPitchEngineTest >/dev/null
+          ./build-dead-state/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/dead-supervisor.log
+          ./build-dead-state/clean-engine-tests/CleanModernPitchEngineTest 2>&1 | tee /tmp/dead-clean.log
+          ! grep -q '=FAIL' /tmp/dead-supervisor.log
+          ! grep -q '=FAIL' /tmp/dead-clean.log
+          echo 'DEAD_STATE_EXISTING_CONTRACTS=PASS'
+
+      - name: Final marker
+        run: echo 'V1_LEAN_DEAD_STATE_EXPERIMENT=PASS_EXACT_BEHAVIOR'
