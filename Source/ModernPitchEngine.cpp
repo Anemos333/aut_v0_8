@@ -1675,6 +1675,26 @@ float ModernPitchEngine::MultiRatePitchTracker::pathPitchAuthority(
     return 0.0f;
 }
 
+float ModernPitchEngine::MultiRatePitchTracker::pathCoordinateAuthority(
+    int pathIndex,
+    float frequencyHz) const noexcept
+{
+    // CONTINUOUS_F0_NATIVE_COORDINATE_V1
+    // Reuse the detector's existing direct maxima as non-overlapping ownership
+    // bands. A slower path outside its native band still contributes family
+    // evidence through pathPitchAuthority(), but cannot steer F0.
+    bool native = false;
+    switch (pathIndex)
+    {
+        case 0: native = frequencyHz > 900.0f; break;
+        case 1: native = frequencyHz > 460.0f && frequencyHz <= 900.0f; break;
+        case 2: native = frequencyHz > 230.0f && frequencyHz <= 460.0f; break;
+        case 3: native = frequencyHz <= 230.0f; break;
+        default: break;
+    }
+    return native ? pathPitchAuthority(pathIndex, frequencyHz) : 0.0f;
+}
+
 float ModernPitchEngine::MultiRatePitchTracker::pathCleanlinessAuthority(
     int pathIndex,
     float frequencyHz) const noexcept
@@ -1829,19 +1849,23 @@ int ModernPitchEngine::MultiRatePitchTracker::buildConsensusHypotheses(
                 : (std::abs(bestOctaveShift) == 1 ? 0.52f : 0.25f);
             const float pitchAuthority = pathPitchAuthority(candidate.pathIndex,
                                                             candidate.frequencyHz);
+            const float coordinateAuthority = pathCoordinateAuthority(
+                candidate.pathIndex, candidate.frequencyHz);
             const float cleanAuthority = pathCleanlinessAuthority(candidate.pathIndex,
                                                                   candidate.frequencyHz);
             const float baseScore = candidateBaseScore(candidate);
             const float candidateCleanliness = candidate.tonalCleanliness >= 0.0f
                 ? clamp01(candidate.tonalCleanliness) : 1.0f;
             const float evidenceWeight = baseScore * pitchAuthority * octavePrior;
-            // STALE_PATH_VERIFIES_NOT_STEERS_V1: keep stale candidates as
-            // evidence, but exponentially remove their ability to pull the live
-            // frequency coordinate after a new fresh family appears.
+            // STALE_PATH_VERIFIES_NOT_STEERS_V1: family evidence may be stale
+            // and octave-transposed; only a direct measurement inside its native
+            // band receives coordinate authority.
             const float steeringFreshness = std::exp(-0.62f
                 * static_cast<float>(std::max(0, candidate.ageInHops)));
             const float coordinateWeight = evidenceWeight * steeringFreshness
                 * (0.72f + 0.28f * candidateCleanliness);
+            const float nativeCoordinateWeight = baseScore * coordinateAuthority
+                * steeringFreshness * (0.72f + 0.28f * candidateCleanliness);
             const float cleanlinessFreshness = std::exp(-0.42f
                 * static_cast<float>(std::max(0, candidate.ageInHops)));
             const float cleanlinessWeight = baseScore * cleanAuthority
@@ -1861,11 +1885,11 @@ int ModernPitchEngine::MultiRatePitchTracker::buildConsensusHypotheses(
             weightedLogFrequency += static_cast<double>(coordinateWeight)
                                   * safeLog2(static_cast<double>(bestFrequency));
             coordinateWeightSum += coordinateWeight;
-            if (direct)
+            if (direct && nativeCoordinateWeight > 0.0f)
             {
-                directWeightedLogFrequency += static_cast<double>(coordinateWeight)
+                directWeightedLogFrequency += static_cast<double>(nativeCoordinateWeight)
                     * safeLog2(static_cast<double>(bestFrequency));
-                directCoordinateWeightSum += coordinateWeight;
+                directCoordinateWeightSum += nativeCoordinateWeight;
             }
             evidenceWeightSum += evidenceWeight;
             confidenceSum += evidenceWeight * candidate.confidence;
@@ -1878,7 +1902,7 @@ int ModernPitchEngine::MultiRatePitchTracker::buildConsensusHypotheses(
             if (cleanlinessWeight >= 0.08f && candidateCleanliness >= 0.24f)
                 ++cleanSupportCount;
             ++supportCount;
-            if (direct)
+            if (direct && nativeCoordinateWeight > 0.0f)
                 ++directSupportCount;
 
             const auto bit = static_cast<std::uint8_t>(1u << candidate.pathIndex);
@@ -2393,7 +2417,7 @@ ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noe
                 continue;
             }
             const float score = candidateBaseScore(candidate)
-                * pathPitchAuthority(candidate.pathIndex, candidate.frequencyHz)
+                * pathCoordinateAuthority(candidate.pathIndex, candidate.frequencyHz)
                 * (0.70f + 0.30f * candidateCleanliness);
             if (score > bestScore)
             {
@@ -3206,7 +3230,7 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
                 return;
             }
             const float score = ageWeight
-                * pathPitchAuthority(candidate.pathIndex, candidate.frequencyHz)
+                * pathCoordinateAuthority(candidate.pathIndex, candidate.frequencyHz)
                 * (0.46f * clamp01(candidate.confidence)
                  + 0.28f * clamp01(candidate.periodicity)
                  + 0.26f * candidateCleanliness);
