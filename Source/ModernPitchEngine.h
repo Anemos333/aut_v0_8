@@ -104,9 +104,6 @@ public:
         float outputTargetCoherence = 0.0f;
         float outputPhysicalHarmonicFit = 0.0f;
         float outputLedgerHealth = 0.0f;
-        float outputPhaseCoherence = 0.0f;
-        float outputReconstructionNeed = 0.0f;
-        float outputMeterValid = 0.0f;
         float outputTemporalStability = 0.0f;
         float outputTargetJumpCents = 0.0f;
         float outputCorrectionVelocityCentsPerSecond = 0.0f;
@@ -115,29 +112,7 @@ public:
         float outputSourceMirrorFit = 0.0f;
         float outputDoubleFamilyRisk = 0.0f;
         float outputLedgerDeficit = 0.0f;
-        float outputMemoryReliability = 0.0f;
-        float outputPreIfftConsensus = 0.0f;
         float outputSelectiveReconstructionNeed = 0.0f;
-
-        // OLA_ACCUMULATION_DIAGNOSTIC_V1: diagnostic-only renderer readback.
-        float outputOlaEnergyRatio = 100.0f;
-        float outputOlaFrameCorrelation = 100.0f;
-        float outputOlaCoverage = 100.0f;
-        int outputOlaContributionCount = 4;
-        bool outputOlaDiagnosticValid = false;
-        bool outputOlaFrameCorrelationValid = false;
-
-        // RENDERER_PHASE_DIAGNOSTIC_EVENT_LATCH_V1: diagnostic-only sticky
-        // event data. Never consumed by DSP.
-        std::uint32_t rendererPhaseDiagnosticSerial = 0;
-        bool rendererPhaseDiagnosticAlert = false;
-        float rendererPhaseDiagnosticHeldPh = 100.0f;
-        float rendererPhaseDiagnosticHeldBin = 100.0f;
-        float rendererPhaseDiagnosticHeldRidge = 0.0f;
-        float rendererPhaseDiagnosticHeldOlaEnergy = 100.0f;
-        float rendererPhaseDiagnosticHeldFrameCorrelation = 100.0f;
-        float rendererPhaseDiagnosticHeldCoverage = 100.0f;
-        int rendererPhaseDiagnosticHeldCount = 4;
 
         int shadowRidgeObservationCount = 0;
         int shadowRidgeActiveCount = 0;
@@ -666,21 +641,7 @@ private:
         const PitchObservation& observation,
         const CorrectionState& state,
         double audibleCents,
-        const CreativeTempo::Metering& tempoMeter,
-        const SingleWetSpectralRenderer::Diagnostics& rendererDiagnostics) noexcept;
-
-    // TEST_COMPAT_METERING_OVERLOAD_V1: historical supervisor tests exercise
-    // metering directly. The 4-argument contract remains valid and simply
-    // supplies an empty renderer diagnostic snapshot.
-    void publishMetering(
-        const PitchObservation& observation,
-        const CorrectionState& state,
-        double audibleCents,
-        const CreativeTempo::Metering& tempoMeter) noexcept
-    {
-        publishMetering(observation, state, audibleCents, tempoMeter,
-                        SingleWetSpectralRenderer::Diagnostics {});
-    }
+        const CreativeTempo::Metering& tempoMeter) noexcept;
 
     double sampleRate_ = 48000.0;
     int maximumBlockSize_ = 512;
@@ -732,16 +693,6 @@ private:
     float targetRevisionCorrectionAfterCents_ = 0.0f;
     float targetRevisionCorrectionDeltaCents_ = 0.0f;
 
-    // Diagnostic event latch only. Updated after rendering, never read by DSP.
-    std::uint32_t rendererPhaseDiagnosticSerial_ = 0;
-    float rendererPhaseDiagnosticWorstPh_ = 100.0f;
-    float rendererPhaseDiagnosticWorstBin_ = 100.0f;
-    float rendererPhaseDiagnosticWorstRidge_ = 0.0f;
-    float rendererPhaseDiagnosticWorstOlaEnergy_ = 100.0f;
-    float rendererPhaseDiagnosticWorstFrameCorrelation_ = 100.0f;
-    float rendererPhaseDiagnosticWorstCoverage_ = 100.0f;
-    int rendererPhaseDiagnosticWorstCount_ = 4;
-
     std::atomic<std::uint32_t> meterSequence_ { 0 };
     std::atomic<float> meterPitchHz_ { 0.0f };
     std::atomic<float> meterTargetHz_ { 0.0f };
@@ -754,29 +705,6 @@ private:
     std::atomic<float> meterOnsetStrength_ { 0.0f };
     std::atomic<float> meterTargetJumpCents_ { 0.0f };
     std::atomic<float> meterSustainedSeconds_ { 0.0f };
-
-    // RENDERER_PHASE_COHERENCE_DIAGNOSTIC_V1: metering only. These values are
-    // written after the renderer has already produced the block and never feed
-    // detector, controller or synthesis decisions.
-    std::atomic<float> meterRendererPreIfftCoherence_ { 1.0f };
-    std::atomic<float> meterRendererStrongBinCoherence_ { 1.0f };
-    std::atomic<float> meterRendererRidgeSpreadBins_ { 0.0f };
-    std::atomic<float> meterRendererOlaEnergyRatio_ { 1.0f };
-    std::atomic<float> meterRendererFrameOverlapCorrelation_ { 1.0f };
-    std::atomic<float> meterRendererOlaCoverageRatio_ { 1.0f };
-    std::atomic<int> meterRendererOlaContributionCount_ { 4 };
-    std::atomic<bool> meterRendererOlaValid_ { false };
-    std::atomic<bool> meterRendererFrameOverlapCorrelationValid_ { false };
-    std::atomic<bool> meterRendererDiagnosticsValid_ { false };
-    std::atomic<std::uint32_t> meterRendererPhaseDiagnosticSerial_ { 0 };
-    std::atomic<bool> meterRendererPhaseDiagnosticAlert_ { false };
-    std::atomic<float> meterRendererPhaseDiagnosticHeldPh_ { 100.0f };
-    std::atomic<float> meterRendererPhaseDiagnosticHeldBin_ { 100.0f };
-    std::atomic<float> meterRendererPhaseDiagnosticHeldRidge_ { 0.0f };
-    std::atomic<float> meterRendererPhaseDiagnosticHeldOlaEnergy_ { 100.0f };
-    std::atomic<float> meterRendererPhaseDiagnosticHeldFrameCorrelation_ { 100.0f };
-    std::atomic<float> meterRendererPhaseDiagnosticHeldCoverage_ { 100.0f };
-    std::atomic<int> meterRendererPhaseDiagnosticHeldCount_ { 4 };
 
     std::atomic<int> meterDetectorSupport_ { 0 };
     std::atomic<int> meterOctaveState_ { 0 };
