@@ -7,6 +7,7 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <vector>
 
@@ -198,6 +199,7 @@ public:
                  const double* scaleRatios,
                  int numberOfScaleRatios,
                  double rootFrequency,
+                 std::uint64_t scaleGeneration,
                  float speedMs,
                  float amount)
     {
@@ -218,6 +220,7 @@ public:
                                      numberOfScaleRatios,
                                      rootFrequency,
                                      conditioned,
+                                     scaleGeneration,
                                      tempoHostPosition_);
     }
 
@@ -231,6 +234,7 @@ public:
                 scaleRatios.empty() ? nullptr : scaleRatios.data(),
                 static_cast<int>(scaleRatios.size()),
                 rootFrequency,
+                0,
                 speedMs,
                 amount);
     }
