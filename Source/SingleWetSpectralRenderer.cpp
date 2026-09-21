@@ -164,7 +164,6 @@ void SingleWetSpectralRenderer::reset() noexcept
     envelopeInitialised_ = false;
     envelopeFrameCounter_ = 0;
     smoothedFormantPreservation_ = 0.0f;
-    diagnosticBlock_ = {};
 }
 
 double SingleWetSpectralRenderer::wrapPhase(double phase) noexcept
