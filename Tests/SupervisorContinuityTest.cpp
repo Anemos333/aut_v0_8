@@ -462,7 +462,6 @@ int main()
     antiphaseParameters.humanize = 0.0f;
     antiphaseParameters.minimumPitchHz = 70.0f;
     antiphaseParameters.maximumPitchHz = 1000.0f;
-    antiphaseParameters.stereoMode = ModernPitchEngine::StereoMode::linkedMidSide;
     const double authorityUnison = 1.0;
     double antiphasePhase = 0.0;
     constexpr double antiphaseFrequency = 452.0;
