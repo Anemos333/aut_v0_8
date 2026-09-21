@@ -148,11 +148,13 @@ int main()
     success &= check(has(engine, "NO_AUDIO_DROPOUT_ON_UNCERTAINTY_V1")
                          && has(engine, "DETECTOR_VETO_NOT_PERMISSION_V1")
                          && has(engine, "FIRST_MEASUREMENT_OWNS_V1")
-                         && has(engine, "SCALE_CHANGE_PRESERVES_AUDIO_CONTINUITY_V1")
+                         && has(engine,
+                                "linkedQuantizer_.setScale(scaleRatios, numberOfScaleRatios, rootFrequency);")
+                         && !has(engine, "if (linkedQuantizer_.setScale")
                          && !has(engine, "UNOWNED_AUDIO_FAILS_CLOSED_V1")
                          && !has(engine, "correction.targetValid ? rendered : 0.0f")
                          && !has(engine, "linkedCorrection_.targetValid ? rendered : 0.0f"),
-                     "detector_uncertainty_never_mutes_active_audio");
+                     "detector_uncertainty_and_scale_change_never_mute_active_audio");
 
     success &= check(has(renderer, "FULL_SPECTRUM_SINGLE_TRANSPORT_V1")
                          && has(renderer, "STABLE_SINGLE_LATTICE_TRANSPORT_V3")
