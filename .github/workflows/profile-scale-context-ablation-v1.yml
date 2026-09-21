@@ -1,0 +1,101 @@
+name: Profile scale context ablation v1
+
+on:
+  push:
+    branches:
+      - v1-lean-scale-context-ablation-v1
+    paths:
+      - Tests/LiveScaleContextCpuBenchmark.cpp
+      - .github/workflows/profile-scale-context-ablation-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          ref: v1-lean-scale-context-ablation-v1
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y             libasound2-dev libjack-jackd2-dev ladspa-sdk             libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev             libx11-dev libxcomposite-dev libxcursor-dev libxext-dev             libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev             libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Build candidate benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/SupervisorContinuityTest.cpp /tmp/scale-cpu-supervisor.cpp
+          cp Tests/LiveScaleContextCpuBenchmark.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-scale-cpu             -DCMAKE_BUILD_TYPE=Release             -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-scale-cpu --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+
+      - name: Build pass2 parent benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach /tmp/neumaton-scale-cpu-parent             1f624bf4edad6a2e65ca29732dd6f8ab0db3a67f
+          cd /tmp/neumaton-scale-cpu-parent
+          cp "$GITHUB_WORKSPACE/Tests/LiveScaleContextCpuBenchmark.cpp"             Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-parent             -DCMAKE_BUILD_TYPE=Release             -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-parent --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+
+      - name: Interleaved runs
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > /tmp/candidate.log
+          : > /tmp/parent.log
+          for round in 1 2 3; do
+            if (( round % 2 )); then
+              ./build-scale-cpu/clean-engine-tests/SupervisorContinuityTest >> /tmp/candidate.log
+              /tmp/neumaton-scale-cpu-parent/build-parent/clean-engine-tests/SupervisorContinuityTest >> /tmp/parent.log
+            else
+              /tmp/neumaton-scale-cpu-parent/build-parent/clean-engine-tests/SupervisorContinuityTest >> /tmp/parent.log
+              ./build-scale-cpu/clean-engine-tests/SupervisorContinuityTest >> /tmp/candidate.log
+            fi
+          done
+          cat /tmp/candidate.log
+          cat /tmp/parent.log
+
+      - name: Compare medians
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, statistics
+
+          def parse(path):
+              rows={}
+              for line in Path(path).read_text().splitlines():
+                  if not line.startswith("SCALE_CONTEXT_CPU "):
+                      continue
+                  d=dict(re.findall(r'(\w+)=([^ ]+)', line))
+                  key=(int(d["block"]), int(d["scale"]))
+                  rows.setdefault(key, []).append(float(d["ms"]))
+              return rows
+
+          c=parse("/tmp/candidate.log")
+          p=parse("/tmp/parent.log")
+          for key in sorted(p):
+              if len(c.get(key, [])) != 3 or len(p[key]) != 3:
+                  raise SystemExit(f"missing rows {key}")
+              cm=statistics.median(c[key])
+              pm=statistics.median(p[key])
+              reduction=100.0*(pm-cm)/max(pm,1e-9)
+              print("SCALE_CONTEXT_CPU_MEDIAN",
+                    f"block={key[0]}",
+                    f"scale={key[1]}",
+                    f"parent_ms={pm:.3f}",
+                    f"candidate_ms={cm:.3f}",
+                    f"reduction_pct={reduction:.3f}")
+              if cm > pm * 1.05:
+                  raise SystemExit(f"material CPU regression {key}")
+          print("SCALE_CONTEXT_CPU_NO_REGRESSION=PASS")
+          PY
