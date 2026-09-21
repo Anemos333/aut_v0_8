@@ -70,10 +70,8 @@ void testPitchTrackingAndCorrection()
     params.amount = 1.0f;
     params.retuneTimeMs = 5.0f;
     params.transitionTimeMs = 25.0f;
-    params.preserveVibrato = 0.0f;
     params.humanize = 0.0f;
     params.formantPreservation = 0.9f;
-    params.transientProtection = 0.8f;
     params.minimumPitchHz = 70.0f;
     params.maximumPitchHz = 1000.0f;
 
@@ -312,7 +310,6 @@ void testBlockSizeInvariance()
         ModernPitchEngine::Parameters params;
         params.retuneTimeMs = 7.0f;
         params.transitionTimeMs = 28.0f;
-        params.preserveVibrato = 0.5f;
 
         std::vector<double> scale {
             1.0, 1.122462048309373, 1.2599210498948732,
