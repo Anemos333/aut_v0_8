@@ -2965,11 +2965,6 @@ void ModernPitchEngine::ScaleQuantizer::reset() noexcept
     hash_ = 0;
     minStepCents_ = 1200.0f;
     asymmetry_ = 0.0f;
-    targetValid_ = false;
-    targetLog2_ = 0.0;
-    pendingValid_ = false;
-    pendingLog2_ = 0.0;
-    pendingCount_ = 0;
 }
 
 bool ModernPitchEngine::ScaleQuantizer::setScale(
@@ -3040,9 +3035,6 @@ bool ModernPitchEngine::ScaleQuantizer::setScale(
     asymmetry_ = static_cast<float>(std::clamp(
         std::sqrt(variance) / std::max(1.0, mean), 0.0, 1.0));
 
-    targetValid_ = false;
-    pendingValid_ = false;
-    pendingCount_ = 0;
     return true;
 }
 
@@ -3084,67 +3076,16 @@ double ModernPitchEngine::ScaleQuantizer::chooseTargetLog2(
     bool onset,
     int& pendingObservations) noexcept
 {
+    // QUANTIZER_STATE_ABLATION_V1
+    // Experimental: the quantizer is geometry only. It no longer owns a second
+    // copy of note identity or Hold state. Ownership remains upstream.
     pendingObservations = 0;
-    if (!std::isfinite(inputLog2) || ratioCount_ <= 0)
-        return inputLog2;
-
-    const double relative = inputLog2 - rootLog2_;
-    const double octave = std::floor(relative);
-    double nearest = inputLog2;
-    double nearestDistance = std::numeric_limits<double>::infinity();
-
-    for (int i = 0; i < ratioCount_; ++i)
-    {
-        const double degree = logRatios_[static_cast<std::size_t>(i)];
-        for (int octaveOffset = -1; octaveOffset <= 1; ++octaveOffset)
-        {
-            const double candidate = rootLog2_ + octave
-                + static_cast<double>(octaveOffset) + degree;
-            const double distance = std::abs(candidate - inputLog2);
-            if (distance < nearestDistance)
-            {
-                nearestDistance = distance;
-                nearest = candidate;
-            }
-        }
-    }
-
-    if (!targetValid_ || onset)
-    {
-        targetLog2_ = nearest;
-        targetValid_ = true;
-        pendingValid_ = false;
-        pendingCount_ = 0;
-        return targetLog2_;
-    }
-
-    // SCALE_OWNED_HOLD_SEMANTICS_V1 / HOLD_IS_CENT_RADIUS_V2:
-    // Hold is measured literally from the centre of the already-owned scale
-    // degree. It never creates a dry/source preference and never weakens the
-    // correction. Hold=0 therefore recovers the ordinary Voronoi boundary;
-    // Hold=80 means 80 cents from the owned degree centre.
-    const double previousDistanceCents =
-        std::abs(targetLog2_ - inputLog2) * 1200.0;
-    const double holdRadiusCents = std::max(0.0f, hysteresisCents);
-    const bool nearestIsOwned =
-        std::abs(nearest - targetLog2_) * 1200.0 < 0.1;
-    if (nearestIsOwned || previousDistanceCents <= holdRadiusCents)
-    {
-        pendingValid_ = false;
-        pendingCount_ = 0;
-        return targetLog2_;
-    }
-
-    // Outside the explicit radius the nearest scale degree wins. Confidence,
-    // consensus and hidden strictness may describe evidence but cannot turn
-    // target selection into a dry-following gate.
+    (void) hysteresisCents;
     (void) strictness;
     (void) confidence;
     (void) hardLock;
-    targetLog2_ = nearest;
-    pendingValid_ = false;
-    pendingCount_ = 0;
-    return targetLog2_;
+    (void) onset;
+    return nearestTargetLog2(inputLog2);
 }
 
 double ModernPitchEngine::ScaleQuantizer::adjacentTargetLog2(
