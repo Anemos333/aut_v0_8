@@ -42,6 +42,7 @@ int main()
     const auto editorHeader = readFile("Source/PluginEditor.h");
     const auto engine = readFile("Source/ModernPitchEngine.cpp");
     const auto engineHeader = readFile("Source/ModernPitchEngine.h");
+    const auto livePitch = readFile("Source/LivePitchProcessor.h");
     const auto renderer = readFile("Source/SingleWetSpectralRenderer.cpp");
     const auto rendererHeader = readFile("Source/SingleWetSpectralRenderer.h");
     const auto tempo = readFile("Source/Tempo.cpp");
@@ -64,6 +65,13 @@ int main()
                          && has(processor, "speedMs")
                          && has(processor, "amount"),
                          "response_and_amount_reach_modern_audio");
+
+    success &= check(has(processor, "scaleSnapshot.generation")
+                         && has(livePitch, "std::uint64_t scaleGeneration")
+                         && has(engine, "SCALE_GENERATION_OWNS_GEOMETRY_V1")
+                         && has(engine, "generation == generation_")
+                         && has(engineHeader, "std::uint64_t generation_ = 0"),
+                     "scale_generation_owns_quantizer_rebuild");
 
     success &= check(has(processor,
                          "setScaleLockParameters(scaleLock, lockHysteresis, vibratoPreserve)"),
