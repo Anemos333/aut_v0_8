@@ -3039,59 +3039,13 @@ bool ModernPitchEngine::ScaleQuantizer::setScale(
     if (generation == generation_)
         return false;
 
-    generation_ = generation;
-    const double safeRoot = std::isfinite(rootFrequency) && rootFrequency > 0.0
-        ? rootFrequency : 440.0;
-    const int safeCount = std::clamp(ratioCount, 0, maxScaleRatios);
-
     // SCALE_GENERATION_OWNS_GEOMETRY_V1: the producer already publishes an
-    // immutable scale snapshot with a monotonic generation. Do not re-hash the
-    // same ratios on every audio block. Rebuild only when that generation changes.
-    hash_ = hashScale(ratios, safeCount, safeRoot);
-    rootLog2_ = ModernPitchEngine::safeLog2(safeRoot);
-    ratioCount_ = 0;
-    logRatios_[static_cast<std::size_t>(ratioCount_++)] = 0.0;
-
-    for (int i = 0; ratios != nullptr && i < safeCount
-         && ratioCount_ < maxScaleRatios; ++i)
-    {
-        const double ratio = ratios[i];
-        if (!std::isfinite(ratio) || ratio <= 0.0)
-            continue;
-        double folded = std::log2(ratio);
-        folded -= std::floor(folded);
-        if (folded >= 1.0 - 1.0e-10)
-            folded = 0.0;
-
-        bool duplicate = false;
-        for (int j = 0; j < ratioCount_; ++j)
-        {
-            if (std::abs(logRatios_[static_cast<std::size_t>(j)] - folded) < 1.0e-8)
-            {
-                duplicate = true;
-                break;
-            }
-        }
-        if (!duplicate)
-            logRatios_[static_cast<std::size_t>(ratioCount_++)] = folded;
-    }
-
-    std::sort(logRatios_.begin(), logRatios_.begin() + ratioCount_);
-
-    minStepCents_ = 1200.0f;
-    for (int i = 0; i < ratioCount_; ++i)
-    {
-        const int next = (i + 1) % ratioCount_;
-        double step = next > i
-            ? (logRatios_[static_cast<std::size_t>(next)]
-               - logRatios_[static_cast<std::size_t>(i)]) * 1200.0
-            : (1.0 + logRatios_[0]
-               - logRatios_[static_cast<std::size_t>(i)]) * 1200.0;
-        step = std::max(0.1, step);
-        minStepCents_ = std::min(minStepCents_, static_cast<float>(step));
-    }
-
-    return true;
+    // immutable scale snapshot with a monotonic generation. Enter the existing
+    // geometry builder only when that generation changes; do not hash the same
+    // ratios on every audio block.
+    const bool changed = setScale(ratios, ratioCount, rootFrequency);
+    generation_ = generation;
+    return changed;
 }
 
 double ModernPitchEngine::ScaleQuantizer::nearestTargetLog2(
