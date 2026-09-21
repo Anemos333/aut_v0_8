@@ -10,6 +10,8 @@ on:
       - Source/ModernPitchEngine.h
       - Source/SingleWetSpectralRenderer.cpp
       - Source/SingleWetSpectralRenderer.h
+      - Source/PluginEditor.cpp
+      - Source/PluginEditor.h
       - Tests/CorrectionTrajectoryGoldenTest.cpp
       - Tests/GoldenDetectorDeterminismTest.cpp
       - Tests/GoldenEngineBehaviorCorpusTest.cpp
@@ -36,9 +38,12 @@ jobs:
         run: |
           set -euo pipefail
           git merge-base --is-ancestor d7995cf9b56c5f2dbd2e3759f64f19c1c93c0425 HEAD
-          grep -q 'LEAN_RENDERER_DIAGNOSTICS_STRIPPED_V1' Source/SingleWetSpectralRenderer.cpp
+          ! grep -q 'consumeDiagnostics' Source/SingleWetSpectralRenderer.h
           ! grep -q 'diagnosticContributionEnergyRing' Source/SingleWetSpectralRenderer.h
           ! grep -q 'depositedMagnitudeSums_' Source/SingleWetSpectralRenderer.cpp
+          ! grep -q 'meterRenderer' Source/ModernPitchEngine.h
+          ! grep -q 'rendererPhaseDiagnostic' Source/ModernPitchEngine.cpp
+          ! grep -q 'RENDERER_DIAGNOSTIC_STRIP_V1' Source/PluginEditor.cpp
           grep -q 'OBSERVATION_OWNERSHIP_POLICY_V1' Source/ObservationOwnershipPolicy.h
           echo 'LEAN_PASS2_SCOPE=PASS'
 
