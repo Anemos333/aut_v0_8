@@ -198,7 +198,7 @@ private:
 
             if (job.runHalf)
             {
-                local.half = owner_.analyse(owner_.halfRateRing_,
+                local.half = owner_.measureCoordinate(owner_.halfRateRing_,
                                             job.halfWritePosition,
                                             job.halfAvailableSamples,
                                             job.halfSampleRate,
@@ -213,7 +213,7 @@ private:
 
             if (job.runEighth)
             {
-                local.eighth = owner_.analyse(owner_.eighthRateRing_,
+                local.eighth = owner_.measureCoordinate(owner_.eighthRateRing_,
                                               job.eighthWritePosition,
                                               job.eighthAvailableSamples,
                                               job.eighthSampleRate,
@@ -464,6 +464,417 @@ void ModernPitchEngine::MultiRatePitchTracker::push(
     ring[static_cast<std::size_t>(writePosition)] = sample;
     writePosition = (writePosition + 1) & ringMask;
     availableSamples = std::min(availableSamples + 1, ringSize);
+}
+
+ModernPitchEngine::MultiRatePitchTracker::PitchCandidate
+ModernPitchEngine::MultiRatePitchTracker::measureCoordinate(
+    const std::array<float, ringSize>& ring,
+    int writePosition,
+    int availableSamples,
+    double effectiveSampleRate,
+    float minimumFrequency,
+    float maximumFrequency,
+    int analysisLength,
+    AnalysisWorkspace& workspace) noexcept
+{
+    auto& frame_ = workspace.frame;
+    auto& voiceResidualFrame_ = workspace.voiceResidualFrame;
+    auto& difference_ = workspace.difference;
+
+    PitchCandidate result;
+    analysisLength = std::clamp(analysisLength, 64, maxAnalysisSize);
+
+    if (availableSamples < analysisLength || effectiveSampleRate <= 0.0
+        || minimumFrequency >= maximumFrequency)
+    {
+        return result;
+    }
+
+    const int startPosition = (writePosition - analysisLength + ringSize) & ringMask;
+
+    double mean = 0.0;
+    for (int index = 0; index < analysisLength; ++index)
+    {
+        const float sample = ring[static_cast<std::size_t>((startPosition + index) & ringMask)];
+        frame_[static_cast<std::size_t>(index)] = sample;
+        mean += static_cast<double>(sample);
+    }
+    mean /= static_cast<double>(analysisLength);
+
+    double squaredSum = 0.0;
+    for (int index = 0; index < analysisLength; ++index)
+    {
+        float& sample = frame_[static_cast<std::size_t>(index)];
+        sample -= static_cast<float>(mean);
+        squaredSum += static_cast<double>(sample) * static_cast<double>(sample);
+    }
+
+    const float rms = static_cast<float>(std::sqrt(
+        squaredSum / static_cast<double>(analysisLength)));
+    if (rms < minimumDetectorRms)
+        return result;
+
+    // Reuse the existing first-order inverse-filtered residual. This is the
+    // measurement substrate; it is not an authority/confidence layer.
+    double predictorNumerator = 0.0;
+    double predictorDenominator = 0.0;
+    for (int index = 1; index < analysisLength; ++index)
+    {
+        const double current = frame_[static_cast<std::size_t>(index)];
+        const double previous = frame_[static_cast<std::size_t>(index - 1)];
+        predictorNumerator += current * previous;
+        predictorDenominator += previous * previous;
+    }
+    const float predictor = static_cast<float>(std::clamp(
+        predictorNumerator / std::max(1.0e-20, predictorDenominator),
+        -0.92, 0.92));
+    voiceResidualFrame_[0] = frame_[0];
+    for (int index = 1; index < analysisLength; ++index)
+    {
+        voiceResidualFrame_[static_cast<std::size_t>(index)] =
+            frame_[static_cast<std::size_t>(index)]
+            - predictor * frame_[static_cast<std::size_t>(index - 1)];
+    }
+
+    const float noiseRms = std::sqrt(std::max(1.0e-12f, noiseFloorEnergy_));
+    const float snrRatio = rms / std::max(0.5f * minimumDetectorRms, noiseRms);
+    const float snrSupport = smoothStep(1.10f, 3.50f, snrRatio);
+
+    const int tauMinimum = std::clamp(
+        static_cast<int>(std::floor(effectiveSampleRate
+                                    / static_cast<double>(maximumFrequency))),
+        2,
+        analysisLength - 16);
+
+    const int tauMaximum = std::clamp(
+        static_cast<int>(std::ceil(effectiveSampleRate
+                                   / static_cast<double>(minimumFrequency))),
+        tauMinimum + 1,
+        analysisLength - 16);
+
+    difference_.fill(1.0f);
+    difference_[0] = 1.0f;
+
+    for (int tau = 1; tau <= tauMaximum; ++tau)
+    {
+        const int overlap = analysisLength - tau;
+        float sum0 = 0.0f;
+        float sum1 = 0.0f;
+        float sum2 = 0.0f;
+        float sum3 = 0.0f;
+
+        int index = 0;
+        const int vectorEnd = overlap & ~3;
+        for (; index < vectorEnd; index += 4)
+        {
+            const float delta0 = voiceResidualFrame_[static_cast<std::size_t>(index)]
+                               - voiceResidualFrame_[static_cast<std::size_t>(index + tau)];
+            const float delta1 = voiceResidualFrame_[static_cast<std::size_t>(index + 1)]
+                               - voiceResidualFrame_[static_cast<std::size_t>(index + tau + 1)];
+            const float delta2 = voiceResidualFrame_[static_cast<std::size_t>(index + 2)]
+                               - voiceResidualFrame_[static_cast<std::size_t>(index + tau + 2)];
+            const float delta3 = voiceResidualFrame_[static_cast<std::size_t>(index + 3)]
+                               - voiceResidualFrame_[static_cast<std::size_t>(index + tau + 3)];
+            sum0 += delta0 * delta0;
+            sum1 += delta1 * delta1;
+            sum2 += delta2 * delta2;
+            sum3 += delta3 * delta3;
+        }
+
+        float differenceSum = (sum0 + sum1) + (sum2 + sum3);
+        for (; index < overlap; ++index)
+        {
+            const float delta = voiceResidualFrame_[static_cast<std::size_t>(index)]
+                              - voiceResidualFrame_[static_cast<std::size_t>(index + tau)];
+            differenceSum += delta * delta;
+        }
+
+        difference_[static_cast<std::size_t>(tau)] = differenceSum
+            / static_cast<float>(std::max(1, overlap));
+    }
+
+    double cumulativeSum = 0.0;
+    for (int tau = 1; tau <= tauMaximum; ++tau)
+    {
+        cumulativeSum += static_cast<double>(difference_[static_cast<std::size_t>(tau)]);
+        difference_[static_cast<std::size_t>(tau)] = cumulativeSum > 1.0e-20
+            ? static_cast<float>(static_cast<double>(difference_[static_cast<std::size_t>(tau)])
+                                 * static_cast<double>(tau) / cumulativeSum)
+            : 1.0f;
+    }
+
+    const float yinThreshold = 0.12f + 0.16f * sensitivity_;
+    int thresholdTau = -1;
+    int globalTau = tauMinimum;
+    float globalValue = difference_[static_cast<std::size_t>(tauMinimum)];
+
+    for (int tau = tauMinimum; tau <= tauMaximum; ++tau)
+    {
+        const float value = difference_[static_cast<std::size_t>(tau)];
+        if (value < globalValue)
+        {
+            globalValue = value;
+            globalTau = tau;
+        }
+
+        if (thresholdTau < 0 && value < yinThreshold)
+        {
+            int localTau = tau;
+            while (localTau + 1 <= tauMaximum
+                   && difference_[static_cast<std::size_t>(localTau + 1)]
+                        < difference_[static_cast<std::size_t>(localTau)])
+            {
+                ++localTau;
+            }
+            thresholdTau = localTau;
+        }
+    }
+
+    std::array<int, 5> candidateTaus {
+        thresholdTau >= 0 ? thresholdTau : globalTau,
+        globalTau,
+        std::max(tauMinimum, globalTau / 2),
+        std::min(tauMaximum, globalTau * 2),
+        std::min(tauMaximum, (globalTau * 3) / 2)
+    };
+    constexpr std::array<float, 5> candidatePriors {
+        1.00f, 0.98f, 0.88f, 0.70f, 0.78f
+    };
+
+    const auto residualLagCorrelation = [&](int lag) noexcept
+    {
+        if (lag <= 0 || lag >= analysisLength - 8)
+            return 0.0f;
+        double correlation = 0.0;
+        double energyA = 0.0;
+        double energyB = 0.0;
+        const int overlap = analysisLength - lag;
+        for (int index = 0; index < overlap; ++index)
+        {
+            const double a = voiceResidualFrame_[static_cast<std::size_t>(index)];
+            const double b = voiceResidualFrame_[static_cast<std::size_t>(index + lag)];
+            correlation += a * b;
+            energyA += a * a;
+            energyB += b * b;
+        }
+        const double denominator = std::sqrt(std::max(1.0e-20, energyA * energyB));
+        return denominator > 0.0
+            ? clamp01(static_cast<float>(correlation / denominator)) : 0.0f;
+    };
+
+    const auto sourceLagCorrelation = [&](int lag) noexcept
+    {
+        if (lag <= 0 || lag >= analysisLength - 8)
+            return -1.0f;
+        double correlation = 0.0;
+        double energyA = 0.0;
+        double energyB = 0.0;
+        const int overlap = analysisLength - lag;
+        for (int index = 0; index < overlap; ++index)
+        {
+            const double a = frame_[static_cast<std::size_t>(index)];
+            const double b = frame_[static_cast<std::size_t>(index + lag)];
+            correlation += a * b;
+            energyA += a * a;
+            energyB += b * b;
+        }
+        const double denominator = std::sqrt(std::max(1.0e-20, energyA * energyB));
+        return denominator > 0.0
+            ? static_cast<float>(correlation / denominator) : -1.0f;
+    };
+
+    struct CoordinateEvidence
+    {
+        int tau = -1;
+        float periodicity = 0.0f;
+        float yinConfidence = 0.0f;
+        float cycleFamily = 0.0f;
+        float periodSupport = 0.0f;
+    };
+    std::array<CoordinateEvidence, 5> evidenceCache {};
+    std::size_t evidenceCount = 0;
+
+    float bestScore = -1.0f;
+    int bestTau = -1;
+    float bestPeriodicity = 0.0f;
+
+    for (std::size_t candidateIndex = 0;
+         candidateIndex < candidateTaus.size();
+         ++candidateIndex)
+    {
+        const int tau = std::clamp(candidateTaus[candidateIndex],
+                                   tauMinimum,
+                                   tauMaximum);
+
+        CoordinateEvidence evidence;
+        bool cached = false;
+        for (std::size_t cachedIndex = 0; cachedIndex < evidenceCount; ++cachedIndex)
+        {
+            if (evidenceCache[cachedIndex].tau == tau)
+            {
+                evidence = evidenceCache[cachedIndex];
+                cached = true;
+                break;
+            }
+        }
+
+        if (!cached)
+        {
+            evidence.tau = tau;
+            evidence.periodicity = residualLagCorrelation(tau);
+            evidence.yinConfidence = clamp01(
+                1.0f - difference_[static_cast<std::size_t>(tau)]);
+
+            float cycleFamilySum = evidence.periodicity;
+            float cycleFamilyWeight = 1.0f;
+            if (2 * tau < analysisLength - 8)
+            {
+                cycleFamilySum += 0.70f * residualLagCorrelation(2 * tau);
+                cycleFamilyWeight += 0.70f;
+            }
+            if (3 * tau < analysisLength - 8)
+            {
+                cycleFamilySum += 0.45f * residualLagCorrelation(3 * tau);
+                cycleFamilyWeight += 0.45f;
+            }
+            evidence.cycleFamily = clamp01(cycleFamilySum / cycleFamilyWeight);
+
+            const float periodsInWindow = static_cast<float>(analysisLength)
+                                        / static_cast<float>(std::max(1, tau));
+            evidence.periodSupport = std::clamp(
+                periodsInWindow / 2.2f, 0.55f, 1.0f);
+
+            evidenceCache[evidenceCount++] = evidence;
+        }
+
+        // Existing score terms only: the certification-only harmonic-contrast
+        // term is deliberately absent. Nothing below may veto a finite coordinate.
+        const float score = (0.44f * evidence.yinConfidence
+                           + 0.22f * evidence.periodicity
+                           + 0.17f * evidence.cycleFamily)
+                          * evidence.periodSupport
+                          * candidatePriors[candidateIndex]
+                          * (0.82f + 0.18f * snrSupport);
+
+        if (score > bestScore)
+        {
+            bestScore = score;
+            bestTau = tau;
+            bestPeriodicity = evidence.periodicity;
+        }
+    }
+
+    if (bestTau < 2)
+        return result;
+
+    int sourceTau = bestTau;
+    float sourcePeak = sourceLagCorrelation(bestTau);
+    for (int offset = -2; offset <= 2; ++offset)
+    {
+        const int candidateTau = bestTau + offset;
+        if (candidateTau < tauMinimum || candidateTau > tauMaximum)
+            continue;
+        const float candidatePeak = sourceLagCorrelation(candidateTau);
+        if (candidatePeak > sourcePeak)
+        {
+            sourcePeak = candidatePeak;
+            sourceTau = candidateTau;
+        }
+    }
+
+    // Reuse PRIMITIVE_DIVISOR_GEOMETRY_V6_6 unchanged: octave/family correction
+    // is geometry, not permission to expose the resulting coordinate.
+    const int selectedSourceTau = sourceTau;
+    const float selectedSourceCorrelation = sourcePeak;
+    const float selectedResidualCorrelation = residualLagCorrelation(sourceTau);
+    const float selectedYin = clamp01(
+        1.0f - difference_[static_cast<std::size_t>(sourceTau)]);
+
+    int primitiveTau = sourceTau;
+    float primitiveSourceCorrelation = selectedSourceCorrelation;
+    float primitiveResidualCorrelation = selectedResidualCorrelation;
+    float primitiveYin = selectedYin;
+
+    constexpr std::array<int, 3> primitiveDivisors { 4, 3, 2 };
+    for (const int divisor : primitiveDivisors)
+    {
+        const int candidateTau = static_cast<int>(std::lround(
+            static_cast<double>(selectedSourceTau)
+            / static_cast<double>(divisor)));
+        if (candidateTau < tauMinimum
+            || candidateTau > tauMaximum
+            || candidateTau >= selectedSourceTau - 2)
+        {
+            continue;
+        }
+
+        const float candidateSourceCorrelation = sourceLagCorrelation(candidateTau);
+        if (candidateSourceCorrelation < 0.55f
+            || candidateSourceCorrelation < selectedSourceCorrelation - 0.12f)
+        {
+            continue;
+        }
+
+        const float candidateResidualCorrelation = residualLagCorrelation(candidateTau);
+        const float candidateYin = clamp01(
+            1.0f - difference_[static_cast<std::size_t>(candidateTau)]);
+        if (candidateResidualCorrelation < 0.30f
+            || candidateYin < 0.30f
+            || candidateResidualCorrelation < selectedResidualCorrelation - 0.12f
+            || candidateYin < selectedYin - 0.12f)
+        {
+            continue;
+        }
+
+        primitiveTau = candidateTau;
+        primitiveSourceCorrelation = candidateSourceCorrelation;
+        primitiveResidualCorrelation = candidateResidualCorrelation;
+        primitiveYin = candidateYin;
+        break;
+    }
+
+    if (primitiveTau != sourceTau)
+    {
+        sourceTau = primitiveTau;
+        sourcePeak = primitiveSourceCorrelation;
+        bestPeriodicity = clamp01(primitiveResidualCorrelation);
+        (void) primitiveYin;
+    }
+
+    double refinedTau = static_cast<double>(sourceTau);
+    if (sourceTau > tauMinimum && sourceTau < tauMaximum)
+    {
+        const double left = sourceLagCorrelation(sourceTau - 1);
+        const double centre = sourceLagCorrelation(sourceTau);
+        const double right = sourceLagCorrelation(sourceTau + 1);
+        const double denominator = left - 2.0 * centre + right;
+        if (std::abs(denominator) > 1.0e-12)
+        {
+            const double fractional = std::clamp(
+                0.5 * (left - right) / denominator, -0.75, 0.75);
+            refinedTau += fractional;
+        }
+    }
+
+    if (refinedTau <= 0.0)
+        return result;
+
+    const float frequency = static_cast<float>(effectiveSampleRate / refinedTau);
+    if (!std::isfinite(frequency)
+        || frequency < minimumFrequency * 0.82f
+        || frequency > maximumFrequency * 1.18f)
+    {
+        return result;
+    }
+
+    result.frequencyHz = frequency;
+    result.confidence = clamp01(bestScore);
+    result.periodicity = bestPeriodicity;
+    result.harmonicFamily = -1.0f;
+    result.aperiodicity = -1.0f;
+    result.tonalCleanliness = -1.0f;
+    result.valid = true;
+    return result;
 }
 
 ModernPitchEngine::MultiRatePitchTracker::PitchCandidate
@@ -2618,7 +3029,7 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
 
         if (fullMinimum < fullMaximum)
         {
-            fullResult = analyse(fullRateRing_,
+            fullResult = measureCoordinate(fullRateRing_,
                                  fullRateWritePosition_,
                                  fullRateAvailableSamples_,
                                  sampleRate_,
@@ -2633,7 +3044,7 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
 
         if (quarterDue && quarterMinimum < quarterMaximum)
         {
-            quarterResult = analyse(quarterRateRing_,
+            quarterResult = measureCoordinate(quarterRateRing_,
                                     quarterRateWritePosition_,
                                     quarterRateAvailableSamples_,
                                     sampleRate_ * 0.25,
@@ -2682,7 +3093,7 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
         const float fullMaximum = std::min(maximumPitchHz_, 2600.0f);
         if (fullMinimum < fullMaximum)
         {
-            fullRateCandidate_.candidate = analyse(fullRateRing_,
+            fullRateCandidate_.candidate = measureCoordinate(fullRateRing_,
                                                    fullRateWritePosition_,
                                                    fullRateAvailableSamples_,
                                                    sampleRate_,
@@ -2701,7 +3112,7 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
             const float halfMaximum = std::min(maximumPitchHz_, 900.0f);
             if (halfMinimum < halfMaximum)
             {
-                halfRateCandidate_.candidate = analyse(halfRateRing_,
+                halfRateCandidate_.candidate = measureCoordinate(halfRateRing_,
                                                        halfRateWritePosition_,
                                                        halfRateAvailableSamples_,
                                                        sampleRate_ * 0.5,
@@ -2721,7 +3132,7 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
             const float quarterMaximum = std::min(maximumPitchHz_, 460.0f);
             if (quarterMinimum < quarterMaximum)
             {
-                quarterRateCandidate_.candidate = analyse(quarterRateRing_,
+                quarterRateCandidate_.candidate = measureCoordinate(quarterRateRing_,
                                                           quarterRateWritePosition_,
                                                           quarterRateAvailableSamples_,
                                                           sampleRate_ * 0.25,
@@ -2741,7 +3152,7 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
             const float eighthMaximum = std::min(maximumPitchHz_, 230.0f);
             if (eighthMinimum < eighthMaximum)
             {
-                eighthRateCandidate_.candidate = analyse(eighthRateRing_,
+                eighthRateCandidate_.candidate = measureCoordinate(eighthRateRing_,
                                                          eighthRateWritePosition_,
                                                          eighthRateAvailableSamples_,
                                                          sampleRate_ * 0.125,
