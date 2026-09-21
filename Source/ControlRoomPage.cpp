@@ -746,39 +746,8 @@ void ControlRoomPage::drawDiagnosticGrid (juce::Graphics& g, juce::Rectangle<int
     if (metering_.pendingOctaveObservations > 0)
         line += "   |   Confirm " + juce::String (metering_.pendingOctaveObservations);
 
-    // TARGET_REVISION_DIAGNOSTIC_LATCH_V1
-    if (metering_.targetRevisionDiagnosticSerial > 0)
-    {
-        line += "   |   Rev#" + juce::String (
-            static_cast<int> (metering_.targetRevisionDiagnosticSerial))
-            + " " + juce::String (metering_.targetRevisionBeforeHz, 1)
-            + ">" + juce::String (metering_.targetRevisionAfterHz, 1)
-            + "Hz " + juce::String (metering_.targetRevisionJumpCents, 0) + "c";
-        if (metering_.targetRevisionFromStable)
-            line += " S";
-        line += metering_.targetRevisionVoiceEvidenceValid ? " V1" : " V0";
-        line += metering_.targetRevisionTerminalTailVeto ? " T1" : " T0";
-        line += metering_.targetRevisionBodyPresent ? " B1" : " B0";
-        line += metering_.targetRevisionMusicalOnset ? " O1" : " O0";
-        line += metering_.targetRevisionLiveIdentityBreak ? " I1" : " I0";
-
-        // TARGET_REVISION_DIAGNOSTIC_LATCH_V2
-        line += metering_.targetRevisionDetectorScaleCommit ? " D1" : " D0";
-        line += metering_.targetRevisionDeepCentreExit ? " C1" : " C0";
-        line += metering_.targetRevisionPersistentBoundaryExit ? " P1" : " P0";
-        line += metering_.targetRevisionTerminalStructure ? " TS1" : " TS0";
-        line += metering_.targetRevisionSameTailSide ? " SS1" : " SS0";
-        line += metering_.targetRevisionOutsideStableCore ? " X1" : " X0";
-        line += " | vE " + juce::String (metering_.targetRevisionVoiceBodyEnergy, 2)
-            + " h " + juce::String (metering_.targetRevisionVoiceHarmonicity, 2)
-            + " r " + juce::String (metering_.targetRevisionVoiceSpectralReliability, 2)
-            + " br " + juce::String (metering_.targetRevisionVoiceBreathiness, 2)
-            + " ev " + juce::String (metering_.targetRevisionVoiceEventStrength, 2);
-        line += " | corr "
-            + juce::String (metering_.targetRevisionCorrectionBeforeCents, 0)
-            + ">" + juce::String (metering_.targetRevisionCorrectionAfterCents, 0)
-            + " d" + juce::String (metering_.targetRevisionCorrectionDeltaCents, 0);
-    }
+    // TARGET_REVISION_DIAGNOSTICS_REMOVED_V1:
+    // footer now shows only live product-state metering; no shadow revision ledger.
 
     line += "   |   Tempo ";
     line += metering_.tempoActive ? "active" : "off";
