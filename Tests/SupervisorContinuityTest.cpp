@@ -872,35 +872,62 @@ int main()
     success &= check(std::abs(denseEffectiveHysteresis - 80.0f) < 1.0e-6f,
                      "hold_radius_is_literal_on_dense_scales");
 
+    // HOLD_OWNERSHIP_BOUNDARY_V1: Hold belongs to musical ownership,
+    // not ScaleQuantizer state. The quantizer is geometry-only.
     const double holdSemitone = std::exp2(1.0 / 12.0);
     const std::array<double, 2> holdScale { 1.0, holdSemitone };
-    ModernPitchEngine::ScaleQuantizer holdGeometryQuantizer;
-    holdGeometryQuantizer.reset();
-    holdGeometryQuantizer.setScale(holdScale.data(), 2, 440.0);
-    int holdPending = 0;
-    const double owned440 = holdGeometryQuantizer.chooseTargetLog2(
-        std::log2(440.0), 80.0f, 0.0f, 1.0f, true, true, holdPending);
-    const double insideHold = holdGeometryQuantizer.chooseTargetLog2(
-        std::log2(440.0 * std::exp2(60.0 / 1200.0)),
-        80.0f, 0.0f, 1.0f, true, false, holdPending);
-    success &= check(std::abs((insideHold - owned440) * 1200.0) < 0.1,
-                     "hold_keeps_owned_degree_inside_user_cent_radius");
-    const double outsideHold = holdGeometryQuantizer.chooseTargetLog2(
-        std::log2(440.0 * std::exp2(81.0 / 1200.0)),
-        80.0f, 0.0f, 1.0f, true, false, holdPending);
-    success &= check(std::abs((outsideHold - owned440) * 1200.0) > 90.0,
-                     "hold_releases_identity_outside_user_cent_radius");
+    ModernPitchEngine::ScaleQuantizer lowHoldQuantizer;
+    ModernPitchEngine::ScaleQuantizer highHoldQuantizer;
+    lowHoldQuantizer.setScale(holdScale.data(), 2, 440.0);
+    highHoldQuantizer.setScale(holdScale.data(), 2, 440.0);
 
-    ModernPitchEngine::ScaleQuantizer zeroHoldGeometryQuantizer;
-    zeroHoldGeometryQuantizer.reset();
-    zeroHoldGeometryQuantizer.setScale(holdScale.data(), 2, 440.0);
-    static_cast<void>(zeroHoldGeometryQuantizer.chooseTargetLog2(
-        std::log2(440.0), 0.0f, 0.0f, 1.0f, true, true, holdPending));
-    const double zeroHoldNext = zeroHoldGeometryQuantizer.chooseTargetLog2(
-        std::log2(440.0 * std::exp2(51.0 / 1200.0)),
-        0.0f, 0.0f, 1.0f, true, false, holdPending);
-    success &= check(std::abs(1200.0 * (zeroHoldNext - std::log2(440.0))) > 90.0,
-                     "hold_zero_uses_normal_scale_cell_boundary");
+    auto makeHoldState = []()
+    {
+        ModernPitchEngine::CorrectionState s;
+        const double root = std::log2(440.0);
+        s.targetValid = true;
+        s.pitchCentreValid = true;
+        s.targetLog2 = root;
+        s.pitchCentreLog2 = root;
+        s.stableObservations = 20;
+        s.stableBodyObservations = 20;
+        s.noteBodyLatched = true;
+        s.noteBodyConfidence = 1.0f;
+        s.transportPeriodHz = 440.0;
+        s.trackingState = ModernPitchEngine::TrackingState::stable;
+        return s;
+    };
+
+    auto lowHoldState = makeHoldState();
+    auto highHoldState = makeHoldState();
+    auto holdObservation = strongPitch(static_cast<float>(
+        440.0 * std::exp2(75.0 / 1200.0)));
+
+    auto lowHoldParameters = parameters;
+    auto highHoldParameters = parameters;
+    setBodyEvidence(lowHoldParameters);
+    setBodyEvidence(highHoldParameters);
+    lowHoldParameters.scaleLock = true;
+    highHoldParameters.scaleLock = true;
+    lowHoldParameters.hardLockActive = true;
+    highHoldParameters.hardLockActive = true;
+    lowHoldParameters.lockHysteresis = 0.0f;
+    highHoldParameters.lockHysteresis = 80.0f;
+
+    for (int hop = 0; hop < 4; ++hop)
+    {
+        engine->updateCorrectionState(
+            lowHoldState, lowHoldQuantizer, holdObservation, lowHoldParameters);
+        engine->updateCorrectionState(
+            highHoldState, highHoldQuantizer, holdObservation, highHoldParameters);
+    }
+
+    const double lowHoldMove =
+        (lowHoldState.targetLog2 - std::log2(440.0)) * 1200.0;
+    const double highHoldMove =
+        (highHoldState.targetLog2 - std::log2(440.0)) * 1200.0;
+    success &= check(lowHoldMove > 90.0 && std::abs(highHoldMove) < 0.5,
+                     "hold_is_owned_by_engine_identity_boundary");
 
     // At maximum Humanize + Vibrato Preserve, a 10-cent input deviation on
     // 48-EDO must still request enough correction to leave <=3 cents residual
