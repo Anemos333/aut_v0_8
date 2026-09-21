@@ -460,7 +460,6 @@ int main()
     antiphaseParameters.amount = 1.0f;
     antiphaseParameters.retuneTimeMs = 0.0f;
     antiphaseParameters.humanize = 0.0f;
-    antiphaseParameters.preserveVibrato = 0.0f;
     antiphaseParameters.minimumPitchHz = 70.0f;
     antiphaseParameters.maximumPitchHz = 1000.0f;
     antiphaseParameters.stereoMode = ModernPitchEngine::StereoMode::linkedMidSide;
@@ -559,7 +558,6 @@ int main()
     ModernPitchEngine::Parameters staleRegisterParameters;
     staleRegisterParameters.amount = 1.0f;
     staleRegisterParameters.humanize = 0.0f;
-    staleRegisterParameters.preserveVibrato = 0.0f;
     staleRegisterParameters.maximumCorrectionSemitones = 12.0f;
     ModernPitchEngine::CorrectionState staleRegisterState;
     staleRegisterState.pitchCentreValid = true;
@@ -605,7 +603,6 @@ int main()
                          staleRegisterOutputHz / staleRegisterTargetHz)) < 1.0e-6,
                      "persistent_zero_consensus_register_change_reaches_scale");
 
-    parameters.transientProtection = 1.0f;
     parameters.humanize = 0.65f;
     setBodyEvidence(parameters);
 
@@ -978,7 +975,6 @@ int main()
     absoluteLockParameters.retuneTimeMs = 0.0f;
     absoluteLockParameters.humanize = 0.0f;
     absoluteLockParameters.vibratoPreserve = 0.0f;
-    absoluteLockParameters.preserveVibrato = 0.0f;
     absoluteLockParameters.maximumCorrectionSemitones = 24.0f;
 
     const auto checkAbsoluteScaleLock = [&](int edo,
@@ -1167,7 +1163,6 @@ int main()
     explicitAuthorityParameters.retuneTimeMs = 0.0f;
     explicitAuthorityParameters.humanize = 0.0f;
     explicitAuthorityParameters.vibratoPreserve = 0.0f;
-    explicitAuthorityParameters.preserveVibrato = 0.0f;
     explicitAuthorityParameters.maximumCorrectionSemitones = 24.0f;
 
     ModernPitchEngine::ScaleQuantizer explicitAuthorityQuantizer;
@@ -1211,14 +1206,12 @@ int main()
                                                  explicitAuthorityObservation) == 0.0f,
                      "hold_zero_has_no_hidden_unlocked_hysteresis");
 
-    // SINGLE_VISIBLE_VIBRATO_AUTHORITY_V1: legacy preserveVibrato may contain
-    // an old non-zero value, but visible Vibrato Preserve=0 must remove all
-    // deliberate vibrato residual even with Scale Lock off.
+    // SINGLE_VISIBLE_VIBRATO_AUTHORITY_V2: Vibrato Preserve is the only
+    // vibrato-residual control. At zero there is no hidden non-lock preserve.
     ModernPitchEngine::Parameters unlockedVibrato = explicitAuthorityParameters;
     unlockedVibrato.scaleLock = false;
     unlockedVibrato.lockHysteresis = 0.0f;
     unlockedVibrato.vibratoPreserve = 0.0f;
-    unlockedVibrato.preserveVibrato = 0.70f; // deliberately hostile legacy value
     ModernPitchEngine::ScaleQuantizer unlockedVibratoQuantizer;
     unlockedVibratoQuantizer.reset();
     unlockedVibratoQuantizer.setScale(&liveCoordinateUnison, 1, 440.0);
@@ -1255,7 +1248,6 @@ int main()
     commonSoftness.amount = 0.55f;
     commonSoftness.humanize = 0.45f;
     commonSoftness.vibratoPreserve = 0.0f;
-    commonSoftness.preserveVibrato = 0.0f;
     commonSoftness.lockHysteresis = 0.0f;
     auto softInput = strongPitch(450.0f);
     softInput.audioPresent = true;
@@ -1448,7 +1440,6 @@ int main()
     parameters.maximumCorrectionSemitones = 1.0f;
     parameters.amount = 1.0f;
     parameters.humanize = 0.0f;
-    parameters.preserveVibrato = 0.0f;
     setBodyEvidence(parameters);
     engine->updateCorrectionState(capState, quantizer, voiced, parameters);
     std::cerr << "one_semitone_cap_cents=" << capState.desiredCents << '\n';
@@ -1846,7 +1837,6 @@ int main()
     ModernPitchEngine::Parameters labelTransportParameters = explicitAuthorityParameters;
     labelTransportParameters.amount = 1.0f;
     labelTransportParameters.humanize = 0.0f;
-    labelTransportParameters.preserveVibrato = 0.0f;
     labelTransportParameters.vibratoPreserve = 0.0f;
     labelTransportParameters.voiceEvidenceValid = true;
 
