@@ -87,11 +87,10 @@ private:
     int envelopeFrameCounter_ = 0;
     int envelopeUpdateInterval_ = 2;
     float synthesisGain_ = 0.5f;
-     float envelopeAttackCoefficient_ = 1.0f;
+    float envelopeAttackCoefficient_ = 1.0f;
     float envelopeReleaseCoefficient_ = 1.0f;
     float smoothedFormantPreservation_ = 0.0f;
     float formantReductionCoefficient_ = 1.0f;
     float formantRecoveryCoefficient_ = 1.0f;
 
-    Diagnostics diagnosticBlock_ {};
 };
