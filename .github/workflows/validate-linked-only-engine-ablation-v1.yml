@@ -1,0 +1,158 @@
+name: Validate linked-only engine ablation v1
+
+on:
+  push:
+    branches:
+      - v1-lean-linked-only-engine-ablation-v1
+    paths:
+      - Source/ModernPitchEngine.h
+      - Source/ModernPitchEngine.cpp
+      - Source/LivePitchProcessor.h
+      - Source/PluginProcessor.cpp
+      - Tests/LinkedOnlyStereoEquivalenceTest.cpp
+      - Tests/CleanModernPitchEngineTest.cpp
+      - Tests/SupervisorContinuityTest.cpp
+      - Tests/CorpusAudioDiffRunner.cpp
+      - Tests/RealWorldRegression.cpp
+      - Tests/CommercialRegression.cpp
+      - .github/workflows/validate-linked-only-engine-ablation-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          ref: v1-lean-linked-only-engine-ablation-v1
+          fetch-depth: 0
+
+      - name: Guard scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor 1a0e91a616d921f441679dfba04b018bb1db782d HEAD
+          grep -q 'LINKED_ONLY_PRODUCT_PATH_V1' Source/ModernPitchEngine.h
+          grep -q 'LINKED_ONLY_PRODUCT_PATH_V1' Source/ModernPitchEngine.cpp
+          ! grep -q 'dualMono' Source/ModernPitchEngine.h Source/ModernPitchEngine.cpp Source/LivePitchProcessor.h Source/PluginProcessor.cpp
+          ! grep -q 'channelTrackers_' Source/ModernPitchEngine.h Source/ModernPitchEngine.cpp
+          ! grep -q 'channelQuantizers_' Source/ModernPitchEngine.h Source/ModernPitchEngine.cpp
+          ! grep -q 'channelTempoControllers_' Source/ModernPitchEngine.h Source/ModernPitchEngine.cpp
+          ! grep -q 'channelCorrections_' Source/ModernPitchEngine.h Source/ModernPitchEngine.cpp
+          ! grep -q 'latestChannelObservation_' Source/ModernPitchEngine.h Source/ModernPitchEngine.cpp
+          echo 'LINKED_ONLY_SCOPE=PASS'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y             libasound2-dev libjack-jackd2-dev ladspa-sdk             libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev             libx11-dev libxcomposite-dev libxcursor-dev libxext-dev             libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev             libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Configure and build full candidate
+        run: |
+          cmake -S . -B build-linked-only             -DCMAKE_BUILD_TYPE=Release             -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-linked-only --config Release --parallel 2 --target Neumaton >/dev/null
+
+      - name: Preserve test slots
+        run: |
+          cp Tests/SupervisorContinuityTest.cpp /tmp/linked-only-supervisor.cpp
+          cp Tests/SingleWetSpectralRendererTest.cpp /tmp/linked-only-renderer.cpp
+
+      - name: Candidate linked stereo corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/LinkedOnlyStereoEquivalenceTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-linked-only --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-linked-only/clean-engine-tests/SupervisorContinuityTest             2>&1 | tee /tmp/linked-only-candidate.log
+          grep '^LINKED_ONLY_STEREO_HASH=' /tmp/linked-only-candidate.log             > /tmp/linked-only-candidate-hash.txt
+          grep '^MODERN_ENGINE_SIZE=' /tmp/linked-only-candidate.log             > /tmp/linked-only-candidate-size.txt
+
+      - name: Exact pass7 parent corpus and footprint
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach /tmp/neumaton-linked-parent             1a0e91a616d921f441679dfba04b018bb1db782d
+          cd /tmp/neumaton-linked-parent
+          cp "$GITHUB_WORKSPACE/Tests/LinkedOnlyStereoEquivalenceTest.cpp"             Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-parent             -DCMAKE_BUILD_TYPE=Release             -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-parent --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-parent/clean-engine-tests/SupervisorContinuityTest             2>&1 | tee /tmp/linked-only-parent.log
+          grep '^LINKED_ONLY_STEREO_HASH=' /tmp/linked-only-parent.log             > /tmp/linked-only-parent-hash.txt
+          grep '^MODERN_ENGINE_SIZE=' /tmp/linked-only-parent.log             > /tmp/linked-only-parent-size.txt
+          diff -u /tmp/linked-only-parent-hash.txt /tmp/linked-only-candidate-hash.txt
+
+          python3 - <<'PY'
+          from pathlib import Path
+          def size(path):
+              line=Path(path).read_text().strip()
+              return int(line.split("=",1)[1])
+          parent=size("/tmp/linked-only-parent-size.txt")
+          candidate=size("/tmp/linked-only-candidate-size.txt")
+          reduction=100.0*(parent-candidate)/max(parent,1)
+          print(f"LINKED_ONLY_ENGINE_SIZE parent={parent} candidate={candidate} reduction_pct={reduction:.3f}")
+          if candidate >= parent:
+              raise SystemExit("linked-only candidate did not reduce engine footprint")
+          print("LINKED_ONLY_STEREO_EXACT_AND_SMALLER=PASS")
+          PY
+
+      - name: Detector oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          cp Tests/GoldenDetectorDeterminismTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-linked-only --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          for run in 1 2 3; do
+            ./build-linked-only/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee "/tmp/linked-detector-$run.log"
+            grep -q '^GOLDEN_DETECTOR_TRACE_HASH=58273352d40c5499$' "/tmp/linked-detector-$run.log"
+          done
+          echo 'LINKED_ONLY_DETECTOR_BIT_EXACT=PASS'
+
+      - name: Trajectory and engine corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/CorrectionTrajectoryGoldenTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-linked-only --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-linked-only/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/linked-trajectory.log
+          grep -q '^CORRECTION_TRAJECTORY_HASH=3c958f8178c118a3$' /tmp/linked-trajectory.log
+
+          cp Tests/GoldenEngineBehaviorCorpusTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-linked-only --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-linked-only/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/linked-engine.log
+          grep -q '^GOLDEN_ENGINE_BEHAVIOR_CORPUS=PASS scenarios=14$' /tmp/linked-engine.log
+          grep -q '^GOLDEN_ENGINE_CORPUS_HASH=982b4ad85accdd75$' /tmp/linked-engine.log
+          echo 'LINKED_ONLY_CORE_EXACT=PASS'
+
+      - name: Renderer oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/RendererDiagnosticTransparencyTest.cpp Tests/SingleWetSpectralRendererTest.cpp
+          cmake --build build-linked-only --config Release --parallel 2 --target SingleWetSpectralRendererTest >/dev/null
+          ./build-linked-only/clean-engine-tests/SingleWetSpectralRendererTest 2>&1 | tee /tmp/linked-renderer.log
+          grep -q '^RENDERER_TRANSPARENCY_HASH_256=ce9950c8dec7364$' /tmp/linked-renderer.log
+          grep -q '^RENDERER_TRANSPARENCY_HASH_512=685aa631a64ef991$' /tmp/linked-renderer.log
+          echo 'LINKED_ONLY_RENDERER_EXACT=PASS'
+
+      - name: Normal product contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp /tmp/linked-only-supervisor.cpp Tests/SupervisorContinuityTest.cpp
+          cp /tmp/linked-only-renderer.cpp Tests/SingleWetSpectralRendererTest.cpp
+          cmake --build build-linked-only --config Release --parallel 2             --target SupervisorContinuityTest CleanModernPitchEngineTest                      VoiceEvidenceAnalyzerTest GuiAudibilityTest GuiAudioControlContractTest                      SingleWetSpectralRendererTest >/dev/null
+          for exe in SupervisorContinuityTest CleanModernPitchEngineTest VoiceEvidenceAnalyzerTest GuiAudibilityTest GuiAudioControlContractTest SingleWetSpectralRendererTest; do
+            ./build-linked-only/clean-engine-tests/"$exe" 2>&1 | tee "/tmp/linked-$exe.log"
+            ! grep -q '=FAIL' "/tmp/linked-$exe.log"
+          done
+          echo 'LINKED_ONLY_NORMAL_CONTRACTS=PASS'
+
+      - name: Final marker
+        run: |
+          echo 'V1_LEAN_LINKED_ONLY_ENGINE_ABLATION=PASS_PRODUCT_EXACT'
+          echo 'UNUSED_DUAL_MONO_ANALYSIS_FAMILY_REMOVED=PASS'
