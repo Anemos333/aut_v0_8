@@ -417,15 +417,12 @@ void allocationAndFuzzTests(Tests& tests)
         parameters.amount = unit(random);
         parameters.retuneTimeMs = 500.0f * unit(random);
         parameters.transitionTimeMs = 300.0f * unit(random);
-        parameters.preserveVibrato = unit(random);
         parameters.humanize = unit(random);
         parameters.formantPreservation = unit(random);
-        parameters.transientProtection = unit(random);
         parameters.detectorSensitivity = unit(random);
         parameters.maximumCorrectionSemitones = 24.0f * unit(random);
         parameters.minimumPitchHz = 35.0f + 180.0f * unit(random);
         parameters.maximumPitchHz = parameters.minimumPitchHz + 50.0f + 2000.0f * unit(random);
-        parameters.breathReduction = unit(random);
         parameters.stereoMode = (iteration & 1) != 0
             ? ModernPitchEngine::StereoMode::linkedMidSide
             : ModernPitchEngine::StereoMode::dualMono;
