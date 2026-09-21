@@ -536,11 +536,6 @@ private:
         std::uint64_t hash_ = 0;
         float minStepCents_ = 1200.0f;
         float asymmetry_ = 0.0f;
-        bool targetValid_ = false;
-        double targetLog2_ = 0.0;
-        bool pendingValid_ = false;
-        double pendingLog2_ = 0.0;
-        int pendingCount_ = 0;
     };
 
     struct CorrectionState
