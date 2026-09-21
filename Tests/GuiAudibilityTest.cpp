@@ -183,7 +183,6 @@ int main()
     unlocked.scaleLock = false;
     auto locked = base;
     locked.scaleLock = true;
-    locked.hardLockActive = true;
     locked.lockHysteresis = 80.0f;
     const auto unlockedResult = render(
         ModernPitchEngine::LatencyMode::quality, unlocked,
