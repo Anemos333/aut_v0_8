@@ -75,7 +75,9 @@ void ModernPitchEngine::BiquadLowPass::reset() noexcept
 
 float ModernPitchEngine::BiquadLowPass::process(float input) noexcept
 {
-    const double x = static_cast<double>(sanitiseAudioSample(input));
+    // BIQUAD_INPUT_SANITIZE_OWNED_UPSTREAM_V1: private anti-alias stages receive
+    // the finite stream already sanitized by the public engine boundary.
+    const double x = static_cast<double>(input);
     const double output = b0_ * x + z1_;
     z1_ = b1_ * x - a1_ * output + z2_;
     z2_ = b2_ * x - a2_ * output;
@@ -3172,54 +3174,6 @@ void ModernPitchEngine::reset() noexcept
     meterCorrectionVelocity_.store(0.0f, std::memory_order_relaxed);
     meterTargetJumpCents_.store(0.0f, std::memory_order_relaxed);
     meterSustainedSeconds_.store(0.0f, std::memory_order_relaxed);
-    targetRevisionDiagnosticSerial_ = 0;
-    targetRevisionBeforeHz_ = 0.0f;
-    targetRevisionAfterHz_ = 0.0f;
-    targetRevisionJumpCents_ = 0.0f;
-    targetRevisionFromStable_ = false;
-    targetRevisionVoiceEvidenceValid_ = false;
-    targetRevisionTerminalTailVeto_ = false;
-    targetRevisionBodyPresent_ = false;
-    targetRevisionMusicalOnset_ = false;
-    targetRevisionLiveIdentityBreak_ = false;
-    targetRevisionDetectorScaleCommit_ = false;
-    targetRevisionDeepCentreExit_ = false;
-    targetRevisionPersistentBoundaryExit_ = false;
-    targetRevisionTerminalStructure_ = false;
-    targetRevisionSameTailSide_ = false;
-    targetRevisionOutsideStableCore_ = false;
-    targetRevisionVoiceBodyEnergy_ = 0.0f;
-    targetRevisionVoiceHarmonicity_ = 0.0f;
-    targetRevisionVoiceSpectralReliability_ = 0.0f;
-    targetRevisionVoiceBreathiness_ = 0.0f;
-    targetRevisionVoiceEventStrength_ = 0.0f;
-    targetRevisionCorrectionBeforeCents_ = 0.0f;
-    targetRevisionCorrectionAfterCents_ = 0.0f;
-    targetRevisionCorrectionDeltaCents_ = 0.0f;
-    meterTargetRevisionDiagnosticSerial_.store(0, std::memory_order_relaxed);
-    meterTargetRevisionBeforeHz_.store(0.0f, std::memory_order_relaxed);
-    meterTargetRevisionAfterHz_.store(0.0f, std::memory_order_relaxed);
-    meterTargetRevisionJumpCents_.store(0.0f, std::memory_order_relaxed);
-    meterTargetRevisionFromStable_.store(false, std::memory_order_relaxed);
-    meterTargetRevisionVoiceEvidenceValid_.store(false, std::memory_order_relaxed);
-    meterTargetRevisionTerminalTailVeto_.store(false, std::memory_order_relaxed);
-    meterTargetRevisionBodyPresent_.store(false, std::memory_order_relaxed);
-    meterTargetRevisionMusicalOnset_.store(false, std::memory_order_relaxed);
-    meterTargetRevisionLiveIdentityBreak_.store(false, std::memory_order_relaxed);
-    meterTargetRevisionDetectorScaleCommit_.store(false, std::memory_order_relaxed);
-    meterTargetRevisionDeepCentreExit_.store(false, std::memory_order_relaxed);
-    meterTargetRevisionPersistentBoundaryExit_.store(false, std::memory_order_relaxed);
-    meterTargetRevisionTerminalStructure_.store(false, std::memory_order_relaxed);
-    meterTargetRevisionSameTailSide_.store(false, std::memory_order_relaxed);
-    meterTargetRevisionOutsideStableCore_.store(false, std::memory_order_relaxed);
-    meterTargetRevisionVoiceBodyEnergy_.store(0.0f, std::memory_order_relaxed);
-    meterTargetRevisionVoiceHarmonicity_.store(0.0f, std::memory_order_relaxed);
-    meterTargetRevisionVoiceSpectralReliability_.store(0.0f, std::memory_order_relaxed);
-    meterTargetRevisionVoiceBreathiness_.store(0.0f, std::memory_order_relaxed);
-    meterTargetRevisionVoiceEventStrength_.store(0.0f, std::memory_order_relaxed);
-    meterTargetRevisionCorrectionBeforeCents_.store(0.0f, std::memory_order_relaxed);
-    meterTargetRevisionCorrectionAfterCents_.store(0.0f, std::memory_order_relaxed);
-    meterTargetRevisionCorrectionDeltaCents_.store(0.0f, std::memory_order_relaxed);
     meterDetectorSupport_.store(0, std::memory_order_relaxed);
     meterOctaveState_.store(0, std::memory_order_relaxed);
     meterPendingOctave_.store(0, std::memory_order_relaxed);
@@ -3487,6 +3441,8 @@ void ModernPitchEngine::updateCorrectionState(
     const PitchObservation& observation,
     const Parameters& parameters) noexcept
 {
+    // TARGET_REVISION_DIAGNOSTICS_REMOVED_V1: ownership state is not mirrored
+    // into a second diagnostic ledger.
     // RENDERER_STABLE_HOP_AUTHORITY_V1
     // Normal hops may replace the renderer command. Existing supervisor vetoes
     // below can revoke only audible authority while preserving analysis,
@@ -3495,10 +3451,6 @@ void ModernPitchEngine::updateCorrectionState(
 
     const int hopSamples = MultiRatePitchTracker::hopSize();
     const double hopSeconds = static_cast<double>(hopSamples) / sampleRate_;
-    // TARGET_REVISION_DIAGNOSTIC_LATCH_V2
-    const double diagnosticDesiredBeforeUpdate = state.desiredCents;
-    const std::uint32_t diagnosticRevisionSerialBeforeUpdate =
-        targetRevisionDiagnosticSerial_;
     const float humanize = clamp01(parameters.humanize);
     const bool richEvidence = parameters.voiceEvidenceValid;
     const bool trustedPitch = observation.valid
@@ -3890,9 +3842,6 @@ void ModernPitchEngine::updateCorrectionState(
     // tails and is measured in the actual adjacent-degree geometry.
     bool terminalTailIdentityVeto = false;
     bool terminalTailStableCompensation = false;
-    bool diagnosticTerminalStructure = false;
-    bool diagnosticSameTailSide = false;
-    bool diagnosticOutsideStableCore = false;
     if (state.targetValid
         && state.noteBodyLatched
         && richEvidence
@@ -3911,7 +3860,6 @@ void ModernPitchEngine::updateCorrectionState(
         const bool sameTailSide = std::abs(signedPriorDistanceCents)
                 < 0.12 * localTailStep
             || signedTailDistanceCents * signedPriorDistanceCents > 0.0;
-        diagnosticSameTailSide = sameTailSide;
 
         int degradationVotes = 0;
         degradationVotes += parameters.voiceBodyEnergy < 0.52f ? 1 : 0;
@@ -3920,7 +3868,6 @@ void ModernPitchEngine::updateCorrectionState(
         degradationVotes += parameters.voiceBreathiness > 0.42f ? 1 : 0;
         const bool terminalStructure = parameters.voiceEventStrength < 0.55f
             && degradationVotes >= 2;
-        diagnosticTerminalStructure = terminalStructure;
 
         // TERMINAL_TAIL_STABLE_TRANSPORT_REBASE_V1
         // A weakening same-note tail may keep reporting valid F0 while its
@@ -3934,7 +3881,6 @@ void ModernPitchEngine::updateCorrectionState(
 
         const bool outsideStableCore =
             std::abs(signedTailDistanceCents) >= 0.32 * localTailStep;
-        diagnosticOutsideStableCore = outsideStableCore;
 
         if (terminalStructure && sameTailSide && outsideStableCore)
         {
@@ -4098,8 +4044,6 @@ void ModernPitchEngine::updateCorrectionState(
 
     bool liveIdentityBreak = false;
     bool forceTargetSwitch = false;
-    bool diagnosticDeepCentreExit = false;
-    bool diagnosticPersistentBoundaryExit = false;
     if (identityOnlyVeto || provisionalOctaveIdentityVeto)
     {
         // IDENTITY_VETO_TRANSPORT_CONTINUES_V1: hold musical identity and its
@@ -4213,8 +4157,6 @@ void ModernPitchEngine::updateCorrectionState(
             const double persistentEvidenceRequired = octaveAmbiguous ? 12.0 : 6.0;
             const bool persistentBoundaryExit =
                 state.identityChallengerEvidence >= persistentEvidenceRequired;
-            diagnosticDeepCentreExit = deepCentreExit;
-            diagnosticPersistentBoundaryExit = persistentBoundaryExit;
 
             liveIdentityBreak = deepCentreExit || persistentBoundaryExit;
             forceTargetSwitch = liveIdentityBreak;
@@ -4265,38 +4207,6 @@ void ModernPitchEngine::updateCorrectionState(
         state.lastTargetJumpCents = targetJump;
         if (targetIdentityChanged)
         {
-            // TARGET_REVISION_DIAGNOSTIC_LATCH_V1
-            // Observe the committed identity change before mutating tracking
-            // state. These fields are debug metering only and never participate
-            // in any subsequent DSP or authority decision.
-            ++targetRevisionDiagnosticSerial_;
-            targetRevisionBeforeHz_ = state.targetValid
-                ? static_cast<float>(std::exp2(state.targetLog2)) : 0.0f;
-            targetRevisionAfterHz_ = static_cast<float>(std::exp2(newTarget));
-            targetRevisionJumpCents_ = static_cast<float>(targetJump);
-            targetRevisionFromStable_ =
-                state.trackingState == TrackingState::stable;
-            targetRevisionVoiceEvidenceValid_ = richEvidence;
-            targetRevisionTerminalTailVeto_ = terminalTailIdentityVeto;
-            targetRevisionBodyPresent_ = bodyPresent;
-            targetRevisionMusicalOnset_ = musicalOnset;
-            targetRevisionLiveIdentityBreak_ = liveIdentityBreak;
-            targetRevisionDetectorScaleCommit_ = detectorScaleCommit;
-            targetRevisionDeepCentreExit_ = diagnosticDeepCentreExit;
-            targetRevisionPersistentBoundaryExit_ =
-                diagnosticPersistentBoundaryExit;
-            targetRevisionTerminalStructure_ = diagnosticTerminalStructure;
-            targetRevisionSameTailSide_ = diagnosticSameTailSide;
-            targetRevisionOutsideStableCore_ = diagnosticOutsideStableCore;
-            targetRevisionVoiceBodyEnergy_ = parameters.voiceBodyEnergy;
-            targetRevisionVoiceHarmonicity_ = parameters.voiceHarmonicity;
-            targetRevisionVoiceSpectralReliability_ =
-                parameters.voiceSpectralReliability;
-            targetRevisionVoiceBreathiness_ = parameters.voiceBreathiness;
-            targetRevisionVoiceEventStrength_ = parameters.voiceEventStrength;
-            targetRevisionCorrectionBeforeCents_ =
-                static_cast<float>(diagnosticDesiredBeforeUpdate);
-
             // TRANSITION_DESTINATION_FROZEN_V2: every committed note boundary
             // starts one clean monotonic trajectory. A later detector candidate
             // may be analysed, but cannot continuously rewrite this destination.
@@ -4626,15 +4536,6 @@ void ModernPitchEngine::updateCorrectionState(
                 -maximumCents,
                 maximumCents);
         }
-    }
-
-    if (targetRevisionDiagnosticSerial_
-        != diagnosticRevisionSerialBeforeUpdate)
-    {
-        targetRevisionCorrectionAfterCents_ =
-            static_cast<float>(errorCents);
-        targetRevisionCorrectionDeltaCents_ = static_cast<float>(
-            errorCents - diagnosticDesiredBeforeUpdate);
     }
 
     state.desiredCents = errorCents;
@@ -5135,54 +5036,6 @@ void ModernPitchEngine::publishMetering(
     meterOctaveState_.store(observation.octaveState, std::memory_order_relaxed);
     meterTrackingState_.store(static_cast<int>(state.trackingState),
                               std::memory_order_relaxed);
-    meterTargetRevisionDiagnosticSerial_.store(
-        targetRevisionDiagnosticSerial_, std::memory_order_relaxed);
-    meterTargetRevisionBeforeHz_.store(
-        targetRevisionBeforeHz_, std::memory_order_relaxed);
-    meterTargetRevisionAfterHz_.store(
-        targetRevisionAfterHz_, std::memory_order_relaxed);
-    meterTargetRevisionJumpCents_.store(
-        targetRevisionJumpCents_, std::memory_order_relaxed);
-    meterTargetRevisionFromStable_.store(
-        targetRevisionFromStable_, std::memory_order_relaxed);
-    meterTargetRevisionVoiceEvidenceValid_.store(
-        targetRevisionVoiceEvidenceValid_, std::memory_order_relaxed);
-    meterTargetRevisionTerminalTailVeto_.store(
-        targetRevisionTerminalTailVeto_, std::memory_order_relaxed);
-    meterTargetRevisionBodyPresent_.store(
-        targetRevisionBodyPresent_, std::memory_order_relaxed);
-    meterTargetRevisionMusicalOnset_.store(
-        targetRevisionMusicalOnset_, std::memory_order_relaxed);
-    meterTargetRevisionLiveIdentityBreak_.store(
-        targetRevisionLiveIdentityBreak_, std::memory_order_relaxed);
-    meterTargetRevisionDetectorScaleCommit_.store(
-        targetRevisionDetectorScaleCommit_, std::memory_order_relaxed);
-    meterTargetRevisionDeepCentreExit_.store(
-        targetRevisionDeepCentreExit_, std::memory_order_relaxed);
-    meterTargetRevisionPersistentBoundaryExit_.store(
-        targetRevisionPersistentBoundaryExit_, std::memory_order_relaxed);
-    meterTargetRevisionTerminalStructure_.store(
-        targetRevisionTerminalStructure_, std::memory_order_relaxed);
-    meterTargetRevisionSameTailSide_.store(
-        targetRevisionSameTailSide_, std::memory_order_relaxed);
-    meterTargetRevisionOutsideStableCore_.store(
-        targetRevisionOutsideStableCore_, std::memory_order_relaxed);
-    meterTargetRevisionVoiceBodyEnergy_.store(
-        targetRevisionVoiceBodyEnergy_, std::memory_order_relaxed);
-    meterTargetRevisionVoiceHarmonicity_.store(
-        targetRevisionVoiceHarmonicity_, std::memory_order_relaxed);
-    meterTargetRevisionVoiceSpectralReliability_.store(
-        targetRevisionVoiceSpectralReliability_, std::memory_order_relaxed);
-    meterTargetRevisionVoiceBreathiness_.store(
-        targetRevisionVoiceBreathiness_, std::memory_order_relaxed);
-    meterTargetRevisionVoiceEventStrength_.store(
-        targetRevisionVoiceEventStrength_, std::memory_order_relaxed);
-    meterTargetRevisionCorrectionBeforeCents_.store(
-        targetRevisionCorrectionBeforeCents_, std::memory_order_relaxed);
-    meterTargetRevisionCorrectionAfterCents_.store(
-        targetRevisionCorrectionAfterCents_, std::memory_order_relaxed);
-    meterTargetRevisionCorrectionDeltaCents_.store(
-        targetRevisionCorrectionDeltaCents_, std::memory_order_relaxed);
     meterTempoBpm_.store(tempoMeter.bpm, std::memory_order_relaxed);
     meterTempoGridPhase_.store(tempoMeter.gridPhase, std::memory_order_relaxed);
     meterTempoGlideTimeMs_.store(tempoMeter.glideTimeMs, std::memory_order_relaxed);
@@ -5227,54 +5080,6 @@ ModernPitchEngine::Metering ModernPitchEngine::getMetering() const noexcept
         result.pendingOctaveObservations = meterPendingOctave_.load(std::memory_order_relaxed);
         result.state = static_cast<TrackingState>(
             meterTrackingState_.load(std::memory_order_relaxed));
-        result.targetRevisionDiagnosticSerial =
-            meterTargetRevisionDiagnosticSerial_.load(std::memory_order_relaxed);
-        result.targetRevisionBeforeHz =
-            meterTargetRevisionBeforeHz_.load(std::memory_order_relaxed);
-        result.targetRevisionAfterHz =
-            meterTargetRevisionAfterHz_.load(std::memory_order_relaxed);
-        result.targetRevisionJumpCents =
-            meterTargetRevisionJumpCents_.load(std::memory_order_relaxed);
-        result.targetRevisionFromStable =
-            meterTargetRevisionFromStable_.load(std::memory_order_relaxed);
-        result.targetRevisionVoiceEvidenceValid =
-            meterTargetRevisionVoiceEvidenceValid_.load(std::memory_order_relaxed);
-        result.targetRevisionTerminalTailVeto =
-            meterTargetRevisionTerminalTailVeto_.load(std::memory_order_relaxed);
-        result.targetRevisionBodyPresent =
-            meterTargetRevisionBodyPresent_.load(std::memory_order_relaxed);
-        result.targetRevisionMusicalOnset =
-            meterTargetRevisionMusicalOnset_.load(std::memory_order_relaxed);
-        result.targetRevisionLiveIdentityBreak =
-            meterTargetRevisionLiveIdentityBreak_.load(std::memory_order_relaxed);
-        result.targetRevisionDetectorScaleCommit =
-            meterTargetRevisionDetectorScaleCommit_.load(std::memory_order_relaxed);
-        result.targetRevisionDeepCentreExit =
-            meterTargetRevisionDeepCentreExit_.load(std::memory_order_relaxed);
-        result.targetRevisionPersistentBoundaryExit =
-            meterTargetRevisionPersistentBoundaryExit_.load(std::memory_order_relaxed);
-        result.targetRevisionTerminalStructure =
-            meterTargetRevisionTerminalStructure_.load(std::memory_order_relaxed);
-        result.targetRevisionSameTailSide =
-            meterTargetRevisionSameTailSide_.load(std::memory_order_relaxed);
-        result.targetRevisionOutsideStableCore =
-            meterTargetRevisionOutsideStableCore_.load(std::memory_order_relaxed);
-        result.targetRevisionVoiceBodyEnergy =
-            meterTargetRevisionVoiceBodyEnergy_.load(std::memory_order_relaxed);
-        result.targetRevisionVoiceHarmonicity =
-            meterTargetRevisionVoiceHarmonicity_.load(std::memory_order_relaxed);
-        result.targetRevisionVoiceSpectralReliability =
-            meterTargetRevisionVoiceSpectralReliability_.load(std::memory_order_relaxed);
-        result.targetRevisionVoiceBreathiness =
-            meterTargetRevisionVoiceBreathiness_.load(std::memory_order_relaxed);
-        result.targetRevisionVoiceEventStrength =
-            meterTargetRevisionVoiceEventStrength_.load(std::memory_order_relaxed);
-        result.targetRevisionCorrectionBeforeCents =
-            meterTargetRevisionCorrectionBeforeCents_.load(std::memory_order_relaxed);
-        result.targetRevisionCorrectionAfterCents =
-            meterTargetRevisionCorrectionAfterCents_.load(std::memory_order_relaxed);
-        result.targetRevisionCorrectionDeltaCents =
-            meterTargetRevisionCorrectionDeltaCents_.load(std::memory_order_relaxed);
         result.tempoBpm = meterTempoBpm_.load(std::memory_order_relaxed);
         result.tempoGridPhase = meterTempoGridPhase_.load(std::memory_order_relaxed);
         result.tempoGlideTimeMs = meterTempoGlideTimeMs_.load(std::memory_order_relaxed);
