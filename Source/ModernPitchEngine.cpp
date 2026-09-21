@@ -2201,6 +2201,135 @@ void ModernPitchEngine::MultiRatePitchTracker::updateDecoderBeam(
 }
 
 ModernPitchEngine::MultiRatePitchTracker::DecoderDecision
+ModernPitchEngine::MultiRatePitchTracker::resolveContinuousCandidate() const noexcept
+{
+    struct NativeProposal
+    {
+        const PitchCandidate* candidate = nullptr;
+        int pathIndex = -1;
+        int ageInHops = 1000;
+        int familySupport = 0;
+        float score = -1.0f;
+        std::uint8_t supportMask = 0;
+    };
+
+    const std::array<const CandidateSlot*, detectorPathCount> slots {
+        &fullRateCandidate_,
+        &halfRateCandidate_,
+        &quarterRateCandidate_,
+        &eighthRateCandidate_
+    };
+    constexpr std::array<int, detectorPathCount> maximumAges { 2, 3, 5, 9 };
+
+    const auto usable = [&](int pathIndex) noexcept
+    {
+        const auto& slot = *slots[static_cast<std::size_t>(pathIndex)];
+        const auto& candidate = slot.candidate;
+        return slot.ageInHops <= maximumAges[static_cast<std::size_t>(pathIndex)]
+            && candidate.valid
+            && std::isfinite(candidate.frequencyHz)
+            && candidate.frequencyHz >= minimumPitchHz_
+            && candidate.frequencyHz <= maximumPitchHz_;
+    };
+
+    const auto supportsFamily = [this](float witnessHz,
+                                       float targetHz) noexcept
+    {
+        if (!(witnessHz > 0.0f) || !(targetHz > 0.0f)
+            || witnessHz > targetHz * 1.06f)
+        {
+            return false;
+        }
+
+        if (centsDistance(witnessHz, targetHz) <= 55.0f)
+            return true;
+
+        // Reuse the already validated primitive-family divisors. A slower path
+        // may verify a higher native coordinate without being allowed to steer it.
+        for (int divisor = 2; divisor <= 4; ++divisor)
+        {
+            if (centsDistance(static_cast<float>(divisor) * witnessHz,
+                              targetHz) <= 55.0f)
+            {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    NativeProposal best;
+    for (int pathIndex = 0; pathIndex < detectorPathCount; ++pathIndex)
+    {
+        if (!usable(pathIndex))
+            continue;
+
+        const auto& slot = *slots[static_cast<std::size_t>(pathIndex)];
+        const auto& candidate = slot.candidate;
+        const float coordinateAuthority =
+            pathCoordinateAuthority(pathIndex, candidate.frequencyHz);
+        if (coordinateAuthority <= 0.0f)
+            continue;
+
+        NativeProposal proposal;
+        proposal.candidate = &candidate;
+        proposal.pathIndex = pathIndex;
+        proposal.ageInHops = slot.ageInHops;
+        proposal.supportMask = static_cast<std::uint8_t>(1u << pathIndex);
+
+        for (int witnessPath = 0; witnessPath < detectorPathCount; ++witnessPath)
+        {
+            if (witnessPath == pathIndex || !usable(witnessPath))
+                continue;
+
+            const auto& witness =
+                slots[static_cast<std::size_t>(witnessPath)]->candidate;
+            if (supportsFamily(witness.frequencyHz, candidate.frequencyHz))
+            {
+                ++proposal.familySupport;
+                proposal.supportMask = static_cast<std::uint8_t>(
+                    proposal.supportMask | (1u << witnessPath));
+            }
+        }
+
+        proposal.score = candidateBaseScore(candidate) * coordinateAuthority;
+
+        const bool betterSupport = proposal.familySupport > best.familySupport;
+        const bool sameSupportBetterScore =
+            proposal.familySupport == best.familySupport
+            && proposal.score > best.score;
+        if (best.candidate == nullptr || betterSupport || sameSupportBetterScore)
+            best = proposal;
+    }
+
+    if (best.candidate == nullptr)
+        return {};
+
+    DecoderDecision decision;
+    decision.candidate = *best.candidate;
+    decision.candidate.pathIndex = best.pathIndex;
+    decision.candidate.ageInHops = best.ageInHops;
+    decision.candidate.valid = true;
+    decision.supportCount = best.familySupport + 1;
+    decision.directSupportCount = 1;
+    decision.freshSupportMask = best.supportMask;
+    decision.decoderOctaveIndex = octaveState_;
+
+    const float pathConsensus = static_cast<float>(best.familySupport)
+                              / static_cast<float>(detectorPathCount - 1);
+    const float directConsensus = 1.0f
+                                / static_cast<float>(detectorPathCount);
+    decision.consensus = clamp01(0.12f
+                               + 0.58f * pathConsensus
+                               + 0.30f * directConsensus);
+
+    // One independent rational-family witness is enough to make the native
+    // coordinate a physical result rather than a temporal preference.
+    decision.authoritativeDirect = best.familySupport >= 1;
+    decision.valid = true;
+    return decision;
+}
+
+ModernPitchEngine::MultiRatePitchTracker::DecoderDecision
 ModernPitchEngine::MultiRatePitchTracker::decodeCandidate(bool onsetPending) noexcept
 {
     std::array<PitchCandidate, detectorPathCount> candidates {};
@@ -3286,7 +3415,7 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
     const PitchCandidate provisionalMeasurement = chooseProvisionalMeasurement();
     std::array<PitchCandidate, detectorPathCount> rawCandidates {};
     const int rawDetectorSupport = collectFreshCandidates(rawCandidates);
-    DecoderDecision decision = decodeCandidate(onsetPending_);
+    DecoderDecision decision = resolveContinuousCandidate();
     const int previousOctaveState = octaveState_;
     const bool decoderDecisionAccepted = confirmOctaveTransition(decision,
                                                                   onsetPending_);
