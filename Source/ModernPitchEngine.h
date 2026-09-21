@@ -372,6 +372,11 @@ private:
             const std::array<PitchCandidate, detectorPathCount>& candidates,
             int candidateCount,
             std::array<ConsensusHypothesis, maxConsensusHypotheses>& hypotheses) const noexcept;
+        // CONTINUOUS_F0_NATIVE_RESOLVER_V1: compose the already measured
+        // path coordinates by native band and rational family agreement.
+        // No confidence/cleanliness gate is allowed to erase a finite F0.
+        [[nodiscard]] DecoderDecision resolveContinuousCandidate() const noexcept;
+
         [[nodiscard]] DecoderDecision decodeCandidate(bool onsetPending) noexcept;
         // PATH_ROLE_SPLIT_V1: decimated paths no longer cast equivalent votes.
         // Pitch authority says how useful a path is for locating F0; cleanliness
