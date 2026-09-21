@@ -214,10 +214,8 @@ void MicrotonalAutotuneAudioProcessor::prepareToPlay (double sampleRate, int sam
         apvts.getRawParameterValue ("vibratoPreserve")->load() / 100.0f);
     livePitchProcessor.setAdvancedParameters (
         35.0f,   // transitionMs
-        vibratoPreserve, // preserveVibrato: same visible authority in every mode
         humanizeVal,
         0.90f,   // formantPreservation
-        0.85f,   // transientProtection
         0.70f,   // detectorSensitivity
         12.0f,   // maximumCorrectionSemitones
         45.0f,   // minimumPitchHz
@@ -617,10 +615,8 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
 
     livePitchProcessor.setAdvancedParameters (
         35.0f,   // transitionMs
-        vibratoPreserve, // preserveVibrato: same visible authority in every mode
         humanizeVal,
         0.90f,   // formantPreservation
-        0.85f,   // transientProtection
         0.70f,   // detectorSensitivity
         12.0f,   // maximumCorrectionSemitones
         45.0f,   // minimumPitchHz
