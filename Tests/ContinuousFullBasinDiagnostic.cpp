@@ -36,6 +36,10 @@ void run(double hz, double snrDb, std::uint32_t seed)
     auto c=t.measureCoordinate(t.fullRateRing_,t.fullRateWritePosition_,t.fullRateAvailableSamples_,
                                sr,std::max(160.0f,t.minimumPitchHz_),std::min(t.maximumPitchHz_,2600.0f),
                                ModernPitchEngine::MultiRatePitchTracker::standardAnalysisSize,ws);
+    ModernPitchEngine::MultiRatePitchTracker::AnalysisWorkspace certifiedWs{};
+    auto certified=t.analyse(t.fullRateRing_,t.fullRateWritePosition_,t.fullRateAvailableSamples_,
+                             sr,std::max(160.0f,t.minimumPitchHz_),std::min(t.maximumPitchHz_,2600.0f),
+                             ModernPitchEngine::MultiRatePitchTracker::standardAnalysisSize,certifiedWs);
     const int n=ModernPitchEngine::MultiRatePitchTracker::standardAnalysisSize;
     const int tauMin=std::clamp(int(std::floor(sr/std::min(t.maximumPitchHz_,2600.0f))),2,n-16);
     const int tauMax=std::clamp(int(std::ceil(sr/std::max(160.0f,t.minimumPitchHz_))),tauMin+1,n-16);
@@ -49,6 +53,11 @@ void run(double hz, double snrDb, std::uint32_t seed)
     auto thz=[&](int tau){return tau>0?sr/double(tau):-1.0;};
     std::cout<<"FULL_BASIN target="<<hz<<" snr="<<snrDb
              <<" measured="<<c.frequencyHz
+             <<" certified_hz="<<certified.frequencyHz
+             <<" certified_valid="<<(certified.valid?1:0)
+             <<" certified_conf="<<certified.confidence
+             <<" certified_family="<<certified.harmonicFamily
+             <<" certified_clean="<<certified.tonalCleanliness
              <<" first_tau="<<first<<" first_hz="<<thz(first)
              <<" global_tau="<<global<<" global_hz="<<thz(global)
              <<" global_yin="<<gv<<"\n";
