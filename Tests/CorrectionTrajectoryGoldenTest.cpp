@@ -109,7 +109,6 @@ ModernPitchEngine::Parameters parameters(bool strongBody)
     p.maximumCorrectionSemitones = 12.0f;
     p.lockHysteresis = 0.0f;
     p.scaleLock = true;
-    p.hardLockActive = true;
     p.voiceEvidenceValid = true;
     p.voiceBodyEnergy = strongBody ? 0.92f : 0.28f;
     p.voiceHarmonicity = strongBody ? 0.90f : 0.28f;
