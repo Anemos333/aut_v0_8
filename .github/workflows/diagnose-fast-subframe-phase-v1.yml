@@ -1,0 +1,47 @@
+name: Diagnose fast subframe phase v1
+on:
+  push:
+    branches: [v1-continuous-f0-contract-v1]
+    paths:
+      - Tests/FastSubframePhaseDiagnostic.cpp
+      - .github/workflows/diagnose-fast-subframe-phase-v1.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: v1-continuous-f0-contract-v1 }
+      - run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y libasound2-dev libjack-jackd2-dev ladspa-sdk libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev >/dev/null
+      - run: |
+          cp Tests/FastSubframePhaseDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-fast-phase -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-fast-phase --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-fast-phase/clean-engine-tests/SupervisorContinuityTest | tee /tmp/fast-phase.log
+          grep -q '^FAST_SUBFRAME_PHASE ' /tmp/fast-phase.log
+      - run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, statistics
+          rows=[]
+          for line in Path('/tmp/fast-phase.log').read_text().splitlines():
+              if not line.startswith('FAST_SUBFRAME_PHASE '): continue
+              d=dict(re.findall(r'(\w+)=([^ ]+)',line))
+              for k in ['source_error','source_us','residual_error','residual_us']: d[k]=float(d[k])
+              for k in ['source_pass','source_improves','residual_pass','residual_improves']: d[k]=int(d[k])
+              rows.append(d)
+          for mode in ['source','residual']:
+              err=[abs(r[f'{mode}_error']) for r in rows]
+              print('FAST_SUBFRAME_PHASE_SUMMARY'
+                    f' mode={mode}'
+                    f' cases={len(rows)}'
+                    f' pass_1p5_fraction={sum(r[f"{mode}_pass"] for r in rows)/len(rows):.6f}'
+                    f' improve_fraction={sum(r[f"{mode}_improves"] for r in rows)/len(rows):.6f}'
+                    f' median_abs_cents={statistics.median(err):.6f}'
+                    f' worst_abs_cents={max(err):.6f}'
+                    f' median_us={statistics.median(r[f"{mode}_us"] for r in rows):.6f}')
+          PY
