@@ -424,7 +424,6 @@ ModernPitchEngine::Parameters makeParameters(const ParamSet& set)
     p.maximumCorrectionSemitones = 12.0f;
     p.minimumPitchHz = 45.0f;
     p.maximumPitchHz = 1600.0f;
-    p.stereoMode = ModernPitchEngine::StereoMode::linkedMidSide;
     return p;
 }
 
