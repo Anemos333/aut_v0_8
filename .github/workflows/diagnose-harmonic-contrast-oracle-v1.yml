@@ -1,0 +1,37 @@
+name: Diagnose harmonic contrast precision v1
+
+on:
+  push:
+    branches:
+      - v1-continuous-f0-contract-v1
+    paths:
+      - Tests/HarmonicContrastOracleDiagnostic.cpp
+      - .github/workflows/diagnose-harmonic-contrast-oracle-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: v1-continuous-f0-contract-v1
+
+      - name: Dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y             libasound2-dev libjack-jackd2-dev ladspa-sdk             libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev             libx11-dev libxcomposite-dev libxcursor-dev libxext-dev             libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev             libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Build and run
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/HarmonicContrastOracleDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-contrast-oracle             -DCMAKE_BUILD_TYPE=Release             -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-contrast-oracle --config Release --parallel 2             --target SupervisorContinuityTest >/dev/null
+          ./build-contrast-oracle/clean-engine-tests/SupervisorContinuityTest             | tee /tmp/contrast-oracle.log
+          grep -q '^CONTRAST_ORACLE ' /tmp/contrast-oracle.log
