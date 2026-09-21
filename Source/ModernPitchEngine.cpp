@@ -4882,12 +4882,9 @@ void ModernPitchEngine::process(
     safe.amount = clamp01(finiteOr(safe.amount, 1.0f));
     safe.retuneTimeMs = std::clamp(finiteOr(safe.retuneTimeMs, 50.0f), 0.0f, 500.0f);
     safe.transitionTimeMs = std::clamp(finiteOr(safe.transitionTimeMs, 35.0f), 0.0f, 2000.0f);
-    safe.preserveVibrato = clamp01(finiteOr(safe.preserveVibrato, 0.70f));
     safe.humanize = clamp01(finiteOr(safe.humanize, 0.20f));
     safe.formantPreservation = clamp01(finiteOr(safe.formantPreservation, 0.90f));
-    safe.transientProtection = clamp01(finiteOr(safe.transientProtection, 0.85f));
     safe.detectorSensitivity = clamp01(finiteOr(safe.detectorSensitivity, 0.70f));
-    safe.breathReduction = clamp01(finiteOr(safe.breathReduction, 0.50f));
     safe.voiceHarmonicity = clamp01(finiteOr(safe.voiceHarmonicity, 0.0f));
     safe.voiceBreathiness = clamp01(finiteOr(safe.voiceBreathiness, 0.0f));
     safe.voiceBodyEnergy = clamp01(finiteOr(safe.voiceBodyEnergy, 0.0f));
