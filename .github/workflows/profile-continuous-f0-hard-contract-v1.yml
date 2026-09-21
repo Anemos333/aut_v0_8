@@ -1,0 +1,49 @@
+name: Profile continuous F0 hard contract v1
+
+on:
+  push:
+    branches:
+      - v1-continuous-f0-contract-v1
+    paths:
+      - Tests/ContinuousF0HardContractTest.cpp
+      - Source/ModernPitchEngine.cpp
+      - Source/ModernPitchEngine.h
+      - .github/workflows/profile-continuous-f0-hard-contract-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: v1-continuous-f0-contract-v1
+
+      - name: Dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y             libasound2-dev libjack-jackd2-dev ladspa-sdk             libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev             libx11-dev libxcomposite-dev libxcursor-dev libxext-dev             libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev             libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Build contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/ContinuousF0HardContractTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-f0-contract             -DCMAKE_BUILD_TYPE=Release             -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-f0-contract --config Release --parallel 2             --target SupervisorContinuityTest >/dev/null
+
+      - name: Measure hard contract
+        shell: bash
+        run: |
+          set +e
+          ./build-f0-contract/clean-engine-tests/SupervisorContinuityTest             2>&1 | tee /tmp/f0-hard-contract.log
+          status=${PIPESTATUS[0]}
+          set -e
+          grep -q '^F0_HARD_CONTRACT ' /tmp/f0-hard-contract.log
+          grep '^F0_HARD_CONTRACT_RESULT=' /tmp/f0-hard-contract.log
+          echo "F0_HARD_CONTRACT_EXIT=${status}"
+          exit 0
