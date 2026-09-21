@@ -292,6 +292,7 @@ bool checkCase(double hz, double snr, std::uint32_t seed)
     return pass;
 }
 
+}
 
 int main()
 {
