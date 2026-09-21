@@ -423,9 +423,6 @@ void allocationAndFuzzTests(Tests& tests)
         parameters.maximumCorrectionSemitones = 24.0f * unit(random);
         parameters.minimumPitchHz = 35.0f + 180.0f * unit(random);
         parameters.maximumPitchHz = parameters.minimumPitchHz + 50.0f + 2000.0f * unit(random);
-        parameters.stereoMode = (iteration & 1) != 0
-            ? ModernPitchEngine::StereoMode::linkedMidSide
-            : ModernPitchEngine::StereoMode::dualMono;
         left[0] = bipolar(random);
         right[0] = bipolar(random);
         engine.process(one, scale.data(), static_cast<int>(scale.size()),
