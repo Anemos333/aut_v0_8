@@ -179,7 +179,7 @@ void run(double targetHz, double snrDb, std::uint32_t seed)
 
             const double proposal = shifted(targetHz, proposalError);
 
-            constexpr int repeats = 4;
+            constexpr int repeats = 1;
             const auto sourceBegin = std::chrono::steady_clock::now();
             double sourceRefined = proposal;
             for (int rep = 0; rep < repeats; ++rep)
