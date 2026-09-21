@@ -11,6 +11,7 @@ on:
       - Source/PluginProcessor.cpp
       - Tests/LinkedOnlyStereoEquivalenceTest.cpp
       - Tests/CleanModernPitchEngineTest.cpp
+      - Tests/GuiAudioControlContractTest.cpp
       - Tests/SupervisorContinuityTest.cpp
       - Tests/CorpusAudioDiffRunner.cpp
       - Tests/RealWorldRegression.cpp
