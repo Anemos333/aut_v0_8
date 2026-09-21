@@ -1,0 +1,41 @@
+name: Fast continuous F0 truth v1
+
+on:
+  push:
+    branches:
+      - v1-continuous-f0-recomposition-v1
+    paths:
+      - Source/ModernPitchEngine.h
+      - Source/ModernPitchEngine.cpp
+      - .github/workflows/fast-continuous-f0-truth-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  truth:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: v1-continuous-f0-recomposition-v1
+      - name: Dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y             libasound2-dev libjack-jackd2-dev ladspa-sdk             libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev             libx11-dev libxcomposite-dev libxcursor-dev libxext-dev             libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev             libglu1-mesa-dev mesa-common-dev >/dev/null
+      - name: Configure
+        run: cmake -S . -B build-truth -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+      - name: Run truth corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          for spec in             "extreme:Tests/DetectorExtremeDiagnostic.cpp"             "motion:Tests/DetectorMotionDiagnostic.cpp"             "path:Tests/DetectorPathDiagnostic.cpp"             "high:Tests/DetectorHighRangeDiagnostic.cpp"             "continuum:Tests/DetectorMeasurementContinuumDiagnostic.cpp"; do
+            name="${spec%%:*}"
+            file="${spec#*:}"
+            cp "$file" Tests/SupervisorContinuityTest.cpp
+            cmake --build build-truth --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+            ./build-truth/clean-engine-tests/SupervisorContinuityTest | tee "/tmp/${name}.log"
+          done
+          echo CONTINUOUS_F0_TRUTH_CORPUS=PASS
