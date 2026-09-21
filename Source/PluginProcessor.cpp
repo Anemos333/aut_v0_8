@@ -219,8 +219,7 @@ void MicrotonalAutotuneAudioProcessor::prepareToPlay (double sampleRate, int sam
         0.70f,   // detectorSensitivity
         12.0f,   // maximumCorrectionSemitones
         45.0f,   // minimumPitchHz
-        1600.0f, // maximumPitchHz
-        LivePitchProcessor::StereoMode::linkedMidSide
+        1600.0f  // maximumPitchHz
     );
     setLatencySamples (livePitchProcessor.getLatencySamples());
 }
@@ -611,8 +610,7 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
         0.70f,   // detectorSensitivity
         12.0f,   // maximumCorrectionSemitones
         45.0f,   // minimumPitchHz
-        1600.0f, // maximumPitchHz
-        LivePitchProcessor::StereoMode::linkedMidSide
+        1600.0f  // maximumPitchHz
     );
 
     livePitchProcessor.process (buffer,
