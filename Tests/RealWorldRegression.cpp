@@ -180,7 +180,6 @@ juce::AudioBuffer<float> renderBuffer(const juce::AudioBuffer<float>& input,
     parameters.amount = 1.0f;
     parameters.retuneTimeMs = 50.0f;
     parameters.transitionTimeMs = 35.0f;
-    parameters.breathReduction = 0.50f;
     parameters.stereoMode = ModernPitchEngine::StereoMode::linkedMidSide;
     const auto scale = chromaticScale();
 
