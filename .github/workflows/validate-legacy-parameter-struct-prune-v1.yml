@@ -1,0 +1,114 @@
+name: Validate legacy parameter struct prune v1
+
+on:
+  push:
+    branches:
+      - v1-lean-legacy-parameter-struct-prune-v1
+    paths:
+      - Source/ModernPitchEngine.h
+      - Source/ModernPitchEngine.cpp
+      - Source/LivePitchProcessor.h
+      - Source/PluginProcessor.cpp
+      - Tests/*.cpp
+      - .github/workflows/probe-end-to-end-vibrato-lock.yml
+      - .github/workflows/validate-legacy-parameter-struct-prune-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          ref: v1-lean-legacy-parameter-struct-prune-v1
+          fetch-depth: 0
+
+      - name: Guard field removal
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! grep -q 'float preserveVibrato' Source/ModernPitchEngine.h
+          ! grep -q 'float transientProtection' Source/ModernPitchEngine.h
+          ! grep -q 'float breathReduction' Source/ModernPitchEngine.h
+          ! grep -R --include='*.cpp' -nE '\.(preserveVibrato|transientProtection|breathReduction)[[:space:]]*=' Tests
+          echo 'LEGACY_PARAMETER_STRUCT_PRUNE_SCOPE=PASS'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y             libasound2-dev libjack-jackd2-dev ladspa-sdk             libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev             libx11-dev libxcomposite-dev libxcursor-dev libxext-dev             libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev             libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Configure
+        run: |
+          cmake -S . -B build-prune             -DCMAKE_BUILD_TYPE=Release             -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+
+      - name: Build plugin and configured tests
+        run: |
+          cmake --build build-prune --config Release --parallel 2             --target Neumaton CleanModernPitchEngineTest SupervisorContinuityTest                      GuiAudibilityTest VoiceEvidenceAnalyzerTest                      GuiAudioControlContractTest SingleWetSpectralRendererTest >/dev/null
+
+      - name: Preserve test slots
+        run: |
+          cp Tests/SupervisorContinuityTest.cpp /tmp/prune-supervisor.cpp
+          cp Tests/SingleWetSpectralRendererTest.cpp /tmp/prune-renderer.cpp
+
+      - name: Detector oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/GoldenDetectorDeterminismTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-prune --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-prune/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/prune-detector.log
+          grep -q '^GOLDEN_DETECTOR_TRACE_HASH=58273352d40c5499$' /tmp/prune-detector.log
+
+      - name: Trajectory and engine corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/CorrectionTrajectoryGoldenTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-prune --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-prune/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/prune-trajectory.log
+          grep -q '^CORRECTION_TRAJECTORY_HASH=3c958f8178c118a3$' /tmp/prune-trajectory.log
+
+          cp Tests/GoldenEngineBehaviorCorpusTest.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-prune --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-prune/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/prune-engine.log
+          grep -q '^GOLDEN_ENGINE_CORPUS_HASH=982b4ad85accdd75$' /tmp/prune-engine.log
+          echo 'LEGACY_PARAMETER_STRUCT_PRUNE_CORE_EXACT=PASS'
+
+      - name: Renderer oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/RendererDiagnosticTransparencyTest.cpp Tests/SingleWetSpectralRendererTest.cpp
+          cmake --build build-prune --config Release --parallel 2 --target SingleWetSpectralRendererTest >/dev/null
+          ./build-prune/clean-engine-tests/SingleWetSpectralRendererTest 2>&1 | tee /tmp/prune-renderer.log
+          grep -q '^RENDERER_TRANSPARENCY_HASH_256=ce9950c8dec7364$' /tmp/prune-renderer.log
+          grep -q '^RENDERER_TRANSPARENCY_HASH_512=685aa631a64ef991$' /tmp/prune-renderer.log
+
+      - name: Normal contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp /tmp/prune-supervisor.cpp Tests/SupervisorContinuityTest.cpp
+          cp /tmp/prune-renderer.cpp Tests/SingleWetSpectralRendererTest.cpp
+          cmake --build build-prune --config Release --parallel 2             --target SupervisorContinuityTest CleanModernPitchEngineTest                      GuiAudibilityTest GuiAudioControlContractTest                      SingleWetSpectralRendererTest >/dev/null
+          ./build-prune/clean-engine-tests/SupervisorContinuityTest 2>&1 | tee /tmp/prune-supervisor.log
+          ./build-prune/clean-engine-tests/CleanModernPitchEngineTest 2>&1 | tee /tmp/prune-clean.log
+          ./build-prune/clean-engine-tests/GuiAudibilityTest 2>&1 | tee /tmp/prune-gui.log
+          ./build-prune/clean-engine-tests/GuiAudioControlContractTest 2>&1 | tee /tmp/prune-gui-contract.log
+          ./build-prune/clean-engine-tests/SingleWetSpectralRendererTest 2>&1 | tee /tmp/prune-renderer-contracts.log
+          ! grep -q '=FAIL' /tmp/prune-supervisor.log
+          ! grep -q '=FAIL' /tmp/prune-clean.log
+          ! grep -q '=FAIL' /tmp/prune-gui.log
+          ! grep -q '=FAIL' /tmp/prune-gui-contract.log
+          ! grep -q '=FAIL' /tmp/prune-renderer-contracts.log
+          echo 'LEGACY_PARAMETER_STRUCT_PRUNE_NORMAL_CONTRACTS=PASS'
+
+      - name: Final marker
+        run: |
+          echo 'V1_LEAN_LEGACY_PARAMETER_STRUCT_PRUNE=PASS_EXACT_BEHAVIOR'
+          echo 'OBSOLETE_SOFT_PATH_FIELDS_DELETED=PASS'
