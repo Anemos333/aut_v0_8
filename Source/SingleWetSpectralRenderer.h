@@ -64,11 +64,6 @@ private:
         std::vector<double> synthesisPhases;
         std::vector<float> outputAccumulationRing;
 
-        // OLA_ACCUMULATION_DIAGNOSTIC_V2: shadow rings only.
-        std::vector<float> diagnosticContributionEnergyRing;
-        std::vector<float> diagnosticCoverageRing;
-        std::vector<std::uint8_t> diagnosticContributionCountRing;
-
         bool phaseInitialised = false;
     };
 
@@ -114,8 +109,6 @@ private:
     std::vector<float> previousAnalysisPhases_;
     std::vector<double> trueSourceBins_;
     std::vector<double> propagatedPhases_;
-    std::vector<float> depositedMagnitudeSums_;
-
     std::vector<float> logMagnitudes_;
     std::vector<float> rawSpectralEnvelope_;
     std::vector<float> spectralEnvelope_;
@@ -129,16 +122,7 @@ private:
     int envelopeFrameCounter_ = 0;
     int envelopeUpdateInterval_ = 2;
     float synthesisGain_ = 0.5f;
-    float expectedOlaCoverage_ = 1.0f;
-
-    // OLA_ACCUMULATION_DIAGNOSTIC_V2 hop-energy accumulator.
-    double diagnosticHopOutputEnergy_ = 0.0;
-    double diagnosticHopContributionEnergy_ = 0.0;
-    double diagnosticHopCoverageSum_ = 0.0;
-    int diagnosticHopSampleCount_ = 0;
-    int diagnosticHopMinimumContributionCount_ = 4;
-
-    float envelopeAttackCoefficient_ = 1.0f;
+     float envelopeAttackCoefficient_ = 1.0f;
     float envelopeReleaseCoefficient_ = 1.0f;
     float smoothedFormantPreservation_ = 0.0f;
     float formantReductionCoefficient_ = 1.0f;
