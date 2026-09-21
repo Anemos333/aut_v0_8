@@ -22,7 +22,6 @@ class LivePitchProcessor final
 {
 public:
     using LatencyMode = ModernPitchEngine::LatencyMode;
-    using StereoMode = ModernPitchEngine::StereoMode;
     using Metering = ModernPitchEngine::Metering;
     using VoiceEvidence = VoiceEvidenceAnalyzer::Evidence;
 
@@ -104,8 +103,7 @@ public:
                                float detectorSensitivity,
                                float maximumCorrectionSemitones,
                                float minimumPitchHz,
-                               float maximumPitchHz,
-                               StereoMode stereoMode) noexcept
+                               float maximumPitchHz) noexcept
     {
         parameters_.transitionTimeMs = transitionMs;
         parameters_.humanize = humanize;
@@ -117,7 +115,6 @@ public:
 
         parameters_.minimumPitchHz = minimumPitchHz;
         parameters_.maximumPitchHz = maximumPitchHz;
-        parameters_.stereoMode = stereoMode;
     }
 
     void setTempoSettings(const CreativeTempo::Settings& settings) noexcept
