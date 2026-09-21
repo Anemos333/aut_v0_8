@@ -96,23 +96,22 @@ public:
         activeModeIndex_.store(modeIndex, std::memory_order_release);
     }
 
+    // LEGACY_AUDIO_POLICY_ARGS_REMOVED_V1:
+    // preserveVibrato/transientProtection/breathReduction were historical
+    // soft-path controls with no remaining DSP consumer. They are not part of
+    // the active V1 parameter path.
     void setAdvancedParameters(float transitionMs,
-                               float preserveVibrato,
                                float humanize,
                                float formantPreservation,
-                               float transientProtection,
                                float detectorSensitivity,
                                float maximumCorrectionSemitones,
                                float minimumPitchHz,
                                float maximumPitchHz,
-                               StereoMode stereoMode,
-                               float breathReduction = 0.50f) noexcept
+                               StereoMode stereoMode) noexcept
     {
         parameters_.transitionTimeMs = transitionMs;
-        parameters_.preserveVibrato = preserveVibrato;
         parameters_.humanize = humanize;
         parameters_.formantPreservation = formantPreservation;
-        parameters_.transientProtection = transientProtection;
         parameters_.detectorSensitivity = detectorSensitivity;
 
         parameters_.maximumCorrectionSemitones = std::clamp(
@@ -121,7 +120,6 @@ public:
         parameters_.minimumPitchHz = minimumPitchHz;
         parameters_.maximumPitchHz = maximumPitchHz;
         parameters_.stereoMode = stereoMode;
-        parameters_.breathReduction = std::clamp(breathReduction, 0.0f, 1.0f);
     }
 
     void setTempoSettings(const CreativeTempo::Settings& settings) noexcept
@@ -136,7 +134,6 @@ public:
         parameters_.scaleLock = scaleLock;
         parameters_.lockHysteresis = std::clamp(lockHysteresis, 0.0f, 80.0f);
         parameters_.vibratoPreserve = std::clamp(vibratoPreserve, 0.0f, 1.0f);
-        parameters_.preserveVibrato = parameters_.vibratoPreserve;
 
         const float h = parameters_.lockHysteresis / 80.0f;
         const float hysteresisStrictness = h * h * (3.0f - 2.0f * h); // smoothstep
