@@ -104,7 +104,6 @@ ModernPitchEngine::Parameters defaultParameters()
     parameters.amount = 1.0f;
     parameters.retuneTimeMs = 8.0f;
     parameters.transitionTimeMs = 35.0f;
-    parameters.breathReduction = 0.50f;
     return parameters;
 }
 
