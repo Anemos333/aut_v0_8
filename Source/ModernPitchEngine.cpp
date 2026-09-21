@@ -1656,7 +1656,11 @@ float ModernPitchEngine::MultiRatePitchTracker::pathPitchAuthority(
     {
         const float lower = smoothStep(lowerSoft, lowerFull, frequency);
         const float upper = 1.0f - smoothStep(upperFull, upperSoft, frequency);
-        return std::clamp(lower * upper, 0.03f, 1.0f);
+        // CONTINUOUS_F0_BAND_AUTHORITY_V1: outside its physical band a
+        // path may corroborate an octave family, but it has zero coordinate
+        // authority. The historical non-zero floor let out-of-band aliases
+        // steer a measurement once confidence vetoes were removed.
+        return std::clamp(lower * upper, 0.0f, 1.0f);
     };
 
     switch (pathIndex)
@@ -1683,7 +1687,7 @@ float ModernPitchEngine::MultiRatePitchTracker::pathCleanlinessAuthority(
     {
         const float lower = smoothStep(lowerSoft, lowerFull, frequency);
         const float upper = 1.0f - smoothStep(upperFull, upperSoft, frequency);
-        return std::clamp(lower * upper, 0.05f, 1.0f);
+        return std::clamp(lower * upper, 0.0f, 1.0f);
     };
 
     // The lower the analysis rate, the less high-frequency evidence remains to
