@@ -1,5 +1,7 @@
 #include <JuceHeader.h>
+#define private public
 #include "../Source/ModernPitchEngine.h"
+#undef private
 
 #include <algorithm>
 #include <array>
