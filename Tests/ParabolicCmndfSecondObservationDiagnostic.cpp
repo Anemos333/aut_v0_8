@@ -131,7 +131,7 @@ void run(double targetHz, double snrDb, std::uint32_t seed)
                 continue;
 
             const double proposal = shifted(targetHz, proposalError);
-            constexpr int repeats = 1000;
+            constexpr int repeats = 100;
 
             const auto begin = std::chrono::steady_clock::now();
             double refined = proposal;
