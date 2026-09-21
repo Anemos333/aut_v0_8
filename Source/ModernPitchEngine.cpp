@@ -3176,6 +3176,7 @@ void ModernPitchEngine::prepare(double sampleRate,
                                 int numberOfChannels,
                                 LatencyMode latencyMode)
 {
+    static_cast<void>(maximumExpectedSamplesPerBlock);
     sampleRate_ = std::max(8000.0, finiteOr(sampleRate, 48000.0));
     channelCount_ = std::clamp(numberOfChannels, 1, maxSupportedChannels);
     latencyMode_ = latencyMode;
