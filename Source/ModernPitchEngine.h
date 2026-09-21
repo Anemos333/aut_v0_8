@@ -469,7 +469,6 @@ private:
         float voiceAuthorityBreathiness_ = 0.0f;
         float voiceAuthorityBodyEnergy_ = 0.0f;
         float voiceAuthoritySpectralReliability_ = 0.0f;
-        float voiceAuthorityEventStrength_ = 0.0f;
         float voiceAuthorityFormantStability_ = 0.0f;
         float voiceAuthorityLowerFamilyEvidence_ = 0.0f;
 
@@ -564,7 +563,6 @@ private:
         bool targetValid_ = false;
         double targetLog2_ = 0.0;
         bool pendingValid_ = false;
-        double pendingLog2_ = 0.0;
         int pendingCount_ = 0;
     };
 
@@ -683,7 +681,6 @@ private:
     }
 
     double sampleRate_ = 48000.0;
-    int maximumBlockSize_ = 512;
     int channelCount_ = 1;
     int latencySamples_ = 256;
     LatencyMode latencyMode_ = LatencyMode::live;
@@ -751,7 +748,6 @@ private:
     std::atomic<float> meterConsensus_ { 0.0f };
     std::atomic<float> meterCorrectionCents_ { 0.0f };
     std::atomic<float> meterCorrectionVelocity_ { 0.0f };
-    std::atomic<float> meterOnsetStrength_ { 0.0f };
     std::atomic<float> meterTargetJumpCents_ { 0.0f };
     std::atomic<float> meterSustainedSeconds_ { 0.0f };
 
