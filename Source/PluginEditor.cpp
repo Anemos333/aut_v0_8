@@ -867,35 +867,6 @@ if (showingControlRoom)
        controlRoomPage.setMetering (displayedMetering);    
     displayedMetering = processorRef.getPitchMetering();
 
-    // RENDERER_PHASE_ALERT_LATCH_V2: the audio-thread diagnostic event serial
-    // is sticky, so even a one-block anomaly cannot be missed by the 30 Hz GUI.
-    // The GUI merely holds the lamp for readability; it has no DSP authority.
-    if (displayedMetering.rendererPhaseDiagnosticSerial
-        != lastRendererPhaseDiagnosticSerial_)
-    {
-        lastRendererPhaseDiagnosticSerial_ =
-            displayedMetering.rendererPhaseDiagnosticSerial;
-        rendererPhaseHeldPh_ =
-            displayedMetering.rendererPhaseDiagnosticHeldPh;
-        rendererPhaseHeldBin_ =
-            displayedMetering.rendererPhaseDiagnosticHeldBin;
-        rendererPhaseHeldRidge_ =
-            displayedMetering.rendererPhaseDiagnosticHeldRidge;
-        rendererPhaseHeldOlaEnergy_ =
-            displayedMetering.rendererPhaseDiagnosticHeldOlaEnergy;
-        rendererPhaseHeldFrameCorrelation_ =
-            displayedMetering.rendererPhaseDiagnosticHeldFrameCorrelation;
-        rendererPhaseHeldCoverage_ =
-            displayedMetering.rendererPhaseDiagnosticHeldCoverage;
-        rendererPhaseHeldCount_ =
-            displayedMetering.rendererPhaseDiagnosticHeldCount;
-        rendererPhaseAlertHoldTicks_ = 60;
-    }
-    else if (rendererPhaseAlertHoldTicks_ > 0)
-    {
-        --rendererPhaseAlertHoldTicks_;
-    }
-
     const auto smoothTowards = [] (float current, float target, float amount)
 {
     if (! std::isfinite (target))
@@ -964,15 +935,6 @@ void MicrotonalAutotuneAudioProcessorEditor::drawMeterPanel (
     g.setColour (juce::Colour (0x507F8CFF));
     g.drawRoundedRectangle (panel.reduced (0.5f), 8.0f, 1.0f);
 
-    // Two-second peak-hold lamp for transient renderer coherence anomalies.
-    const bool rendererPhaseAlert = rendererPhaseAlertHoldTicks_ > 0;
-    const auto lampBounds = juce::Rectangle<float>(
-        panel.getRight() - 18.0f, panel.getY() + 7.0f, 8.0f, 8.0f);
-    g.setColour (rendererPhaseAlert
-        ? juce::Colour (0xFFFF3B30)
-        : juce::Colour (0xFF2D5A3D));
-    g.fillEllipse (lampBounds);
-
     auto content = bounds.reduced (12, 8);
     auto valueRow = content.removeFromTop (24);
     auto statusRow = content.removeFromTop (20);
@@ -1027,24 +989,6 @@ void MicrotonalAutotuneAudioProcessorEditor::drawMeterPanel (
                + juce::String (displayedMetering.sustainedNoteSeconds, 1)
                + " s";
 
-    // RENDERER_PHASE_COHERENCE_DIAGNOSTIC_V1: display-only. These values are
-    // computed after the renderer has already formed the frame and never feed
-    // any audio decision.
-    if (displayedMetering.outputMeterValid > 0.5f)
-    {
-        const float phaseDisplay = rendererPhaseAlert
-            ? rendererPhaseHeldPh_ : displayedMetering.outputPhaseCoherence;
-        const float binDisplay = rendererPhaseAlert
-            ? rendererPhaseHeldBin_ : displayedMetering.outputPreIfftConsensus;
-        const float ridgeDisplay = rendererPhaseAlert
-            ? rendererPhaseHeldRidge_ : displayedMetering.outputReconstructionNeed;
-        status += rendererPhaseAlert ? "   PHASE! " : "   Ph:";
-        if (rendererPhaseAlert)
-            status += "Ph:";
-        status += juce::String (phaseDisplay, 0)
-               + " Bin:" + juce::String (binDisplay, 0)
-               + " Rg:" + juce::String (ridgeDisplay, 0);
-    }
     g.drawText (status, statusRow, juce::Justification::centredLeft);
 
     const auto drawBar = [&g](juce::Rectangle<int> area,
@@ -1327,60 +1271,6 @@ void MicrotonalAutotuneAudioProcessorEditor::paint (juce::Graphics& g)
     }
 
 
-}
-
-void MicrotonalAutotuneAudioProcessorEditor::paintOverChildren (
-    juce::Graphics& g)
-{
-    if (showingScaleEditor || showingControlRoom || showingTempoPage)
-        return;
-
-    // RENDERER_DIAGNOSTIC_STRIP_V1
-    // Always-visible diagnostic overlay for this experimental branch only.
-    // Values are read from metering and never feed audio processing.
-    const bool rendererDiagnosticAlert = rendererPhaseAlertHoldTicks_ > 0;
-    const float displayPh = rendererDiagnosticAlert
-        ? rendererPhaseHeldPh_ : displayedMetering.outputPhaseCoherence;
-    const float displayBin = rendererDiagnosticAlert
-        ? rendererPhaseHeldBin_ : displayedMetering.outputPreIfftConsensus;
-    const float displayRidge = rendererDiagnosticAlert
-        ? rendererPhaseHeldRidge_ : displayedMetering.outputReconstructionNeed;
-    const float displayOlaEnergy = rendererDiagnosticAlert
-        ? rendererPhaseHeldOlaEnergy_ : displayedMetering.outputOlaEnergyRatio;
-    const float displayFrameCorrelation = rendererDiagnosticAlert
-        ? rendererPhaseHeldFrameCorrelation_
-        : displayedMetering.outputOlaFrameCorrelation;
-    const float displayCoverage = rendererDiagnosticAlert
-        ? rendererPhaseHeldCoverage_ : displayedMetering.outputOlaCoverage;
-    const int displayCount = rendererDiagnosticAlert
-        ? rendererPhaseHeldCount_ : displayedMetering.outputOlaContributionCount;
-
-    auto diagnosticStrip = getLocalBounds().removeFromTop (26)
-        .removeFromRight (430).reduced (6, 3);
-    g.setColour (juce::Colour (0xD0101422));
-    g.fillRoundedRectangle (diagnosticStrip.toFloat(), 5.0f);
-    g.setColour (rendererDiagnosticAlert
-        ? juce::Colour (0xFFFF3B30)
-        : juce::Colour (0xFF2D8A4B));
-    g.fillEllipse (static_cast<float> (diagnosticStrip.getX() + 6),
-                   static_cast<float> (diagnosticStrip.getCentreY() - 4),
-                   8.0f, 8.0f);
-
-    juce::String diagnosticText = rendererDiagnosticAlert
-        ? "RENDER! " : "DBG ";
-    diagnosticText += "Ph:" + juce::String (displayPh, 0)
-        + " Bin:" + juce::String (displayBin, 0)
-        + " Rg:" + juce::String (displayRidge, 0)
-        + " E:" + juce::String (displayOlaEnergy, 0)
-        + " Corr:" + juce::String (displayFrameCorrelation, 0)
-        + " Cov:" + juce::String (displayCoverage, 0)
-        + " N:" + juce::String (displayCount);
-
-    g.setColour (juce::Colours::white);
-    g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
-    g.drawText (diagnosticText,
-                diagnosticStrip.withTrimmedLeft (20),
-                juce::Justification::centredLeft);
 }
 
 void MicrotonalAutotuneAudioProcessorEditor::resized()
