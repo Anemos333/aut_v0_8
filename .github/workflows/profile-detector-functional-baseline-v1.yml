@@ -1,0 +1,61 @@
+name: Profile detector functional baseline v1
+
+on:
+  push:
+    branches:
+      - v1-lean-scale-generation-ablation-v1
+    paths:
+      - .github/workflows/profile-detector-functional-baseline-v1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  profile:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout diagnostic branch
+        uses: actions/checkout@v4
+        with:
+          ref: v1-lean-scale-generation-ablation-v1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y             libasound2-dev libjack-jackd2-dev ladspa-sdk             libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev             libx11-dev libxcomposite-dev libxcursor-dev libxext-dev             libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev             libglu1-mesa-dev mesa-common-dev >/dev/null
+
+      - name: Configure diagnostics
+        run: |
+          cmake -S . -B build-detector-functional             -DCMAKE_BUILD_TYPE=Release             -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+
+      - name: Extreme and noise baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/DetectorExtremeDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-detector-functional --config Release --parallel 2             --target SupervisorContinuityTest >/dev/null
+          ./build-detector-functional/clean-engine-tests/SupervisorContinuityTest             2>&1 | tee /tmp/detector-extreme.log
+
+      - name: Motion baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/DetectorMotionDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-detector-functional --config Release --parallel 2             --target SupervisorContinuityTest >/dev/null
+          ./build-detector-functional/clean-engine-tests/SupervisorContinuityTest             2>&1 | tee /tmp/detector-motion.log
+
+      - name: Per-path truth baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp Tests/DetectorPathDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
+          cmake --build build-detector-functional --config Release --parallel 2             --target SupervisorContinuityTest >/dev/null
+          ./build-detector-functional/clean-engine-tests/SupervisorContinuityTest             2>&1 | tee /tmp/detector-path.log
+
+      - name: Baseline marker
+        run: |
+          grep -q '^DETECTOR_STRESS ' /tmp/detector-extreme.log
+          grep -q '^MOTION_STEP ' /tmp/detector-motion.log
+          grep -q '^PATH_STRESS ' /tmp/detector-path.log
+          echo 'DETECTOR_FUNCTIONAL_BASELINE=PASS'
