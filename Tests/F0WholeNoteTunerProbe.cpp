@@ -225,10 +225,22 @@ WholeNoteEstimate estimateWholeNote(const std::array<double, frameSize>& x)
     int bestLag = 0;
     double bestCorr = -1.0;
 
+    // A period peak is meaningful only after the waveform has first
+    // decorrelated from its zero-lag neighbourhood. Without this guard,
+    // smooth/formant-dominated notes can make a tiny lag look like a
+    // high-frequency period simply because adjacent samples are similar.
+    constexpr double decorrelationThreshold = 0.35;
+    bool decorrelated = false;
+
     for (int lag = lagMin + 1; lag < lagMax; ++lag)
     {
         const double c = corr[static_cast<std::size_t>(lag)];
-        if (c < acceptance)
+        if (c <= decorrelationThreshold)
+        {
+            decorrelated = true;
+            continue;
+        }
+        if (!decorrelated || c < acceptance)
             continue;
         if (c < corr[static_cast<std::size_t>(lag - 1)]
             || c < corr[static_cast<std::size_t>(lag + 1)])
