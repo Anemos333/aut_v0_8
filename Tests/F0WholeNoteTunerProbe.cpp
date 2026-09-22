@@ -286,7 +286,7 @@ WholeNoteEstimate applyPrimitiveValidator(const std::array<double, frameSize>& x
         return e;
 
     const auto witness = measurePrimitiveWitness(x, e.lag);
-    constexpr double octaveDownRatio = 0.70;
+    constexpr double octaveDownRatio = 0.65;
 
     if (!witness.observable || witness.ratio > octaveDownRatio)
         return e;
@@ -314,6 +314,10 @@ int main()
     constexpr std::array<std::uint32_t, 6> holdoutSeeds {
         0x31415926u, 0x27182818u, 0x13579bdfu,
         0x2468ace0u, 0xc001d00du, 0x7f4a7c15u
+    };
+    constexpr std::array<std::uint32_t, 6> verificationSeeds {
+        0x6c8e9cf5u, 0x5a827999u, 0x3c6ef372u,
+        0xbb67ae85u, 0xa54ff53au, 0x510e527fu
     };
 
     int cases = 0;
@@ -542,6 +546,76 @@ int main()
               << " validated_high=" << holdoutValidatedHigh
               << " changed=" << holdoutChanged
               << " correct_to_wrong=" << holdoutChangedCorrectToWrong
+              << '\n';
+
+
+    int verificationCases = 0;
+    int verificationBaseCorrect = 0;
+    int verificationBaseWrong = 0;
+    int verificationValidatedCorrect = 0;
+    int verificationValidatedWrong = 0;
+    int verificationBaseLow = 0;
+    int verificationValidatedLow = 0;
+    int verificationBaseHigh = 0;
+    int verificationValidatedHigh = 0;
+    int verificationChanged = 0;
+    int verificationCorrectToWrong = 0;
+
+    for (const auto& profile : profiles)
+        for (double f0 : frequencies)
+            for (double snr : snrs)
+                for (auto seed : verificationSeeds)
+                {
+                    const auto x = makeVoiceLikeFrame(
+                        profile, f0, snr,
+                        seed ^ static_cast<std::uint32_t>(f0 * 97.0));
+                    const auto base = estimateWholeNote(x);
+                    const auto validated = applyPrimitiveValidator(x, base);
+                    ++verificationCases;
+
+                    if (base.valid)
+                    {
+                        const double be = std::abs(cents(base.hz, f0));
+                        if (be <= 100.0) ++verificationBaseCorrect;
+                        else ++verificationBaseWrong;
+                        if (base.hz < 0.75 * f0) ++verificationBaseLow;
+                        if (base.hz > 1.5 * f0) ++verificationBaseHigh;
+                    }
+
+                    if (validated.valid)
+                    {
+                        const double ve = std::abs(cents(validated.hz, f0));
+                        if (ve <= 100.0) ++verificationValidatedCorrect;
+                        else ++verificationValidatedWrong;
+                        if (validated.hz < 0.75 * f0) ++verificationValidatedLow;
+                        if (validated.hz > 1.5 * f0) ++verificationValidatedHigh;
+                    }
+
+                    if (base.valid && validated.valid
+                        && std::abs(base.hz - validated.hz) > 1.0e-9)
+                    {
+                        ++verificationChanged;
+                        const bool baseWasCorrect =
+                            std::abs(cents(base.hz, f0)) <= 100.0;
+                        const bool validatedIsWrong =
+                            std::abs(cents(validated.hz, f0)) > 100.0;
+                        if (baseWasCorrect && validatedIsWrong)
+                            ++verificationCorrectToWrong;
+                    }
+                }
+
+    std::cout << "WHOLE_NOTE_VERIFICATION"
+              << " cases=" << verificationCases
+              << " base_correct=" << verificationBaseCorrect
+              << " base_wrong=" << verificationBaseWrong
+              << " validated_correct=" << verificationValidatedCorrect
+              << " validated_wrong=" << verificationValidatedWrong
+              << " base_low=" << verificationBaseLow
+              << " validated_low=" << verificationValidatedLow
+              << " base_high=" << verificationBaseHigh
+              << " validated_high=" << verificationValidatedHigh
+              << " changed=" << verificationChanged
+              << " correct_to_wrong=" << verificationCorrectToWrong
               << '\n';
 
     const bool structuralSafe =
