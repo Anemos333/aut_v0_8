@@ -1,0 +1,64 @@
+name: Diagnose minimal aperiodicity evidence v1
+on:
+  push:
+    branches: [v1-continuous-f0-minimal-recomposition-v1]
+    paths:
+      - Tests/MinimalAperiodicityEvidenceProbe.cpp
+      - .github/workflows/diagnose-minimal-aperiodicity-evidence-v1.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: v1-continuous-f0-minimal-recomposition-v1 }
+      - run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y libasound2-dev libjack-jackd2-dev ladspa-sdk libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev >/dev/null
+      - run: |
+          cp Tests/MinimalAperiodicityEvidenceProbe.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-aper-evidence -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-aper-evidence --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-aper-evidence/clean-engine-tests/SupervisorContinuityTest | tee /tmp/aper-evidence.log
+          grep -q '^APERIODIC_EVIDENCE ' /tmp/aper-evidence.log
+      - run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re,statistics
+          rows=[]
+          for line in Path('/tmp/aper-evidence.log').read_text().splitlines():
+              if not line.startswith('APERIODIC_EVIDENCE '):continue
+              d=dict(re.findall(r'(\w+)=([^ ]+)',line))
+              for k in ['hz','snr','frequency','confidence','periodicity']:d[k]=float(d[k])
+              d['valid']=int(d['valid']);rows.append(d)
+          noise=[r for r in rows if r['kind'] in {'white','colored','breath'}]
+          periodic=[r for r in rows if r['kind'] not in {'white','colored','breath'}]
+          def pct(v,q):
+              v=sorted(v)
+              pos=q*(len(v)-1);lo=int(pos);hi=min(len(v)-1,lo+1);t=pos-lo
+              return v[lo]*(1-t)+v[hi]*t
+          for group,data in [('noise',noise),('periodic',periodic)]:
+              print('APERIODIC_EVIDENCE_SUMMARY'
+                    f' group={group} n={len(data)}'
+                    f' confidence_p05={pct([r["confidence"] for r in data],.05):.6f}'
+                    f' confidence_p50={pct([r["confidence"] for r in data],.50):.6f}'
+                    f' confidence_p95={pct([r["confidence"] for r in data],.95):.6f}'
+                    f' confidence_min={min(r["confidence"] for r in data):.6f}'
+                    f' confidence_max={max(r["confidence"] for r in data):.6f}'
+                    f' periodicity_p05={pct([r["periodicity"] for r in data],.05):.6f}'
+                    f' periodicity_p50={pct([r["periodicity"] for r in data],.50):.6f}'
+                    f' periodicity_p95={pct([r["periodicity"] for r in data],.95):.6f}'
+                    f' periodicity_min={min(r["periodicity"] for r in data):.6f}'
+                    f' periodicity_max={max(r["periodicity"] for r in data):.6f}')
+          for kind in ['normal','strong_second','missing_fundamental','white','colored','breath']:
+              sub=[r for r in rows if r['kind']==kind]
+              print('APERIODIC_EVIDENCE_KIND'
+                    f' kind={kind} n={len(sub)}'
+                    f' confidence_min={min(r["confidence"] for r in sub):.6f}'
+                    f' confidence_p05={pct([r["confidence"] for r in sub],.05):.6f}'
+                    f' periodicity_min={min(r["periodicity"] for r in sub):.6f}'
+                    f' periodicity_p05={pct([r["periodicity"] for r in sub],.05):.6f}'
+                    f' periodicity_max={max(r["periodicity"] for r in sub):.6f}')
+          PY
