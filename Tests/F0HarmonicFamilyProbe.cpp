@@ -722,9 +722,15 @@ int noiseHallucinations(bool coloured, bool useRescue = false)
 int main()
 {
     constexpr std::array<Kind, 4> kinds { Kind::normal, Kind::strongSecond, Kind::missingFundamental, Kind::sine };
-    constexpr std::array<double, 5> frequencies { 82.4069, 110.0, 220.0, 440.0, 880.0 };
+    constexpr std::array<double, 13> frequencies {
+        82.4069, 110.0, 123.4708, 146.8324, 164.8138, 196.0, 220.0,
+        246.9417, 293.6648, 329.6276, 440.0, 659.2551, 880.0
+    };
     constexpr std::array<double, 3> snrs { 12.0, 6.0, 3.0 };
-    constexpr std::array<std::uint32_t, 2> seeds { 0x1234567u, 0x9e3779b9u };
+    constexpr std::array<std::uint32_t, 6> seeds {
+        0x01234567u, 0x9e3779b9u, 0x243f6a88u,
+        0xb7e15162u, 0xdeadbeefu, 0xa5a5a5a5u
+    };
 
     int cases = 0;
     int valid = 0;
