@@ -1,0 +1,28 @@
+name: Validate F0 periodic gate v1
+on:
+  push:
+    branches: [v1-f0-demolish-and-rebuild-v1]
+    paths:
+      - Source/F0PeriodicGateV1.h
+      - Tests/F0GateContractV1.cpp
+      - .github/workflows/validate-f0-periodic-gate-v1.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: v1-f0-demolish-and-rebuild-v1 }
+      - name: Build isolated gate contract
+        run: |
+          g++ -std=c++17 -O3 -Wall -Wextra -Wpedantic \
+              -ISource Tests/F0GateContractV1.cpp \
+              -o /tmp/f0-gate-v1
+      - name: Run isolated gate contract
+        run: |
+          /tmp/f0-gate-v1 | tee /tmp/f0-gate-v1.log
+          grep -q '^F0_GATE_V1_RESULT=PASS$' /tmp/f0-gate-v1.log
+          grep -q 'periodic_false_negatives=0' /tmp/f0-gate-v1.log
+          grep -q 'burst_false_negatives=0' /tmp/f0-gate-v1.log
