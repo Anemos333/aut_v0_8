@@ -89,12 +89,12 @@ void run(double hz,double snr,std::uint32_t seed)
     float low=160.0f,high=1600.0f;
 
     if(hz<=230.0){
-        rate=sr/8.0; length=ModernPitchEngine::MultiRatePitchTracker::lowAnalysisSize;
+        rate=sr/8.0; length=512;
         low=25.0f; high=230.0f;
         (void)t.measureCoordinate(t.eighthRateRing_,t.eighthRateWritePosition_,t.eighthRateAvailableSamples_,
                                   rate,low,high,length,ws);
     } else if(hz<=460.0){
-        rate=sr/4.0; length=ModernPitchEngine::MultiRatePitchTracker::mediumAnalysisSize;
+        rate=sr/4.0; length=384;
         low=35.0f; high=460.0f;
         (void)t.measureCoordinate(t.quarterRateRing_,t.quarterRateWritePosition_,t.quarterRateAvailableSamples_,
                                   rate,low,high,length,ws);
