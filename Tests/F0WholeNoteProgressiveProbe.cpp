@@ -189,7 +189,8 @@ struct ProgressiveEstimate
 
 ProgressiveEstimate estimateProgressive(
     const std::array<double, progressiveMaxSamples>& x,
-    int sampleCount)
+    int sampleCount,
+    bool requireDirectPublication = true)
 {
     std::array<double, progressiveMaxSamples> y {};
     double mean = 0.0;
@@ -339,7 +340,9 @@ ProgressiveEstimate estimateProgressive(
         return {};
 
     // Direct publication requires two periods of the final claimed F0.
-    if (2 * finalLag >= sampleCount)
+    // Diagnostic nested windows may still expose the internal candidate
+    // without granting it publication authority.
+    if (requireDirectPublication && 2 * finalLag >= sampleCount)
         return {};
 
     return { true, hz, bestCorr, primitiveRatio, finalLag };
@@ -347,34 +350,27 @@ ProgressiveEstimate estimateProgressive(
 }
 
 
+struct AgreementStats
+{
+    int retained = 0;
+    int correct = 0;
+    int wrong = 0;
+};
+
 struct NestedWindowStats
 {
     int valid448 = 0;
     int correct448 = 0;
     int wrong448 = 0;
-
-    int rule400Retained = 0;
-    int rule400Correct = 0;
-    int rule400Wrong = 0;
-
-    int rule424Retained = 0;
-    int rule424Correct = 0;
-    int rule424Wrong = 0;
-
-    int ruleAnyRetained = 0;
-    int ruleAnyCorrect = 0;
-    int ruleAnyWrong = 0;
-
-    int ruleBothRetained = 0;
-    int ruleBothCorrect = 0;
-    int ruleBothWrong = 0;
+    std::array<AgreementStats, 4> any {};
+    std::array<AgreementStats, 4> both {};
 };
 
-bool sameFamilyHz(double a, double b) noexcept
+double familyDistanceCents(double a, double b) noexcept
 {
     if (!(a > 0.0) || !(b > 0.0))
-        return false;
-    return std::abs(1200.0 * std::log2(a / b)) <= 100.0;
+        return std::numeric_limits<double>::infinity();
+    return std::abs(1200.0 * std::log2(a / b));
 }
 
 template <std::size_t N>
@@ -387,6 +383,7 @@ void accumulateNestedWindowStats(
         246.9417, 293.6648, 329.6276, 440.0, 659.2551, 880.0
     };
     constexpr std::array<double, 3> testSnrs { 18.0, 9.0, 3.0 };
+    constexpr std::array<double, 4> thresholds { 15.0, 30.0, 60.0, 100.0 };
 
     for (const auto& profile : profiles)
         for (double f0 : testFrequencies)
@@ -397,9 +394,11 @@ void accumulateNestedWindowStats(
                         profile, f0, snr,
                         seed ^ static_cast<std::uint32_t>(f0 * 97.0));
 
-                    const auto e400 = estimateProgressive(x, 400);
-                    const auto e424 = estimateProgressive(x, 424);
-                    const auto e448 = estimateProgressive(x, 448);
+                    // These are witnesses only. They may expose a candidate
+                    // even when the shorter window is not yet publishable.
+                    const auto e400 = estimateProgressive(x, 400, false);
+                    const auto e424 = estimateProgressive(x, 424, false);
+                    const auto e448 = estimateProgressive(x, 448, true);
                     if (!e448.valid)
                         continue;
 
@@ -409,41 +408,30 @@ void accumulateNestedWindowStats(
                     if (truthCorrect) ++stats.correct448;
                     else ++stats.wrong448;
 
-                    const bool agrees400 =
-                        e400.valid && sameFamilyHz(e400.hz, e448.hz);
-                    const bool agrees424 =
-                        e424.valid && sameFamilyHz(e424.hz, e448.hz);
-                    const bool agreesAny = agrees400 || agrees424;
-                    const bool agreesBoth = agrees400 && agrees424;
+                    const double d400 = e400.valid
+                        ? familyDistanceCents(e400.hz, e448.hz)
+                        : std::numeric_limits<double>::infinity();
+                    const double d424 = e424.valid
+                        ? familyDistanceCents(e424.hz, e448.hz)
+                        : std::numeric_limits<double>::infinity();
 
-                    auto countRule = [&](bool keep,
-                                         int& retained,
-                                         int& correct,
-                                         int& wrong)
+                    for (std::size_t i = 0; i < thresholds.size(); ++i)
                     {
-                        if (!keep)
-                            return;
-                        ++retained;
-                        if (truthCorrect) ++correct;
-                        else ++wrong;
-                    };
+                        const bool agrees400 = d400 <= thresholds[i];
+                        const bool agrees424 = d424 <= thresholds[i];
+                        const bool keepAny = agrees400 || agrees424;
+                        const bool keepBoth = agrees400 && agrees424;
 
-                    countRule(agrees400,
-                              stats.rule400Retained,
-                              stats.rule400Correct,
-                              stats.rule400Wrong);
-                    countRule(agrees424,
-                              stats.rule424Retained,
-                              stats.rule424Correct,
-                              stats.rule424Wrong);
-                    countRule(agreesAny,
-                              stats.ruleAnyRetained,
-                              stats.ruleAnyCorrect,
-                              stats.ruleAnyWrong);
-                    countRule(agreesBoth,
-                              stats.ruleBothRetained,
-                              stats.ruleBothCorrect,
-                              stats.ruleBothWrong);
+                        auto count = [&](bool keep, AgreementStats& s)
+                        {
+                            if (!keep) return;
+                            ++s.retained;
+                            if (truthCorrect) ++s.correct;
+                            else ++s.wrong;
+                        };
+                        count(keepAny, stats.any[i]);
+                        count(keepBoth, stats.both[i]);
+                    }
                 }
 }
 
@@ -656,23 +644,27 @@ int main()
     accumulateNestedWindowStats(nested, alternationVerificationSeeds);
     accumulateNestedWindowStats(nested, integratedVerificationSeeds);
 
-    std::cout << "NESTED_WINDOW_SUMMARY"
+    constexpr std::array<int, 4> nestedThresholdLabels { 15, 30, 60, 100 };
+    std::cout << "NESTED_CANDIDATE_SUMMARY"
               << " valid448=" << nested.valid448
               << " correct448=" << nested.correct448
-              << " wrong448=" << nested.wrong448
-              << " r400_retained=" << nested.rule400Retained
-              << " r400_correct=" << nested.rule400Correct
-              << " r400_wrong=" << nested.rule400Wrong
-              << " r424_retained=" << nested.rule424Retained
-              << " r424_correct=" << nested.rule424Correct
-              << " r424_wrong=" << nested.rule424Wrong
-              << " any_retained=" << nested.ruleAnyRetained
-              << " any_correct=" << nested.ruleAnyCorrect
-              << " any_wrong=" << nested.ruleAnyWrong
-              << " both_retained=" << nested.ruleBothRetained
-              << " both_correct=" << nested.ruleBothCorrect
-              << " both_wrong=" << nested.ruleBothWrong
-              << '\\n';
+              << " wrong448=" << nested.wrong448;
+    for (std::size_t i = 0; i < nestedThresholdLabels.size(); ++i)
+    {
+        std::cout << " any" << nestedThresholdLabels[i]
+                  << "_retained=" << nested.any[i].retained
+                  << " any" << nestedThresholdLabels[i]
+                  << "_correct=" << nested.any[i].correct
+                  << " any" << nestedThresholdLabels[i]
+                  << "_wrong=" << nested.any[i].wrong
+                  << " both" << nestedThresholdLabels[i]
+                  << "_retained=" << nested.both[i].retained
+                  << " both" << nestedThresholdLabels[i]
+                  << "_correct=" << nested.both[i].correct
+                  << " both" << nestedThresholdLabels[i]
+                  << "_wrong=" << nested.both[i].wrong;
+    }
+    std::cout << '\n';
 
     std::cout << "INTEGRATED_VERIFY"
               << " cases=" << integratedCases
