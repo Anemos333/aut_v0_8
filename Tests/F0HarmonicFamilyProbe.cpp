@@ -342,7 +342,7 @@ Estimate estimateFamily(const std::array<double, frameSize>& x)
         runnerUp = std::max(runnerUp, c.fit);
     }
 
-    if (runnerUp >= best.fit - 0.0025)
+    if (runnerUp >= best.fit - 0.0050)
         return { false, 0.0, best.fit, runnerUp };
 
     return { true, best.hz, best.fit, runnerUp };
@@ -393,6 +393,7 @@ int main()
     int precision = 0;
     int artificialLow = 0;
     int octaveHigh = 0;
+    int wrongFamily = 0;
     double worstAcceptedCents = 0.0;
 
     for (Kind kind : kinds)
@@ -410,6 +411,7 @@ int main()
                         err = cents(e.hz, f0);
                         const double ae = std::abs(err);
                         if (ae <= 100.0) ++familyCorrect;
+                        else ++wrongFamily;
                         if (ae <= 1.5) ++precision;
                         worstAcceptedCents = std::max(worstAcceptedCents, ae);
                         if (e.hz < 0.75 * f0) ++artificialLow;
@@ -440,6 +442,7 @@ int main()
               << " precision_1_5c=" << precision
               << " artificial_low=" << artificialLow
               << " octave_high=" << octaveHigh
+              << " wrong_family=" << wrongFamily
               << " worst_accepted_cents=" << worstAcceptedCents
               << " white_hallucinations=" << whiteHallucinations
               << " coloured_hallucinations=" << colouredHallucinations
@@ -447,6 +450,7 @@ int main()
 
     const bool familySafety = artificialLow == 0
                            && octaveHigh == 0
+                           && wrongFamily == 0
                            && whiteHallucinations == 0
                            && colouredHallucinations == 0;
     std::cout << "HARMONIC_FAMILY_SAFETY=" << (familySafety ? "PASS" : "FAIL") << '\n';
