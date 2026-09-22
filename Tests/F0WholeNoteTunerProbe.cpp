@@ -535,16 +535,6 @@ int main()
                         if (validated.hz > 1.5 * f0) ++holdoutValidatedHigh;
                     }
 
-                    if (guarded.valid)
-                    {
-                        ++verificationGuardedValid;
-                        const double ge = std::abs(cents(guarded.hz, f0));
-                        if (ge <= 100.0) ++verificationGuardedCorrect;
-                        else ++verificationGuardedWrong;
-                        if (guarded.hz < 0.75 * f0) ++verificationGuardedLow;
-                        if (guarded.hz > 1.5 * f0) ++verificationGuardedHigh;
-                    }
-
                     if (base.valid && validated.valid
                         && std::abs(base.hz - validated.hz) > 1.0e-9)
                     {
@@ -664,6 +654,16 @@ int main()
                         }
                         if (validated.hz < 0.75 * f0) ++verificationValidatedLow;
                         if (validated.hz > 1.5 * f0) ++verificationValidatedHigh;
+                    }
+
+                    if (guarded.valid)
+                    {
+                        ++verificationGuardedValid;
+                        const double ge = std::abs(cents(guarded.hz, f0));
+                        if (ge <= 100.0) ++verificationGuardedCorrect;
+                        else ++verificationGuardedWrong;
+                        if (guarded.hz < 0.75 * f0) ++verificationGuardedLow;
+                        if (guarded.hz > 1.5 * f0) ++verificationGuardedHigh;
                     }
 
                     if (base.valid && validated.valid
