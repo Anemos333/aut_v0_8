@@ -278,6 +278,8 @@ struct Estimate
     double hz = 0.0;
     double fit = -1.0;
     double runnerUpFit = -1.0;
+    double candidateHz = 0.0;
+    double runnerUpHz = 0.0;
 };
 
 Estimate estimateFamily(const std::array<double, frameSize>& x)
@@ -358,17 +360,22 @@ Estimate estimateFamily(const std::array<double, frameSize>& x)
     }
 
     double runnerUp = -1.0;
+    double runnerUpHz = 0.0;
     for (const auto& c : refined)
     {
         if (c.primitiveScore < primitiveThreshold || sameFamilyNeighbour(c.hz, best.hz))
             continue;
-        runnerUp = std::max(runnerUp, c.fit);
+        if (c.fit > runnerUp)
+        {
+            runnerUp = c.fit;
+            runnerUpHz = c.hz;
+        }
     }
 
     if (runnerUp >= best.fit - 0.0050)
-        return { false, 0.0, best.fit, runnerUp };
+        return { false, 0.0, best.fit, runnerUp, best.hz, runnerUpHz };
 
-    return { true, best.hz, best.fit, runnerUp };
+    return { true, best.hz, best.fit, runnerUp, best.hz, runnerUpHz };
 }
 
 
@@ -577,6 +584,8 @@ int main()
                               << " cents=" << err
                               << " fit=" << e.fit
                               << " runner_up=" << e.runnerUpFit
+                              << " candidate_hz=" << e.candidateHz
+                              << " runner_up_hz=" << e.runnerUpHz
                               << " oracle_hz=" << oracle.hz
                               << " oracle_cents=" << oracleError
                               << " phase_oracle_hz=" << phaseOracleHz
