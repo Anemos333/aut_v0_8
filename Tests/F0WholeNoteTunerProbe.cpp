@@ -278,6 +278,28 @@ WholeNoteEstimate estimateWholeNote(const std::array<double, frameSize>& x)
 }
 }
 
+
+WholeNoteEstimate applyPrimitiveValidator(const std::array<double, frameSize>& x,
+                                          WholeNoteEstimate e) noexcept
+{
+    if (!e.valid)
+        return e;
+
+    const auto witness = measurePrimitiveWitness(x, e.lag);
+    constexpr double octaveDownRatio = 0.70;
+
+    if (!witness.observable || witness.ratio > octaveDownRatio)
+        return e;
+
+    const double loweredHz = 0.5 * e.hz;
+    if (loweredHz < minimumF0)
+        return e;
+
+    e.hz = loweredHz;
+    e.lag *= 2;
+    return e;
+}
+
 int main()
 {
     constexpr std::array<double, 12> frequencies {
@@ -289,6 +311,10 @@ int main()
         0x01234567u, 0x9e3779b9u, 0x243f6a88u,
         0xb7e15162u, 0xdeadbeefu, 0xa5a5a5a5u
     };
+    constexpr std::array<std::uint32_t, 6> holdoutSeeds {
+        0x31415926u, 0x27182818u, 0x13579bdfu,
+        0x2468ace0u, 0xc001d00du, 0x7f4a7c15u
+    };
 
     int cases = 0;
     int valid = 0;
@@ -297,6 +323,11 @@ int main()
     int artificialLow = 0;
     int octaveHigh = 0;
     int precision = 0;
+    int validatedCorrect = 0;
+    int validatedWrong = 0;
+    int validatedArtificialLow = 0;
+    int validatedOctaveHigh = 0;
+    int validatedPrecision = 0;
     int witnessObservable = 0;
     int octaveHighWitnessObservable = 0;
     int octaveHighDoubleBetter = 0;
@@ -317,6 +348,7 @@ int main()
 
                     const auto start = std::chrono::steady_clock::now();
                     const auto e = estimateWholeNote(x);
+                    const auto validated = applyPrimitiveValidator(x, e);
                     const auto end = std::chrono::steady_clock::now();
                     micros.push_back(std::chrono::duration<double, std::micro>(
                         end - start).count());
@@ -356,6 +388,17 @@ int main()
                         if (ae <= 1.5) ++precision;
                     }
 
+                    if (validated.valid)
+                    {
+                        const double ve = cents(validated.hz, f0);
+                        const double ave = std::abs(ve);
+                        if (ave <= 100.0) ++validatedCorrect;
+                        else ++validatedWrong;
+                        if (validated.hz < 0.75 * f0) ++validatedArtificialLow;
+                        if (validated.hz > 1.5 * f0) ++validatedOctaveHigh;
+                        if (ave <= 1.5) ++validatedPrecision;
+                    }
+
                     std::cout << std::fixed << std::setprecision(4)
                               << "WHOLE_NOTE_CASE profile=" << profile.name
                               << " hz=" << f0
@@ -393,6 +436,11 @@ int main()
               << " artificial_low=" << artificialLow
               << " octave_high=" << octaveHigh
               << " precision_1_5c=" << precision
+              << " validated_correct=" << validatedCorrect
+              << " validated_wrong=" << validatedWrong
+              << " validated_artificial_low=" << validatedArtificialLow
+              << " validated_octave_high=" << validatedOctaveHigh
+              << " validated_precision_1_5c=" << validatedPrecision
               << " witness_observable=" << witnessObservable
               << " octave_high_witness_observable=" << octaveHighWitnessObservable
               << " octave_high_double_better=" << octaveHighDoubleBetter
@@ -409,6 +457,76 @@ int main()
               << " mean_us=" << meanUs
               << " p95_us=" << p95Us
               << " max_us=" << maxUs
+              << '\n';
+
+
+    int holdoutCases = 0;
+    int holdoutBaseCorrect = 0;
+    int holdoutBaseWrong = 0;
+    int holdoutValidatedCorrect = 0;
+    int holdoutValidatedWrong = 0;
+    int holdoutBaseLow = 0;
+    int holdoutValidatedLow = 0;
+    int holdoutBaseHigh = 0;
+    int holdoutValidatedHigh = 0;
+    int holdoutChanged = 0;
+    int holdoutChangedCorrectToWrong = 0;
+
+    for (const auto& profile : profiles)
+        for (double f0 : frequencies)
+            for (double snr : snrs)
+                for (auto seed : holdoutSeeds)
+                {
+                    const auto x = makeVoiceLikeFrame(
+                        profile, f0, snr,
+                        seed ^ static_cast<std::uint32_t>(f0 * 97.0));
+                    const auto base = estimateWholeNote(x);
+                    const auto validated = applyPrimitiveValidator(x, base);
+                    ++holdoutCases;
+
+                    if (base.valid)
+                    {
+                        const double be = std::abs(cents(base.hz, f0));
+                        if (be <= 100.0) ++holdoutBaseCorrect;
+                        else ++holdoutBaseWrong;
+                        if (base.hz < 0.75 * f0) ++holdoutBaseLow;
+                        if (base.hz > 1.5 * f0) ++holdoutBaseHigh;
+                    }
+
+                    if (validated.valid)
+                    {
+                        const double ve = std::abs(cents(validated.hz, f0));
+                        if (ve <= 100.0) ++holdoutValidatedCorrect;
+                        else ++holdoutValidatedWrong;
+                        if (validated.hz < 0.75 * f0) ++holdoutValidatedLow;
+                        if (validated.hz > 1.5 * f0) ++holdoutValidatedHigh;
+                    }
+
+                    if (base.valid && validated.valid
+                        && std::abs(base.hz - validated.hz) > 1.0e-9)
+                    {
+                        ++holdoutChanged;
+                        const bool baseWasCorrect =
+                            std::abs(cents(base.hz, f0)) <= 100.0;
+                        const bool validatedIsWrong =
+                            std::abs(cents(validated.hz, f0)) > 100.0;
+                        if (baseWasCorrect && validatedIsWrong)
+                            ++holdoutChangedCorrectToWrong;
+                    }
+                }
+
+    std::cout << "WHOLE_NOTE_HOLDOUT"
+              << " cases=" << holdoutCases
+              << " base_correct=" << holdoutBaseCorrect
+              << " base_wrong=" << holdoutBaseWrong
+              << " validated_correct=" << holdoutValidatedCorrect
+              << " validated_wrong=" << holdoutValidatedWrong
+              << " base_low=" << holdoutBaseLow
+              << " validated_low=" << holdoutValidatedLow
+              << " base_high=" << holdoutBaseHigh
+              << " validated_high=" << holdoutValidatedHigh
+              << " changed=" << holdoutChanged
+              << " correct_to_wrong=" << holdoutChangedCorrectToWrong
               << '\n';
 
     const bool structuralSafe =
