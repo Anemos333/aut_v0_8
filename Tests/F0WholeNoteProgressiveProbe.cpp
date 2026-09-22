@@ -485,6 +485,70 @@ bool shouldPublishInsideNormalWindow(
         || current.periodicity >= strongWholeNotePeriodicity;
 }
 
+struct EarlySuspicionStats
+{
+    int eligibleCorrect = 0;
+    int eligibleHigh = 0;
+    int eligibleOtherWrong = 0;
+    std::array<int, 12> correctFlagged {};
+    std::array<int, 12> highFlagged {};
+    std::array<int, 12> otherWrongFlagged {};
+};
+
+template <std::size_t N>
+void accumulateEarlySuspicion(
+    EarlySuspicionStats& stats,
+    const std::array<std::uint32_t, N>& seedSet)
+{
+    constexpr std::array<double, 12> testFrequencies {
+        110.0, 123.4708, 146.8324, 164.8138, 196.0, 220.0,
+        246.9417, 293.6648, 329.6276, 440.0, 659.2551, 880.0
+    };
+    constexpr std::array<double, 3> testSnrs { 18.0, 9.0, 3.0 };
+    constexpr std::array<double, 3> sigThresholds { 1.0, 1.25, 1.5 };
+    constexpr std::array<double, 4> periodicityCaps { 0.82, 0.85, 0.88, 0.90 };
+
+    for (const auto& profile : profiles)
+        for (double f0 : testFrequencies)
+            for (double snr : testSnrs)
+                for (auto seed : seedSet)
+                {
+                    const auto x = makeProgressiveVoiceLike(
+                        profile, f0, snr,
+                        seed ^ static_cast<std::uint32_t>(f0 * 97.0));
+                    const auto e = estimateProgressive(x, 448);
+                    if (!e.valid || !shouldPublishInsideNormalWindow(x, e))
+                        continue;
+
+                    const double ae = std::abs(cents(e.hz, f0));
+                    const bool correct = ae <= 100.0;
+                    const bool high = e.hz > 1.5 * f0;
+                    if (correct) ++stats.eligibleCorrect;
+                    else if (high) ++stats.eligibleHigh;
+                    else ++stats.eligibleOtherWrong;
+
+                    const auto alt = measureCycleAlternation(x, 448, e.lag);
+                    if (!alt.observable)
+                        continue;
+
+                    std::size_t index = 0;
+                    for (double sig : sigThresholds)
+                        for (double cap : periodicityCaps)
+                        {
+                            const bool flagged =
+                                alt.significance >= sig
+                                && e.periodicity <= cap;
+                            if (flagged)
+                            {
+                                if (correct) ++stats.correctFlagged[index];
+                                else if (high) ++stats.highFlagged[index];
+                                else ++stats.otherWrongFlagged[index];
+                            }
+                            ++index;
+                        }
+                }
+}
+
 int main()
 {
     constexpr std::array<double, 12> frequencies {
@@ -965,6 +1029,33 @@ int main()
                     if (correct) ++combinedVerifyCorrectFlagged;
                     if (high) ++combinedVerifyHighFlagged;
                 }
+
+
+    EarlySuspicionStats early {};
+    accumulateEarlySuspicion(early, seeds);
+    accumulateEarlySuspicion(early, alternationVerificationSeeds);
+    accumulateEarlySuspicion(early, integratedVerificationSeeds);
+    accumulateEarlySuspicion(early, adaptiveVerificationSeeds);
+
+    constexpr std::array<int, 3> earlySigLabels { 100, 125, 150 };
+    constexpr std::array<int, 4> earlyCapLabels { 82, 85, 88, 90 };
+    std::cout << "EARLY_SUSPICION_SUMMARY"
+              << " eligible_correct=" << early.eligibleCorrect
+              << " eligible_high=" << early.eligibleHigh
+              << " eligible_other_wrong=" << early.eligibleOtherWrong;
+    std::size_t earlyIndex = 0;
+    for (int sig : earlySigLabels)
+        for (int cap : earlyCapLabels)
+        {
+            std::cout << " s" << sig << "p" << cap
+                      << "_correct=" << early.correctFlagged[earlyIndex]
+                      << " s" << sig << "p" << cap
+                      << "_high=" << early.highFlagged[earlyIndex]
+                      << " s" << sig << "p" << cap
+                      << "_other=" << early.otherWrongFlagged[earlyIndex];
+            ++earlyIndex;
+        }
+    std::cout << '\n';
 
     std::cout << "COMBINED_VERIFY"
               << " cases=" << combinedVerifyCases
