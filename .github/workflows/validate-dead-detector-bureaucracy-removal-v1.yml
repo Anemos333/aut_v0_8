@@ -1,0 +1,64 @@
+name: Validate dead detector bureaucracy removal v1
+on:
+  push:
+    branches: [v1-continuous-f0-dead-bureaucracy-removal-v1]
+    paths:
+      - Source/ModernPitchEngine.h
+      - Source/ModernPitchEngine.cpp
+      - .github/workflows/validate-dead-detector-bureaucracy-removal-v1.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: v1-continuous-f0-dead-bureaucracy-removal-v1 }
+      - run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y libasound2-dev libjack-jackd2-dev ladspa-sdk libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev >/dev/null
+      - name: Reject removed bureaucracy
+        run: |
+          ! grep -Eq 'decodeCandidate\(|buildConsensusHypotheses\(|updateDecoderBeam\(|ConsensusHypothesis|DecoderState|decoderBeam_|transitionWake_|setTransitionWake|pathCleanlinessAuthority\(' Source/ModernPitchEngine.h Source/ModernPitchEngine.cpp
+      - name: Build product
+        run: |
+          cmake -S . -B build-product -DCMAKE_BUILD_TYPE=Release >/dev/null
+          cmake --build build-product --config Release --parallel 2 --target Neumaton_VST3 >/dev/null
+      - name: Run acquisition provenance
+        run: |
+          cp Tests/AcquisitionOwnershipDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-acq -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-acq --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-acq/clean-engine-tests/SupervisorContinuityTest | tee /tmp/acq.log
+          grep -q '^ACQ_PROVENANCE ' /tmp/acq.log
+      - name: Check baseline acquisition landmarks
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, statistics
+          rows=[]
+          for line in Path('/tmp/acq.log').read_text().splitlines():
+              if not line.startswith('ACQ_PROVENANCE '): continue
+              d=dict(re.findall(r'(\w+)=([^ ]+)',line))
+              if d.get('mode')!='onset' or float(d.get('snr','-1'))!=6.0: continue
+              for k in ['hz','valid_correct','measurement_correct','owner_correct']:
+                  d[k]=float(d[k])
+              rows.append(d)
+          def med(kind,hz,key):
+              v=sorted(r[key] for r in rows if r['kind']==kind and abs(r['hz']-hz)<0.01 and r[key]>=0)
+              return statistics.median(v) if v else -1.0
+          expected=[
+              ('normal',110.0,'valid_correct',85.33333),
+              ('normal',440.0,'valid_correct',32.0),
+              ('strong_second',110.0,'valid_correct',85.33333),
+              ('strong_second',440.0,'valid_correct',32.0),
+              ('missing_fundamental',220.0,'valid_correct',85.33333),
+              ('missing_fundamental',440.0,'valid_correct',32.0),
+          ]
+          for kind,hz,key,want in expected:
+              got=med(kind,hz,key)
+              print('DEAD_REMOVAL_ACQ',kind,hz,key,got)
+              if abs(got-want)>0.01:
+                  raise SystemExit(f'acquisition changed: {kind} {hz} {key}: {got} != {want}')
+          PY
