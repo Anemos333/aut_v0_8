@@ -98,6 +98,7 @@ struct AlternationWitness
     double score = 0.0;
     double between = 0.0;
     double within = 0.0;
+    double significance = 0.0;
     int cycles = 0;
 };
 
@@ -174,8 +175,15 @@ AlternationWitness measureCycleAlternation(
         within / std::max(1.0e-30, energy);
     const double score =
         normalizedBetween / std::max(1.0e-12, normalizedWithin);
+    const double effectiveGroups =
+        static_cast<double>(evenCycles * oddCycles)
+        / static_cast<double>(evenCycles + oddCycles);
+    const double significance = score * effectiveGroups;
 
-    return { true, score, normalizedBetween, normalizedWithin, cycles };
+    return {
+        true, score, normalizedBetween, normalizedWithin,
+        significance, cycles
+    };
 }
 
 struct ProgressiveEstimate
@@ -588,6 +596,7 @@ int main()
                                   << " alt_score=" << alternation.score
                                   << " alt_between=" << alternation.between
                                   << " alt_within=" << alternation.within
+                                  << " alt_significance=" << alternation.significance
                                   << " alt_cycles=" << alternation.cycles
                                   << '\n';
                         published = true;
@@ -689,6 +698,63 @@ int main()
                     if (!published) ++integratedNever;
                 }
 
+
+
+    constexpr std::array<double, 6> significanceThresholds {
+        2.0, 3.0, 4.0, 5.0, 6.0, 8.0
+    };
+    std::array<int, significanceThresholds.size()> longCorrectFlagged {};
+    std::array<int, significanceThresholds.size()> longHighFlagged {};
+    int longCases = 0;
+    int longCorrect = 0;
+    int longHigh = 0;
+    int longOtherWrong = 0;
+
+    for (const auto& profile : profiles)
+        for (double f0 : frequencies)
+            for (double snr : snrs)
+                for (auto seed : seeds)
+                {
+                    const auto x = makeProgressiveVoiceLike(
+                        profile, f0, snr,
+                        seed ^ static_cast<std::uint32_t>(f0 * 97.0));
+                    const auto e = estimateProgressive(x, 896);
+                    if (!e.valid)
+                        continue;
+
+                    ++longCases;
+                    const double ae = std::abs(cents(e.hz, f0));
+                    const bool correct = ae <= 100.0;
+                    const bool high = e.hz > 1.5 * f0;
+                    if (correct) ++longCorrect;
+                    else if (high) ++longHigh;
+                    else ++longOtherWrong;
+
+                    const auto alt = measureCycleAlternation(x, 896, e.lag);
+                    if (!alt.observable)
+                        continue;
+
+                    for (std::size_t i = 0;
+                         i < significanceThresholds.size(); ++i)
+                    {
+                        if (alt.significance < significanceThresholds[i])
+                            continue;
+                        if (correct) ++longCorrectFlagged[i];
+                        if (high) ++longHighFlagged[i];
+                    }
+                }
+
+    std::cout << "LONG_ALTERNATION_SUMMARY"
+              << " cases=" << longCases
+              << " correct=" << longCorrect
+              << " octave_high=" << longHigh
+              << " other_wrong=" << longOtherWrong;
+    for (std::size_t i = 0; i < significanceThresholds.size(); ++i)
+        std::cout << " t" << significanceThresholds[i]
+                  << "_correct_flagged=" << longCorrectFlagged[i]
+                  << " t" << significanceThresholds[i]
+                  << "_high_flagged=" << longHighFlagged[i];
+    std::cout << '\n';
 
     NestedWindowStats nested {};
     accumulateNestedWindowStats(nested, seeds);
