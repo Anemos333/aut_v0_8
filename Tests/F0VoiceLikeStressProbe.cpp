@@ -122,6 +122,261 @@ std::array<double, frameSize> makeVoiceLikeFrame(const VoiceProfile& profile,
 }
 }
 
+
+struct SpacingEstimate
+{
+    bool valid = false;
+    double hz = 0.0;
+    double score = -1.0e30;
+    int support = 0;
+    double rmsCents = 1.0e30;
+};
+
+struct SparsePartial
+{
+    double hz = 0.0;
+    double power = 0.0;
+};
+
+double goertzelPower(const std::array<double, frameSize>& x, double hz) noexcept
+{
+    const double omega = 2.0 * pi * hz / sr;
+    const double coeff = 2.0 * std::cos(omega);
+    double s1 = 0.0;
+    double s2 = 0.0;
+    for (int n = 0; n < frameSize; ++n)
+    {
+        const double w = 0.5 - 0.5 * std::cos(
+            2.0 * pi * static_cast<double>(n)
+            / static_cast<double>(frameSize - 1));
+        const double s0 = x[static_cast<std::size_t>(n)] * w + coeff * s1 - s2;
+        s2 = s1;
+        s1 = s0;
+    }
+    return std::max(0.0, s1 * s1 + s2 * s2 - coeff * s1 * s2);
+}
+
+double refineSparsePeak(const std::array<double, frameSize>& x, double centre) noexcept
+{
+    double lo = std::max(60.0, centre - 28.0);
+    double hi = std::min(6000.0, centre + 28.0);
+    constexpr double phi = 0.6180339887498948482;
+    double a = hi - phi * (hi - lo);
+    double b = lo + phi * (hi - lo);
+    double pa = goertzelPower(x, a);
+    double pb = goertzelPower(x, b);
+    for (int i = 0; i < 9; ++i)
+    {
+        if (pa > pb)
+        {
+            hi = b; b = a; pb = pa;
+            a = hi - phi * (hi - lo);
+            pa = goertzelPower(x, a);
+        }
+        else
+        {
+            lo = a; a = b; pa = pb;
+            b = lo + phi * (hi - lo);
+            pb = goertzelPower(x, b);
+        }
+    }
+    return 0.5 * (lo + hi);
+}
+
+std::vector<SparsePartial> extractSparsePartials(const std::array<double, frameSize>& x)
+{
+    struct GridPeak { double hz; double power; };
+    std::vector<GridPeak> grid;
+
+    constexpr double step = 20.0;
+    double previous = goertzelPower(x, 80.0);
+    double current = goertzelPower(x, 100.0);
+    for (double hz = 120.0; hz <= 5000.0; hz += step)
+    {
+        const double next = goertzelPower(x, hz);
+        if (current >= previous && current >= next)
+            grid.push_back({ hz - step, current });
+        previous = current;
+        current = next;
+    }
+
+    std::sort(grid.begin(), grid.end(),
+        [](const GridPeak& a, const GridPeak& b) { return a.power > b.power; });
+    if (grid.size() > 12)
+        grid.resize(12);
+
+    std::vector<SparsePartial> partials;
+    partials.reserve(grid.size());
+    for (const auto& p : grid)
+    {
+        const double hz = refineSparsePeak(x, p.hz);
+        partials.push_back({ hz, goertzelPower(x, hz) });
+    }
+    std::sort(partials.begin(), partials.end(),
+        [](const SparsePartial& a, const SparsePartial& b) { return a.hz < b.hz; });
+    return partials;
+}
+
+struct SpacingScore
+{
+    bool usable = false;
+    double refinedHz = 0.0;
+    double score = -1.0e30;
+    int support = 0;
+    double rmsCents = 1.0e30;
+};
+
+SpacingScore scoreSpacingCandidate(const std::vector<SparsePartial>& partials,
+                                   double candidate) noexcept
+{
+    if (!(candidate >= minimumF0 && candidate <= maximumF0) || partials.size() < 2)
+        return {};
+
+    double maxPower = 0.0;
+    for (const auto& p : partials)
+        maxPower = std::max(maxPower, p.power);
+    if (!(maxPower > 0.0))
+        return {};
+
+    struct Match { int h; double hz; double weight; };
+    std::array<Match, 12> matches {};
+    int count = 0;
+    int gcdIndex = 0;
+    double coverageWeight = 0.0;
+    double totalWeight = 0.0;
+
+    for (const auto& p : partials)
+    {
+        const double baseWeight = std::sqrt(std::max(0.0, p.power / maxPower));
+        totalWeight += baseWeight;
+
+        const int h = static_cast<int>(std::llround(p.hz / candidate));
+        if (h < 1 || h > 24)
+            continue;
+
+        const double predicted = candidate * static_cast<double>(h);
+        const double errCents = 1200.0 * std::log2(p.hz / predicted);
+        if (std::abs(errCents) > 42.0)
+            continue;
+
+        bool duplicateH = false;
+        for (int i = 0; i < count; ++i)
+            if (matches[static_cast<std::size_t>(i)].h == h)
+                duplicateH = true;
+        if (duplicateH || count >= static_cast<int>(matches.size()))
+            continue;
+
+        matches[static_cast<std::size_t>(count++)] = { h, p.hz, baseWeight };
+        gcdIndex = gcdIndex == 0 ? h : std::gcd(gcdIndex, h);
+        coverageWeight += baseWeight;
+    }
+
+    if (count < 2 || gcdIndex != 1)
+        return {};
+
+    double numerator = 0.0;
+    double denominator = 0.0;
+    for (int i = 0; i < count; ++i)
+    {
+        const auto& m = matches[static_cast<std::size_t>(i)];
+        numerator += m.weight * static_cast<double>(m.h) * m.hz;
+        denominator += m.weight * static_cast<double>(m.h * m.h);
+    }
+    if (!(denominator > 0.0))
+        return {};
+
+    const double refined = numerator / denominator;
+
+    double err2 = 0.0;
+    double errWeight = 0.0;
+    int refinedGcd = 0;
+    int refinedCount = 0;
+    for (const auto& p : partials)
+    {
+        const int h = static_cast<int>(std::llround(p.hz / refined));
+        if (h < 1 || h > 24)
+            continue;
+        const double predicted = refined * static_cast<double>(h);
+        const double ec = 1200.0 * std::log2(p.hz / predicted);
+        if (std::abs(ec) > 42.0)
+            continue;
+
+        const double w = std::sqrt(std::max(0.0, p.power / maxPower));
+        err2 += w * ec * ec;
+        errWeight += w;
+        refinedGcd = refinedGcd == 0 ? h : std::gcd(refinedGcd, h);
+        ++refinedCount;
+    }
+
+    if (refinedCount < 2 || refinedGcd != 1 || !(errWeight > 0.0))
+        return {};
+
+    const double rms = std::sqrt(err2 / errWeight);
+    const double coverage = coverageWeight / std::max(1.0e-12, totalWeight);
+    const double score =
+        2.2 * coverage
+        + 0.11 * static_cast<double>(refinedCount)
+        - 0.012 * rms
+        + 0.00015 * refined; // tiny primitive-family preference on near ties
+
+    return { true, refined, score, refinedCount, rms };
+}
+
+SpacingEstimate estimateByPartialSpacing(const std::array<double, frameSize>& x)
+{
+    const auto partials = extractSparsePartials(x);
+    if (partials.size() < 2)
+        return {};
+
+    std::vector<double> hypotheses;
+    hypotheses.reserve(partials.size() * 12);
+    for (const auto& p : partials)
+    {
+        for (int h = 1; h <= 16; ++h)
+        {
+            const double f = p.hz / static_cast<double>(h);
+            if (f < minimumF0 || f > maximumF0)
+                continue;
+
+            bool duplicate = false;
+            for (double old : hypotheses)
+                if (std::abs(old - f) < 1.0)
+                    duplicate = true;
+            if (!duplicate)
+                hypotheses.push_back(f);
+        }
+    }
+
+    SpacingScore best {};
+    SpacingScore runner {};
+    for (double h : hypotheses)
+    {
+        const auto s = scoreSpacingCandidate(partials, h);
+        if (!s.usable)
+            continue;
+
+        if (!best.usable || s.score > best.score)
+        {
+            runner = best;
+            best = s;
+        }
+        else if (std::abs(1200.0 * std::log2(s.refinedHz / best.refinedHz)) > 80.0
+              && (!runner.usable || s.score > runner.score))
+        {
+            runner = s;
+        }
+    }
+
+    if (!best.usable)
+        return {};
+
+    const double margin = runner.usable ? best.score - runner.score : 1.0e9;
+    if (best.support < 2 || best.rmsCents > 24.0 || margin < 0.055)
+        return { false, 0.0, best.score, best.support, best.rmsCents };
+
+    return { true, best.refinedHz, best.score, best.support, best.rmsCents };
+}
+
 int main()
 {
     constexpr std::array<double, 12> frequencies {
@@ -144,9 +399,15 @@ int main()
     int rescuedWrong = 0;
     int rescuedArtificialLow = 0;
     int rescuedPrecision = 0;
+    int spacingValid = 0;
+    int spacingCorrect = 0;
+    int spacingWrong = 0;
+    int spacingArtificialLow = 0;
     double worstRescuedCents = 0.0;
     std::vector<double> micros;
+    std::vector<double> spacingMicros;
     micros.reserve(profiles.size() * frequencies.size() * snrs.size() * seeds.size());
+    spacingMicros.reserve(micros.capacity());
 
     for (const auto& profile : profiles)
         for (double f0 : frequencies)
@@ -160,6 +421,12 @@ int main()
                     const auto rescued = applyPredictiveAmbiguityRescue(x, base);
                     const auto end = std::chrono::steady_clock::now();
                     micros.push_back(std::chrono::duration<double, std::micro>(end - start).count());
+
+                    const auto spacingStart = std::chrono::steady_clock::now();
+                    const auto spacing = estimateByPartialSpacing(x);
+                    const auto spacingEnd = std::chrono::steady_clock::now();
+                    spacingMicros.push_back(
+                        std::chrono::duration<double, std::micro>(spacingEnd - spacingStart).count());
                     ++cases;
 
                     if (base.valid)
@@ -169,6 +436,16 @@ int main()
                         if (std::abs(err) <= 100.0) ++baseCorrect;
                         else ++baseWrong;
                         if (base.hz < 0.75 * f0) ++baseArtificialLow;
+                    }
+
+                    double spacingErr = std::numeric_limits<double>::quiet_NaN();
+                    if (spacing.valid)
+                    {
+                        ++spacingValid;
+                        spacingErr = cents(spacing.hz, f0);
+                        if (std::abs(spacingErr) <= 100.0) ++spacingCorrect;
+                        else ++spacingWrong;
+                        if (spacing.hz < 0.75 * f0) ++spacingArtificialLow;
                     }
 
                     double rescuedErr = std::numeric_limits<double>::quiet_NaN();
@@ -204,6 +481,15 @@ int main()
         : micros[static_cast<std::size_t>(0.95 * static_cast<double>(micros.size() - 1))];
     const double maxUs = micros.empty() ? 0.0 : micros.back();
 
+    std::sort(spacingMicros.begin(), spacingMicros.end());
+    const double spacingMeanUs = spacingMicros.empty() ? 0.0
+        : std::accumulate(spacingMicros.begin(), spacingMicros.end(), 0.0)
+          / static_cast<double>(spacingMicros.size());
+    const double spacingP95Us = spacingMicros.empty() ? 0.0
+        : spacingMicros[static_cast<std::size_t>(
+            0.95 * static_cast<double>(spacingMicros.size() - 1))];
+    const double spacingMaxUs = spacingMicros.empty() ? 0.0 : spacingMicros.back();
+
     std::cout << std::fixed << std::setprecision(4)
               << "VOICE_STRESS_SUMMARY"
               << " cases=" << cases
@@ -216,6 +502,10 @@ int main()
               << " rescued_wrong=" << rescuedWrong
               << " rescued_artificial_low=" << rescuedArtificialLow
               << " rescued_precision_1_5c=" << rescuedPrecision
+              << " spacing_valid=" << spacingValid
+              << " spacing_correct=" << spacingCorrect
+              << " spacing_wrong=" << spacingWrong
+              << " spacing_artificial_low=" << spacingArtificialLow
               << " worst_rescued_cents=" << worstRescuedCents
               << " mean_us=" << meanUs
               << " p95_us=" << p95Us
