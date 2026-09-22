@@ -648,6 +648,156 @@ ProgressiveEstimate applyLongPrimitiveConsensus(
     return e;
 }
 
+double targetedProjectionPower(
+    const std::array<double, progressiveMaxSamples>& x,
+    int sampleCount,
+    double hz) noexcept
+{
+    if (!(hz > 0.0) || hz >= 0.48 * sr)
+        return 0.0;
+
+    double re = 0.0;
+    double im = 0.0;
+    for (int n = 0; n < sampleCount; ++n)
+    {
+        const double w = 0.5 - 0.5 * std::cos(
+            2.0 * pi * static_cast<double>(n)
+            / static_cast<double>(sampleCount - 1));
+        const double phase =
+            2.0 * pi * hz * static_cast<double>(n) / sr;
+        const double s = x[static_cast<std::size_t>(n)] * w;
+        re += s * std::cos(phase);
+        im -= s * std::sin(phase);
+    }
+    return re * re + im * im;
+}
+
+struct DownwardShadowEvidence
+{
+    bool observable = false;
+    double oddFraction = 0.0;
+    double oddEvenRatio = 0.0;
+    int oddWitnesses = 0;
+};
+
+DownwardShadowEvidence measureDownwardShadow(
+    const std::array<double, progressiveMaxSamples>& x,
+    int sampleCount,
+    double primaryHz) noexcept
+{
+    const double lowHz = 0.5 * primaryHz;
+    if (lowHz < minimumF0)
+        return {};
+
+    double odd = 0.0;
+    double even = 0.0;
+    double strongestEven = 0.0;
+    std::array<double, 4> oddPower {};
+    int oddIndex = 0;
+
+    for (int k = 1; k <= 8; ++k)
+    {
+        const double hz = lowHz * static_cast<double>(k);
+        if (hz >= 0.48 * sr)
+            break;
+
+        const double p = targetedProjectionPower(x, sampleCount, hz);
+        if ((k & 1) != 0)
+        {
+            odd += p;
+            if (oddIndex < static_cast<int>(oddPower.size()))
+                oddPower[static_cast<std::size_t>(oddIndex++)] = p;
+        }
+        else
+        {
+            even += p;
+            strongestEven = std::max(strongestEven, p);
+        }
+    }
+
+    const double total = odd + even;
+    if (!(total > 1.0e-18) || !(strongestEven > 1.0e-18))
+        return {};
+
+    int witnesses = 0;
+    for (double p : oddPower)
+        if (p >= 0.03 * strongestEven)
+            ++witnesses;
+
+    return {
+        true,
+        odd / total,
+        odd / std::max(1.0e-18, even),
+        witnesses
+    };
+}
+
+struct DownwardShadowStats
+{
+    int eligibleCorrect = 0;
+    int eligibleHigh = 0;
+    std::array<int, 7> correctFlagged {};
+    std::array<int, 7> highFlagged {};
+    std::array<int, 7> correctFlaggedTwoOdd {};
+    std::array<int, 7> highFlaggedTwoOdd {};
+};
+
+template <std::size_t N>
+void accumulateDownwardShadow(
+    DownwardShadowStats& stats,
+    const std::array<std::uint32_t, N>& seedSet)
+{
+    constexpr std::array<double, 12> testFrequencies {
+        110.0, 123.4708, 146.8324, 164.8138, 196.0, 220.0,
+        246.9417, 293.6648, 329.6276, 440.0, 659.2551, 880.0
+    };
+    constexpr std::array<double, 3> testSnrs { 18.0, 9.0, 3.0 };
+    constexpr std::array<double, 7> oddFractionThresholds {
+        0.03, 0.05, 0.08, 0.10, 0.15, 0.20, 0.25
+    };
+
+    for (const auto& profile : profiles)
+        for (double f0 : testFrequencies)
+            for (double snr : testSnrs)
+                for (auto seed : seedSet)
+                {
+                    const auto x = makeProgressiveVoiceLike(
+                        profile, f0, snr,
+                        seed ^ static_cast<std::uint32_t>(f0 * 97.0));
+                    const auto e = estimateProgressive(x, 448);
+                    if (!e.valid || !shouldPublishInsideNormalWindow(x, e)
+                        || e.loweredPrimitive || 0.5 * e.hz < minimumF0)
+                        continue;
+
+                    const double ae = std::abs(cents(e.hz, f0));
+                    const bool correct = ae <= 100.0;
+                    const bool high = e.hz > 1.5 * f0;
+                    if (!correct && !high)
+                        continue;
+                    if (correct) ++stats.eligibleCorrect;
+                    if (high) ++stats.eligibleHigh;
+
+                    const auto d = measureDownwardShadow(x, 448, e.hz);
+                    if (!d.observable)
+                        continue;
+
+                    for (std::size_t i = 0;
+                         i < oddFractionThresholds.size(); ++i)
+                    {
+                        if (d.oddFraction < oddFractionThresholds[i])
+                            continue;
+                        if (correct) ++stats.correctFlagged[i];
+                        if (high) ++stats.highFlagged[i];
+
+                        if (d.oddWitnesses >= 2)
+                        {
+                            if (correct) ++stats.correctFlaggedTwoOdd[i];
+                            if (high) ++stats.highFlaggedTwoOdd[i];
+                        }
+                    }
+                }
+}
+
 int main()
 {
     constexpr std::array<double, 12> frequencies {
@@ -1240,6 +1390,30 @@ int main()
                     }
                     if (!published) ++e2eNever;
                 }
+
+
+    DownwardShadowStats downward {};
+    accumulateDownwardShadow(downward, seeds);
+    accumulateDownwardShadow(downward, alternationVerificationSeeds);
+    accumulateDownwardShadow(downward, integratedVerificationSeeds);
+    accumulateDownwardShadow(downward, adaptiveVerificationSeeds);
+
+    constexpr std::array<int, 7> downwardLabels { 3, 5, 8, 10, 15, 20, 25 };
+    std::cout << "DOWNWARD_SHADOW_SUMMARY"
+              << " eligible_correct=" << downward.eligibleCorrect
+              << " eligible_high=" << downward.eligibleHigh;
+    for (std::size_t i = 0; i < downwardLabels.size(); ++i)
+    {
+        std::cout << " f" << downwardLabels[i]
+                  << "_correct=" << downward.correctFlagged[i]
+                  << " f" << downwardLabels[i]
+                  << "_high=" << downward.highFlagged[i]
+                  << " f" << downwardLabels[i]
+                  << "_twoodd_correct=" << downward.correctFlaggedTwoOdd[i]
+                  << " f" << downwardLabels[i]
+                  << "_twoodd_high=" << downward.highFlaggedTwoOdd[i];
+    }
+    std::cout << '\n';
 
     std::cout << "E2E_PRIMITIVE_VERIFY"
               << " cases=" << e2eCases
