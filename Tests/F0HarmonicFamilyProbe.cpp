@@ -278,6 +278,24 @@ double harmonicFitCount(const std::array<double, frameSize>& x,
     return 1.0 - residual / total;
 }
 
+
+double bestSingleToneFit(const std::array<double, frameSize>& x) noexcept
+{
+    double bestHz = 60.0;
+    double bestPower = spectralPower(x, bestHz);
+    for (double hz = 80.0; hz <= 5000.0; hz += 20.0)
+    {
+        const double p = spectralPower(x, hz);
+        if (p > bestPower)
+        {
+            bestPower = p;
+            bestHz = hz;
+        }
+    }
+    const double refinedHz = refinePartial(x, bestHz);
+    return harmonicFitCount(x, refinedHz, 1);
+}
+
 double harmonicFit(const std::array<double, frameSize>& x, double f0) noexcept
 {
     if (!(f0 >= minimumF0 && f0 <= maximumF0))
@@ -761,6 +779,9 @@ int main()
                         tieBreakHz > 0.0 ? harmonicFitCount(x, tieBreakHz, 1) : -1.0;
                     const double tieBreakHarmonicGain =
                         tieBreakFullFit - tieBreakSingleFit;
+                    const double globalSingleToneFit = bestSingleToneFit(x);
+                    const double rescueRichnessGap =
+                        tieBreakFullFit - globalSingleToneFit;
 
                     std::cout << std::fixed << std::setprecision(4)
                               << "HARMONIC_FAMILY_CASE kind=" << kindName(kind)
@@ -784,6 +805,8 @@ int main()
                               << " tie_break_harmonic_gain=" << tieBreakHarmonicGain
                               << " tie_break_single_fit=" << tieBreakSingleFit
                               << " tie_break_full_fit=" << tieBreakFullFit
+                              << " global_single_tone_fit=" << globalSingleToneFit
+                              << " rescue_richness_gap=" << rescueRichnessGap
                               << " oracle_hz=" << oracle.hz
                               << " oracle_cents=" << oracleError
                               << " phase_oracle_hz=" << phaseOracleHz
