@@ -193,6 +193,7 @@ struct ProgressiveEstimate
     double periodicity = 0.0;
     double primitiveRatio = 1.0;
     int lag = 0;
+    bool loweredPrimitive = false;
 };
 
 ProgressiveEstimate estimateProgressive(
@@ -353,7 +354,7 @@ ProgressiveEstimate estimateProgressive(
     if (requireDirectPublication && 2 * finalLag >= sampleCount)
         return {};
 
-    return { true, hz, bestCorr, primitiveRatio, finalLag };
+    return { true, hz, bestCorr, primitiveRatio, finalLag, loweredPrimitive };
 }
 }
 
@@ -700,6 +701,26 @@ int main()
 
 
 
+
+    struct ComboRule
+    {
+        double maxRatio;
+        double minSignificance;
+    };
+    constexpr std::array<ComboRule, 8> comboRules {{
+        { 0.95, 1.0 },
+        { 0.90, 1.0 },
+        { 0.85, 1.0 },
+        { 0.95, 1.5 },
+        { 0.90, 1.5 },
+        { 0.85, 1.5 },
+        { 0.90, 2.0 },
+        { 0.85, 2.0 }
+    }};
+    std::array<int, comboRules.size()> comboCorrectFlagged {};
+    std::array<int, comboRules.size()> comboHighFlagged {};
+    int comboEligibleCorrect = 0;
+    int comboEligibleHigh = 0;
     constexpr std::array<double, 6> significanceThresholds {
         2.0, 3.0, 4.0, 5.0, 6.0, 8.0
     };
@@ -734,6 +755,22 @@ int main()
                     if (!alt.observable)
                         continue;
 
+                    if (!e.loweredPrimitive)
+                    {
+                        if (correct) ++comboEligibleCorrect;
+                        if (high) ++comboEligibleHigh;
+                        for (std::size_t i = 0; i < comboRules.size(); ++i)
+                        {
+                            const bool flagged =
+                                e.primitiveRatio <= comboRules[i].maxRatio
+                                && alt.significance >= comboRules[i].minSignificance;
+                            if (!flagged)
+                                continue;
+                            if (correct) ++comboCorrectFlagged[i];
+                            if (high) ++comboHighFlagged[i];
+                        }
+                    }
+
                     for (std::size_t i = 0;
                          i < significanceThresholds.size(); ++i)
                     {
@@ -754,6 +791,20 @@ int main()
                   << "_correct_flagged=" << longCorrectFlagged[i]
                   << " t" << significanceThresholds[i]
                   << "_high_flagged=" << longHighFlagged[i];
+    std::cout << '\n';
+
+    std::cout << "COMBINED_PRIMITIVE_SUMMARY"
+              << " eligible_correct=" << comboEligibleCorrect
+              << " eligible_high=" << comboEligibleHigh;
+    for (std::size_t i = 0; i < comboRules.size(); ++i)
+        std::cout << " r" << i
+                  << "_maxratio=" << comboRules[i].maxRatio
+                  << " r" << i
+                  << "_minsig=" << comboRules[i].minSignificance
+                  << " r" << i
+                  << "_correct_flagged=" << comboCorrectFlagged[i]
+                  << " r" << i
+                  << "_high_flagged=" << comboHighFlagged[i];
     std::cout << '\n';
 
     NestedWindowStats nested {};
