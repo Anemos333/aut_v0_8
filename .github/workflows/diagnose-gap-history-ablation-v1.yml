@@ -1,0 +1,56 @@
+name: Diagnose gap-history acquisition ablation v1
+on:
+  push:
+    branches: [v1-continuous-f0-gap-history-ablation-v1]
+    paths:
+      - Source/ModernPitchEngine.cpp
+      - Tests/AcquisitionOwnershipDiagnostic.cpp
+      - .github/workflows/diagnose-gap-history-ablation-v1.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: v1-continuous-f0-gap-history-ablation-v1 }
+      - run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y libasound2-dev libjack-jackd2-dev ladspa-sdk libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev >/dev/null
+      - run: |
+          cp Tests/AcquisitionOwnershipDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-gap-history -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-gap-history --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-gap-history/clean-engine-tests/SupervisorContinuityTest | tee /tmp/gap-history.log
+          grep -q '^ACQ_PROVENANCE ' /tmp/gap-history.log
+      - run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re,statistics
+          rows=[]
+          for line in Path('/tmp/gap-history.log').read_text().splitlines():
+              if not line.startswith('ACQ_PROVENANCE '): continue
+              d=dict(re.findall(r'(\w+)=([^ ]+)',line))
+              if d.get('mode')!='reentry': continue
+              for k in ['hz','snr','any_correct','owner_correct','measurement_correct','valid_correct']:
+                  d[k]=float(d[k])
+              for k in ['wrong_before_correct','octave_before_correct']:
+                  d[k]=int(d[k])
+              rows.append(d)
+          for kind in sorted({r['kind'] for r in rows}):
+              for hz in sorted({r['hz'] for r in rows if r['kind']==kind}):
+                  sub=[r for r in rows if r['kind']==kind and r['hz']==hz and r['snr']==6.0]
+                  if not sub: continue
+                  def med(k):
+                      v=sorted(r[k] for r in sub if r[k]>=0)
+                      return statistics.median(v) if v else -1.0
+                  print('GAP_HISTORY_SUMMARY'
+                        f' kind={kind} hz={hz:.4f}'
+                        f' any_ms={med("any_correct"):.5f}'
+                        f' owner_ms={med("owner_correct"):.5f}'
+                        f' measurement_ms={med("measurement_correct"):.5f}'
+                        f' valid_ms={med("valid_correct"):.5f}'
+                        f' wrong={sum(r["wrong_before_correct"] for r in sub)}'
+                        f' octave={sum(r["octave_before_correct"] for r in sub)}')
+          PY
