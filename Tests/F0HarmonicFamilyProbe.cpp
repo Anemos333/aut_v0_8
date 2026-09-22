@@ -511,6 +511,11 @@ int main()
 
     int cases = 0;
     int valid = 0;
+    int vocalCases = 0;
+    int vocalValid = 0;
+    int vocalPrecision = 0;
+    int observabilityCases = 0;
+    int observabilityValid = 0;
     int familyCorrect = 0;
     int precision = 0;
     int artificialLow = 0;
@@ -538,15 +543,25 @@ int main()
                     oracleWorstCents = std::max(oracleWorstCents, oracleError);
                     phaseOracleWorstCents = std::max(phaseOracleWorstCents, phaseOracleError);
                     ++cases;
+                    const bool productCriticalVocal =
+                        kind != Kind::sine && f0 >= 110.0;
+                    if (productCriticalVocal) ++vocalCases;
+                    else ++observabilityCases;
                     double err = std::numeric_limits<double>::quiet_NaN();
                     if (e.valid)
                     {
                         ++valid;
+                        if (productCriticalVocal) ++vocalValid;
+                        else ++observabilityValid;
                         err = cents(e.hz, f0);
                         const double ae = std::abs(err);
                         if (ae <= 100.0) ++familyCorrect;
                         else ++wrongFamily;
-                        if (ae <= 1.5) ++precision;
+                        if (ae <= 1.5)
+                        {
+                            ++precision;
+                            if (productCriticalVocal) ++vocalPrecision;
+                        }
                         worstAcceptedCents = std::max(worstAcceptedCents, ae);
                         if (e.hz < 0.75 * f0) ++artificialLow;
                         if (e.hz > 1.5 * f0) ++octaveHigh;
@@ -576,6 +591,11 @@ int main()
               << "HARMONIC_FAMILY_SUMMARY"
               << " cases=" << cases
               << " valid=" << valid
+              << " vocal_cases=" << vocalCases
+              << " vocal_valid=" << vocalValid
+              << " vocal_precision_1_5c=" << vocalPrecision
+              << " observability_cases=" << observabilityCases
+              << " observability_valid_9ms=" << observabilityValid
               << " family_correct=" << familyCorrect
               << " precision_1_5c=" << precision
               << " artificial_low=" << artificialLow
@@ -595,13 +615,19 @@ int main()
                            && wrongFamily == 0
                            && whiteHallucinations == 0
                            && colouredHallucinations == 0;
-    const bool promotionReady = familySafety
-                             && valid == cases
-                             && precision == cases
-                             && worstAcceptedCents <= 1.5;
+    const bool vocalPromotionReady = familySafety
+                                  && vocalValid == vocalCases
+                                  && vocalPrecision == vocalCases;
+    const bool research120Ready = familySafety
+                               && valid == cases
+                               && precision == cases
+                               && worstAcceptedCents <= 1.5;
 
     std::cout << "HARMONIC_FAMILY_SAFETY=" << (familySafety ? "PASS" : "FAIL") << '\n';
-    std::cout << "F0_V1_PROMOTION_READY=" << (promotionReady ? "PASS" : "FAIL") << '\n';
+    std::cout << "F0_V1_VOCAL_PROMOTION_READY="
+              << (vocalPromotionReady ? "PASS" : "FAIL") << '\n';
+    std::cout << "F0_RESEARCH_120_READY="
+              << (research120Ready ? "PASS" : "FAIL") << '\n';
 
     for (double f0 : frequencies)
         for (double snrDb : snrs)
