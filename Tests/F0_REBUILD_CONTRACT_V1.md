@@ -271,3 +271,25 @@ Implications:
 This principle does NOT authorize restoring the old YIN/multi-rate tracker. The old implementation started from whole-wave difference/correlation but then generated alternative periods, band-dependent paths, octave-transposed consensus hypotheses, temporal beam state and confidence authority. Those mechanisms are not part of the new contract.
 
 A whole-note method must still satisfy the single-ring, estimate -> validate -> refine -> stable/transition architecture and the mandatory randomized voice-like stress gate.
+
+
+## 17. Downward-only fallback witness (Plan B)
+
+A secondary downward-looking mechanism is permitted only as a future validation experiment if the primary whole-note primitive-period validator cannot eliminate octave-high errors by itself.
+
+It is not a second detector and has no independent F0 ownership.
+
+Constraints:
+- it runs only inside the validate stage after the primary whole-note estimate exists;
+- it may inspect only lower-family alternatives related to the primary candidate, not perform an unrestricted second F0 search;
+- it is inactive unless the primary estimate contains strong internal evidence of being too high;
+- it may speak only when the lower-family evidence is substantially stronger than the evidence required for an ordinary primary publication;
+- it may veto or demote the primary estimate to transition, or confirm a longer primitive period when the waveform itself proves it;
+- it may never publish a lower F0 merely because a lower harmonic grid can contain the observed components;
+- it may never create a new artificial-low/subharmonic result on any training, holdout or verification corpus;
+- if primary-error evidence and downward evidence are not both decisive, the result is transition, not a guessed lower stable F0;
+- no confidence/evidence value from this witness survives beyond validation or reaches the renderer, quantizer or audio path.
+
+The intended asymmetry is deliberate: octave-high recovery is useful, but manufacturing bass is considered the more serious structural failure.
+
+This mechanism remains Plan B. It is not introduced into production while the single whole-note path can still be improved with a simpler primitive-period validation rule.
