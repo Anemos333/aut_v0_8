@@ -16,7 +16,7 @@ constexpr double minimumF0 = 55.0;
 constexpr double maximumF0 = 1600.0;
 constexpr int modelHarmonics = 5;
 
-enum class Kind { normal, strongSecond, missingFundamental, sine };
+enum class Kind { normal, strongSecond, missingFundamental, sine, vocalFormant, reedLike, stringLike };
 
 struct Rng
 {
@@ -57,12 +57,129 @@ const char* kindName(Kind kind) noexcept
         case Kind::strongSecond: return "strong_second";
         case Kind::missingFundamental: return "missing_fundamental";
         case Kind::sine: return "sine";
+        case Kind::vocalFormant: return "vocal_formant";
+        case Kind::reedLike: return "reed_like";
+        case Kind::stringLike: return "string_like";
     }
     return "unknown";
 }
 
+
+double resonantEnvelope(double hz, double centre, double bandwidth) noexcept
+{
+    const double d = (hz - centre) / bandwidth;
+    return 1.0 / (1.0 + d * d);
+}
+
+bool isRichStressKind(Kind kind) noexcept
+{
+    return kind == Kind::vocalFormant
+        || kind == Kind::reedLike
+        || kind == Kind::stringLike;
+}
+
+std::array<double, frameSize> makeRichFrame(Kind kind,
+                                            double f0,
+                                            double snrDb,
+                                            std::uint32_t seed)
+{
+    std::array<double, frameSize> x {};
+    Rng rng { seed ^ 0x6a09e667u };
+
+    constexpr int harmonics = 12;
+    std::array<double, harmonics> amp {};
+    std::array<double, harmonics> phaseOffset {};
+
+    const int vowel = static_cast<int>(seed % 5u);
+    constexpr std::array<std::array<double, 3>, 5> formants {{
+        {{730.0, 1090.0, 2440.0}},
+        {{530.0, 1840.0, 2480.0}},
+        {{270.0, 2290.0, 3010.0}},
+        {{570.0,  840.0, 2410.0}},
+        {{300.0,  870.0, 2240.0}}
+    }};
+    constexpr std::array<double, 3> bandwidth {{90.0, 140.0, 220.0}};
+
+    for (int k = 1; k <= harmonics; ++k)
+    {
+        const double harmonicHz = f0 * static_cast<double>(k);
+        const double randomGain = 0.72 + 0.56 * (0.5 * (rng.next() + 1.0));
+        double a = 0.0;
+
+        if (kind == Kind::vocalFormant)
+        {
+            const auto& vf = formants[static_cast<std::size_t>(vowel)];
+            const double envelope =
+                0.10
+                + 1.45 * resonantEnvelope(harmonicHz, vf[0], bandwidth[0])
+                + 1.05 * resonantEnvelope(harmonicHz, vf[1], bandwidth[1])
+                + 0.70 * resonantEnvelope(harmonicHz, vf[2], bandwidth[2]);
+            a = envelope * randomGain / std::pow(static_cast<double>(k), 1.15);
+        }
+        else if (kind == Kind::reedLike)
+        {
+            const double parity = (k & 1) != 0 ? 1.0 : 0.32;
+            const double body =
+                0.18
+                + 1.20 * resonantEnvelope(harmonicHz, 900.0, 180.0)
+                + 0.65 * resonantEnvelope(harmonicHz, 2450.0, 320.0);
+            a = parity * body * randomGain
+              / std::pow(static_cast<double>(k), 0.86);
+        }
+        else
+        {
+            const double body =
+                0.28
+                + 0.90 * resonantEnvelope(harmonicHz, 650.0, 240.0)
+                + 0.55 * resonantEnvelope(harmonicHz, 1800.0, 420.0);
+            a = body * randomGain / static_cast<double>(k);
+            if ((seed + static_cast<std::uint32_t>(k)) % 7u == 0u)
+                a *= 0.18; // random spectral hole
+        }
+
+        amp[static_cast<std::size_t>(k - 1)] = a;
+        phaseOffset[static_cast<std::size_t>(k - 1)] = pi * rng.next();
+    }
+
+    const double initialPhase = pi * (rng.next() + 1.0);
+    const double amplitudeSlope = 0.12 * rng.next();
+    double cleanEnergy = 0.0;
+
+    for (int n = 0; n < frameSize; ++n)
+    {
+        const double t = static_cast<double>(n + 1) / sr;
+        const double phase = initialPhase + 2.0 * pi * f0 * t;
+        const double position =
+            2.0 * static_cast<double>(n) / static_cast<double>(frameSize - 1) - 1.0;
+        const double envelope = std::max(0.65, 1.0 + amplitudeSlope * position);
+
+        double s = 0.0;
+        for (int k = 1; k <= harmonics; ++k)
+        {
+            if (f0 * static_cast<double>(k) >= 0.48 * sr)
+                break;
+            s += amp[static_cast<std::size_t>(k - 1)]
+               * std::sin(static_cast<double>(k) * phase
+                        + phaseOffset[static_cast<std::size_t>(k - 1)]);
+        }
+
+        x[static_cast<std::size_t>(n)] = envelope * s;
+        cleanEnergy += x[static_cast<std::size_t>(n)] * x[static_cast<std::size_t>(n)];
+    }
+
+    const double cleanRms = std::sqrt(cleanEnergy / frameSize);
+    const double noiseScale = cleanRms / std::pow(10.0, snrDb / 20.0);
+    for (double& s : x)
+        s += noiseScale * rng.next();
+
+    return x;
+}
+
 std::array<double, frameSize> makeFrame(Kind kind, double f0, double snrDb, std::uint32_t seed)
 {
+    if (isRichStressKind(kind))
+        return makeRichFrame(kind, f0, snrDb, seed);
+
     std::array<double, frameSize> x {};
     Rng rng { seed };
 
@@ -824,7 +941,10 @@ int noiseHallucinations(bool coloured, bool useRescue = false)
 
 int main()
 {
-    constexpr std::array<Kind, 4> kinds { Kind::normal, Kind::strongSecond, Kind::missingFundamental, Kind::sine };
+    constexpr std::array<Kind, 7> kinds {
+        Kind::normal, Kind::strongSecond, Kind::missingFundamental, Kind::sine,
+        Kind::vocalFormant, Kind::reedLike, Kind::stringLike
+    };
     constexpr std::array<double, 13> frequencies {
         82.4069, 110.0, 123.4708, 146.8324, 164.8138, 196.0, 220.0,
         246.9417, 293.6648, 329.6276, 440.0, 659.2551, 880.0
@@ -842,6 +962,11 @@ int main()
     int vocalPrecision = 0;
     int observabilityCases = 0;
     int observabilityValid = 0;
+    int richStressCases = 0;
+    int richStressValid = 0;
+    int richStressFamilyCorrect = 0;
+    int richStressWrongFamily = 0;
+    int richStressPrecision = 0;
     int predictiveVocalFamilyCorrect = 0;
     int predictiveVocalWrongFamily = 0;
     int predictiveAllWrongFamily = 0;
@@ -890,6 +1015,8 @@ int main()
                         kind != Kind::sine && f0 >= 110.0;
                     if (productCriticalVocal) ++vocalCases;
                     else ++observabilityCases;
+                    const bool richStress = isRichStressKind(kind) && f0 >= 110.0;
+                    if (richStress) ++richStressCases;
                     if (e.predictiveBestHz > 0.0)
                     {
                         const double predictiveError =
@@ -952,14 +1079,24 @@ int main()
                         ++valid;
                         if (productCriticalVocal) ++vocalValid;
                         else ++observabilityValid;
+                        if (richStress) ++richStressValid;
                         err = cents(e.hz, f0);
                         const double ae = std::abs(err);
-                        if (ae <= 100.0) ++familyCorrect;
-                        else ++wrongFamily;
+                        if (ae <= 100.0)
+                        {
+                            ++familyCorrect;
+                            if (richStress) ++richStressFamilyCorrect;
+                        }
+                        else
+                        {
+                            ++wrongFamily;
+                            if (richStress) ++richStressWrongFamily;
+                        }
                         if (ae <= 1.5)
                         {
                             ++precision;
                             if (productCriticalVocal) ++vocalPrecision;
+                            if (richStress) ++richStressPrecision;
                         }
                         worstAcceptedCents = std::max(worstAcceptedCents, ae);
                         if (e.hz < 0.75 * f0) ++artificialLow;
@@ -1031,6 +1168,11 @@ int main()
               << " vocal_precision_1_5c=" << vocalPrecision
               << " observability_cases=" << observabilityCases
               << " observability_valid_9ms=" << observabilityValid
+              << " rich_stress_cases=" << richStressCases
+              << " rich_stress_valid=" << richStressValid
+              << " rich_stress_family_correct=" << richStressFamilyCorrect
+              << " rich_stress_wrong_family=" << richStressWrongFamily
+              << " rich_stress_precision_1_5c=" << richStressPrecision
               << " predictive_vocal_family_correct=" << predictiveVocalFamilyCorrect
               << " predictive_vocal_wrong_family=" << predictiveVocalWrongFamily
               << " predictive_all_wrong_family=" << predictiveAllWrongFamily
