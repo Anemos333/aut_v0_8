@@ -511,6 +511,10 @@ int main()
         0xcbbb9d5du, 0x629a292au, 0x9159015au,
         0x152fecd8u, 0x67332667u, 0x8eb44a87u
     };
+    constexpr std::array<std::uint32_t, 6> combinedVerificationSeeds {
+        0xd1310ba6u, 0x98dfb5acu, 0x2ffd72dbu,
+        0xd01adfb7u, 0xb8e1afedu, 0x6a267e96u
+    };
 
     int cases = 0;
     int firstCorrect = 0;
@@ -920,6 +924,56 @@ int main()
                     }
                     if (!published) ++adaptiveNever;
                 }
+
+
+    int combinedVerifyCases = 0;
+    int combinedVerifyCorrect = 0;
+    int combinedVerifyHigh = 0;
+    int combinedVerifyOtherWrong = 0;
+    int combinedVerifyCorrectFlagged = 0;
+    int combinedVerifyHighFlagged = 0;
+
+    for (const auto& profile : profiles)
+        for (double f0 : frequencies)
+            for (double snr : snrs)
+                for (auto seed : combinedVerificationSeeds)
+                {
+                    const auto x = makeProgressiveVoiceLike(
+                        profile, f0, snr,
+                        seed ^ static_cast<std::uint32_t>(f0 * 97.0));
+                    const auto e = estimateProgressive(x, 896);
+                    if (!e.valid || e.loweredPrimitive)
+                        continue;
+
+                    ++combinedVerifyCases;
+                    const double ae = std::abs(cents(e.hz, f0));
+                    const bool correct = ae <= 100.0;
+                    const bool high = e.hz > 1.5 * f0;
+                    if (correct) ++combinedVerifyCorrect;
+                    else if (high) ++combinedVerifyHigh;
+                    else ++combinedVerifyOtherWrong;
+
+                    const auto alt = measureCycleAlternation(x, 896, e.lag);
+                    if (!alt.observable)
+                        continue;
+
+                    const bool flagged =
+                        e.primitiveRatio <= 0.85
+                        && alt.significance >= 1.0;
+                    if (!flagged)
+                        continue;
+                    if (correct) ++combinedVerifyCorrectFlagged;
+                    if (high) ++combinedVerifyHighFlagged;
+                }
+
+    std::cout << "COMBINED_VERIFY"
+              << " cases=" << combinedVerifyCases
+              << " correct=" << combinedVerifyCorrect
+              << " octave_high=" << combinedVerifyHigh
+              << " other_wrong=" << combinedVerifyOtherWrong
+              << " correct_flagged=" << combinedVerifyCorrectFlagged
+              << " high_flagged=" << combinedVerifyHighFlagged
+              << '\n';
 
     std::cout << "ADAPTIVE_VERIFY"
               << " cases=" << adaptiveCases
