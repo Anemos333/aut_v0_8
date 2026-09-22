@@ -549,6 +549,70 @@ void accumulateEarlySuspicion(
                 }
 }
 
+struct EarlyCombinedStats
+{
+    int eligibleCorrect = 0;
+    int eligibleHigh = 0;
+    std::array<int, 16> correctFlagged {};
+    std::array<int, 16> highFlagged {};
+};
+
+template <std::size_t N>
+void accumulateEarlyCombined(
+    EarlyCombinedStats& stats,
+    const std::array<std::uint32_t, N>& seedSet)
+{
+    constexpr std::array<double, 12> testFrequencies {
+        110.0, 123.4708, 146.8324, 164.8138, 196.0, 220.0,
+        246.9417, 293.6648, 329.6276, 440.0, 659.2551, 880.0
+    };
+    constexpr std::array<double, 3> testSnrs { 18.0, 9.0, 3.0 };
+    constexpr std::array<double, 4> ratios { 0.75, 0.80, 0.85, 0.90 };
+    constexpr std::array<double, 4> significances { 0.75, 1.0, 1.25, 1.5 };
+
+    for (const auto& profile : profiles)
+        for (double f0 : testFrequencies)
+            for (double snr : testSnrs)
+                for (auto seed : seedSet)
+                {
+                    const auto x = makeProgressiveVoiceLike(
+                        profile, f0, snr,
+                        seed ^ static_cast<std::uint32_t>(f0 * 97.0));
+                    const auto e = estimateProgressive(x, 448);
+                    if (!e.valid || !shouldPublishInsideNormalWindow(x, e)
+                        || e.loweredPrimitive)
+                        continue;
+
+                    const double ae = std::abs(cents(e.hz, f0));
+                    const bool correct = ae <= 100.0;
+                    const bool high = e.hz > 1.5 * f0;
+                    if (!correct && !high)
+                        continue;
+
+                    if (correct) ++stats.eligibleCorrect;
+                    if (high) ++stats.eligibleHigh;
+
+                    const auto alt = measureCycleAlternation(x, 448, e.lag);
+                    if (!alt.observable)
+                        continue;
+
+                    std::size_t index = 0;
+                    for (double ratio : ratios)
+                        for (double sig : significances)
+                        {
+                            const bool flagged =
+                                e.primitiveRatio <= ratio
+                                && alt.significance >= sig;
+                            if (flagged)
+                            {
+                                if (correct) ++stats.correctFlagged[index];
+                                if (high) ++stats.highFlagged[index];
+                            }
+                            ++index;
+                        }
+                }
+}
+
 int main()
 {
     constexpr std::array<double, 12> frequencies {
@@ -1039,6 +1103,30 @@ int main()
 
     constexpr std::array<int, 3> earlySigLabels { 100, 125, 150 };
     constexpr std::array<int, 4> earlyCapLabels { 82, 85, 88, 90 };
+
+    EarlyCombinedStats earlyCombined {};
+    accumulateEarlyCombined(earlyCombined, seeds);
+    accumulateEarlyCombined(earlyCombined, alternationVerificationSeeds);
+    accumulateEarlyCombined(earlyCombined, integratedVerificationSeeds);
+    accumulateEarlyCombined(earlyCombined, adaptiveVerificationSeeds);
+
+    constexpr std::array<int, 4> earlyRatioLabels { 75, 80, 85, 90 };
+    constexpr std::array<int, 4> earlySig2Labels { 75, 100, 125, 150 };
+    std::cout << "EARLY_COMBINED_SUMMARY"
+              << " eligible_correct=" << earlyCombined.eligibleCorrect
+              << " eligible_high=" << earlyCombined.eligibleHigh;
+    std::size_t ecIndex = 0;
+    for (int ratio : earlyRatioLabels)
+        for (int sig : earlySig2Labels)
+        {
+            std::cout << " r" << ratio << "s" << sig
+                      << "_correct=" << earlyCombined.correctFlagged[ecIndex]
+                      << " r" << ratio << "s" << sig
+                      << "_high=" << earlyCombined.highFlagged[ecIndex];
+            ++ecIndex;
+        }
+    std::cout << '\n';
+
     std::cout << "EARLY_SUSPICION_SUMMARY"
               << " eligible_correct=" << early.eligibleCorrect
               << " eligible_high=" << early.eligibleHigh
