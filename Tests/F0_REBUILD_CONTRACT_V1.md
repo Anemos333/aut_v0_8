@@ -49,21 +49,31 @@ The scale remains owned exclusively by ScaleQuantizer.
 
 ## 4. Acquisition
 
-The V1 acquisition contract distinguishes product-critical vocal behaviour from observability-limited stress cases. This distinction exists in validation only; it MUST NOT create register modes, frequency-band ownership or different detector paths in production code.
+Acquisition is an optimization problem, not a fixed deadline.
 
-For ordinary voice-like periodic material in the practical live-singing operating corpus:
-- the first correct stable F0 must be published in strictly less than 10 ms from the beginning of usable periodic material;
-- this remains true for difficult but realistic harmonic structures such as a dominant second harmonic and a missing fundamental;
-- acquisition is measured from the actual periodic onset, not from a later confidence event.
+The detector must publish the first stable F0 at the earliest causal instant at which the required family safety and precision are defensible from the available samples.
 
-For observability-limited cases, including unusually low sparse tones, pure or nearly pure sinusoids, and combinations of very low F0 with poor SNR:
-- the 10 ms acquisition deadline is not a V1 release blocker when the available causal samples are physically insufficient to support the normal precision target;
-- the detector must remain acquire/transition rather than publish a weak or invented stable F0;
-- the first stable F0 must be published as soon as the normal family-safety and precision requirements become defensible from the available samples;
-- the measured time-to-stable must be reported explicitly and minimized;
+Priority is lexicographic:
+1. family correctness / no artificial subharmonic / no hallucinated stable;
+2. precision;
+3. minimum acquisition time.
+
+Therefore:
+- a wrong or weak F0 at 8-10 ms is worse than a correct defensible F0 at 15, 20 or 30 ms;
+- if two methods reach the same structural correctness and precision, the faster one wins;
+- once the required evidence exists, additional waiting is a defect;
+- difficult material may legitimately need more observation than easy material;
+- the adaptation is evidence-driven only and MUST NOT create register modes, frequency-band ownership or different detector paths.
+
+Less than 10 ms remains an important live-performance benchmark for easy and well-observed voice-like material, but it is not a universal pass/fail deadline.
+
+For difficult but realistic material, including dominant-second, missing-fundamental, low-SNR or sparse-periodicity cases:
+- the detector remains acquire/transition until the physical F0 is defensible;
+- it must converge in the shortest time supported by the evidence;
+- 20-30 ms is acceptable when genuinely required, but not when the same correctness could have been established earlier;
 - no arbitrary timeout, register-specific fallback, octave shortcut or artificial subharmonic is permitted.
 
-The relaxation applies to acquisition time, not to family correctness. A hard case may take longer; it may not become wrong.
+Acquisition is measured from the actual periodic onset, not from a later confidence event.
 
 An estimate may exist internally before validation, but it is not allowed to affect correction until validated stable.
 
@@ -185,8 +195,10 @@ At minimum, automated tests must include:
 The acceptance report must expose:
 - first stable correct F0 time in ms;
 - whether each case belongs to the product-critical vocal acquisition corpus or to the observability-limited diagnostic corpus;
-- the count of product-critical vocal cases acquiring in <10 ms;
-- the measured convergence time of observability-limited cases without converting them into an artificial 10 ms pass/fail;
+- the acquisition-time distribution for correct stable F0, including median, p90, p95 and worst case;
+- the count of correct cases acquiring in <10 ms as a live-performance benchmark, not a universal pass/fail rule;
+- the measured convergence time of difficult/observability-limited cases;
+- evidence that delayed cases are not being held longer than necessary once family safety and precision are already defensible;
 - stable F0 cents error distribution;
 - maximum consecutive stable-step error on sustained material;
 - octave error count;
@@ -211,12 +223,13 @@ The V1 release is blocked by:
 - any artificial subharmonic or octave error;
 - any hallucinated stable on aperiodic/noise-only material;
 - failure to meet the normal precision target on accepted stable measurements;
-- failure to acquire ordinary voice-like harmonic material promptly enough for live monitoring.
+- systematically avoidable acquisition delay that harms live monitoring.
 
-The V1 release is not blocked solely because an observability-limited stress case needs more than 10 ms, provided that:
-- it remains acquire/transition until a defensible measurement exists;
-- it converges to the correct family and precision as soon as the causal evidence allows;
+The V1 release is NOT blocked by crossing an arbitrary 10 ms line in a difficult case, provided that:
+- the detector remains acquire/transition until a defensible measurement exists;
+- it converges to the correct family and precision at the earliest causal point supported by the evidence;
 - the delay is measured, documented and minimized;
+- easier cases are not slowed down because harder cases need more observation;
 - no register-specific production path is introduced to hide the limitation.
 
 Such cases are documented as known V1 limitations and remain candidates for a later detector/engine redesign.
@@ -297,17 +310,42 @@ This mechanism remains Plan B. It is not introduced into production while the si
 
 ## 18. Evidence-adaptive acquisition window
 
-The nominal live target remains a correct stable F0 in less than 10 ms whenever the available causal evidence is already sufficient.
+The detector uses an evidence-adaptive observation window.
 
-The detector may continue observing beyond 10 ms only when the current whole-note estimate is internally ambiguous or not yet structurally defensible.
+There is no universal 10 ms cutoff. The normal path should still close inside roughly 10 ms whenever the available causal evidence already supports a structurally safe and precise F0, because live responsiveness remains a product objective.
+
+When the estimate is ambiguous, the same detector may continue accumulating evidence for as long as needed to become defensible. The engineering objective is to minimize time-to-correct-precision, not to minimize time at the expense of truth.
 
 Rules:
 - adaptation is driven by evidence quality/consistency, never by a hard-coded vocal register or frequency band;
 - an easy low note and an easy high note are treated identically if the periodic evidence is equally decisive;
-- cases that are already structurally stable inside the normal window must not be delayed merely because other cases need more observation;
+- cases that are already structurally stable must not be delayed merely because other cases need more observation;
 - the same estimator/validator continues accumulating evidence; no alternate detector path is activated;
-- the extension ends immediately when a structurally valid F0 becomes available;
-- the acceptance report must expose how many cases publish inside the normal window and the additional acquisition time of delayed cases;
+- the extension ends immediately when a structurally valid and sufficiently precise F0 becomes available;
+- 20-30 ms or more may be accepted in genuinely difficult cases if the evidence shows that an earlier publication would be less reliable;
+- conversely, a 20-30 ms acquisition is considered inefficient if the same family safety and precision were already available earlier;
+- the acceptance report must expose the complete acquisition-time distribution and the quality reached at first publication;
 - adaptive delay is preferable to publishing a wrong family, octave or artificial subharmonic.
 
 This mechanism is part of the primary whole-note path. It is not the downward-only Plan B described below.
+
+
+## 19. Time-to-precision objective
+
+Detector tuning MUST optimize the earliest defensible publication point.
+
+For each test case, define:
+- t_safe: first causal time at which the correct F0 family can be defended without octave/subharmonic/hallucination error;
+- t_precise: first causal time at which the accepted precision target is also met.
+
+The detector should publish as close as practical to t_precise, never before t_safe.
+
+A change is an improvement only if it:
+- reduces t_safe or t_precise without worsening structural safety or precision; or
+- improves safety/precision without unnecessarily increasing those times.
+
+This prevents both failure modes:
+- publishing early but wrong;
+- remaining in transition after enough evidence already exists.
+
+The preferred detector is therefore the one on the best safety/precision/acquisition-time frontier, not the one that merely wins a fixed 10 ms threshold.
