@@ -91,6 +91,93 @@ makeProgressiveVoiceLike(const VoiceProfile& profile,
     return x;
 }
 
+
+struct AlternationWitness
+{
+    bool observable = false;
+    double score = 0.0;
+    double between = 0.0;
+    double within = 0.0;
+    int cycles = 0;
+};
+
+AlternationWitness measureCycleAlternation(
+    const std::array<double, progressiveMaxSamples>& x,
+    int sampleCount,
+    int lag) noexcept
+{
+    if (lag <= 0)
+        return {};
+
+    const int cycles = sampleCount / lag;
+    if (cycles < 4)
+        return {};
+
+    const int evenCycles = (cycles + 1) / 2;
+    const int oddCycles = cycles / 2;
+    if (evenCycles < 2 || oddCycles < 2)
+        return {};
+
+    double between = 0.0;
+    double within = 0.0;
+    double energy = 0.0;
+
+    for (int phase = 0; phase < lag; ++phase)
+    {
+        double evenMean = 0.0;
+        double oddMean = 0.0;
+        int ne = 0;
+        int no = 0;
+
+        for (int cycle = 0; cycle < cycles; ++cycle)
+        {
+            const int index = cycle * lag + phase;
+            if (index >= sampleCount)
+                break;
+            const double s = x[static_cast<std::size_t>(index)];
+            energy += s * s;
+            if ((cycle & 1) == 0)
+            {
+                evenMean += s;
+                ++ne;
+            }
+            else
+            {
+                oddMean += s;
+                ++no;
+            }
+        }
+
+        if (ne == 0 || no == 0)
+            continue;
+        evenMean /= static_cast<double>(ne);
+        oddMean /= static_cast<double>(no);
+
+        const double d = evenMean - oddMean;
+        between += d * d;
+
+        for (int cycle = 0; cycle < cycles; ++cycle)
+        {
+            const int index = cycle * lag + phase;
+            if (index >= sampleCount)
+                break;
+            const double s = x[static_cast<std::size_t>(index)];
+            const double mean = ((cycle & 1) == 0) ? evenMean : oddMean;
+            const double e = s - mean;
+            within += e * e;
+        }
+    }
+
+    const double normalizedBetween =
+        between / std::max(1.0e-30, energy / static_cast<double>(cycles));
+    const double normalizedWithin =
+        within / std::max(1.0e-30, energy);
+    const double score =
+        normalizedBetween / std::max(1.0e-12, normalizedWithin);
+
+    return { true, score, normalizedBetween, normalizedWithin, cycles };
+}
+
 struct ProgressiveEstimate
 {
     bool valid = false;
@@ -321,6 +408,9 @@ int main()
                             std::cout << '\n';
                         }
 
+                        const auto alternation =
+                            measureCycleAlternation(x, checkpoints[i], e.lag);
+
                         std::cout << std::fixed << std::setprecision(4)
                                   << "PROGRESSIVE_FIRST profile=" << profile.name
                                   << " hz=" << f0
@@ -333,6 +423,11 @@ int main()
                                   << " cents=" << error
                                   << " periodicity=" << e.periodicity
                                   << " primitive_ratio=" << e.primitiveRatio
+                                  << " alt_observable=" << (alternation.observable ? 1 : 0)
+                                  << " alt_score=" << alternation.score
+                                  << " alt_between=" << alternation.between
+                                  << " alt_within=" << alternation.within
+                                  << " alt_cycles=" << alternation.cycles
                                   << '\n';
                         published = true;
                         break;
