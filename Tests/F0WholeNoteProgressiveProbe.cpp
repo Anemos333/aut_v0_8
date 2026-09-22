@@ -556,7 +556,7 @@ int main()
               << " never=" << integratedNever
               << " artificial_low=" << integratedLow
               << " octave_high=" << integratedHigh
-              << '\\n';
+              << '\n';
 
     std::cout << "ALTERNATION_VERIFY"
               << " cases=" << altVerifyCases
