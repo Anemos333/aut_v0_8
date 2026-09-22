@@ -366,6 +366,12 @@ int main()
                               << " cents=" << err
                               << " periodicity=" << e.periodicity
                               << " lag=" << e.lag
+                              << " witness_observable=" << (witness.observable ? 1 : 0)
+                              << " mismatch_lag=" << witness.lagMismatch
+                              << " mismatch_2lag=" << witness.doubleLagMismatch
+                              << " witness_improvement=" << witness.improvement
+                              << " witness_ratio=" << witness.ratio
+                              << " witness_overlap=" << witness.overlap
                               << '\n';
                 }
 
