@@ -1715,20 +1715,11 @@ float ModernPitchEngine::MultiRatePitchTracker::pathCoordinateAuthority(
     int pathIndex,
     float frequencyHz) const noexcept
 {
-    // CONTINUOUS_F0_NATIVE_COORDINATE_V1
-    // Reuse the detector's existing direct maxima as non-overlapping ownership
-    // bands. A slower path outside its native band still contributes family
-    // evidence through pathPitchAuthority(), but cannot steer F0.
-    bool native = false;
-    switch (pathIndex)
-    {
-        case 0: native = frequencyHz > 900.0f; break;
-        case 1: native = frequencyHz > 460.0f && frequencyHz <= 900.0f; break;
-        case 2: native = frequencyHz > 230.0f && frequencyHz <= 460.0f; break;
-        case 3: native = frequencyHz <= 230.0f; break;
-        default: break;
-    }
-    return native ? pathPitchAuthority(pathIndex, frequencyHz) : 0.0f;
+    // OVERLAP_OWNER_ABLATION_V1: test whether non-overlapping ownership bands
+    // are themselves imposing acquisition latency. A path may steer only where
+    // its already-existing physical pitch authority is non-zero; no new score,
+    // threshold, persistence or temporal state is introduced.
+    return pathPitchAuthority(pathIndex, frequencyHz);
 }
 
 float ModernPitchEngine::MultiRatePitchTracker::pathCleanlinessAuthority(
