@@ -613,6 +613,41 @@ void accumulateEarlyCombined(
                 }
 }
 
+bool hasUnresolvedPrimitiveAtNormalWindow(
+    const std::array<double, progressiveMaxSamples>& x,
+    const ProgressiveEstimate& e) noexcept
+{
+    if (!e.valid || e.loweredPrimitive)
+        return false;
+    const auto alt = measureCycleAlternation(x, 448, e.lag);
+    return alt.observable
+        && e.primitiveRatio <= 0.80
+        && alt.significance >= 1.50;
+}
+
+ProgressiveEstimate applyLongPrimitiveConsensus(
+    const std::array<double, progressiveMaxSamples>& x,
+    int sampleCount,
+    ProgressiveEstimate e) noexcept
+{
+    if (!e.valid || e.loweredPrimitive || sampleCount < 896)
+        return e;
+
+    const auto alt = measureCycleAlternation(x, sampleCount, e.lag);
+    if (!alt.observable)
+        return e;
+
+    if (e.primitiveRatio <= 0.85
+        && alt.significance >= 1.0
+        && 0.5 * e.hz >= minimumF0)
+    {
+        e.hz *= 0.5;
+        e.lag *= 2;
+        e.loweredPrimitive = true;
+    }
+    return e;
+}
+
 int main()
 {
     constexpr std::array<double, 12> frequencies {
@@ -642,6 +677,10 @@ int main()
     constexpr std::array<std::uint32_t, 6> combinedVerificationSeeds {
         0xd1310ba6u, 0x98dfb5acu, 0x2ffd72dbu,
         0xd01adfb7u, 0xb8e1afedu, 0x6a267e96u
+    };
+    constexpr std::array<std::uint32_t, 6> endToEndVerificationSeeds {
+        0xba7c9045u, 0xf12c7f99u, 0x24a19947u,
+        0xb3916cf7u, 0x0801f2e2u, 0x858efc16u
     };
 
     int cases = 0;
@@ -1112,6 +1151,114 @@ int main()
 
     constexpr std::array<int, 4> earlyRatioLabels { 75, 80, 85, 90 };
     constexpr std::array<int, 4> earlySig2Labels { 75, 100, 125, 150 };
+
+    int e2eCases = 0;
+    int e2eBase448Valid = 0;
+    int e2eBase448Correct = 0;
+    int e2eBase448Wrong = 0;
+    int e2ePrimitiveHeld = 0;
+    int e2eHeldCorrect = 0;
+    int e2eHeldWrong = 0;
+    int e2eFirstCorrect = 0;
+    int e2eFirstWrong = 0;
+    int e2eNever = 0;
+    int e2eLow = 0;
+    int e2eHigh = 0;
+    int e2eLongCorrected = 0;
+    std::array<int, checkpoints.size()> e2eFirstAt {};
+
+    for (const auto& profile : profiles)
+        for (double f0 : frequencies)
+            for (double snr : snrs)
+                for (auto seed : endToEndVerificationSeeds)
+                {
+                    ++e2eCases;
+                    const auto x = makeProgressiveVoiceLike(
+                        profile, f0, snr,
+                        seed ^ static_cast<std::uint32_t>(f0 * 97.0));
+
+                    const auto base448 = estimateProgressive(x, 448);
+                    bool primitiveHeld = false;
+                    if (base448.valid)
+                    {
+                        ++e2eBase448Valid;
+                        const bool baseCorrect =
+                            std::abs(cents(base448.hz, f0)) <= 100.0;
+                        if (baseCorrect) ++e2eBase448Correct;
+                        else ++e2eBase448Wrong;
+
+                        if (shouldPublishInsideNormalWindow(x, base448)
+                            && hasUnresolvedPrimitiveAtNormalWindow(x, base448))
+                        {
+                            primitiveHeld = true;
+                            ++e2ePrimitiveHeld;
+                            if (baseCorrect) ++e2eHeldCorrect;
+                            else ++e2eHeldWrong;
+                        }
+                    }
+
+                    bool published = false;
+                    for (std::size_t i = 0; i < checkpoints.size(); ++i)
+                    {
+                        const int sampleCount = checkpoints[i];
+                        auto e = estimateProgressive(x, sampleCount);
+                        if (!e.valid)
+                            continue;
+
+                        if (sampleCount == 448)
+                        {
+                            if (!shouldPublishInsideNormalWindow(x, e))
+                                continue;
+                            if (primitiveHeld)
+                                continue;
+                        }
+
+                        if (primitiveHeld && sampleCount < 896)
+                            continue;
+
+                        const double beforeHz = e.hz;
+                        if (primitiveHeld)
+                            e = applyLongPrimitiveConsensus(x, sampleCount, e);
+                        if (!e.valid)
+                            continue;
+
+                        if (primitiveHeld
+                            && std::abs(e.hz - beforeHz) > 1.0e-9)
+                            ++e2eLongCorrected;
+
+                        ++e2eFirstAt[i];
+                        const double ae = std::abs(cents(e.hz, f0));
+                        if (ae <= 100.0) ++e2eFirstCorrect;
+                        else
+                        {
+                            ++e2eFirstWrong;
+                            if (e.hz < 0.75 * f0) ++e2eLow;
+                            if (e.hz > 1.5 * f0) ++e2eHigh;
+                        }
+                        published = true;
+                        break;
+                    }
+                    if (!published) ++e2eNever;
+                }
+
+    std::cout << "E2E_PRIMITIVE_VERIFY"
+              << " cases=" << e2eCases
+              << " base448_valid=" << e2eBase448Valid
+              << " base448_correct=" << e2eBase448Correct
+              << " base448_wrong=" << e2eBase448Wrong
+              << " primitive_held=" << e2ePrimitiveHeld
+              << " held_correct=" << e2eHeldCorrect
+              << " held_wrong=" << e2eHeldWrong
+              << " long_corrected=" << e2eLongCorrected
+              << " first_correct=" << e2eFirstCorrect
+              << " first_wrong=" << e2eFirstWrong
+              << " never=" << e2eNever
+              << " artificial_low=" << e2eLow
+              << " octave_high=" << e2eHigh;
+    for (std::size_t i = 0; i < checkpoints.size(); ++i)
+        std::cout << " first_" << checkpoints[i] << "=" << e2eFirstAt[i];
+    std::cout << '\n';
+
     std::cout << "EARLY_COMBINED_SUMMARY"
               << " eligible_correct=" << earlyCombined.eligibleCorrect
               << " eligible_high=" << earlyCombined.eligibleHigh;
