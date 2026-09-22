@@ -512,6 +512,21 @@ int main()
                             std::abs(cents(validated.hz, f0)) > 100.0;
                         if (baseWasCorrect && validatedIsWrong)
                             ++holdoutChangedCorrectToWrong;
+
+                        const auto w = measurePrimitiveWitness(x, base.lag);
+                        std::cout << std::fixed << std::setprecision(4)
+                                  << "WHOLE_NOTE_HOLDOUT_CHANGE profile=" << profile.name
+                                  << " hz=" << f0
+                                  << " snr=" << snr
+                                  << " seed=" << seed
+                                  << " base_hz=" << base.hz
+                                  << " validated_hz=" << validated.hz
+                                  << " base_cents=" << cents(base.hz, f0)
+                                  << " validated_cents=" << cents(validated.hz, f0)
+                                  << " witness_ratio=" << w.ratio
+                                  << " mismatch_lag=" << w.lagMismatch
+                                  << " mismatch_2lag=" << w.doubleLagMismatch
+                                  << '\n';
                     }
                 }
 
