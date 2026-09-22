@@ -657,7 +657,7 @@ Estimate applyPredictiveAmbiguityRescue(const std::array<double, frameSize>& x,
     // an ambiguous family is rescued only after roughly one period is actually
     // present in the causal window and the samples require a multi-harmonic
     // explanation rather than a single sinusoid.
-    constexpr double minimumObservedCycles = 0.98;
+    constexpr double minimumObservedCycles = 1.00;
     constexpr double minimumHarmonicGain = 0.10;
 
     if (observedCycles < minimumObservedCycles
@@ -739,6 +739,7 @@ int main()
     int rescuedCases = 0;
     int rescuedVocalValid = 0;
     int rescuedVocalFamilyCorrect = 0;
+    int rescuedVocalPrecision = 0;
     int rescuedVocalWrongFamily = 0;
     int rescuedAllWrongFamily = 0;
     int rescuedArtificialLow = 0;
@@ -805,6 +806,8 @@ int main()
                                 ++rescuedVocalFamilyCorrect;
                             else
                                 ++rescuedVocalWrongFamily;
+                            if (rescuedAbs <= 1.5)
+                                ++rescuedVocalPrecision;
                         }
                         if (rescuedAbs > 100.0)
                             ++rescuedAllWrongFamily;
@@ -901,6 +904,7 @@ int main()
               << " rescued_cases=" << rescuedCases
               << " rescued_vocal_valid=" << rescuedVocalValid
               << " rescued_vocal_family_correct=" << rescuedVocalFamilyCorrect
+              << " rescued_vocal_precision_1_5c=" << rescuedVocalPrecision
               << " rescued_vocal_wrong_family=" << rescuedVocalWrongFamily
               << " rescued_all_wrong_family=" << rescuedAllWrongFamily
               << " rescued_artificial_low=" << rescuedArtificialLow
@@ -926,15 +930,26 @@ int main()
                            && wrongFamily == 0
                            && whiteHallucinations == 0
                            && colouredHallucinations == 0;
-    const bool vocalPromotionReady = familySafety
-                                  && vocalValid == vocalCases
-                                  && vocalPrecision == vocalCases;
+    const bool structuralFamilyReady =
+        rescuedVocalValid == vocalCases
+        && rescuedVocalFamilyCorrect == vocalCases
+        && rescuedVocalWrongFamily == 0
+        && rescuedAllWrongFamily == 0
+        && rescuedArtificialLow == 0
+        && rescuedOctaveHigh == 0
+        && rescuedWhiteHallucinations == 0
+        && rescuedColouredHallucinations == 0;
+
+    const bool vocalPromotionReady = structuralFamilyReady
+                                  && rescuedVocalPrecision == vocalCases;
     const bool research120Ready = familySafety
                                && valid == cases
                                && precision == cases
                                && worstAcceptedCents <= 1.5;
 
     std::cout << "HARMONIC_FAMILY_SAFETY=" << (familySafety ? "PASS" : "FAIL") << '\n';
+    std::cout << "F0_V1_STRUCTURAL_FAMILY_READY="
+              << (structuralFamilyReady ? "PASS" : "FAIL") << '\n';
     std::cout << "F0_V1_VOCAL_PROMOTION_READY="
               << (vocalPromotionReady ? "PASS" : "FAIL") << '\n';
     std::cout << "F0_RESEARCH_120_READY="
