@@ -220,7 +220,24 @@ struct Candidate
 {
     double hz = 0.0;
     double fit = -1.0;
+    double primitiveScore = 0.0;
 };
+
+double primitiveHarmonicScore(const std::array<double, frameSize>& x, double f0) noexcept
+{
+    double odd = 0.0;
+    double even = 0.0;
+    for (int k = 1; k <= 8; ++k)
+    {
+        const double hz = f0 * static_cast<double>(k);
+        if (hz >= 0.48 * sr)
+            break;
+        const double p = spectralPower(x, hz);
+        if ((k & 1) != 0) odd += p;
+        else even += p;
+    }
+    return odd / std::max(1.0e-18, odd + even);
+}
 
 Candidate refineFamily(const std::array<double, frameSize>& x, double centre) noexcept
 {
@@ -246,7 +263,7 @@ Candidate refineFamily(const std::array<double, frameSize>& x, double centre) no
         }
     }
     const double hz = 0.5 * (lo + hi);
-    return { hz, harmonicFit(x, hz) };
+    return { hz, harmonicFit(x, hz), primitiveHarmonicScore(x, hz) };
 }
 
 bool sameFamilyNeighbour(double a, double b) noexcept
@@ -306,7 +323,7 @@ Estimate estimateFamily(const std::array<double, frameSize>& x)
     std::vector<Candidate> coarse;
     coarse.reserve(hypotheses.size());
     for (double h : hypotheses)
-        coarse.push_back({ h, harmonicFit(x, h) });
+        coarse.push_back({ h, harmonicFit(x, h), primitiveHarmonicScore(x, h) });
     std::sort(coarse.begin(), coarse.end(), [](const Candidate& a, const Candidate& b) { return a.fit > b.fit; });
     if (coarse.size() > 8) coarse.resize(8);
 
@@ -319,7 +336,13 @@ Estimate estimateFamily(const std::array<double, frameSize>& x)
     if (refined.empty() || refined.front().fit < 0.45)
         return {};
 
-    Candidate best = refined.front();
+    constexpr double primitiveThreshold = 0.08;
+    auto primitiveIt = std::find_if(refined.begin(), refined.end(),
+        [](const Candidate& c) { return c.primitiveScore >= primitiveThreshold; });
+    if (primitiveIt == refined.end())
+        return {};
+
+    Candidate best = *primitiveIt;
 
     // Primitive-family guard: never keep F/n when a higher primitive model
     // explains essentially the same samples. This is deliberately asymmetric:
@@ -337,7 +360,7 @@ Estimate estimateFamily(const std::array<double, frameSize>& x)
     double runnerUp = -1.0;
     for (const auto& c : refined)
     {
-        if (sameFamilyNeighbour(c.hz, best.hz))
+        if (c.primitiveScore < primitiveThreshold || sameFamilyNeighbour(c.hz, best.hz))
             continue;
         runnerUp = std::max(runnerUp, c.fit);
     }
