@@ -1,0 +1,47 @@
+name: Diagnose pre-detector physical features v1
+on:
+  push:
+    branches: [v1-continuous-f0-minimal-recomposition-v1]
+    paths:
+      - Tests/PreDetectorPhysicalFeaturesDiagnostic.cpp
+      - .github/workflows/diagnose-predetector-physical-features-v1.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: v1-continuous-f0-minimal-recomposition-v1 }
+      - run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y libasound2-dev libjack-jackd2-dev ladspa-sdk libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev >/dev/null
+      - run: |
+          cp Tests/PreDetectorPhysicalFeaturesDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-predetect -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-predetect --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-predetect/clean-engine-tests/SupervisorContinuityTest | tee /tmp/predetect.log
+          grep -q '^PREDETECT_FEATURE ' /tmp/predetect.log
+      - run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re,statistics
+          rows=[]
+          for line in Path('/tmp/predetect.log').read_text().splitlines():
+              if not line.startswith('PREDETECT_FEATURE '):continue
+              d=dict(re.findall(r'(\w+)=([^ ]+)',line))
+              for k in ['hz','snr','rms','low','mid','high','zcr','fastslow']:d[k]=float(d[k])
+              rows.append(d)
+          for kind in ['normal','strong_second','missing_fundamental','onset_burst','white','colored','breath']:
+              sub=[r for r in rows if r['kind']==kind]
+              if not sub:continue
+              vals=lambda k:sorted(r[k] for r in sub)
+              def p(v,q):return v[int(round(q*(len(v)-1)))]
+              print('PREDETECT_SUMMARY'
+                    f' kind={kind} n={len(sub)}'
+                    f' zcr_min={min(vals("zcr")):.6f} zcr_p05={p(vals("zcr"),.05):.6f} zcr_p50={p(vals("zcr"),.5):.6f} zcr_p95={p(vals("zcr"),.95):.6f} zcr_max={max(vals("zcr")):.6f}'
+                    f' high_min={min(vals("high")):.6f} high_p50={p(vals("high"),.5):.6f} high_max={max(vals("high")):.6f}'
+                    f' low_min={min(vals("low")):.6f} low_p50={p(vals("low"),.5):.6f} low_max={max(vals("low")):.6f}'
+                    f' fastslow_min={min(vals("fastslow")):.6f} fastslow_p50={p(vals("fastslow"),.5):.6f} fastslow_max={max(vals("fastslow")):.6f}')
+          PY
