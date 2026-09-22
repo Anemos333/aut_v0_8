@@ -215,6 +215,69 @@ double predictiveHarmonicFit(const std::array<double, frameSize>& x, double f0) 
     return total > 1.0e-12 ? 1.0 - residual / total : -1.0;
 }
 
+
+double harmonicFitCount(const std::array<double, frameSize>& x,
+                        double f0,
+                        int harmonicCount) noexcept
+{
+    if (!(f0 >= minimumF0 && f0 <= maximumF0))
+        return -1.0;
+
+    harmonicCount = std::max(1, std::min(modelHarmonics, harmonicCount));
+    const int columns = 1 + 2 * harmonicCount;
+    double normal[12][13] {};
+    double mean = 0.0;
+    for (double s : x) mean += s;
+    mean /= frameSize;
+
+    double total = 0.0;
+    for (double s : x)
+    {
+        const double d = s - mean;
+        total += d * d;
+    }
+    if (total < 1.0e-12)
+        return -1.0;
+
+    for (int n = 0; n < frameSize; ++n)
+    {
+        std::array<double, 11> basis {};
+        basis[0] = 1.0;
+        for (int k = 1; k <= harmonicCount; ++k)
+        {
+            const double a = 2.0 * pi * f0 * static_cast<double>(k * n) / sr;
+            basis[static_cast<std::size_t>(2 * k - 1)] = std::sin(a);
+            basis[static_cast<std::size_t>(2 * k)] = std::cos(a);
+        }
+        for (int i = 0; i < columns; ++i)
+        {
+            normal[i][columns] += basis[static_cast<std::size_t>(i)] * x[static_cast<std::size_t>(n)];
+            for (int j = 0; j < columns; ++j)
+                normal[i][j] += basis[static_cast<std::size_t>(i)] * basis[static_cast<std::size_t>(j)];
+        }
+    }
+
+    for (int i = 0; i < columns; ++i)
+        normal[i][i] += 1.0e-7;
+    if (!solveLinear(normal, columns))
+        return -1.0;
+
+    double residual = 0.0;
+    for (int n = 0; n < frameSize; ++n)
+    {
+        double y = normal[0][columns];
+        for (int k = 1; k <= harmonicCount; ++k)
+        {
+            const double a = 2.0 * pi * f0 * static_cast<double>(k * n) / sr;
+            y += normal[2 * k - 1][columns] * std::sin(a);
+            y += normal[2 * k][columns] * std::cos(a);
+        }
+        const double e = x[static_cast<std::size_t>(n)] - y;
+        residual += e * e;
+    }
+    return 1.0 - residual / total;
+}
+
 double harmonicFit(const std::array<double, frameSize>& x, double f0) noexcept
 {
     if (!(f0 >= minimumF0 && f0 <= maximumF0))
@@ -690,6 +753,14 @@ int main()
                         e.candidateHz > 0.0 ? predictiveHarmonicFit(x, e.candidateHz) : -1.0;
                     const double runnerPredictive =
                         e.runnerUpHz > 0.0 ? predictiveHarmonicFit(x, e.runnerUpHz) : -1.0;
+                    const double tieBreakHz =
+                        candidatePredictive >= runnerPredictive ? e.candidateHz : e.runnerUpHz;
+                    const double tieBreakFullFit =
+                        tieBreakHz > 0.0 ? harmonicFitCount(x, tieBreakHz, modelHarmonics) : -1.0;
+                    const double tieBreakSingleFit =
+                        tieBreakHz > 0.0 ? harmonicFitCount(x, tieBreakHz, 1) : -1.0;
+                    const double tieBreakHarmonicGain =
+                        tieBreakFullFit - tieBreakSingleFit;
 
                     std::cout << std::fixed << std::setprecision(4)
                               << "HARMONIC_FAMILY_CASE kind=" << kindName(kind)
@@ -709,6 +780,10 @@ int main()
                               << " shadow_predictive_score=" << e.predictiveBestScore
                               << " shadow_runner_hz=" << e.predictiveRunnerHz
                               << " shadow_runner_score=" << e.predictiveRunnerScore
+                              << " tie_break_hz=" << tieBreakHz
+                              << " tie_break_harmonic_gain=" << tieBreakHarmonicGain
+                              << " tie_break_single_fit=" << tieBreakSingleFit
+                              << " tie_break_full_fit=" << tieBreakFullFit
                               << " oracle_hz=" << oracle.hz
                               << " oracle_cents=" << oracleError
                               << " phase_oracle_hz=" << phaseOracleHz
