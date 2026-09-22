@@ -339,6 +339,10 @@ struct Estimate
     double runnerUpFit = -1.0;
     double candidateHz = 0.0;
     double runnerUpHz = 0.0;
+    double predictiveBestHz = 0.0;
+    double predictiveBestScore = -std::numeric_limits<double>::infinity();
+    double predictiveRunnerHz = 0.0;
+    double predictiveRunnerScore = -std::numeric_limits<double>::infinity();
 };
 
 Estimate estimateFamily(const std::array<double, frameSize>& x)
@@ -431,10 +435,39 @@ Estimate estimateFamily(const std::array<double, frameSize>& x)
         }
     }
 
-    if (runnerUp >= best.fit - 0.0050)
-        return { false, 0.0, best.fit, runnerUp, best.hz, runnerUpHz };
+    double predictiveBestHz = 0.0;
+    double predictiveBestScore = -std::numeric_limits<double>::infinity();
+    double predictiveRunnerHz = 0.0;
+    double predictiveRunnerScore = -std::numeric_limits<double>::infinity();
 
-    return { true, best.hz, best.fit, runnerUp, best.hz, runnerUpHz };
+    for (const auto& c : refined)
+    {
+        if (c.primitiveScore < primitiveThreshold)
+            continue;
+        const double score = predictiveHarmonicFit(x, c.hz);
+        if (score > predictiveBestScore)
+        {
+            predictiveRunnerScore = predictiveBestScore;
+            predictiveRunnerHz = predictiveBestHz;
+            predictiveBestScore = score;
+            predictiveBestHz = c.hz;
+        }
+        else if (!sameFamilyNeighbour(c.hz, predictiveBestHz)
+              && score > predictiveRunnerScore)
+        {
+            predictiveRunnerScore = score;
+            predictiveRunnerHz = c.hz;
+        }
+    }
+
+    if (runnerUp >= best.fit - 0.0050)
+        return { false, 0.0, best.fit, runnerUp, best.hz, runnerUpHz,
+                 predictiveBestHz, predictiveBestScore,
+                 predictiveRunnerHz, predictiveRunnerScore };
+
+    return { true, best.hz, best.fit, runnerUp, best.hz, runnerUpHz,
+             predictiveBestHz, predictiveBestScore,
+             predictiveRunnerHz, predictiveRunnerScore };
 }
 
 
@@ -582,6 +615,9 @@ int main()
     int vocalPrecision = 0;
     int observabilityCases = 0;
     int observabilityValid = 0;
+    int predictiveVocalFamilyCorrect = 0;
+    int predictiveVocalWrongFamily = 0;
+    int predictiveAllWrongFamily = 0;
     int familyCorrect = 0;
     int precision = 0;
     int artificialLow = 0;
@@ -613,6 +649,23 @@ int main()
                         kind != Kind::sine && f0 >= 110.0;
                     if (productCriticalVocal) ++vocalCases;
                     else ++observabilityCases;
+                    if (e.predictiveBestHz > 0.0)
+                    {
+                        const double predictiveError =
+                            std::abs(cents(e.predictiveBestHz, f0));
+                        if (predictiveError <= 100.0)
+                        {
+                            if (productCriticalVocal)
+                                ++predictiveVocalFamilyCorrect;
+                        }
+                        else
+                        {
+                            ++predictiveAllWrongFamily;
+                            if (productCriticalVocal)
+                                ++predictiveVocalWrongFamily;
+                        }
+                    }
+
                     double err = std::numeric_limits<double>::quiet_NaN();
                     if (e.valid)
                     {
@@ -652,6 +705,10 @@ int main()
                               << " runner_up_hz=" << e.runnerUpHz
                               << " candidate_predictive=" << candidatePredictive
                               << " runner_predictive=" << runnerPredictive
+                              << " shadow_predictive_hz=" << e.predictiveBestHz
+                              << " shadow_predictive_score=" << e.predictiveBestScore
+                              << " shadow_runner_hz=" << e.predictiveRunnerHz
+                              << " shadow_runner_score=" << e.predictiveRunnerScore
                               << " oracle_hz=" << oracle.hz
                               << " oracle_cents=" << oracleError
                               << " phase_oracle_hz=" << phaseOracleHz
@@ -671,6 +728,9 @@ int main()
               << " vocal_precision_1_5c=" << vocalPrecision
               << " observability_cases=" << observabilityCases
               << " observability_valid_9ms=" << observabilityValid
+              << " predictive_vocal_family_correct=" << predictiveVocalFamilyCorrect
+              << " predictive_vocal_wrong_family=" << predictiveVocalWrongFamily
+              << " predictive_all_wrong_family=" << predictiveAllWrongFamily
               << " family_correct=" << familyCorrect
               << " precision_1_5c=" << precision
               << " artificial_low=" << artificialLow
