@@ -329,6 +329,8 @@ WholeNoteEstimate applyDirectObservabilityGuard(WholeNoteEstimate e) noexcept
     return e;
 }
 
+#ifndef F0_WHOLE_NOTE_TUNER_NO_MAIN
+
 int main()
 {
     constexpr std::array<double, 12> frequencies {
@@ -711,3 +713,5 @@ int main()
               << (structuralSafe ? "PASS" : "FAIL") << '\n';
     return 0;
 }
+
+#endif // F0_WHOLE_NOTE_TUNER_NO_MAIN

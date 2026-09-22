@@ -6,9 +6,9 @@
 #include <iostream>
 #include <limits>
 
-#define main whole_note_reference_main
+#define F0_WHOLE_NOTE_TUNER_NO_MAIN
 #include "F0WholeNoteTunerProbe.cpp"
-#undef main
+#undef F0_WHOLE_NOTE_TUNER_NO_MAIN
 
 namespace
 {
