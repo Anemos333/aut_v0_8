@@ -49,10 +49,21 @@ The scale remains owned exclusively by ScaleQuantizer.
 
 ## 4. Acquisition
 
-For periodic material:
+The V1 acquisition contract distinguishes product-critical vocal behaviour from observability-limited stress cases. This distinction exists in validation only; it MUST NOT create register modes, frequency-band ownership or different detector paths in production code.
+
+For ordinary voice-like periodic material in the practical live-singing operating corpus:
 - the first correct stable F0 must be published in strictly less than 10 ms from the beginning of usable periodic material;
-- this applies to difficult but realistic sung material, including dominant second harmonic and missing-fundamental cases;
+- this remains true for difficult but realistic harmonic structures such as a dominant second harmonic and a missing fundamental;
 - acquisition is measured from the actual periodic onset, not from a later confidence event.
+
+For observability-limited cases, including unusually low sparse tones, pure or nearly pure sinusoids, and combinations of very low F0 with poor SNR:
+- the 10 ms acquisition deadline is not a V1 release blocker when the available causal samples are physically insufficient to support the normal precision target;
+- the detector must remain acquire/transition rather than publish a weak or invented stable F0;
+- the first stable F0 must be published as soon as the normal family-safety and precision requirements become defensible from the available samples;
+- the measured time-to-stable must be reported explicitly and minimized;
+- no arbitrary timeout, register-specific fallback, octave shortcut or artificial subharmonic is permitted.
+
+The relaxation applies to acquisition time, not to family correctness. A hard case may take longer; it may not become wrong.
 
 An estimate may exist internally before validation, but it is not allowed to affect correction until validated stable.
 
@@ -162,12 +173,15 @@ At minimum, automated tests must include:
 - consonant-like/breath-like/sibilant-like interruptions;
 - white noise;
 - coloured noise;
-- pure sinusoid;
+- pure sinusoid as a sparse-information safety/observability diagnostic, not as a proxy for ordinary sung material;
 - sustained notes;
 - transitions between distant registers.
 
 The acceptance report must expose:
 - first stable correct F0 time in ms;
+- whether each case belongs to the product-critical vocal acquisition corpus or to the observability-limited diagnostic corpus;
+- the count of product-critical vocal cases acquiring in <10 ms;
+- the measured convergence time of observability-limited cases without converting them into an artificial 10 ms pass/fail;
 - stable F0 cents error distribution;
 - maximum consecutive stable-step error on sustained material;
 - octave error count;
@@ -179,3 +193,21 @@ The acceptance report must expose:
 - effective plugin latency.
 
 No detector version is promoted by subjective listening alone.
+
+
+## 13. V1 release interpretation
+
+The V1 release is blocked by:
+- any wrong-family stable F0;
+- any artificial subharmonic or octave error;
+- any hallucinated stable on aperiodic/noise-only material;
+- failure to meet the normal precision target on accepted stable measurements;
+- failure to acquire ordinary voice-like harmonic material promptly enough for live monitoring.
+
+The V1 release is not blocked solely because an observability-limited stress case needs more than 10 ms, provided that:
+- it remains acquire/transition until a defensible measurement exists;
+- it converges to the correct family and precision as soon as the causal evidence allows;
+- the delay is measured, documented and minimized;
+- no register-specific production path is introduced to hide the limitation.
+
+Such cases are documented as known V1 limitations and remain candidates for a later detector/engine redesign.
