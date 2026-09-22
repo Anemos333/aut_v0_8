@@ -252,3 +252,22 @@ Correctness is necessary but not sufficient for the live product.
 The acceptance report must continue to expose detector analysis cost. A candidate whose analysis cost is of the same order as, or greater than, the audio interval it analyzes is not a production candidate even if its offline accuracy improves.
 
 Optimization must follow structural correctness, but additional validator layers are not accepted merely because they recover cases. If a new layer does not produce a clear improvement in structural safety per unit of CPU cost, it is removed rather than accumulated.
+
+
+## 16. Whole-note periodicity principle
+
+The detector is not a sinusoid hunter.
+
+Its primary physical question is: what single periodic coordinate best explains the monophonic note as a whole?
+
+Implications:
+- a formant peak, strongest partial or isolated sinusoidal component is evidence about the note, not the note itself;
+- harmonic amplitudes may change radically with vowel, instrument, microphone, articulation and dynamics without changing F0;
+- missing fundamental and dominant-second cases must be solved as properties of the complete periodic waveform, not by assigning authority to one partial;
+- the preferred family is the primitive repetition/fundamental of the complete periodic structure, not an arbitrary subharmonic grid that merely contains observed components;
+- analysis may use spectral, time-domain or parametric mathematics, but no individual partial, detector band or historical track owns the physical F0;
+- the architecture should resemble a robust monophonic tuner: one note-level periodicity estimate, independently validated, then refined.
+
+This principle does NOT authorize restoring the old YIN/multi-rate tracker. The old implementation started from whole-wave difference/correlation but then generated alternative periods, band-dependent paths, octave-transposed consensus hypotheses, temporal beam state and confidence authority. Those mechanisms are not part of the new contract.
+
+A whole-note method must still satisfy the single-ring, estimate -> validate -> refine -> stable/transition architecture and the mandatory randomized voice-like stress gate.
