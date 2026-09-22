@@ -1,0 +1,48 @@
+name: Diagnose harmonic family primitive blockers v1
+on:
+  push:
+    branches: [v1-continuous-f0-minimal-recomposition-v1]
+    paths:
+      - Tests/HarmonicFamilyBlockerProbe.cpp
+      - .github/workflows/diagnose-harmonic-family-blockers-v1.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: v1-continuous-f0-minimal-recomposition-v1 }
+      - run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y libasound2-dev libjack-jackd2-dev ladspa-sdk libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev >/dev/null
+      - run: |
+          cp Tests/HarmonicFamilyBlockerProbe.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-family-blocker -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-family-blocker --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-family-blocker/clean-engine-tests/SupervisorContinuityTest | tee /tmp/family-blocker.log
+          grep -q '^FAMILY_BLOCKER_PROBE ' /tmp/family-blocker.log
+      - run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re,statistics
+          rows=[]
+          for line in Path('/tmp/family-blocker.log').read_text().splitlines():
+              if not line.startswith('FAMILY_BLOCKER_PROBE '): continue
+              d=dict(re.findall(r'(\w+)=([^ ]+)',line))
+              for k in ['hz','snr','true','double','half','triple','margin_double','winner_hz','us']:
+                  d[k]=float(d[k])
+              d['true_wins']=int(d['true_wins'])
+              rows.append(d)
+          for variant in sorted({r['variant'] for r in rows}):
+              for kind in ['normal','strong_second','missing_fundamental']:
+                  sub=[r for r in rows if r['variant']==variant and r['kind']==kind]
+                  print('FAMILY_BLOCKER_SUMMARY'
+                        f' variant={variant} kind={kind} cases={len(sub)}'
+                        f' true_win_fraction={sum(r["true_wins"] for r in sub)/len(sub):.6f}'
+                        f' low_win_fraction={sum(r["true_wins"] for r in sub if r["hz"]<=220.0)/len([r for r in sub if r["hz"]<=220.0]):.6f}'
+                        f' median_margin_double={statistics.median(r["margin_double"] for r in sub):.6f}'
+                        f' worst_margin_double={min(r["margin_double"] for r in sub):.6f}'
+                        f' median_us={statistics.median(r["us"] for r in sub):.6f}')
+          PY
