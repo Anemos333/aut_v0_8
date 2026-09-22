@@ -346,6 +346,107 @@ ProgressiveEstimate estimateProgressive(
 }
 }
 
+
+struct NestedWindowStats
+{
+    int valid448 = 0;
+    int correct448 = 0;
+    int wrong448 = 0;
+
+    int rule400Retained = 0;
+    int rule400Correct = 0;
+    int rule400Wrong = 0;
+
+    int rule424Retained = 0;
+    int rule424Correct = 0;
+    int rule424Wrong = 0;
+
+    int ruleAnyRetained = 0;
+    int ruleAnyCorrect = 0;
+    int ruleAnyWrong = 0;
+
+    int ruleBothRetained = 0;
+    int ruleBothCorrect = 0;
+    int ruleBothWrong = 0;
+};
+
+bool sameFamilyHz(double a, double b) noexcept
+{
+    if (!(a > 0.0) || !(b > 0.0))
+        return false;
+    return std::abs(1200.0 * std::log2(a / b)) <= 100.0;
+}
+
+template <std::size_t N>
+void accumulateNestedWindowStats(
+    NestedWindowStats& stats,
+    const std::array<std::uint32_t, N>& seedSet)
+{
+    constexpr std::array<double, 12> testFrequencies {
+        110.0, 123.4708, 146.8324, 164.8138, 196.0, 220.0,
+        246.9417, 293.6648, 329.6276, 440.0, 659.2551, 880.0
+    };
+    constexpr std::array<double, 3> testSnrs { 18.0, 9.0, 3.0 };
+
+    for (const auto& profile : profiles)
+        for (double f0 : testFrequencies)
+            for (double snr : testSnrs)
+                for (auto seed : seedSet)
+                {
+                    const auto x = makeProgressiveVoiceLike(
+                        profile, f0, snr,
+                        seed ^ static_cast<std::uint32_t>(f0 * 97.0));
+
+                    const auto e400 = estimateProgressive(x, 400);
+                    const auto e424 = estimateProgressive(x, 424);
+                    const auto e448 = estimateProgressive(x, 448);
+                    if (!e448.valid)
+                        continue;
+
+                    ++stats.valid448;
+                    const bool truthCorrect =
+                        std::abs(cents(e448.hz, f0)) <= 100.0;
+                    if (truthCorrect) ++stats.correct448;
+                    else ++stats.wrong448;
+
+                    const bool agrees400 =
+                        e400.valid && sameFamilyHz(e400.hz, e448.hz);
+                    const bool agrees424 =
+                        e424.valid && sameFamilyHz(e424.hz, e448.hz);
+                    const bool agreesAny = agrees400 || agrees424;
+                    const bool agreesBoth = agrees400 && agrees424;
+
+                    auto countRule = [&](bool keep,
+                                         int& retained,
+                                         int& correct,
+                                         int& wrong)
+                    {
+                        if (!keep)
+                            return;
+                        ++retained;
+                        if (truthCorrect) ++correct;
+                        else ++wrong;
+                    };
+
+                    countRule(agrees400,
+                              stats.rule400Retained,
+                              stats.rule400Correct,
+                              stats.rule400Wrong);
+                    countRule(agrees424,
+                              stats.rule424Retained,
+                              stats.rule424Correct,
+                              stats.rule424Wrong);
+                    countRule(agreesAny,
+                              stats.ruleAnyRetained,
+                              stats.ruleAnyCorrect,
+                              stats.ruleAnyWrong);
+                    countRule(agreesBoth,
+                              stats.ruleBothRetained,
+                              stats.ruleBothCorrect,
+                              stats.ruleBothWrong);
+                }
+}
+
 int main()
 {
     constexpr std::array<double, 12> frequencies {
@@ -548,6 +649,30 @@ int main()
                     }
                     if (!published) ++integratedNever;
                 }
+
+
+    NestedWindowStats nested {};
+    accumulateNestedWindowStats(nested, seeds);
+    accumulateNestedWindowStats(nested, alternationVerificationSeeds);
+    accumulateNestedWindowStats(nested, integratedVerificationSeeds);
+
+    std::cout << "NESTED_WINDOW_SUMMARY"
+              << " valid448=" << nested.valid448
+              << " correct448=" << nested.correct448
+              << " wrong448=" << nested.wrong448
+              << " r400_retained=" << nested.rule400Retained
+              << " r400_correct=" << nested.rule400Correct
+              << " r400_wrong=" << nested.rule400Wrong
+              << " r424_retained=" << nested.rule424Retained
+              << " r424_correct=" << nested.rule424Correct
+              << " r424_wrong=" << nested.rule424Wrong
+              << " any_retained=" << nested.ruleAnyRetained
+              << " any_correct=" << nested.ruleAnyCorrect
+              << " any_wrong=" << nested.ruleAnyWrong
+              << " both_retained=" << nested.ruleBothRetained
+              << " both_correct=" << nested.ruleBothCorrect
+              << " both_wrong=" << nested.ruleBothWrong
+              << '\\n';
 
     std::cout << "INTEGRATED_VERIFY"
               << " cases=" << integratedCases

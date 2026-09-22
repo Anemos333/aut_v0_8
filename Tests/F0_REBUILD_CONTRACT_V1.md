@@ -293,3 +293,21 @@ Constraints:
 The intended asymmetry is deliberate: octave-high recovery is useful, but manufacturing bass is considered the more serious structural failure.
 
 This mechanism remains Plan B. It is not introduced into production while the single whole-note path can still be improved with a simpler primitive-period validation rule.
+
+
+## 18. Evidence-adaptive acquisition window
+
+The nominal live target remains a correct stable F0 in less than 10 ms whenever the available causal evidence is already sufficient.
+
+The detector may continue observing beyond 10 ms only when the current whole-note estimate is internally ambiguous or not yet structurally defensible.
+
+Rules:
+- adaptation is driven by evidence quality/consistency, never by a hard-coded vocal register or frequency band;
+- an easy low note and an easy high note are treated identically if the periodic evidence is equally decisive;
+- cases that are already structurally stable inside the normal window must not be delayed merely because other cases need more observation;
+- the same estimator/validator continues accumulating evidence; no alternate detector path is activated;
+- the extension ends immediately when a structurally valid F0 becomes available;
+- the acceptance report must expose how many cases publish inside the normal window and the additional acquisition time of delayed cases;
+- adaptive delay is preferable to publishing a wrong family, octave or artificial subharmonic.
+
+This mechanism is part of the primary whole-note path. It is not the downward-only Plan B described below.
