@@ -5,6 +5,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <vector>
 
 #define F0_WHOLE_NOTE_TUNER_NO_MAIN
 #include "F0WholeNoteTunerProbe.cpp"
@@ -798,6 +799,93 @@ void accumulateDownwardShadow(
                 }
 }
 
+struct TimeToQualityStats
+{
+    std::vector<double> familyMs;
+    std::vector<double> precisionMs;
+    int neverFamily = 0;
+    int neverPrecision = 0;
+};
+
+double percentileMs(std::vector<double> values, double p)
+{
+    if (values.empty())
+        return -1.0;
+    std::sort(values.begin(), values.end());
+    const double pos = p * static_cast<double>(values.size() - 1);
+    const std::size_t lo = static_cast<std::size_t>(std::floor(pos));
+    const std::size_t hi = static_cast<std::size_t>(std::ceil(pos));
+    if (lo == hi)
+        return values[lo];
+    const double frac = pos - static_cast<double>(lo);
+    return values[lo] * (1.0 - frac) + values[hi] * frac;
+}
+
+template <std::size_t N>
+void accumulateTimeToQuality(
+    TimeToQualityStats& stats,
+    const std::array<std::uint32_t, N>& seedSet)
+{
+    constexpr std::array<double, 12> testFrequencies {
+        110.0, 123.4708, 146.8324, 164.8138, 196.0, 220.0,
+        246.9417, 293.6648, 329.6276, 440.0, 659.2551, 880.0
+    };
+    constexpr std::array<double, 3> testSnrs { 18.0, 9.0, 3.0 };
+    constexpr std::array<int, 6> testCheckpoints {
+        448, 576, 672, 768, 896, 1024
+    };
+
+    for (const auto& profile : profiles)
+        for (double f0 : testFrequencies)
+            for (double snr : testSnrs)
+                for (auto seed : seedSet)
+                {
+                    const auto x = makeProgressiveVoiceLike(
+                        profile, f0, snr,
+                        seed ^ static_cast<std::uint32_t>(f0 * 97.0));
+
+                    bool familyFound = false;
+                    bool precisionFound = false;
+
+                    for (int sampleCount : testCheckpoints)
+                    {
+                        auto e = estimateProgressive(x, sampleCount);
+                        if (!e.valid)
+                            continue;
+
+                        if (sampleCount == 448
+                            && (!shouldPublishInsideNormalWindow(x, e)
+                                || hasUnresolvedPrimitiveAtNormalWindow(x, e)))
+                            continue;
+
+                        if (sampleCount >= 896)
+                            e = applyLongPrimitiveConsensus(x, sampleCount, e);
+
+                        const double ae = std::abs(cents(e.hz, f0));
+                        const double ms =
+                            1000.0 * static_cast<double>(sampleCount) / sr;
+
+                        if (!familyFound && ae <= 100.0)
+                        {
+                            stats.familyMs.push_back(ms);
+                            familyFound = true;
+                        }
+
+                        if (!precisionFound && ae <= 1.5)
+                        {
+                            stats.precisionMs.push_back(ms);
+                            precisionFound = true;
+                        }
+
+                        if (familyFound && precisionFound)
+                            break;
+                    }
+
+                    if (!familyFound) ++stats.neverFamily;
+                    if (!precisionFound) ++stats.neverPrecision;
+                }
+}
+
 int main()
 {
     constexpr std::array<double, 12> frequencies {
@@ -1399,6 +1487,31 @@ int main()
     accumulateDownwardShadow(downward, adaptiveVerificationSeeds);
 
     constexpr std::array<int, 7> downwardLabels { 3, 5, 8, 10, 15, 20, 25 };
+
+    TimeToQualityStats timeQuality {};
+    accumulateTimeToQuality(timeQuality, seeds);
+    accumulateTimeToQuality(timeQuality, alternationVerificationSeeds);
+    accumulateTimeToQuality(timeQuality, integratedVerificationSeeds);
+    accumulateTimeToQuality(timeQuality, adaptiveVerificationSeeds);
+    accumulateTimeToQuality(timeQuality, combinedVerificationSeeds);
+    accumulateTimeToQuality(timeQuality, endToEndVerificationSeeds);
+
+    std::cout << std::fixed << std::setprecision(4)
+              << "TIME_TO_QUALITY"
+              << " family_count=" << timeQuality.familyMs.size()
+              << " family_never=" << timeQuality.neverFamily
+              << " family_p50_ms=" << percentileMs(timeQuality.familyMs, 0.50)
+              << " family_p90_ms=" << percentileMs(timeQuality.familyMs, 0.90)
+              << " family_p95_ms=" << percentileMs(timeQuality.familyMs, 0.95)
+              << " family_worst_ms=" << percentileMs(timeQuality.familyMs, 1.00)
+              << " precision_count=" << timeQuality.precisionMs.size()
+              << " precision_never=" << timeQuality.neverPrecision
+              << " precision_p50_ms=" << percentileMs(timeQuality.precisionMs, 0.50)
+              << " precision_p90_ms=" << percentileMs(timeQuality.precisionMs, 0.90)
+              << " precision_p95_ms=" << percentileMs(timeQuality.precisionMs, 0.95)
+              << " precision_worst_ms=" << percentileMs(timeQuality.precisionMs, 1.00)
+              << '\n';
+
     std::cout << "DOWNWARD_SHADOW_SUMMARY"
               << " eligible_correct=" << downward.eligibleCorrect
               << " eligible_high=" << downward.eligibleHigh;
