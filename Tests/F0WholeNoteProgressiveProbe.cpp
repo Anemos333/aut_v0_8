@@ -364,6 +364,7 @@ struct NestedWindowStats
     int wrong448 = 0;
     std::array<AgreementStats, 4> any {};
     std::array<AgreementStats, 4> both {};
+    std::array<AgreementStats, 5> adaptive {};
 };
 
 double familyDistanceCents(double a, double b) noexcept
@@ -384,6 +385,9 @@ void accumulateNestedWindowStats(
     };
     constexpr std::array<double, 3> testSnrs { 18.0, 9.0, 3.0 };
     constexpr std::array<double, 4> thresholds { 15.0, 30.0, 60.0, 100.0 };
+    constexpr std::array<double, 5> periodicityThresholds {
+        0.65, 0.70, 0.75, 0.80, 0.85
+    };
 
     for (const auto& profile : profiles)
         for (double f0 : testFrequencies)
@@ -431,6 +435,24 @@ void accumulateNestedWindowStats(
                         };
                         count(keepAny, stats.any[i]);
                         count(keepBoth, stats.both[i]);
+                    }
+
+                    // Adaptive rule under test: delay only if the candidate
+                    // is unstable across BOTH earlier windows AND the
+                    // current whole-wave periodicity is not strong.
+                    const bool stable15 =
+                        d400 <= 15.0 && d424 <= 15.0;
+                    for (std::size_t i = 0; i < periodicityThresholds.size(); ++i)
+                    {
+                        const bool keep =
+                            stable15
+                            || e448.periodicity >= periodicityThresholds[i];
+                        if (keep)
+                        {
+                            ++stats.adaptive[i].retained;
+                            if (truthCorrect) ++stats.adaptive[i].correct;
+                            else ++stats.adaptive[i].wrong;
+                        }
                     }
                 }
 }
@@ -663,6 +685,16 @@ int main()
                   << "_correct=" << nested.both[i].correct
                   << " both" << nestedThresholdLabels[i]
                   << "_wrong=" << nested.both[i].wrong;
+    }
+    constexpr std::array<int, 5> periodicityLabels { 65, 70, 75, 80, 85 };
+    for (std::size_t i = 0; i < periodicityLabels.size(); ++i)
+    {
+        std::cout << " adaptive" << periodicityLabels[i]
+                  << "_retained=" << nested.adaptive[i].retained
+                  << " adaptive" << periodicityLabels[i]
+                  << "_correct=" << nested.adaptive[i].correct
+                  << " adaptive" << periodicityLabels[i]
+                  << "_wrong=" << nested.adaptive[i].wrong;
     }
     std::cout << '\n';
 
