@@ -1,4 +1,4 @@
-#include "F0DetectorV1.h"
+#include "F0SingleRingAutocorrProbe.h"
 #include "F0PeriodicGateV1.h"
 
 #include <array>

@@ -3,7 +3,7 @@ on:
   push:
     branches: [v1-f0-demolish-and-rebuild-v1]
     paths:
-      - Source/F0DetectorV1.h
+      - Tests/F0SingleRingAutocorrProbe.h
       - Source/F0PeriodicGateV1.h
       - Tests/F0DetectorContractV1.cpp
       - .github/workflows/probe-f0-detector-v1.yml
