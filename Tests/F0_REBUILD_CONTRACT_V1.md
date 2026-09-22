@@ -163,6 +163,11 @@ Detector uncertainty must never change scale authority. Naturalness controls, if
 
 At minimum, automated tests must include:
 - clean periodic voice-like material over the realistic sung range;
+- randomized source-filter voice-like material with independent harmonic phases and changing spectral envelopes;
+- multiple vowel/formant profiles;
+- breathy material, jitter, shimmer, vibrato and non-instantaneous onset envelopes;
+- randomized harmonic amplitudes and spectral holes;
+- monophonic instrument-like harmonic spectra whose envelope differs materially from the vocal fixtures;
 - dominant second harmonic;
 - missing fundamental;
 - low and high SNR;
@@ -194,6 +199,10 @@ The acceptance report must expose:
 
 No detector version is promoted by subjective listening alone.
 
+The simple deterministic harmonic corpus is a smoke test only. Passing it is not evidence of release readiness.
+
+The randomized voice-like stress corpus is a mandatory structural gate. A detector that passes the simple corpus but produces wrong-family stable values, artificial subharmonics or octave errors on the randomized voice-like corpus is structurally failed and remains a test-only experiment.
+
 
 ## 13. V1 release interpretation
 
@@ -211,3 +220,35 @@ The V1 release is not blocked solely because an observability-limited stress cas
 - no register-specific production path is introduced to hide the limitation.
 
 Such cases are documented as known V1 limitations and remain candidates for a later detector/engine redesign.
+
+
+## 14. Development order: structure before tuning
+
+Detector development is deliberately split into two ordered phases.
+
+Phase A -- structural family safety:
+- recover the physical F0 family on the product-critical vocal corpus;
+- wrong-family stable count must be zero;
+- artificial-low/subharmonic count must be zero;
+- octave-error count must be zero;
+- hallucinated stable count on aperiodic/noise-only material must be zero;
+- ambiguous material may remain acquire/transition rather than publish a guessed coordinate;
+- the same rules must hold on the randomized voice-like stress corpus, not only on deterministic harmonic fixtures.
+
+No refiner or cents-level tuning result may promote a detector that fails Phase A.
+
+Phase B -- precision tuning:
+- begins only after Phase A is structurally safe;
+- improves accepted stable measurements toward the precision epsilon;
+- must not reduce structural safety or reintroduce family errors;
+- tuning must generalize across seeds, spectral envelopes, formants and source profiles.
+
+Experimental rescue, predictive, derivative, partial-spacing or other validators remain shadow/test-only until they independently improve the mandatory stress corpus without creating any new wrong-family or artificial-low result.
+
+## 15. Efficiency gate
+
+Correctness is necessary but not sufficient for the live product.
+
+The acceptance report must continue to expose detector analysis cost. A candidate whose analysis cost is of the same order as, or greater than, the audio interval it analyzes is not a production candidate even if its offline accuracy improves.
+
+Optimization must follow structural correctness, but additional validator layers are not accepted merely because they recover cases. If a new layer does not produce a clear improvement in structural safety per unit of CPU cost, it is removed rather than accumulated.
