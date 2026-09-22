@@ -286,6 +286,7 @@ ProgressiveEstimate estimateProgressive(
     double hz = sr / refinedLag;
     int finalLag = bestLag;
     double primitiveRatio = 1.0;
+    bool loweredPrimitive = false;
 
     if (2 * bestLag < sampleCount)
     {
@@ -315,7 +316,22 @@ ProgressiveEstimate estimateProgressive(
             {
                 hz *= 0.5;
                 finalLag *= 2;
+                loweredPrimitive = true;
             }
+        }
+    }
+
+    // Independent whole-wave primitive witness: if candidate-length cycles
+    // alternate A/B/A/B with a very strong parity signature, the candidate
+    // is the half-period. This witness is allowed to lower exactly once.
+    if (!loweredPrimitive && 0.5 * hz >= minimumF0)
+    {
+        const auto alt = measureCycleAlternation(x, sampleCount, bestLag);
+        if (alt.observable && alt.score >= 3.0)
+        {
+            hz *= 0.5;
+            finalLag *= 2;
+            loweredPrimitive = true;
         }
     }
 
@@ -347,6 +363,10 @@ int main()
     constexpr std::array<std::uint32_t, 6> alternationVerificationSeeds {
         0x8f1bbcdcu, 0xca62c1d6u, 0x9b05688cu,
         0x1f83d9abu, 0x4a7484aau, 0x3f84d5b5u
+    };
+    constexpr std::array<std::uint32_t, 6> integratedVerificationSeeds {
+        0x5be0cd19u, 0x243185beu, 0x550c7dc3u,
+        0x72be5d74u, 0x80deb1feu, 0x9bdc06a7u
     };
 
     int cases = 0;
@@ -473,12 +493,7 @@ int main()
 
                     double correctedHz = base.hz;
                     const auto alt = measureCycleAlternation(x, 448, base.lag);
-                    if (alt.observable && alt.score >= 3.0
-                        && 0.5 * base.hz >= minimumF0)
-                    {
-                        correctedHz *= 0.5;
-                        ++altVerifyChanged;
-                    }
+                    (void) alt;
 
                     const double correctedError =
                         std::abs(cents(correctedHz, f0));
@@ -494,6 +509,54 @@ int main()
                     if (correctedHz > 1.5 * f0)
                         ++altVerifyOctaveHigh;
                 }
+
+
+    int integratedCases = 0;
+    int integratedFirstCorrect = 0;
+    int integratedFirstWrong = 0;
+    int integratedNever = 0;
+    int integratedLow = 0;
+    int integratedHigh = 0;
+
+    for (const auto& profile : profiles)
+        for (double f0 : frequencies)
+            for (double snr : snrs)
+                for (auto seed : integratedVerificationSeeds)
+                {
+                    ++integratedCases;
+                    const auto x = makeProgressiveVoiceLike(
+                        profile, f0, snr,
+                        seed ^ static_cast<std::uint32_t>(f0 * 97.0));
+
+                    bool published = false;
+                    for (int sampleCount : checkpoints)
+                    {
+                        const auto e = estimateProgressive(x, sampleCount);
+                        if (!e.valid)
+                            continue;
+
+                        const double ae = std::abs(cents(e.hz, f0));
+                        if (ae <= 100.0) ++integratedFirstCorrect;
+                        else
+                        {
+                            ++integratedFirstWrong;
+                            if (e.hz < 0.75 * f0) ++integratedLow;
+                            if (e.hz > 1.5 * f0) ++integratedHigh;
+                        }
+                        published = true;
+                        break;
+                    }
+                    if (!published) ++integratedNever;
+                }
+
+    std::cout << "INTEGRATED_VERIFY"
+              << " cases=" << integratedCases
+              << " first_correct=" << integratedFirstCorrect
+              << " first_wrong=" << integratedFirstWrong
+              << " never=" << integratedNever
+              << " artificial_low=" << integratedLow
+              << " octave_high=" << integratedHigh
+              << '\\n';
 
     std::cout << "ALTERNATION_VERIFY"
               << " cases=" << altVerifyCases
