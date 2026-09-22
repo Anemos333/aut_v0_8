@@ -460,6 +460,21 @@ double cents(double measured, double target) noexcept
     return 1200.0 * std::log2(measured / target);
 }
 
+
+double optimisticSineFrequencyStdHz(double snrDb) noexcept
+{
+    const double linearSnr = std::pow(10.0, snrDb / 10.0);
+    const double n = static_cast<double>(frameSize);
+    const double omegaVariance =
+        12.0 / (linearSnr * n * (n * n - 1.0));
+    return std::sqrt(omegaVariance) * sr / (2.0 * pi);
+}
+
+double hzStdToCents(double stdHz, double hz) noexcept
+{
+    return (1200.0 / std::log(2.0)) * stdHz / hz;
+}
+
 int noiseHallucinations(bool coloured)
 {
     int hallucinated = 0;
@@ -580,6 +595,24 @@ int main()
                            && wrongFamily == 0
                            && whiteHallucinations == 0
                            && colouredHallucinations == 0;
+    const bool promotionReady = familySafety
+                             && valid == cases
+                             && precision == cases
+                             && worstAcceptedCents <= 1.5;
+
     std::cout << "HARMONIC_FAMILY_SAFETY=" << (familySafety ? "PASS" : "FAIL") << '\n';
+    std::cout << "F0_V1_PROMOTION_READY=" << (promotionReady ? "PASS" : "FAIL") << '\n';
+
+    for (double f0 : frequencies)
+        for (double snrDb : snrs)
+        {
+            const double stdHz = optimisticSineFrequencyStdHz(snrDb);
+            std::cout << std::fixed << std::setprecision(4)
+                      << "SINE_CRLB_APPROX hz=" << f0
+                      << " snr=" << snrDb
+                      << " std_hz=" << stdHz
+                      << " std_cents=" << hzStdToCents(stdHz, f0)
+                      << '\n';
+        }
     return 0;
 }
