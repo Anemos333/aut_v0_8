@@ -1,0 +1,46 @@
+name: Diagnose local minima candidate recall v1
+on:
+  push:
+    branches: [v1-continuous-f0-minimal-recomposition-v1]
+    paths:
+      - Tests/LocalMinimaCandidateRecallDiagnostic.cpp
+      - .github/workflows/diagnose-local-minima-candidate-recall-v1.yml
+  workflow_dispatch:
+permissions: { contents: read }
+jobs:
+  diagnose:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: v1-continuous-f0-minimal-recomposition-v1 }
+      - run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y libasound2-dev libjack-jackd2-dev ladspa-sdk libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev >/dev/null
+      - run: |
+          cp Tests/LocalMinimaCandidateRecallDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-local-min -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-local-min --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-local-min/clean-engine-tests/SupervisorContinuityTest | tee /tmp/local-min.log
+          grep -q '^LOCAL_MINIMA_RECALL ' /tmp/local-min.log
+      - run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          rows=[]
+          for line in Path('/tmp/local-min.log').read_text().splitlines():
+              if not line.startswith('LOCAL_MINIMA_RECALL '):continue
+              d=dict(re.findall(r'(\w+)=([^ ]+)',line))
+              for q in ['hz','snr','best_abs_cents']:d[q]=float(d[q])
+              for q in ['k','family_recall','coarse20']:d[q]=int(d[q])
+              rows.append(d)
+          for k in [1,2,4,8,12,16]:
+            for kind in ['normal','strong_second','missing_fundamental','onset_burst']:
+              sub=[r for r in rows if r['k']==k and r['kind']==kind]
+              low=[r for r in sub if r['hz']<=220]
+              print('LOCAL_MINIMA_SUMMARY'
+                    f' k={k} kind={kind} n={len(sub)}'
+                    f' family={sum(r["family_recall"] for r in sub)/len(sub):.6f}'
+                    f' low_family={sum(r["family_recall"] for r in low)/len(low):.6f}'
+                    f' coarse20={sum(r["coarse20"] for r in sub)/len(sub):.6f}'
+                    f' low_coarse20={sum(r["coarse20"] for r in low)/len(low):.6f}')
+          PY
