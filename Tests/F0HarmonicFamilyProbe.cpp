@@ -635,6 +635,40 @@ double phaseOracleRefine(const std::array<double, frameSize>& x, double centre) 
     return centre + weighted / totalWeight;
 }
 
+
+Estimate applyPredictiveAmbiguityRescue(const std::array<double, frameSize>& x,
+                                        Estimate e) noexcept
+{
+    if (e.valid || !(e.candidateHz > 0.0) || !(e.runnerUpHz > 0.0))
+        return e;
+
+    const double candidatePredictive = predictiveHarmonicFit(x, e.candidateHz);
+    const double runnerPredictive = predictiveHarmonicFit(x, e.runnerUpHz);
+    const double chosenHz =
+        candidatePredictive >= runnerPredictive ? e.candidateHz : e.runnerUpHz;
+
+    const double fullFit = harmonicFitCount(x, chosenHz, modelHarmonics);
+    const double singleToneFit = bestSingleToneFit(x);
+    const double harmonicGainOverSingle = fullFit - singleToneFit;
+    const double observedCycles =
+        chosenHz * static_cast<double>(frameSize) / sr;
+
+    // This is an observability rule, not a register rule:
+    // an ambiguous family is rescued only after roughly one period is actually
+    // present in the causal window and the samples require a multi-harmonic
+    // explanation rather than a single sinusoid.
+    constexpr double minimumObservedCycles = 0.98;
+    constexpr double minimumHarmonicGain = 0.10;
+
+    if (observedCycles < minimumObservedCycles
+        || harmonicGainOverSingle < minimumHarmonicGain)
+        return e;
+
+    e.valid = true;
+    e.hz = chosenHz;
+    return e;
+}
+
 double cents(double measured, double target) noexcept
 {
     return 1200.0 * std::log2(measured / target);
@@ -655,7 +689,7 @@ double hzStdToCents(double stdHz, double hz) noexcept
     return (1200.0 / std::log(2.0)) * stdHz / hz;
 }
 
-int noiseHallucinations(bool coloured)
+int noiseHallucinations(bool coloured, bool useRescue = false)
 {
     int hallucinated = 0;
     for (std::uint32_t seed = 1; seed <= 16; ++seed)
@@ -675,7 +709,10 @@ int noiseHallucinations(bool coloured)
             }
             else s = w;
         }
-        if (estimateFamily(x).valid)
+        auto estimate = estimateFamily(x);
+        if (useRescue)
+            estimate = applyPredictiveAmbiguityRescue(x, estimate);
+        if (estimate.valid)
             ++hallucinated;
     }
     return hallucinated;
@@ -699,6 +736,13 @@ int main()
     int predictiveVocalFamilyCorrect = 0;
     int predictiveVocalWrongFamily = 0;
     int predictiveAllWrongFamily = 0;
+    int rescuedCases = 0;
+    int rescuedVocalValid = 0;
+    int rescuedVocalFamilyCorrect = 0;
+    int rescuedVocalWrongFamily = 0;
+    int rescuedAllWrongFamily = 0;
+    int rescuedArtificialLow = 0;
+    int rescuedOctaveHigh = 0;
     int familyCorrect = 0;
     int precision = 0;
     int artificialLow = 0;
@@ -717,6 +761,9 @@ int main()
                 {
                     const auto x = makeFrame(kind, f0, snr, seed);
                     const auto e = estimateFamily(x);
+                    const auto rescued = applyPredictiveAmbiguityRescue(x, e);
+                    if (!e.valid && rescued.valid)
+                        ++rescuedCases;
                     const auto oracle = refineFamily(x, f0);
                     const double oracleError = std::abs(cents(oracle.hz, f0));
                     const double phaseOracleHz = phaseOracleRefine(x, f0);
@@ -745,6 +792,26 @@ int main()
                             if (productCriticalVocal)
                                 ++predictiveVocalWrongFamily;
                         }
+                    }
+
+                    if (rescued.valid)
+                    {
+                        const double rescuedError = cents(rescued.hz, f0);
+                        const double rescuedAbs = std::abs(rescuedError);
+                        if (productCriticalVocal)
+                        {
+                            ++rescuedVocalValid;
+                            if (rescuedAbs <= 100.0)
+                                ++rescuedVocalFamilyCorrect;
+                            else
+                                ++rescuedVocalWrongFamily;
+                        }
+                        if (rescuedAbs > 100.0)
+                            ++rescuedAllWrongFamily;
+                        if (rescued.hz < 0.75 * f0)
+                            ++rescuedArtificialLow;
+                        if (rescued.hz > 1.5 * f0)
+                            ++rescuedOctaveHigh;
                     }
 
                     double err = std::numeric_limits<double>::quiet_NaN();
@@ -816,6 +883,8 @@ int main()
 
     const int whiteHallucinations = noiseHallucinations(false);
     const int colouredHallucinations = noiseHallucinations(true);
+    const int rescuedWhiteHallucinations = noiseHallucinations(false, true);
+    const int rescuedColouredHallucinations = noiseHallucinations(true, true);
 
     std::cout << std::fixed << std::setprecision(4)
               << "HARMONIC_FAMILY_SUMMARY"
@@ -829,6 +898,15 @@ int main()
               << " predictive_vocal_family_correct=" << predictiveVocalFamilyCorrect
               << " predictive_vocal_wrong_family=" << predictiveVocalWrongFamily
               << " predictive_all_wrong_family=" << predictiveAllWrongFamily
+              << " rescued_cases=" << rescuedCases
+              << " rescued_vocal_valid=" << rescuedVocalValid
+              << " rescued_vocal_family_correct=" << rescuedVocalFamilyCorrect
+              << " rescued_vocal_wrong_family=" << rescuedVocalWrongFamily
+              << " rescued_all_wrong_family=" << rescuedAllWrongFamily
+              << " rescued_artificial_low=" << rescuedArtificialLow
+              << " rescued_octave_high=" << rescuedOctaveHigh
+              << " rescued_white_hallucinations=" << rescuedWhiteHallucinations
+              << " rescued_coloured_hallucinations=" << rescuedColouredHallucinations
               << " family_correct=" << familyCorrect
               << " precision_1_5c=" << precision
               << " artificial_low=" << artificialLow
