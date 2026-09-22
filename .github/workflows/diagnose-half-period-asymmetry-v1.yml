@@ -1,0 +1,51 @@
+name: Diagnose half-period asymmetry witness v1
+on:
+  push:
+    branches: [v1-continuous-f0-minimal-recomposition-v1]
+    paths:
+      - Tests/HalfPeriodAsymmetryWitnessProbe.cpp
+      - .github/workflows/diagnose-half-period-asymmetry-v1.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: v1-continuous-f0-minimal-recomposition-v1 }
+      - run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y libasound2-dev libjack-jackd2-dev ladspa-sdk libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev >/dev/null
+      - run: |
+          cp Tests/HalfPeriodAsymmetryWitnessProbe.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-half-period -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-half-period --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-half-period/clean-engine-tests/SupervisorContinuityTest | tee /tmp/half-period.log
+          grep -q '^HALF_PERIOD_WITNESS ' /tmp/half-period.log
+      - run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re,statistics
+          rows=[]
+          for line in Path('/tmp/half-period.log').read_text().splitlines():
+              if not line.startswith('HALF_PERIOD_WITNESS '):continue
+              d=dict(re.findall(r'(\w+)=([^ ]+)',line))
+              for k in ['hz','snr','corr1','corr2','margin','us']:d[k]=float(d[k])
+              d['available']=int(d['available']);rows.append(d)
+          for kind in ['normal','strong_second','missing_fundamental']:
+              for candidate in ['true','double']:
+                  sub=[r for r in rows if r['kind']==kind and r['candidate']==candidate and r['available']]
+                  low=[r for r in sub if r['hz']<=220.0]
+                  if not sub:continue
+                  v=sorted(r['margin'] for r in sub)
+                  lv=sorted(r['margin'] for r in low)
+                  print('HALF_PERIOD_SUMMARY'
+                        f' kind={kind} candidate={candidate} n={len(sub)}'
+                        f' margin_min={min(v):.6f} margin_p05={v[max(0,int(.05*(len(v)-1)))]:.6f}'
+                        f' margin_p50={statistics.median(v):.6f} margin_p95={v[int(.95*(len(v)-1))]:.6f} margin_max={max(v):.6f}'
+                        f' low_n={len(low)} low_min={(min(lv) if lv else -9):.6f}'
+                        f' low_p50={(statistics.median(lv) if lv else -9):.6f}'
+                        f' low_max={(max(lv) if lv else -9):.6f}'
+                        f' median_us={statistics.median(r["us"] for r in sub):.6f}')
+          PY
