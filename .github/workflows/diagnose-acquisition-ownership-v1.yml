@@ -1,0 +1,56 @@
+name: Diagnose acquisition ownership v1
+on:
+  push:
+    branches: [v1-continuous-f0-contract-v1]
+    paths:
+      - Tests/AcquisitionOwnershipDiagnostic.cpp
+      - .github/workflows/diagnose-acquisition-ownership-v1.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: v1-continuous-f0-contract-v1 }
+      - run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y libasound2-dev libjack-jackd2-dev ladspa-sdk libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev >/dev/null
+      - run: |
+          cp Tests/AcquisitionOwnershipDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-acq-owner -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-acq-owner --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-acq-owner/clean-engine-tests/SupervisorContinuityTest | tee /tmp/acq-owner.log
+          grep -q '^ACQ_PROVENANCE ' /tmp/acq-owner.log
+      - run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re,statistics
+          rows=[]
+          for line in Path('/tmp/acq-owner.log').read_text().splitlines():
+              if not line.startswith('ACQ_PROVENANCE '): continue
+              d=dict(re.findall(r'(\w+)=([^ ]+)',line))
+              for k in ['hz','snr','any_correct','owner_correct','resolved_correct',
+                        'measurement_first','measurement_correct','valid_correct']:
+                  d[k]=float(d[k])
+              for k in ['wrong_before_correct','octave_before_correct']:
+                  d[k]=int(d[k])
+              rows.append(d)
+          for kind in sorted({r['kind'] for r in rows}):
+              for hz in sorted({r['hz'] for r in rows if r['kind']==kind and r['mode']=='onset'}):
+                  sub=[r for r in rows if r['kind']==kind and r['mode']=='onset' and r['hz']==hz]
+                  if not sub: continue
+                  def med(k):
+                      v=[r[k] for r in sub if r[k]>=0]
+                      return statistics.median(v) if v else -1.0
+                  print('ACQ_SUMMARY'
+                        f' kind={kind} hz={hz:.4f}'
+                        f' any_correct_ms={med("any_correct"):.5f}'
+                        f' owner_correct_ms={med("owner_correct"):.5f}'
+                        f' resolved_correct_ms={med("resolved_correct"):.5f}'
+                        f' measurement_correct_ms={med("measurement_correct"):.5f}'
+                        f' valid_correct_ms={med("valid_correct"):.5f}'
+                        f' wrong_before_correct={sum(r["wrong_before_correct"] for r in sub)}'
+                        f' octave_before_correct={sum(r["octave_before_correct"] for r in sub)}')
+          PY
