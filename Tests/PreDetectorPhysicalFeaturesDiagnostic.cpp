@@ -45,22 +45,21 @@ Features extract(double f0,double snrDb,Kind kind,std::uint32_t seed)
  const double fastCoef=1.0-std::exp(-1.0/(0.0020*sr));
  const double slowCoef=1.0-std::exp(-1.0/(0.040*sr));
  double lowState=0,bodyState=0,fast=0,slow=0,previous=0;
+ double coloredState=0,breathHpState=0;
  double total=0,lowE=0,midE=0,highE=0,phase=0,peakRatio=0;
  int zc=0;
 
  for(int i=0;i<n;++i){
   const double w=rng.next();
-  static double dummy=0;
   float x=0;
   if(kind==Kind::white)x=float(amp*w);
   else if(kind==Kind::colored){
-   dummy+=0.035*(w-dummy);
-   x=float(2.2*amp*dummy);
+   coloredState+=0.035*(w-coloredState);
+   x=float(2.2*amp*coloredState);
   }else if(kind==Kind::breath){
    // same cheap high-frequency emphasis used in the stress diagnostics
-   static double hp=0;
-   hp+=0.12*(w-hp);
-   x=float(amp*(0.8*(w-hp)+0.25*w));
+   breathHpState+=0.12*(w-breathHpState);
+   x=float(amp*(0.8*(w-breathHpState)+0.25*w));
   }else{
    phase+=2*pi*f0/sr;if(phase>=2*pi)phase-=2*pi;
    x=float(amp)*body(kind,phase)+float(noiseAmp)*rng.next();
