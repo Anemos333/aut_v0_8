@@ -128,6 +128,58 @@ struct WholeNoteEstimate
     int lag = 0;
 };
 
+
+struct PrimitiveWitness
+{
+    bool observable = false;
+    double lagMismatch = 1.0;
+    double doubleLagMismatch = 1.0;
+    double improvement = 0.0;
+    double ratio = 1.0;
+    int overlap = 0;
+};
+
+PrimitiveWitness measurePrimitiveWitness(const std::array<double, frameSize>& x,
+                                         int lag) noexcept
+{
+    if (lag <= 0 || 2 * lag >= frameSize)
+        return {};
+
+    const int overlap = frameSize - 2 * lag;
+    if (overlap < 40)
+        return {};
+
+    double mean = 0.0;
+    for (double s : x) mean += s;
+    mean /= static_cast<double>(frameSize);
+
+    auto mismatch = [&](int testLag) noexcept
+    {
+        double diff = 0.0;
+        double energy = 0.0;
+        for (int n = 0; n < overlap; ++n)
+        {
+            const double a = x[static_cast<std::size_t>(n)] - mean;
+            const double b = x[static_cast<std::size_t>(n + testLag)] - mean;
+            const double d = a - b;
+            diff += d * d;
+            energy += a * a + b * b;
+        }
+        return diff / std::max(1.0e-30, energy);
+    };
+
+    const double one = mismatch(lag);
+    const double two = mismatch(2 * lag);
+    return {
+        true,
+        one,
+        two,
+        one - two,
+        two / std::max(1.0e-12, one),
+        overlap
+    };
+}
+
 WholeNoteEstimate estimateWholeNote(const std::array<double, frameSize>& x)
 {
     std::array<double, frameSize> y {};
@@ -245,6 +297,12 @@ int main()
     int artificialLow = 0;
     int octaveHigh = 0;
     int precision = 0;
+    int witnessObservable = 0;
+    int octaveHighWitnessObservable = 0;
+    int octaveHighDoubleBetter = 0;
+    int correctDoubleBetter = 0;
+    double octaveHighRatioSum = 0.0;
+    double correctRatioSum = 0.0;
     double worstCents = 0.0;
     std::vector<double> micros;
 
@@ -265,8 +323,11 @@ int main()
 
                     ++cases;
                     double err = std::numeric_limits<double>::quiet_NaN();
+                    PrimitiveWitness witness {};
                     if (e.valid)
                     {
+                        witness = measurePrimitiveWitness(x, e.lag);
+                        if (witness.observable) ++witnessObservable;
                         ++valid;
                         err = cents(e.hz, f0);
                         const double ae = std::abs(err);
@@ -275,7 +336,23 @@ int main()
                         if (ae <= 100.0) ++familyCorrect;
                         else ++wrongFamily;
                         if (e.hz < 0.75 * f0) ++artificialLow;
-                        if (e.hz > 1.5 * f0) ++octaveHigh;
+                        if (e.hz > 1.5 * f0)
+                        {
+                            ++octaveHigh;
+                            if (witness.observable)
+                            {
+                                ++octaveHighWitnessObservable;
+                                octaveHighRatioSum += witness.ratio;
+                                if (witness.doubleLagMismatch < witness.lagMismatch)
+                                    ++octaveHighDoubleBetter;
+                            }
+                        }
+                        else if (ae <= 100.0 && witness.observable)
+                        {
+                            correctRatioSum += witness.ratio;
+                            if (witness.doubleLagMismatch < witness.lagMismatch)
+                                ++correctDoubleBetter;
+                        }
                         if (ae <= 1.5) ++precision;
                     }
 
@@ -310,6 +387,18 @@ int main()
               << " artificial_low=" << artificialLow
               << " octave_high=" << octaveHigh
               << " precision_1_5c=" << precision
+              << " witness_observable=" << witnessObservable
+              << " octave_high_witness_observable=" << octaveHighWitnessObservable
+              << " octave_high_double_better=" << octaveHighDoubleBetter
+              << " octave_high_mean_ratio="
+              << (octaveHighWitnessObservable > 0
+                    ? octaveHighRatioSum / static_cast<double>(octaveHighWitnessObservable)
+                    : 0.0)
+              << " correct_double_better=" << correctDoubleBetter
+              << " correct_mean_ratio="
+              << ((familyCorrect - octaveHigh) > 0
+                    ? correctRatioSum / static_cast<double>(std::max(1, witnessObservable - octaveHighWitnessObservable))
+                    : 0.0)
               << " worst_cents=" << worstCents
               << " mean_us=" << meanUs
               << " p95_us=" << p95Us
