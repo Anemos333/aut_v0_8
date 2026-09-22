@@ -94,9 +94,12 @@ public:
         // Reject only an extreme aperiodic/high-frequency signature. Ordinary
         // white/coloured noise is deliberately allowed to pass when ambiguous;
         // the detector validator, not this gate, owns stable-F0 truth.
-        const bool certainAperiodic = zcr > 0.60
-                                   && roughness > 1.48
-                                   && lagOneCorrelation < -0.10;
+        const bool certainAperiodic = (zcr > 0.60
+                                    && roughness > 1.48
+                                    && lagOneCorrelation < -0.10)
+                                || (zcr > 0.48
+                                    && roughness > 1.45
+                                    && lagOneCorrelation < 0.05);
         measure_ = !certainAperiodic;
         return measure_;
     }
