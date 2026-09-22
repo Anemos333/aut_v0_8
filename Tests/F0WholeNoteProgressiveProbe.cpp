@@ -344,6 +344,10 @@ int main()
     constexpr std::array<int, 6> checkpoints {
         448, 576, 672, 768, 896, 1024
     };
+    constexpr std::array<std::uint32_t, 6> alternationVerificationSeeds {
+        0x8f1bbcdcu, 0xca62c1d6u, 0x9b05688cu,
+        0x1f83d9abu, 0x4a7484aau, 0x3f84d5b5u
+    };
 
     int cases = 0;
     int firstCorrect = 0;
@@ -436,6 +440,73 @@ int main()
                     if (!published)
                         ++neverPublished;
                 }
+
+
+    int altVerifyCases = 0;
+    int altVerifyBaseValid = 0;
+    int altVerifyBaseCorrect = 0;
+    int altVerifyBaseWrong = 0;
+    int altVerifyCorrectedCorrect = 0;
+    int altVerifyCorrectedWrong = 0;
+    int altVerifyChanged = 0;
+    int altVerifyCorrectToWrong = 0;
+    int altVerifyArtificialLow = 0;
+    int altVerifyOctaveHigh = 0;
+
+    for (const auto& profile : profiles)
+        for (double f0 : frequencies)
+            for (double snr : snrs)
+                for (auto seed : alternationVerificationSeeds)
+                {
+                    ++altVerifyCases;
+                    const auto x = makeProgressiveVoiceLike(
+                        profile, f0, snr,
+                        seed ^ static_cast<std::uint32_t>(f0 * 97.0));
+                    const auto base = estimateProgressive(x, 448);
+                    if (!base.valid)
+                        continue;
+
+                    ++altVerifyBaseValid;
+                    const double baseError = std::abs(cents(base.hz, f0));
+                    if (baseError <= 100.0) ++altVerifyBaseCorrect;
+                    else ++altVerifyBaseWrong;
+
+                    double correctedHz = base.hz;
+                    const auto alt = measureCycleAlternation(x, 448, base.lag);
+                    if (alt.observable && alt.score >= 3.0
+                        && 0.5 * base.hz >= minimumF0)
+                    {
+                        correctedHz *= 0.5;
+                        ++altVerifyChanged;
+                    }
+
+                    const double correctedError =
+                        std::abs(cents(correctedHz, f0));
+                    if (correctedError <= 100.0)
+                        ++altVerifyCorrectedCorrect;
+                    else
+                        ++altVerifyCorrectedWrong;
+
+                    if (baseError <= 100.0 && correctedError > 100.0)
+                        ++altVerifyCorrectToWrong;
+                    if (correctedHz < 0.75 * f0)
+                        ++altVerifyArtificialLow;
+                    if (correctedHz > 1.5 * f0)
+                        ++altVerifyOctaveHigh;
+                }
+
+    std::cout << "ALTERNATION_VERIFY"
+              << " cases=" << altVerifyCases
+              << " base_valid=" << altVerifyBaseValid
+              << " base_correct=" << altVerifyBaseCorrect
+              << " base_wrong=" << altVerifyBaseWrong
+              << " corrected_correct=" << altVerifyCorrectedCorrect
+              << " corrected_wrong=" << altVerifyCorrectedWrong
+              << " changed=" << altVerifyChanged
+              << " correct_to_wrong=" << altVerifyCorrectToWrong
+              << " artificial_low=" << altVerifyArtificialLow
+              << " octave_high=" << altVerifyOctaveHigh
+              << '\n';
 
     std::cout << "PROGRESSIVE_SUMMARY"
               << " cases=" << cases
