@@ -457,6 +457,25 @@ void accumulateNestedWindowStats(
                 }
 }
 
+bool shouldPublishInsideNormalWindow(
+    const std::array<double, progressiveMaxSamples>& x,
+    const ProgressiveEstimate& current) noexcept
+{
+    if (!current.valid)
+        return false;
+
+    const auto e400 = estimateProgressive(x, 400, false);
+    const auto e424 = estimateProgressive(x, 424, false);
+    const bool stable400 =
+        e400.valid && familyDistanceCents(e400.hz, current.hz) <= 15.0;
+    const bool stable424 =
+        e424.valid && familyDistanceCents(e424.hz, current.hz) <= 15.0;
+
+    constexpr double strongWholeNotePeriodicity = 0.75;
+    return (stable400 && stable424)
+        || current.periodicity >= strongWholeNotePeriodicity;
+}
+
 int main()
 {
     constexpr std::array<double, 12> frequencies {
@@ -478,6 +497,10 @@ int main()
     constexpr std::array<std::uint32_t, 6> integratedVerificationSeeds {
         0x5be0cd19u, 0x243185beu, 0x550c7dc3u,
         0x72be5d74u, 0x80deb1feu, 0x9bdc06a7u
+    };
+    constexpr std::array<std::uint32_t, 6> adaptiveVerificationSeeds {
+        0xcbbb9d5du, 0x629a292au, 0x9159015au,
+        0x152fecd8u, 0x67332667u, 0x8eb44a87u
     };
 
     int cases = 0;
@@ -696,6 +719,103 @@ int main()
                   << " adaptive" << periodicityLabels[i]
                   << "_wrong=" << nested.adaptive[i].wrong;
     }
+    std::cout << '\n';
+
+
+    int adaptiveCases = 0;
+    int adaptiveBase448Valid = 0;
+    int adaptiveBase448Correct = 0;
+    int adaptiveBase448Wrong = 0;
+    int adaptiveFastPublished = 0;
+    int adaptiveFastCorrect = 0;
+    int adaptiveFastWrong = 0;
+    int adaptiveDelayedAt448 = 0;
+    int adaptiveDelayedCorrectAt448 = 0;
+    int adaptiveDelayedWrongAt448 = 0;
+    int adaptiveFirstCorrect = 0;
+    int adaptiveFirstWrong = 0;
+    int adaptiveNever = 0;
+    int adaptiveLow = 0;
+    int adaptiveHigh = 0;
+    std::array<int, checkpoints.size()> adaptiveFirstAt {};
+
+    for (const auto& profile : profiles)
+        for (double f0 : frequencies)
+            for (double snr : snrs)
+                for (auto seed : adaptiveVerificationSeeds)
+                {
+                    ++adaptiveCases;
+                    const auto x = makeProgressiveVoiceLike(
+                        profile, f0, snr,
+                        seed ^ static_cast<std::uint32_t>(f0 * 97.0));
+
+                    const auto base448 = estimateProgressive(x, 448);
+                    if (base448.valid)
+                    {
+                        ++adaptiveBase448Valid;
+                        const bool baseCorrect =
+                            std::abs(cents(base448.hz, f0)) <= 100.0;
+                        if (baseCorrect) ++adaptiveBase448Correct;
+                        else ++adaptiveBase448Wrong;
+
+                        if (shouldPublishInsideNormalWindow(x, base448))
+                        {
+                            ++adaptiveFastPublished;
+                            if (baseCorrect) ++adaptiveFastCorrect;
+                            else ++adaptiveFastWrong;
+                        }
+                        else
+                        {
+                            ++adaptiveDelayedAt448;
+                            if (baseCorrect) ++adaptiveDelayedCorrectAt448;
+                            else ++adaptiveDelayedWrongAt448;
+                        }
+                    }
+
+                    bool published = false;
+                    for (std::size_t i = 0; i < checkpoints.size(); ++i)
+                    {
+                        const auto e = estimateProgressive(x, checkpoints[i]);
+                        if (!e.valid)
+                            continue;
+
+                        if (checkpoints[i] == 448
+                            && !shouldPublishInsideNormalWindow(x, e))
+                            continue;
+
+                        ++adaptiveFirstAt[i];
+                        const double ae = std::abs(cents(e.hz, f0));
+                        if (ae <= 100.0) ++adaptiveFirstCorrect;
+                        else
+                        {
+                            ++adaptiveFirstWrong;
+                            if (e.hz < 0.75 * f0) ++adaptiveLow;
+                            if (e.hz > 1.5 * f0) ++adaptiveHigh;
+                        }
+                        published = true;
+                        break;
+                    }
+                    if (!published) ++adaptiveNever;
+                }
+
+    std::cout << "ADAPTIVE_VERIFY"
+              << " cases=" << adaptiveCases
+              << " base448_valid=" << adaptiveBase448Valid
+              << " base448_correct=" << adaptiveBase448Correct
+              << " base448_wrong=" << adaptiveBase448Wrong
+              << " fast_published=" << adaptiveFastPublished
+              << " fast_correct=" << adaptiveFastCorrect
+              << " fast_wrong=" << adaptiveFastWrong
+              << " delayed448=" << adaptiveDelayedAt448
+              << " delayed_correct448=" << adaptiveDelayedCorrectAt448
+              << " delayed_wrong448=" << adaptiveDelayedWrongAt448
+              << " first_correct=" << adaptiveFirstCorrect
+              << " first_wrong=" << adaptiveFirstWrong
+              << " never=" << adaptiveNever
+              << " artificial_low=" << adaptiveLow
+              << " octave_high=" << adaptiveHigh;
+    for (std::size_t i = 0; i < checkpoints.size(); ++i)
+        std::cout << " first_" << checkpoints[i] << "=" << adaptiveFirstAt[i];
     std::cout << '\n';
 
     std::cout << "INTEGRATED_VERIFY"
