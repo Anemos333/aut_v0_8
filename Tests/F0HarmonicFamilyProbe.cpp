@@ -394,6 +394,8 @@ int main()
     int artificialLow = 0;
     int octaveHigh = 0;
     int wrongFamily = 0;
+    int oraclePrecision = 0;
+    double oracleWorstCents = 0.0;
     double worstAcceptedCents = 0.0;
 
     for (Kind kind : kinds)
@@ -403,6 +405,10 @@ int main()
                 {
                     const auto x = makeFrame(kind, f0, snr, seed);
                     const auto e = estimateFamily(x);
+                    const auto oracle = refineFamily(x, f0);
+                    const double oracleError = std::abs(cents(oracle.hz, f0));
+                    if (oracleError <= 1.5) ++oraclePrecision;
+                    oracleWorstCents = std::max(oracleWorstCents, oracleError);
                     ++cases;
                     double err = std::numeric_limits<double>::quiet_NaN();
                     if (e.valid)
@@ -428,6 +434,8 @@ int main()
                               << " cents=" << err
                               << " fit=" << e.fit
                               << " runner_up=" << e.runnerUpFit
+                              << " oracle_hz=" << oracle.hz
+                              << " oracle_cents=" << oracleError
                               << '\n';
                 }
 
@@ -443,6 +451,8 @@ int main()
               << " artificial_low=" << artificialLow
               << " octave_high=" << octaveHigh
               << " wrong_family=" << wrongFamily
+              << " oracle_precision_1_5c=" << oraclePrecision
+              << " oracle_worst_cents=" << oracleWorstCents
               << " worst_accepted_cents=" << worstAcceptedCents
               << " white_hallucinations=" << whiteHallucinations
               << " coloured_hallucinations=" << colouredHallucinations
