@@ -560,6 +560,9 @@ int main()
     int verificationValidatedHigh = 0;
     int verificationChanged = 0;
     int verificationCorrectToWrong = 0;
+    int verificationResidualOctaveHigh = 0;
+    int verificationResidualArtificialLow = 0;
+    int verificationResidualOther = 0;
 
     for (const auto& profile : profiles)
         for (double f0 : frequencies)
@@ -584,9 +587,36 @@ int main()
 
                     if (validated.valid)
                     {
-                        const double ve = std::abs(cents(validated.hz, f0));
+                        const double signedVe = cents(validated.hz, f0);
+                        const double ve = std::abs(signedVe);
                         if (ve <= 100.0) ++verificationValidatedCorrect;
-                        else ++verificationValidatedWrong;
+                        else
+                        {
+                            ++verificationValidatedWrong;
+                            const bool octaveHigh = validated.hz > 1.5 * f0;
+                            const bool artificialLow = validated.hz < 0.75 * f0;
+                            if (octaveHigh) ++verificationResidualOctaveHigh;
+                            else if (artificialLow) ++verificationResidualArtificialLow;
+                            else ++verificationResidualOther;
+
+                            const auto w = measurePrimitiveWitness(x, validated.lag);
+                            std::cout << std::fixed << std::setprecision(4)
+                                      << "WHOLE_NOTE_VERIFICATION_ERROR profile=" << profile.name
+                                      << " hz=" << f0
+                                      << " snr=" << snr
+                                      << " seed=" << seed
+                                      << " base_hz=" << base.hz
+                                      << " validated_hz=" << validated.hz
+                                      << " cents=" << signedVe
+                                      << " ratio_to_truth=" << (validated.hz / f0)
+                                      << " class="
+                                      << (octaveHigh ? "high" : (artificialLow ? "low" : "other"))
+                                      << " witness_observable=" << (w.observable ? 1 : 0)
+                                      << " witness_ratio=" << w.ratio
+                                      << " mismatch_lag=" << w.lagMismatch
+                                      << " mismatch_2lag=" << w.doubleLagMismatch
+                                      << '\n';
+                        }
                         if (validated.hz < 0.75 * f0) ++verificationValidatedLow;
                         if (validated.hz > 1.5 * f0) ++verificationValidatedHigh;
                     }
@@ -614,6 +644,9 @@ int main()
               << " validated_low=" << verificationValidatedLow
               << " base_high=" << verificationBaseHigh
               << " validated_high=" << verificationValidatedHigh
+              << " residual_high=" << verificationResidualOctaveHigh
+              << " residual_low=" << verificationResidualArtificialLow
+              << " residual_other=" << verificationResidualOther
               << " changed=" << verificationChanged
               << " correct_to_wrong=" << verificationCorrectToWrong
               << '\n';
