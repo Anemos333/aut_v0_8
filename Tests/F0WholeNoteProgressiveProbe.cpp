@@ -298,6 +298,27 @@ int main()
                             ++firstWrong;
                             if (e.hz < 0.75 * f0) ++artificialLow;
                             if (e.hz > 1.5 * f0) ++octaveHigh;
+
+                            std::cout << std::fixed << std::setprecision(4)
+                                      << "PROGRESSIVE_WRONG_EVOLUTION profile=" << profile.name
+                                      << " hz=" << f0
+                                      << " snr=" << snr
+                                      << " seed=" << seed
+                                      << " first_samples=" << checkpoints[i]
+                                      << " first_hz=" << e.hz
+                                      << " first_cents=" << error;
+
+                            for (std::size_t j = i + 1; j < checkpoints.size(); ++j)
+                            {
+                                const auto later = estimateProgressive(x, checkpoints[j]);
+                                std::cout << " s" << checkpoints[j] << "_valid="
+                                          << (later.valid ? 1 : 0)
+                                          << " s" << checkpoints[j] << "_hz=" << later.hz;
+                                if (later.valid)
+                                    std::cout << " s" << checkpoints[j] << "_cents="
+                                              << cents(later.hz, f0);
+                            }
+                            std::cout << '\n';
                         }
 
                         std::cout << std::fixed << std::setprecision(4)
