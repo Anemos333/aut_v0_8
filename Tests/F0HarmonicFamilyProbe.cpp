@@ -296,6 +296,76 @@ double bestSingleToneFit(const std::array<double, frameSize>& x) noexcept
     return harmonicFitCount(x, refinedHz, 1);
 }
 
+
+double derivativeHarmonicFit(const std::array<double, frameSize>& x,
+                             double f0) noexcept
+{
+    if (!(f0 >= minimumF0 && f0 <= maximumF0))
+        return -1.0;
+
+    constexpr int columns = 2 * modelHarmonics;
+    double normal[12][13] {};
+    double mean = 0.0;
+    for (int n = 0; n < frameSize - 1; ++n)
+        mean += x[static_cast<std::size_t>(n + 1)]
+              - x[static_cast<std::size_t>(n)];
+    mean /= static_cast<double>(frameSize - 1);
+
+    double total = 0.0;
+    for (int n = 0; n < frameSize - 1; ++n)
+    {
+        const double y = (x[static_cast<std::size_t>(n + 1)]
+                        - x[static_cast<std::size_t>(n)]) - mean;
+        total += y * y;
+
+        std::array<double, columns> basis {};
+        for (int k = 1; k <= modelHarmonics; ++k)
+        {
+            const double a = 2.0 * pi * f0
+                           * static_cast<double>(k)
+                           * (static_cast<double>(n) + 0.5) / sr;
+            basis[static_cast<std::size_t>(2 * k - 2)] = std::sin(a);
+            basis[static_cast<std::size_t>(2 * k - 1)] = std::cos(a);
+        }
+
+        for (int i = 0; i < columns; ++i)
+        {
+            normal[i][columns] += basis[static_cast<std::size_t>(i)] * y;
+            for (int j = 0; j < columns; ++j)
+                normal[i][j] += basis[static_cast<std::size_t>(i)]
+                              * basis[static_cast<std::size_t>(j)];
+        }
+    }
+
+    if (total < 1.0e-12)
+        return -1.0;
+
+    for (int i = 0; i < columns; ++i)
+        normal[i][i] += 1.0e-7;
+    if (!solveLinear(normal, columns))
+        return -1.0;
+
+    double residual = 0.0;
+    for (int n = 0; n < frameSize - 1; ++n)
+    {
+        double model = 0.0;
+        for (int k = 1; k <= modelHarmonics; ++k)
+        {
+            const double a = 2.0 * pi * f0
+                           * static_cast<double>(k)
+                           * (static_cast<double>(n) + 0.5) / sr;
+            model += normal[2 * k - 2][columns] * std::sin(a);
+            model += normal[2 * k - 1][columns] * std::cos(a);
+        }
+        const double y = (x[static_cast<std::size_t>(n + 1)]
+                        - x[static_cast<std::size_t>(n)]) - mean;
+        const double e = y - model;
+        residual += e * e;
+    }
+
+    return 1.0 - residual / total;
+}
+
 double harmonicFit(const std::array<double, frameSize>& x, double f0) noexcept
 {
     if (!(f0 >= minimumF0 && f0 <= maximumF0))
@@ -424,6 +494,10 @@ struct Estimate
     double predictiveBestScore = -std::numeric_limits<double>::infinity();
     double predictiveRunnerHz = 0.0;
     double predictiveRunnerScore = -std::numeric_limits<double>::infinity();
+    double derivativeBestHz = 0.0;
+    double derivativeBestScore = -std::numeric_limits<double>::infinity();
+    double derivativeRunnerHz = 0.0;
+    double derivativeRunnerScore = -std::numeric_limits<double>::infinity();
 };
 
 Estimate estimateFamily(const std::array<double, frameSize>& x)
@@ -541,14 +615,43 @@ Estimate estimateFamily(const std::array<double, frameSize>& x)
         }
     }
 
+    double derivativeBestHz = 0.0;
+    double derivativeBestScore = -std::numeric_limits<double>::infinity();
+    double derivativeRunnerHz = 0.0;
+    double derivativeRunnerScore = -std::numeric_limits<double>::infinity();
+
+    for (const auto& c : refined)
+    {
+        if (c.primitiveScore < primitiveThreshold)
+            continue;
+        const double score = derivativeHarmonicFit(x, c.hz);
+        if (score > derivativeBestScore)
+        {
+            derivativeRunnerScore = derivativeBestScore;
+            derivativeRunnerHz = derivativeBestHz;
+            derivativeBestScore = score;
+            derivativeBestHz = c.hz;
+        }
+        else if (!sameFamilyNeighbour(c.hz, derivativeBestHz)
+              && score > derivativeRunnerScore)
+        {
+            derivativeRunnerScore = score;
+            derivativeRunnerHz = c.hz;
+        }
+    }
+
     if (runnerUp >= best.fit - 0.0050)
         return { false, 0.0, best.fit, runnerUp, best.hz, runnerUpHz,
                  predictiveBestHz, predictiveBestScore,
-                 predictiveRunnerHz, predictiveRunnerScore };
+                 predictiveRunnerHz, predictiveRunnerScore,
+                 derivativeBestHz, derivativeBestScore,
+                 derivativeRunnerHz, derivativeRunnerScore };
 
     return { true, best.hz, best.fit, runnerUp, best.hz, runnerUpHz,
              predictiveBestHz, predictiveBestScore,
-             predictiveRunnerHz, predictiveRunnerScore };
+             predictiveRunnerHz, predictiveRunnerScore,
+             derivativeBestHz, derivativeBestScore,
+             derivativeRunnerHz, derivativeRunnerScore };
 }
 
 
@@ -742,6 +845,9 @@ int main()
     int predictiveVocalFamilyCorrect = 0;
     int predictiveVocalWrongFamily = 0;
     int predictiveAllWrongFamily = 0;
+    int derivativeVocalFamilyCorrect = 0;
+    int derivativeVocalWrongFamily = 0;
+    int derivativeAllWrongFamily = 0;
     int rescuedCases = 0;
     int rescuedVocalValid = 0;
     int rescuedVocalFamilyCorrect = 0;
@@ -798,6 +904,23 @@ int main()
                             ++predictiveAllWrongFamily;
                             if (productCriticalVocal)
                                 ++predictiveVocalWrongFamily;
+                        }
+                    }
+
+                    if (e.derivativeBestHz > 0.0)
+                    {
+                        const double derivativeError =
+                            std::abs(cents(e.derivativeBestHz, f0));
+                        if (derivativeError <= 100.0)
+                        {
+                            if (productCriticalVocal)
+                                ++derivativeVocalFamilyCorrect;
+                        }
+                        else
+                        {
+                            ++derivativeAllWrongFamily;
+                            if (productCriticalVocal)
+                                ++derivativeVocalWrongFamily;
                         }
                     }
 
@@ -877,6 +1000,10 @@ int main()
                               << " shadow_predictive_score=" << e.predictiveBestScore
                               << " shadow_runner_hz=" << e.predictiveRunnerHz
                               << " shadow_runner_score=" << e.predictiveRunnerScore
+                              << " derivative_hz=" << e.derivativeBestHz
+                              << " derivative_score=" << e.derivativeBestScore
+                              << " derivative_runner_hz=" << e.derivativeRunnerHz
+                              << " derivative_runner_score=" << e.derivativeRunnerScore
                               << " tie_break_hz=" << tieBreakHz
                               << " tie_break_harmonic_gain=" << tieBreakHarmonicGain
                               << " tie_break_single_fit=" << tieBreakSingleFit
@@ -907,6 +1034,9 @@ int main()
               << " predictive_vocal_family_correct=" << predictiveVocalFamilyCorrect
               << " predictive_vocal_wrong_family=" << predictiveVocalWrongFamily
               << " predictive_all_wrong_family=" << predictiveAllWrongFamily
+              << " derivative_vocal_family_correct=" << derivativeVocalFamilyCorrect
+              << " derivative_vocal_wrong_family=" << derivativeVocalWrongFamily
+              << " derivative_all_wrong_family=" << derivativeAllWrongFamily
               << " rescued_cases=" << rescuedCases
               << " rescued_vocal_valid=" << rescuedVocalValid
               << " rescued_vocal_family_correct=" << rescuedVocalFamilyCorrect
