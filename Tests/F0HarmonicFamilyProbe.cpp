@@ -371,6 +371,90 @@ Estimate estimateFamily(const std::array<double, frameSize>& x)
     return { true, best.hz, best.fit, runnerUp };
 }
 
+
+double phaseOracleRefine(const std::array<double, frameSize>& x, double centre) noexcept
+{
+    constexpr int windowLength = 144;
+    constexpr int firstStart = 24;
+    constexpr int secondStart = frameSize - firstStart - windowLength;
+    constexpr double deltaSamples =
+        static_cast<double>(secondStart - firstStart);
+
+    struct HarmonicPhase
+    {
+        double deltaHz = 0.0;
+        double weight = 0.0;
+    };
+
+    std::array<HarmonicPhase, modelHarmonics> values {};
+    double strongest = 0.0;
+
+    for (int k = 1; k <= modelHarmonics; ++k)
+    {
+        const double hz = centre * static_cast<double>(k);
+        if (hz >= 0.48 * sr)
+            continue;
+
+        double reA = 0.0, imA = 0.0;
+        double reB = 0.0, imB = 0.0;
+        for (int j = 0; j < windowLength; ++j)
+        {
+            const double w = 0.5 - 0.5 * std::cos(
+                2.0 * pi * static_cast<double>(j)
+                / static_cast<double>(windowLength - 1));
+
+            const int na = firstStart + j;
+            const int nb = secondStart + j;
+            const double aa = 2.0 * pi * hz * static_cast<double>(na) / sr;
+            const double ab = 2.0 * pi * hz * static_cast<double>(nb) / sr;
+
+            const double xa = x[static_cast<std::size_t>(na)] * w;
+            const double xb = x[static_cast<std::size_t>(nb)] * w;
+            reA += xa * std::cos(aa);
+            imA -= xa * std::sin(aa);
+            reB += xb * std::cos(ab);
+            imB -= xb * std::sin(ab);
+        }
+
+        const double powerA = reA * reA + imA * imA;
+        const double powerB = reB * reB + imB * imB;
+        const double coherentPower = std::sqrt(std::max(0.0, powerA * powerB));
+        strongest = std::max(strongest, coherentPower);
+
+        const double crossRe = reB * reA + imB * imA;
+        const double crossIm = imB * reA - reB * imA;
+        const double phase = std::atan2(crossIm, crossRe);
+        const double deltaHz = phase * sr
+                             / (2.0 * pi * static_cast<double>(k) * deltaSamples);
+
+        values[static_cast<std::size_t>(k - 1)] =
+            { deltaHz, coherentPower * static_cast<double>(k * k) };
+    }
+
+    if (!(strongest > 1.0e-18))
+        return centre;
+
+    double weighted = 0.0;
+    double totalWeight = 0.0;
+    for (int k = 1; k <= modelHarmonics; ++k)
+    {
+        const auto& v = values[static_cast<std::size_t>(k - 1)];
+        const double rawPower = v.weight / static_cast<double>(k * k);
+        if (rawPower < 0.035 * strongest)
+            continue;
+        if (std::abs(v.deltaHz) > std::max(30.0, 0.08 * centre))
+            continue;
+
+        weighted += v.deltaHz * v.weight;
+        totalWeight += v.weight;
+    }
+
+    if (!(totalWeight > 0.0))
+        return centre;
+
+    return centre + weighted / totalWeight;
+}
+
 double cents(double measured, double target) noexcept
 {
     return 1200.0 * std::log2(measured / target);
@@ -418,7 +502,9 @@ int main()
     int octaveHigh = 0;
     int wrongFamily = 0;
     int oraclePrecision = 0;
+    int phaseOraclePrecision = 0;
     double oracleWorstCents = 0.0;
+    double phaseOracleWorstCents = 0.0;
     double worstAcceptedCents = 0.0;
 
     for (Kind kind : kinds)
@@ -430,8 +516,12 @@ int main()
                     const auto e = estimateFamily(x);
                     const auto oracle = refineFamily(x, f0);
                     const double oracleError = std::abs(cents(oracle.hz, f0));
+                    const double phaseOracleHz = phaseOracleRefine(x, f0);
+                    const double phaseOracleError = std::abs(cents(phaseOracleHz, f0));
                     if (oracleError <= 1.5) ++oraclePrecision;
+                    if (phaseOracleError <= 1.5) ++phaseOraclePrecision;
                     oracleWorstCents = std::max(oracleWorstCents, oracleError);
+                    phaseOracleWorstCents = std::max(phaseOracleWorstCents, phaseOracleError);
                     ++cases;
                     double err = std::numeric_limits<double>::quiet_NaN();
                     if (e.valid)
@@ -459,6 +549,8 @@ int main()
                               << " runner_up=" << e.runnerUpFit
                               << " oracle_hz=" << oracle.hz
                               << " oracle_cents=" << oracleError
+                              << " phase_oracle_hz=" << phaseOracleHz
+                              << " phase_oracle_cents=" << phaseOracleError
                               << '\n';
                 }
 
@@ -476,6 +568,8 @@ int main()
               << " wrong_family=" << wrongFamily
               << " oracle_precision_1_5c=" << oraclePrecision
               << " oracle_worst_cents=" << oracleWorstCents
+              << " phase_oracle_precision_1_5c=" << phaseOraclePrecision
+              << " phase_oracle_worst_cents=" << phaseOracleWorstCents
               << " worst_accepted_cents=" << worstAcceptedCents
               << " white_hallucinations=" << whiteHallucinations
               << " coloured_hallucinations=" << colouredHallucinations
