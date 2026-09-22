@@ -156,6 +156,65 @@ bool solveLinear(double a[12][13], int n) noexcept
     return true;
 }
 
+
+double predictiveHarmonicFit(const std::array<double, frameSize>& x, double f0) noexcept
+{
+    if (!(f0 >= minimumF0 && f0 <= maximumF0))
+        return -1.0;
+
+    constexpr int columns = 1 + 2 * modelHarmonics;
+    constexpr int trainEnd = 288; // 6 ms train, 3 ms causal holdout
+    double normal[12][13] {};
+
+    for (int n = 0; n < trainEnd; ++n)
+    {
+        std::array<double, columns> basis {};
+        basis[0] = 1.0;
+        for (int k = 1; k <= modelHarmonics; ++k)
+        {
+            const double a = 2.0 * pi * f0 * static_cast<double>(k * n) / sr;
+            basis[static_cast<std::size_t>(2 * k - 1)] = std::sin(a);
+            basis[static_cast<std::size_t>(2 * k)] = std::cos(a);
+        }
+        for (int i = 0; i < columns; ++i)
+        {
+            normal[i][columns] += basis[static_cast<std::size_t>(i)] * x[static_cast<std::size_t>(n)];
+            for (int j = 0; j < columns; ++j)
+                normal[i][j] += basis[static_cast<std::size_t>(i)] * basis[static_cast<std::size_t>(j)];
+        }
+    }
+
+    for (int i = 0; i < columns; ++i)
+        normal[i][i] += 1.0e-6;
+
+    if (!solveLinear(normal, columns))
+        return -1.0;
+
+    double mean = 0.0;
+    for (int n = trainEnd; n < frameSize; ++n)
+        mean += x[static_cast<std::size_t>(n)];
+    mean /= static_cast<double>(frameSize - trainEnd);
+
+    double total = 0.0;
+    double residual = 0.0;
+    for (int n = trainEnd; n < frameSize; ++n)
+    {
+        double y = normal[0][columns];
+        for (int k = 1; k <= modelHarmonics; ++k)
+        {
+            const double a = 2.0 * pi * f0 * static_cast<double>(k * n) / sr;
+            y += normal[2 * k - 1][columns] * std::sin(a);
+            y += normal[2 * k][columns] * std::cos(a);
+        }
+        const double centred = x[static_cast<std::size_t>(n)] - mean;
+        const double e = x[static_cast<std::size_t>(n)] - y;
+        total += centred * centred;
+        residual += e * e;
+    }
+
+    return total > 1.0e-12 ? 1.0 - residual / total : -1.0;
+}
+
 double harmonicFit(const std::array<double, frameSize>& x, double f0) noexcept
 {
     if (!(f0 >= minimumF0 && f0 <= maximumF0))
@@ -574,6 +633,11 @@ int main()
                         if (e.hz > 1.5 * f0) ++octaveHigh;
                     }
 
+                    const double candidatePredictive =
+                        e.candidateHz > 0.0 ? predictiveHarmonicFit(x, e.candidateHz) : -1.0;
+                    const double runnerPredictive =
+                        e.runnerUpHz > 0.0 ? predictiveHarmonicFit(x, e.runnerUpHz) : -1.0;
+
                     std::cout << std::fixed << std::setprecision(4)
                               << "HARMONIC_FAMILY_CASE kind=" << kindName(kind)
                               << " hz=" << f0
@@ -586,6 +650,8 @@ int main()
                               << " runner_up=" << e.runnerUpFit
                               << " candidate_hz=" << e.candidateHz
                               << " runner_up_hz=" << e.runnerUpHz
+                              << " candidate_predictive=" << candidatePredictive
+                              << " runner_predictive=" << runnerPredictive
                               << " oracle_hz=" << oracle.hz
                               << " oracle_cents=" << oracleError
                               << " phase_oracle_hz=" << phaseOracleHz
