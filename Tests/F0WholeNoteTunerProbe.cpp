@@ -9,12 +9,117 @@
 #include <numeric>
 #include <vector>
 
-#define main voice_stress_reference_main
-#include "F0VoiceLikeStressProbe.cpp"
+#define main harmonic_probe_reference_main
+#include "F0HarmonicFamilyProbe.cpp"
 #undef main
 
 namespace
 {
+struct VoiceProfile
+{
+    const char* name;
+    double f1, bw1;
+    double f2, bw2;
+    double f3, bw3;
+    double tilt;
+    double breath;
+    double jitter;
+    double shimmer;
+    double fundamentalScale;
+    double secondScale;
+    double attackMs;
+};
+
+constexpr std::array<VoiceProfile, 5> profiles {{
+    { "vowel_a",           750.0, 110.0, 1200.0, 170.0, 2600.0, 260.0, 1.15, 0.025, 0.0005, 0.018, 1.00, 1.00, 0.4 },
+    { "vowel_i_breathy",   300.0,  80.0, 2250.0, 210.0, 3000.0, 280.0, 1.35, 0.100, 0.0015, 0.045, 1.00, 1.00, 0.7 },
+    { "strong_second",     520.0, 100.0, 1550.0, 190.0, 2700.0, 260.0, 1.10, 0.040, 0.0010, 0.030, 0.24, 2.20, 0.5 },
+    { "missing_fund",      600.0, 115.0, 1350.0, 180.0, 2450.0, 250.0, 1.20, 0.050, 0.0012, 0.035, 0.00, 1.20, 0.5 },
+    { "rough_onset",       430.0, 120.0, 1750.0, 220.0, 2900.0, 300.0, 1.05, 0.075, 0.0030, 0.070, 0.75, 1.15, 1.8 }
+}};
+
+double formantGain(double hz, double centre, double bandwidth) noexcept
+{
+    const double d = (hz - centre) / std::max(1.0, bandwidth);
+    return 1.0 / (1.0 + d * d);
+}
+
+std::array<double, frameSize> makeVoiceLikeFrame(const VoiceProfile& profile,
+                                                  double baseF0,
+                                                  double snrDb,
+                                                  std::uint32_t seed)
+{
+    std::array<double, frameSize> x {};
+    Rng rng { seed };
+    std::array<double, 24> phaseOffset {};
+    for (auto& p : phaseOffset)
+        p = pi * rng.next();
+
+    double phase = 0.0;
+    double jitterState = 0.0;
+    double shimmerState = 0.0;
+    double breathState = 0.0;
+    double cleanEnergy = 0.0;
+
+    for (int n = 0; n < frameSize; ++n)
+    {
+        const double t = static_cast<double>(n) / sr;
+        const double vibrato = 0.0035 * std::sin(2.0 * pi * 5.2 * t + 0.37);
+        jitterState = 0.86 * jitterState + 0.14 * rng.next();
+        shimmerState = 0.93 * shimmerState + 0.07 * rng.next();
+
+        const double instF0 = baseF0
+            * (1.0 + vibrato + profile.jitter * jitterState);
+        phase += 2.0 * pi * instF0 / sr;
+
+        double voiced = 0.0;
+        for (int k = 1; k <= static_cast<int>(phaseOffset.size()); ++k)
+        {
+            const double hz = baseF0 * static_cast<double>(k);
+            if (hz >= 0.47 * sr)
+                break;
+
+            double amp = 1.0 / std::pow(static_cast<double>(k), profile.tilt);
+            const double envelope =
+                0.12
+                + 1.10 * formantGain(hz, profile.f1, profile.bw1)
+                + 0.85 * formantGain(hz, profile.f2, profile.bw2)
+                + 0.58 * formantGain(hz, profile.f3, profile.bw3);
+            amp *= envelope;
+
+            if (k == 1) amp *= profile.fundamentalScale;
+            if (k == 2) amp *= profile.secondScale;
+
+            voiced += amp * std::sin(static_cast<double>(k) * phase
+                                   + phaseOffset[static_cast<std::size_t>(k - 1)]);
+        }
+
+        const double shimmer = std::max(0.65, 1.0 + profile.shimmer * shimmerState);
+        const double attackSamples = std::max(1.0, profile.attackMs * 0.001 * sr);
+        const double attack = std::min(1.0, (static_cast<double>(n) + 1.0) / attackSamples);
+
+        const double w = rng.next();
+        const double highBreath = w - breathState;
+        breathState = 0.86 * breathState + 0.14 * w;
+
+        const double sample = attack * shimmer * voiced
+                            + profile.breath * highBreath;
+        x[static_cast<std::size_t>(n)] = sample;
+        cleanEnergy += sample * sample;
+    }
+
+    const double rms = std::sqrt(cleanEnergy / static_cast<double>(frameSize));
+    const double noiseScale = rms / std::pow(10.0, snrDb / 20.0);
+    double noiseColour = 0.0;
+    for (double& s : x)
+    {
+        const double w = rng.next();
+        noiseColour = 0.72 * noiseColour + 0.28 * w;
+        s += noiseScale * (0.72 * w + 0.28 * noiseColour);
+    }
+    return x;
+}
+
 struct WholeNoteEstimate
 {
     bool valid = false;
