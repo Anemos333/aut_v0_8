@@ -1,0 +1,28 @@
+name: Probe whole-note tuner baseline
+on:
+  push:
+    branches: [v1-f0-demolish-and-rebuild-v1]
+    paths:
+      - Tests/F0WholeNoteTunerProbe.cpp
+      - Tests/F0VoiceLikeStressProbe.cpp
+      - Tests/F0HarmonicFamilyProbe.cpp
+      - .github/workflows/probe-f0-whole-note-tuner.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: v1-f0-demolish-and-rebuild-v1 }
+      - name: Build whole-note tuner baseline
+        run: |
+          g++ -std=c++17 -O3 -Wall -Wextra -Wpedantic \
+              Tests/F0WholeNoteTunerProbe.cpp \
+              -o /tmp/f0-whole-note-tuner
+      - name: Run diagnostic
+        run: |
+          /tmp/f0-whole-note-tuner | tee /tmp/f0-whole-note-tuner.log
+          grep '^WHOLE_NOTE_SUMMARY' /tmp/f0-whole-note-tuner.log
+          grep '^WHOLE_NOTE_STRUCTURAL_SAFE=' /tmp/f0-whole-note-tuner.log
