@@ -1,0 +1,47 @@
+name: Diagnose autocorrelation candidate recall v1
+on:
+  push:
+    branches: [v1-continuous-f0-minimal-recomposition-v1]
+    paths:
+      - Tests/AutocorrelationCandidateRecallDiagnostic.cpp
+      - .github/workflows/diagnose-autocorrelation-candidate-recall-v1.yml
+  workflow_dispatch:
+permissions: { contents: read }
+jobs:
+  diagnose:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: v1-continuous-f0-minimal-recomposition-v1 }
+      - run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y libasound2-dev libjack-jackd2-dev ladspa-sdk libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev >/dev/null
+      - run: |
+          cp Tests/AutocorrelationCandidateRecallDiagnostic.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-autocorr -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-autocorr --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-autocorr/clean-engine-tests/SupervisorContinuityTest | tee /tmp/autocorr.log
+          grep -q '^AUTOCORR_RECALL ' /tmp/autocorr.log
+      - run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re,statistics
+          rows=[]
+          for line in Path('/tmp/autocorr.log').read_text().splitlines():
+              if not line.startswith('AUTOCORR_RECALL '):continue
+              d=dict(re.findall(r'(\w+)=([^ ]+)',line))
+              for q in ['hz','snr','best_abs_cents','scan_us']:d[q]=float(d[q])
+              for q in ['per_band','family','coarse20','candidates']:d[q]=int(d[q])
+              rows.append(d)
+          for p in [1,2,3,4,6]:
+           for kind in ['normal','strong_second','missing_fundamental','onset_burst']:
+            sub=[r for r in rows if r['per_band']==p and r['kind']==kind];low=[r for r in sub if r['hz']<=220]
+            print('AUTOCORR_RECALL_SUMMARY'
+                  f' per_band={p} kind={kind} n={len(sub)}'
+                  f' family={sum(r["family"] for r in sub)/len(sub):.6f}'
+                  f' low_family={sum(r["family"] for r in low)/len(low):.6f}'
+                  f' coarse20={sum(r["coarse20"] for r in sub)/len(sub):.6f}'
+                  f' low_coarse20={sum(r["coarse20"] for r in low)/len(low):.6f}'
+                  f' median_scan_us={statistics.median(r["scan_us"] for r in sub):.6f}'
+                  f' max_candidates={max(r["candidates"] for r in sub)}')
+          PY
