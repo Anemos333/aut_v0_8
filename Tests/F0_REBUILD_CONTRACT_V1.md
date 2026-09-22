@@ -80,6 +80,8 @@ Required stress behaviour:
 
 For every accepted stable F0:
 - octave errors: exactly zero in the validation corpus;
+- artificial subharmonics are forbidden: a component at F, 2F, 3F... is not by itself evidence that a lower F/n exists; a lower family may be published only when the observed harmonic structure requires that lower fundamental;
+- when a low family and a higher primitive family are observationally ambiguous, the detector must not publish the artificial low family; it remains acquire/transition rather than manufacturing bass;
 - hallucinated stable F0 on aperiodic/noise-only material: exactly zero;
 - F0 error must be very small and measured in cents;
 - the target acceptance epsilon for the precision corpus is 1.5 cents unless a stricter later contract replaces it.

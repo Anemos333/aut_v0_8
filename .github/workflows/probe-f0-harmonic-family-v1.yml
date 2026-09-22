@@ -1,0 +1,27 @@
+name: Probe harmonic F0 family v1
+on:
+  push:
+    branches: [v1-f0-demolish-and-rebuild-v1]
+    paths:
+      - Tests/F0HarmonicFamilyProbe.cpp
+      - Tests/F0_REBUILD_CONTRACT_V1.md
+      - .github/workflows/probe-f0-harmonic-family-v1.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: v1-f0-demolish-and-rebuild-v1 }
+      - name: Build isolated harmonic-family probe
+        run: |
+          g++ -std=c++17 -O3 -Wall -Wextra -Wpedantic \
+              Tests/F0HarmonicFamilyProbe.cpp \
+              -o /tmp/f0-harmonic-family-v1
+      - name: Run diagnostic
+        run: |
+          /tmp/f0-harmonic-family-v1 | tee /tmp/f0-harmonic-family-v1.log
+          grep '^HARMONIC_FAMILY_SUMMARY' /tmp/f0-harmonic-family-v1.log
+          grep '^HARMONIC_FAMILY_SAFETY=' /tmp/f0-harmonic-family-v1.log
