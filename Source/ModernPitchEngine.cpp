@@ -419,10 +419,20 @@ void ModernPitchEngine::MultiRatePitchTracker::clearObservationMemory(
     octaveCommitGuardHops_ = 0;
     observationContinuityBroken_ = true;
 
+    // GAP_HISTORY_ABLATION_V1: detector hypotheses/candidates must never survive
+    // a physical gap, but the sample rings already contain the real zero-valued
+    // gap because processSample() pushes input before presence handling. Preserve
+    // that physical history so a short dropout does not force every multirate
+    // path to refill an entire window from scratch.
+    fullRateCandidate_ = {};
+    halfRateCandidate_ = {};
+    quarterRateCandidate_ = {};
+    eighthRateCandidate_ = {};
+
     if (!clearAnalysisBuffers)
         return;
 
-    // A physical gap means samples on the two sides are not one analysis frame.
+    // Full reset still drops detector sample history.
     // Drop only detector buffers; the single wet renderer/OLA is untouched.
     fullRateRing_.fill(0.0f);
     halfRateRing_.fill(0.0f);
@@ -440,10 +450,6 @@ void ModernPitchEngine::MultiRatePitchTracker::clearObservationMemory(
     quarterRateDecimationCounter_ = 0;
     eighthRateDecimationCounter_ = 0;
     analysisHopCounter_ = 0;
-    fullRateCandidate_ = {};
-    halfRateCandidate_ = {};
-    quarterRateCandidate_ = {};
-    eighthRateCandidate_ = {};
     halfRateAntiAlias_.reset();
     quarterRateAntiAlias_.reset();
     eighthRateAntiAlias_.reset();
@@ -3163,7 +3169,7 @@ bool ModernPitchEngine::MultiRatePitchTracker::processSample(
     // ZERO_INPUT_CLEARS_OBSERVER_NOT_MUSIC_V1
     if (!presenceMode_)
     {
-        clearObservationMemory(true);
+        clearObservationMemory(false);
         observation.audioPresent = false;
         observation.measurementAvailable = false;
         observation.valid = false;
