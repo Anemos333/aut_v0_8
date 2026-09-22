@@ -10,7 +10,7 @@
 namespace
 {
 constexpr double sr = 48000.0;
-constexpr int frameSize = 432; // 9 ms
+constexpr int frameSize = 448; // 9.33 ms at 48 kHz, still inside the <10 ms contract
 constexpr double pi = 3.14159265358979323846;
 constexpr double minimumF0 = 55.0;
 constexpr double maximumF0 = 1600.0;
