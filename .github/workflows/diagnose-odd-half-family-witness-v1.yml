@@ -1,0 +1,51 @@
+name: Diagnose 2F odd-half witness v1
+on:
+  push:
+    branches: [v1-continuous-f0-minimal-recomposition-v1]
+    paths:
+      - Tests/OddHalfFamilyWitnessProbe.cpp
+      - .github/workflows/diagnose-odd-half-family-witness-v1.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: v1-continuous-f0-minimal-recomposition-v1 }
+      - run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y libasound2-dev libjack-jackd2-dev ladspa-sdk libcurl4-openssl-dev libfreetype6-dev libfontconfig-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev >/dev/null
+      - run: |
+          cp Tests/OddHalfFamilyWitnessProbe.cpp Tests/SupervisorContinuityTest.cpp
+          cmake -S . -B build-odd-half -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON >/dev/null
+          cmake --build build-odd-half --config Release --parallel 2 --target SupervisorContinuityTest >/dev/null
+          ./build-odd-half/clean-engine-tests/SupervisorContinuityTest | tee /tmp/odd-half.log
+          grep -q '^ODD_HALF_WITNESS ' /tmp/odd-half.log
+      - run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re,statistics
+          rows=[]
+          for line in Path('/tmp/odd-half.log').read_text().splitlines():
+              if not line.startswith('ODD_HALF_WITNESS '):continue
+              d=dict(re.findall(r'(\w+)=([^ ]+)',line))
+              for k in ['hz','snr','true_candidate','double_candidate','alias_margin','us']:d[k]=float(d[k])
+              d['alias_detected']=int(d['alias_detected']);rows.append(d)
+          for mode in ['source','residual']:
+              for kind in ['normal','strong_second','missing_fundamental']:
+                  sub=[r for r in rows if r['mode']==mode and r['kind']==kind]
+                  print('ODD_HALF_SUMMARY'
+                        f' mode={mode} kind={kind} n={len(sub)}'
+                        f' alias_detect_fraction={sum(r["alias_detected"] for r in sub)/len(sub):.6f}'
+                        f' median_margin={statistics.median(r["alias_margin"] for r in sub):.6f}'
+                        f' worst_margin={min(r["alias_margin"] for r in sub):.6f}'
+                        f' median_us={statistics.median(r["us"] for r in sub):.6f}')
+              noise=[r for r in rows if r['mode']==mode and r['kind']=='white']
+              print('ODD_HALF_NOISE'
+                    f' mode={mode} n={len(noise)}'
+                    f' max_true={max(r["true_candidate"] for r in noise):.6f}'
+                    f' max_double={max(r["double_candidate"] for r in noise):.6f}'
+                    f' max_abs_margin={max(abs(r["alias_margin"]) for r in noise):.6f}')
+          PY
