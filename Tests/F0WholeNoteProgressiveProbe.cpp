@@ -528,6 +528,9 @@ int main()
                         const auto e = estimateProgressive(x, checkpoints[i]);
                         if (!e.valid)
                             continue;
+                        if (checkpoints[i] == 448
+                            && !shouldPublishInsideNormalWindow(x, e))
+                            continue;
 
                         ++firstAt[i];
                         const double error = cents(e.hz, f0);
@@ -667,6 +670,9 @@ int main()
                     {
                         const auto e = estimateProgressive(x, sampleCount);
                         if (!e.valid)
+                            continue;
+                        if (sampleCount == 448
+                            && !shouldPublishInsideNormalWindow(x, e))
                             continue;
 
                         const double ae = std::abs(cents(e.hz, f0));
