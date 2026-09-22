@@ -312,6 +312,23 @@ WholeNoteEstimate applyPrimitiveValidator(const std::array<double, frameSize>& x
     return e;
 }
 
+
+WholeNoteEstimate applyDirectObservabilityGuard(WholeNoteEstimate e) noexcept
+{
+    if (!e.valid)
+        return e;
+
+    // A direct whole-wave repetition claim is structurally publishable only
+    // when two candidate periods fit in the causal frame. If not, the
+    // current time-domain estimator has insufficient direct repetition
+    // evidence and must remain transition. A later estimator may recover
+    // these cases using additional whole-note information.
+    if (2 * e.lag >= frameSize)
+        return {};
+
+    return e;
+}
+
 int main()
 {
     constexpr std::array<double, 12> frequencies {
@@ -518,6 +535,16 @@ int main()
                         if (validated.hz > 1.5 * f0) ++holdoutValidatedHigh;
                     }
 
+                    if (guarded.valid)
+                    {
+                        ++verificationGuardedValid;
+                        const double ge = std::abs(cents(guarded.hz, f0));
+                        if (ge <= 100.0) ++verificationGuardedCorrect;
+                        else ++verificationGuardedWrong;
+                        if (guarded.hz < 0.75 * f0) ++verificationGuardedLow;
+                        if (guarded.hz > 1.5 * f0) ++verificationGuardedHigh;
+                    }
+
                     if (base.valid && validated.valid
                         && std::abs(base.hz - validated.hz) > 1.0e-9)
                     {
@@ -572,6 +599,11 @@ int main()
     int verificationValidatedHigh = 0;
     int verificationChanged = 0;
     int verificationCorrectToWrong = 0;
+    int verificationGuardedValid = 0;
+    int verificationGuardedCorrect = 0;
+    int verificationGuardedWrong = 0;
+    int verificationGuardedHigh = 0;
+    int verificationGuardedLow = 0;
     int verificationResidualOctaveHigh = 0;
     int verificationResidualArtificialLow = 0;
     int verificationResidualOther = 0;
@@ -586,6 +618,7 @@ int main()
                         seed ^ static_cast<std::uint32_t>(f0 * 97.0));
                     const auto base = estimateWholeNote(x);
                     const auto validated = applyPrimitiveValidator(x, base);
+                    const auto guarded = applyDirectObservabilityGuard(validated);
                     ++verificationCases;
 
                     if (base.valid)
@@ -659,6 +692,11 @@ int main()
               << " residual_high=" << verificationResidualOctaveHigh
               << " residual_low=" << verificationResidualArtificialLow
               << " residual_other=" << verificationResidualOther
+              << " guarded_valid=" << verificationGuardedValid
+              << " guarded_correct=" << verificationGuardedCorrect
+              << " guarded_wrong=" << verificationGuardedWrong
+              << " guarded_low=" << verificationGuardedLow
+              << " guarded_high=" << verificationGuardedHigh
               << " changed=" << verificationChanged
               << " correct_to_wrong=" << verificationCorrectToWrong
               << '\n';
