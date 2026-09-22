@@ -235,8 +235,6 @@ private:
                                       float formantStability,
                                       float lowerFamilyEvidence) noexcept;
         void setRescueMode(bool enabled) noexcept { rescueMode_ = enabled; }
-        // TRANSITION_WAKES_DETECTOR_NOT_OUTPUT_V1: analysis-only watchdog.
-        void setTransitionWake(bool enabled) noexcept { transitionWake_ = enabled; }
         void setReacquisitionAnchor(float frequencyHz) noexcept;
         void clearReacquisitionAnchor() noexcept { reacquisitionAnchorHz_ = 0.0f; }
         bool processSample(float inputSample, PitchObservation& observation) noexcept;
@@ -251,8 +249,6 @@ private:
         static constexpr int standardAnalysisSize = 256;
         static constexpr int detectorHop = 32;
         static constexpr int detectorPathCount = 4;
-        static constexpr int maxConsensusHypotheses = 20;
-        static constexpr int decoderBeamWidth = 6;
 
         struct PitchCandidate
         {
@@ -286,36 +282,6 @@ private:
             // enters this buffer and the renderer never reads it.
             std::array<float, maxAnalysisSize> voiceResidualFrame {};
             std::array<float, maxAnalysisSize> difference {};
-            // RESIDUAL_HANN_LAZY_MEMOIZATION_V1: scratch for one analyse() call.
-            // The first unique residual line fills this lazily in golden loop
-            // order; later unique lines reuse the exact double coefficients.
-            std::array<double, maxAnalysisSize> residualHannWindow {};
-        };
-
-        struct ConsensusHypothesis
-        {
-            float frequencyHz = 0.0f;
-            float confidence = 0.0f;
-            float periodicity = 0.0f;
-            float harmonicFamily = 1.0f;
-            float tonalCleanliness = 1.0f;
-            float consensus = 0.0f;
-            float evidenceScore = -1000.0f;
-            int supportCount = 0;
-            int cleanSupportCount = 0;
-            int directSupportCount = 0;
-            std::uint8_t supportMask = 0;
-            std::uint8_t freshSupportMask = 0;
-            bool valid = false;
-        };
-
-        struct DecoderState
-        {
-            double logFrequency = 0.0;
-            float score = -1000.0f;
-            int ageInHops = 0;
-            int octaveIndex = 0;
-            bool valid = false;
         };
 
         struct DecoderDecision
@@ -357,27 +323,13 @@ private:
             int analysisLength,
             AnalysisWorkspace& workspace) noexcept;
 
-        [[nodiscard]] PitchCandidate analyse(
-            const std::array<float, ringSize>& ring,
-            int writePosition,
-            int availableSamples,
-            double effectiveSampleRate,
-            float minimumFrequency,
-            float maximumFrequency,
-            int analysisLength,
-            AnalysisWorkspace& workspace) noexcept;
         [[nodiscard]] int collectFreshCandidates(
             std::array<PitchCandidate, detectorPathCount>& candidates) const noexcept;
-        [[nodiscard]] int buildConsensusHypotheses(
-            const std::array<PitchCandidate, detectorPathCount>& candidates,
-            int candidateCount,
-            std::array<ConsensusHypothesis, maxConsensusHypotheses>& hypotheses) const noexcept;
         // CONTINUOUS_F0_NATIVE_RESOLVER_V1: compose the already measured
         // path coordinates by native band and rational family agreement.
         // No confidence/cleanliness gate is allowed to erase a finite F0.
         [[nodiscard]] DecoderDecision resolveContinuousCandidate() const noexcept;
 
-        [[nodiscard]] DecoderDecision decodeCandidate(bool onsetPending) noexcept;
         // PATH_ROLE_SPLIT_V1: decimated paths no longer cast equivalent votes.
         // Pitch authority says how useful a path is for locating F0; cleanliness
         // authority says how useful it is for deciding whether that F0 belongs to
@@ -386,7 +338,6 @@ private:
         // Family evidence and coordinate ownership are deliberately distinct.
         // Direct-band boundaries reuse the existing 230/460/900 Hz path limits.
         [[nodiscard]] float pathCoordinateAuthority(int pathIndex, float frequencyHz) const noexcept;
-        [[nodiscard]] float pathCleanlinessAuthority(int pathIndex, float frequencyHz) const noexcept;
         [[nodiscard]] float candidateBaseScore(const PitchCandidate& candidate) const noexcept;
         [[nodiscard]] float voiceBodyAuthorityV67() const noexcept;
         [[nodiscard]] bool voiceAllowsLowerFamilyV67() const noexcept;
@@ -398,11 +349,6 @@ private:
                                                          float& residualCents) noexcept;
         [[nodiscard]] bool confirmOctaveTransition(DecoderDecision& decision,
                                                    bool onsetPending) noexcept;
-        void updateDecoderBeam(
-            const std::array<ConsensusHypothesis, maxConsensusHypotheses>& hypotheses,
-            int hypothesisCount,
-            bool onsetPending) noexcept;
-
         double sampleRate_ = 48000.0;
         float minimumPitchHz_ = 45.0f;
         float maximumPitchHz_ = 1600.0f;
@@ -410,7 +356,6 @@ private:
         bool rescueMode_ = false;
         bool presenceMode_ = false;
         bool presenceSinceLastHop_ = false;
-        bool transitionWake_ = false;
         // True after a physical input discontinuity or watchdog falsification.
         // While true, musical note-body state may not be re-injected as an F0
         // anchor. A fresh measured F0 clears it.
@@ -470,7 +415,6 @@ private:
         // private workspace and never shares scratch arithmetic with this one.
         AnalysisWorkspace analysisWorkspace_ {};
         std::unique_ptr<AnalysisWorker> analysisWorker_;
-        std::array<DecoderState, decoderBeamWidth> decoderBeam_ {};
         float trackedPitchHz_ = 0.0f;
         float reacquisitionAnchorHz_ = 0.0f;
         float trackedConfidence_ = 0.0f;
