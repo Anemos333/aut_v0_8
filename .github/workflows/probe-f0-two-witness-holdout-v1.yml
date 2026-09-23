@@ -1,0 +1,35 @@
+name: Probe conservative two-witness octave-high holdout
+
+on:
+  push:
+    branches:
+      - v1-f0-demolish-and-rebuild-v1
+    paths:
+      - 'Tests/F0WholeNoteTwoWitnessHoldoutProbe.cpp'
+      - '.github/workflows/probe-f0-two-witness-holdout-v1.yml'
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v1-f0-demolish-and-rebuild-v1
+      - name: Build two-witness holdout
+        run: |
+          sed -i '0,/^int main()$/{s/^int main()$/int progressive_probe_reference_main()/}' \
+            Tests/F0WholeNoteProgressiveProbe.cpp
+          sed -i '0,/^int main()$/{s/^int main()$/int extended_eight_reference_main()/}' \
+            Tests/F0WholeNoteExtendedEightProbe.cpp
+          sed -i '0,/^int main()$/{s/^int main()$/int extended_exclusive_reference_main()/}' \
+            Tests/F0WholeNoteExtendedExclusiveHoldoutProbe.cpp
+          sed -i '0,/^int main()$/{s/^int main()$/int conjunction_holdout_reference_main()/}' \
+            Tests/F0WholeNoteExclusiveConjunctionHoldoutProbe.cpp
+          g++ -std=c++17 -O3 -Wall -Wextra -Wpedantic \
+            Tests/F0WholeNoteTwoWitnessHoldoutProbe.cpp \
+            -o /tmp/f0-two-witness-holdout
+      - name: Run two-witness holdout
+        run: |
+          /tmp/f0-two-witness-holdout | tee /tmp/f0-two-witness-holdout.log
+          grep '^TWO_WITNESS_HOLDOUT' /tmp/f0-two-witness-holdout.log
