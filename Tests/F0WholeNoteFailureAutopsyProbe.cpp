@@ -6,10 +6,7 @@
 #include <string>
 
 #include "../Source/F0WholeNoteDetectorV1.h"
-
-#define main conjunction_holdout_reference_main
 #include "F0WholeNoteExclusiveConjunctionHoldoutProbe.cpp"
-#undef main
 
 namespace
 {
