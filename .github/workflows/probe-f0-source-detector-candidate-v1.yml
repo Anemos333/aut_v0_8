@@ -1,0 +1,34 @@
+name: Probe Source whole-note detector candidate
+on:
+  push:
+    branches: [v1-f0-demolish-and-rebuild-v1]
+    paths:
+      - Source/F0WholeNoteDetectorV1.h
+      - Tests/F0SourceDetectorCandidateProbe.cpp
+      - Tests/F0WholeNoteExtendedEightProbe.cpp
+      - Tests/F0WholeNoteProgressiveProbe.cpp
+      - .github/workflows/probe-f0-source-detector-candidate-v1.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v1-f0-demolish-and-rebuild-v1
+      - name: Build Source detector candidate probe
+        run: |
+          sed -i '0,/^int main()$/{s/^int main()$/int progressive_probe_reference_main()/}' \
+              Tests/F0WholeNoteProgressiveProbe.cpp
+          sed -i '0,/^int main()$/{s/^int main()$/int extended_eight_reference_main()/}' \
+              Tests/F0WholeNoteExtendedEightProbe.cpp
+          g++ -std=c++17 -O3 -Wall -Wextra -Wpedantic \
+              Tests/F0SourceDetectorCandidateProbe.cpp \
+              -o /tmp/f0-source-detector-candidate
+      - name: Run Source detector candidate probe
+        run: |
+          /tmp/f0-source-detector-candidate | tee /tmp/f0-source-detector-candidate.log
+          grep '^SOURCE_DETECTOR_CANDIDATE ' /tmp/f0-source-detector-candidate.log
+          grep '^SOURCE_DETECTOR_CANDIDATE_SAFE=' /tmp/f0-source-detector-candidate.log
