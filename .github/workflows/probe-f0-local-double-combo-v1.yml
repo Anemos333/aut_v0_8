@@ -1,0 +1,31 @@
+name: Probe local double-lag F0 conjunction
+on:
+  push:
+    branches: [v1-f0-demolish-and-rebuild-v1]
+    paths:
+      - Tests/F0WholeNoteLocalDoubleComboProbe.cpp
+      - Tests/F0WholeNoteLocalDoubleLagProbe.cpp
+      - Tests/F0WholeNoteProgressiveProbe.cpp
+      - .github/workflows/probe-f0-local-double-combo-v1.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: v1-f0-demolish-and-rebuild-v1 }
+      - name: Build local double-lag conjunction probe
+        run: |
+          sed -i '0,/^int main()$/{s/^int main()$/int progressive_probe_reference_main()/}' \
+              Tests/F0WholeNoteProgressiveProbe.cpp
+          sed -i '0,/^int main()$/{s/^int main()$/int local_double_reference_main()/}' \
+              Tests/F0WholeNoteLocalDoubleLagProbe.cpp
+          g++ -std=c++17 -O3 -Wall -Wextra -Wpedantic \
+              Tests/F0WholeNoteLocalDoubleComboProbe.cpp \
+              -o /tmp/f0-local-double-combo
+      - name: Run diagnostic
+        run: |
+          /tmp/f0-local-double-combo | tee /tmp/f0-local-double-combo.log
+          grep '^LOCAL_DOUBLE_COMBO_SUMMARY' /tmp/f0-local-double-combo.log
