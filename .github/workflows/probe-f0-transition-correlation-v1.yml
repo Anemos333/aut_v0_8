@@ -1,0 +1,46 @@
+name: Sweep correlation F0 transition onset
+on:
+  push:
+    branches: [v1-f0-demolish-and-rebuild-v1]
+    paths:
+      - Tests/F0TransitionCorrelationSweepProbe.cpp
+      - Tests/F0TransitionAdaptiveStateProbe.cpp
+      - Tests/F0TransitionDisciplineProbe.cpp
+      - Tests/F0WholeNoteProgressiveProbe.cpp
+      - .github/workflows/probe-f0-transition-correlation-v1.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v1-f0-demolish-and-rebuild-v1
+      - name: Build correlation transition sweep
+        run: |
+          sed -i '0,/^int main()$/{s/^int main()$/int progressive_probe_reference_main()/}' \
+              Tests/F0WholeNoteProgressiveProbe.cpp
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('Tests/F0TransitionDisciplineProbe.cpp')
+          s = p.read_text()
+          s = s.replace(
+              '#define F0_WHOLE_NOTE_TUNER_NO_MAIN\n#define main progressive_probe_reference_main\n#include "F0WholeNoteProgressiveProbe.cpp"\n#undef main\n#undef F0_WHOLE_NOTE_TUNER_NO_MAIN',
+              '#include "F0WholeNoteProgressiveProbe.cpp"')
+          s = s.replace('neumaton::f0v1::PeriodicMeasurementGate', 'F0PeriodicGateV1')
+          s = s.replace('int main()\n{', 'int transition_discipline_reference_main()\n{', 1)
+          p.write_text(s)
+          p = Path('Tests/F0TransitionAdaptiveStateProbe.cpp')
+          s = p.read_text()
+          s = s.replace('int main()\n{', 'int adaptive_state_reference_main()\n{', 1)
+          p.write_text(s)
+          PY
+          g++ -std=c++17 -O3 -Wall -Wextra -Wpedantic \
+              Tests/F0TransitionCorrelationSweepProbe.cpp \
+              -o /tmp/f0-transition-correlation
+      - name: Run diagnostic
+        run: |
+          /tmp/f0-transition-correlation | tee /tmp/f0-transition-correlation.log
+          grep '^CORR_SWEEP' /tmp/f0-transition-correlation.log
