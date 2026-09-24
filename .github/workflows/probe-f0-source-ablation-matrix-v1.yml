@@ -17,6 +17,7 @@ jobs:
           - baseline
           - no_primitive065
           - no_alternation
+          - no_legacy_down
           - no_exclusive_down
           - no_ambiguity_flag
     name: ${{ matrix.variant }}
@@ -35,25 +36,33 @@ jobs:
           s = p.read_text()
           v = os.environ['VARIANT']
           edits = {
-              'no_primitive065': (
+              'primitive': (
                   'if(primitiveRatio<=.65&&.5*hz>=minimumHz_)',
                   'if(false&&primitiveRatio<=.65&&.5*hz>=minimumHz_)'),
-              'no_alternation': (
+              'alternation': (
                   'if(a.observable&&a.score>=3.0)',
                   'if(false&&a.observable&&a.score>=3.0)'),
-              'no_exclusive_down': (
+              'exclusive': (
                   'if(low.observable&&low.witnesses8>=3)',
                   'if(false&&low.observable&&low.witnesses8>=3)'),
-              'no_ambiguity_flag': (
+              'ambiguity': (
                   'else if(low.observable&&low.witnesses8==2&&low.localRatio<=.85)ambiguous=true;',
                   'else if(false&&low.observable&&low.witnesses8==2&&low.localRatio<=.85)ambiguous=true;'),
           }
-          if v != 'baseline':
-              old, new = edits[v]
+          which = {
+              'baseline': [],
+              'no_primitive065': ['primitive'],
+              'no_alternation': ['alternation'],
+              'no_legacy_down': ['primitive', 'alternation'],
+              'no_exclusive_down': ['exclusive'],
+              'no_ambiguity_flag': ['ambiguity'],
+          }[v]
+          for key in which:
+              old, new = edits[key]
               if old not in s:
-                  raise SystemExit(f'ablation target not found: {v}')
+                  raise SystemExit(f'ablation target not found: {v}/{key}')
               s = s.replace(old, new, 1)
-              p.write_text(s)
+          p.write_text(s)
           print('ABLATION_VARIANT=' + v)
           PY
       - name: Build
