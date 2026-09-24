@@ -1,0 +1,31 @@
+name: Probe F0 primitive authority ablation
+
+on:
+  push:
+    branches:
+      - v1-f0-demolish-and-rebuild-v1
+    paths:
+      - 'Tests/F0PrimitiveAuthorityAblationProbe.cpp'
+      - '.github/workflows/probe-f0-primitive-authority-ablation-v1.yml'
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v1-f0-demolish-and-rebuild-v1
+      - name: Build primitive authority ablation
+        run: |
+          sed -i '0,/^int main()$/{s/^int main()$/int progressive_probe_reference_main()/}' Tests/F0WholeNoteProgressiveProbe.cpp
+          sed -i '0,/^int main()$/{s/^int main()$/int extended_eight_reference_main()/}' Tests/F0WholeNoteExtendedEightProbe.cpp
+          sed -i '0,/^int main()$/{s/^int main()$/int extended_exclusive_reference_main()/}' Tests/F0WholeNoteExtendedExclusiveHoldoutProbe.cpp
+          sed -i '0,/^int main()$/{s/^int main()$/int conjunction_holdout_reference_main()/}' Tests/F0WholeNoteExclusiveConjunctionHoldoutProbe.cpp
+          g++ -std=c++17 -O3 -Wall -Wextra -Wpedantic \
+            Tests/F0PrimitiveAuthorityAblationProbe.cpp \
+            -o /tmp/f0-primitive-authority-ablation
+      - name: Run primitive authority ablation
+        run: |
+          /tmp/f0-primitive-authority-ablation | tee /tmp/f0-primitive-authority-ablation.log
+          grep '^ARTIFICIAL_LOW_REASON\|^PRIMITIVE_ABLATION' /tmp/f0-primitive-authority-ablation.log
