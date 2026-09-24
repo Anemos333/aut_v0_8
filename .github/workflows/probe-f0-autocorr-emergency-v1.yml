@@ -1,0 +1,30 @@
+name: Probe autocorrelation emergency F0 path
+on:
+  push:
+    branches: [v1-f0-demolish-and-rebuild-v1]
+    paths:
+      - 'Tests/F0AutocorrEmergencyProbe.cpp'
+      - 'Source/F0WholeNoteDetectorV1.h'
+      - 'Tests/F0WholeNoteExtendedEightProbe.cpp'
+      - 'Tests/F0WholeNoteProgressiveProbe.cpp'
+      - '.github/workflows/probe-f0-autocorr-emergency-v1.yml'
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v1-f0-demolish-and-rebuild-v1
+      - name: Prepare reusable probe includes
+        run: |
+          sed -i '0,/^int main()$/{s/^int main()$/int progressive_probe_reference_main()/}' Tests/F0WholeNoteProgressiveProbe.cpp
+          sed -i '0,/^int main()$/{s/^int main()$/int extended_eight_reference_main()/}' Tests/F0WholeNoteExtendedEightProbe.cpp
+      - name: Build ACF emergency probe
+        run: |
+          g++ -std=c++17 -O3 -march=native -Wall -Wextra -Wpedantic \
+            Tests/F0AutocorrEmergencyProbe.cpp -o /tmp/f0-acf-emergency
+      - name: Run probe
+        run: |
+          /tmp/f0-acf-emergency | tee /tmp/f0-acf-emergency.log
+          grep '^ACF_EMERGENCY' /tmp/f0-acf-emergency.log
