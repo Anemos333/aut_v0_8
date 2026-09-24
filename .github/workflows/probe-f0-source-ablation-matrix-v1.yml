@@ -1,0 +1,70 @@
+name: Probe Source F0 authority ablation matrix
+on:
+  push:
+    branches: [v1-f0-demolish-and-rebuild-v1]
+    paths:
+      - 'Source/F0WholeNoteDetectorV1.h'
+      - 'Tests/F0SourceMultiHoldoutProbe.cpp'
+      - '.github/workflows/probe-f0-source-ablation-matrix-v1.yml'
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - baseline
+          - no_primitive065
+          - no_alternation
+          - no_exclusive_down
+          - no_ambiguity_flag
+    name: ${{ matrix.variant }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v1-f0-demolish-and-rebuild-v1
+      - name: Apply checkout-only ablation
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          p = Path('Source/F0WholeNoteDetectorV1.h')
+          s = p.read_text()
+          v = os.environ['VARIANT']
+          edits = {
+              'no_primitive065': (
+                  'if(primitiveRatio<=.65&&.5*hz>=minimumHz_)',
+                  'if(false&&primitiveRatio<=.65&&.5*hz>=minimumHz_)'),
+              'no_alternation': (
+                  'if(a.observable&&a.score>=3.0)',
+                  'if(false&&a.observable&&a.score>=3.0)'),
+              'no_exclusive_down': (
+                  'if(low.observable&&low.witnesses8>=3)',
+                  'if(false&&low.observable&&low.witnesses8>=3)'),
+              'no_ambiguity_flag': (
+                  'else if(low.observable&&low.witnesses8==2&&low.localRatio<=.85)ambiguous=true;',
+                  'else if(false&&low.observable&&low.witnesses8==2&&low.localRatio<=.85)ambiguous=true;'),
+          }
+          if v != 'baseline':
+              old, new = edits[v]
+              if old not in s:
+                  raise SystemExit(f'ablation target not found: {v}')
+              s = s.replace(old, new, 1)
+              p.write_text(s)
+          print('ABLATION_VARIANT=' + v)
+          PY
+      - name: Build
+        run: |
+          sed -i '0,/^int main()$/{s/^int main()$/int progressive_probe_reference_main()/}' Tests/F0WholeNoteProgressiveProbe.cpp
+          sed -i '0,/^int main()$/{s/^int main()$/int extended_eight_reference_main()/}' Tests/F0WholeNoteExtendedEightProbe.cpp
+          g++ -std=c++17 -O3 -Wall -Wextra -Wpedantic Tests/F0SourceMultiHoldoutProbe.cpp -o /tmp/f0-source-ablation
+      - name: Run
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          echo "ABLATION_BEGIN variant=$VARIANT"
+          /tmp/f0-source-ablation
+          echo "ABLATION_END variant=$VARIANT"
