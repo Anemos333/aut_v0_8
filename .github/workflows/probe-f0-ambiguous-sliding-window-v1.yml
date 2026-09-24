@@ -1,0 +1,33 @@
+name: Probe fixed sliding-window ambiguity escape
+
+on:
+  push:
+    branches:
+      - v1-f0-demolish-and-rebuild-v1
+    paths:
+      - 'Tests/F0AmbiguousSlidingWindowProbe.cpp'
+      - '.github/workflows/probe-f0-ambiguous-sliding-window-v1.yml'
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v1-f0-demolish-and-rebuild-v1
+      - name: Build sliding-window ambiguity probe
+        run: |
+          sed -i '0,/^int main()$/{s/^int main()$/int progressive_probe_reference_main()/}' Tests/F0WholeNoteProgressiveProbe.cpp
+          sed -i '0,/^int main()$/{s/^int main()$/int extended_eight_reference_main()/}' Tests/F0WholeNoteExtendedEightProbe.cpp
+          sed -i '0,/^int main()$/{s/^int main()$/int extended_exclusive_reference_main()/}' Tests/F0WholeNoteExtendedExclusiveHoldoutProbe.cpp
+          sed -i '0,/^int main()$/{s/^int main()$/int conjunction_holdout_reference_main()/}' Tests/F0WholeNoteExclusiveConjunctionHoldoutProbe.cpp
+          sed -i '0,/^int main()$/{s/^int main()$/int primitive_ablation_reference_main()/}' Tests/F0PrimitiveAuthorityAblationProbe.cpp
+          sed -i '0,/^int main()$/{s/^int main()$/int transition_bound_reference_main()/}' Tests/F0AmbiguousTransitionBoundProbe.cpp
+          g++ -std=c++17 -O3 -Wall -Wextra -Wpedantic \
+            Tests/F0AmbiguousSlidingWindowProbe.cpp \
+            -o /tmp/f0-ambiguous-sliding-window
+      - name: Run sliding-window ambiguity probe
+        run: |
+          /tmp/f0-ambiguous-sliding-window | tee /tmp/f0-ambiguous-sliding-window.log
+          grep '^SLIDING_' /tmp/f0-ambiguous-sliding-window.log
