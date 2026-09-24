@@ -1,0 +1,30 @@
+name: Verify fixed autocorrelation emergency F0 rule
+on:
+  push:
+    branches: [v1-f0-demolish-and-rebuild-v1]
+    paths:
+      - 'Tests/F0AutocorrEmergencyVerification.cpp'
+      - 'Tests/F0AutocorrEmergencyProbe.cpp'
+      - 'Source/F0WholeNoteDetectorV1.h'
+      - '.github/workflows/probe-f0-autocorr-emergency-verify-v1.yml'
+  workflow_dispatch:
+jobs:
+  verify:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v1-f0-demolish-and-rebuild-v1
+      - name: Prepare reusable probe includes
+        run: |
+          sed -i '0,/^int main()$/{s/^int main()$/int progressive_probe_reference_main()/}' Tests/F0WholeNoteProgressiveProbe.cpp
+          sed -i '0,/^int main()$/{s/^int main()$/int extended_eight_reference_main()/}' Tests/F0WholeNoteExtendedEightProbe.cpp
+          sed -i '0,/^int main()$/{s/^int main()$/int autocorr_probe_reference_main()/}' Tests/F0AutocorrEmergencyProbe.cpp
+      - name: Build verification
+        run: |
+          g++ -std=c++17 -O3 -march=native -Wall -Wextra -Wpedantic \
+            Tests/F0AutocorrEmergencyVerification.cpp -o /tmp/f0-acf-verify
+      - name: Run verification
+        run: |
+          /tmp/f0-acf-verify | tee /tmp/f0-acf-verify.log
+          grep '^ACF_FIXED_VERIFY' /tmp/f0-acf-verify.log
