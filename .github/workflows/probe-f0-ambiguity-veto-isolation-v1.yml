@@ -1,0 +1,32 @@
+name: Probe isolated ambiguous octave veto
+
+on:
+  push:
+    branches:
+      - v1-f0-demolish-and-rebuild-v1
+    paths:
+      - 'Tests/F0AmbiguityVetoIsolationProbe.cpp'
+      - '.github/workflows/probe-f0-ambiguity-veto-isolation-v1.yml'
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v1-f0-demolish-and-rebuild-v1
+      - name: Build ambiguity veto isolation
+        run: |
+          sed -i '0,/^int main()$/{s/^int main()$/int progressive_probe_reference_main()/}' Tests/F0WholeNoteProgressiveProbe.cpp
+          sed -i '0,/^int main()$/{s/^int main()$/int extended_eight_reference_main()/}' Tests/F0WholeNoteExtendedEightProbe.cpp
+          sed -i '0,/^int main()$/{s/^int main()$/int extended_exclusive_reference_main()/}' Tests/F0WholeNoteExtendedExclusiveHoldoutProbe.cpp
+          sed -i '0,/^int main()$/{s/^int main()$/int conjunction_holdout_reference_main()/}' Tests/F0WholeNoteExclusiveConjunctionHoldoutProbe.cpp
+          sed -i '0,/^int main()$/{s/^int main()$/int primitive_ablation_reference_main()/}' Tests/F0PrimitiveAuthorityAblationProbe.cpp
+          g++ -std=c++17 -O3 -Wall -Wextra -Wpedantic \
+            Tests/F0AmbiguityVetoIsolationProbe.cpp \
+            -o /tmp/f0-ambiguity-veto-isolation
+      - name: Run ambiguity veto isolation
+        run: |
+          /tmp/f0-ambiguity-veto-isolation | tee /tmp/f0-ambiguity-veto-isolation.log
+          grep '^AMBIGUITY_VETO' /tmp/f0-ambiguity-veto-isolation.log
