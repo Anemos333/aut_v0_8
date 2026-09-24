@@ -1,0 +1,22 @@
+name: Probe stateful octave change regression
+on:
+  push:
+    branches: [v1-f0-demolish-and-rebuild-v1]
+    paths:
+      - 'Tests/F0StatefulOctaveChangeProbe.cpp'
+      - '.github/workflows/probe-f0-stateful-octave-change-v1.yml'
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v1-f0-demolish-and-rebuild-v1
+      - name: Build
+        run: |
+          sed -i '0,/^int main()$/{s/^int main()$/int progressive_probe_reference_main()/}' Tests/F0WholeNoteProgressiveProbe.cpp
+          sed -i '0,/^int main()$/{s/^int main()$/int extended_eight_reference_main()/}' Tests/F0WholeNoteExtendedEightProbe.cpp
+          g++ -std=c++17 -O3 -Wall -Wextra -Wpedantic Tests/F0StatefulOctaveChangeProbe.cpp -o /tmp/f0-octave-change
+      - name: Run
+        run: /tmp/f0-octave-change | tee /tmp/f0-octave-change.log
