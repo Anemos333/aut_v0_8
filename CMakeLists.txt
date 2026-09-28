@@ -51,6 +51,7 @@ target_sources(Neumaton
         Source/ScaleDefinitions.cpp
         Source/CustomScalePresets.cpp
         Source/CustomScaleEditor.cpp
+        Source/PitchCore.cpp
         Source/ModernPitchEngine.cpp
         Source/SingleWetSpectralRenderer.cpp
         Source/Tempo.cpp
@@ -93,6 +94,21 @@ option(NEUMATON_BUILD_CLEAN_ENGINE_TESTS
        "Build the clean ModernPitchEngine invariant tests" OFF)
 
 if(NEUMATON_BUILD_CLEAN_ENGINE_TESTS)
+    add_executable(PitchCoreStressTest
+        Tests/PitchCoreStressTest.cpp
+        Source/PitchCore.cpp
+    )
+    target_include_directories(PitchCoreStressTest PRIVATE Source)
+    set_target_properties(PitchCoreStressTest PROPERTIES
+        CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED ON
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/clean-engine-tests"
+        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/clean-engine-tests"
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/clean-engine-tests"
+        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/clean-engine-tests"
+        RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}/clean-engine-tests"
+    )
+
     juce_add_console_app(CleanModernPitchEngineTest
         PRODUCT_NAME CleanModernPitchEngineTest
     )
