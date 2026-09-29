@@ -386,9 +386,11 @@ FundamentalDetector::Candidate FundamentalDetector::estimateGlobal() noexcept
             : 1.0f;
     }
 
+    // Select the strongest periodic family first. The previous "first minimum
+    // under threshold" rule was biased toward short periods and could promote
+    // strong H2/H3 structure to the fundamental.
     int chosenTau = -1;
     float chosenValue = 1.0f;
-    constexpr float threshold = 0.24f;
     for (int tau = tauMinimum; tau <= tauMaximum; ++tau)
     {
         const float value = cmndf_[static_cast<std::size_t>(tau)];
@@ -396,27 +398,58 @@ FundamentalDetector::Candidate FundamentalDetector::estimateGlobal() noexcept
             || tau >= tauMaximum
             || (value <= cmndf_[static_cast<std::size_t>(tau - 1)]
                 && value < cmndf_[static_cast<std::size_t>(tau + 1)]);
-        if (value < threshold && localMinimum)
+        if (localMinimum && value < chosenValue)
         {
             chosenTau = tau;
             chosenValue = value;
-            break;
         }
     }
 
-    if (chosenTau < 0)
+    // Keep the old global validity ceiling. This change is only about family
+    // identity; it must not make the detector more permissive.
+    if (chosenTau < 0 || chosenValue > 0.38f)
+        return result;
+
+    // A long candidate period can be a false 2:1, 3:1 or 4:1 subharmonic.
+    // Collapse it to the shortest integer divisor only when that divisor is a
+    // genuine nearby CMNDF minimum and explains almost the same waveform. This
+    // is validation of one estimate, not another pitch tracker or a vote.
+    const int familyTau = chosenTau;
+    const float familyValue = chosenValue;
+    for (int divisor = 4; divisor >= 2; --divisor)
     {
-        for (int tau = tauMinimum; tau <= tauMaximum; ++tau)
+        const double targetTau = static_cast<double>(familyTau)
+                               / static_cast<double>(divisor);
+        if (targetTau < static_cast<double>(tauMinimum)
+            || targetTau > static_cast<double>(tauMaximum))
+            continue;
+
+        const int centreTau = static_cast<int>(std::lround(targetTau));
+        int divisorTau = -1;
+        float divisorValue = 2.0f;
+        const int firstTau = std::max(tauMinimum, centreTau - 2);
+        const int lastTau = std::min(tauMaximum, centreTau + 2);
+        for (int tau = firstTau; tau <= lastTau; ++tau)
         {
             const float value = cmndf_[static_cast<std::size_t>(tau)];
-            if (value < chosenValue)
+            const bool localMinimum = tau <= tauMinimum
+                || tau >= tauMaximum
+                || (value <= cmndf_[static_cast<std::size_t>(tau - 1)]
+                    && value < cmndf_[static_cast<std::size_t>(tau + 1)]);
+            if (localMinimum && value < divisorValue)
             {
-                chosenValue = value;
-                chosenTau = tau;
+                divisorTau = tau;
+                divisorValue = value;
             }
         }
-        if (chosenTau < 0 || chosenValue > 0.38f)
-            return result;
+
+        if (divisorTau > 0
+            && divisorValue <= familyValue * 1.35f + 0.005f)
+        {
+            chosenTau = divisorTau;
+            chosenValue = divisorValue;
+            break;
+        }
     }
 
     double refinedTau = static_cast<double>(chosenTau);
