@@ -623,13 +623,37 @@ void FundamentalDetector::handleCandidate(const Candidate& candidate) noexcept
     {
         if (stableHz_ > 0.0f)
             enterTransition();
+        else
+        {
+            pendingHz_ = 0.0f;
+            pendingConfirmations_ = 0;
+        }
         return;
     }
 
     if (stableHz_ <= 0.0f)
     {
         const SensorDecision sensors = queryNatureSensors(candidate);
-        if (!sensors.rejectCandidate && !candidate.octaveAmbiguous)
+        if (sensors.rejectCandidate || candidate.octaveAmbiguous)
+        {
+            pendingHz_ = 0.0f;
+            pendingConfirmations_ = 0;
+            return;
+        }
+
+        // The first Stable F0 needs the same minimal continuity proof used for
+        // a new Stable F0 after Transition. This prevents a single uncertain
+        // gate false-positive from becoming persistent pitch memory. One extra
+        // analysis hop is enough; there is no timer or confidence smoothing.
+        if (pendingHz_ <= 0.0f || centsDistance(candidate.hz, pendingHz_) > 20.0f)
+        {
+            pendingHz_ = candidate.hz;
+            pendingConfirmations_ = 1;
+            return;
+        }
+
+        ++pendingConfirmations_;
+        if (pendingConfirmations_ >= 2)
             acceptStable(candidate);
         return;
     }
