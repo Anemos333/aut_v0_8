@@ -39,6 +39,42 @@ bool PitchEngineV1::setScale(const double* ratios,
     return quantizer_.setScale(ratios, count, referenceHz, equaveRatio);
 }
 
+pitch::PitchResult PitchEngineV1::analyseFrame(const float* input,
+                                               int channels) noexcept
+{
+    pitch::PitchResult result;
+    if (input == nullptr)
+        return result;
+
+    const int usedChannels = std::clamp(channels, 1, channels_);
+    double mono = 0.0;
+    for (int channel = 0; channel < usedChannels; ++channel)
+    {
+        const float x = std::isfinite(input[channel]) ? input[channel] : 0.0f;
+        mono += x;
+    }
+    mono /= static_cast<double>(usedChannels);
+    return pitchCore_.processSample(static_cast<float>(mono));
+}
+
+void PitchEngineV1::updateTrajectory(const pitch::PitchResult& pitchResult,
+                                     float speedMs,
+                                     float amount,
+                                     float humanize) noexcept
+{
+    const double correction = trajectory_.process(
+        pitchResult,
+        quantizer_,
+        std::clamp(amount, 0.0f, 1.0f),
+        std::clamp(humanize, 0.0f, 1.0f),
+        speedMs);
+
+    metering_.pitch = pitchResult;
+    metering_.targetPitchHz = trajectory_.targetPitchHz();
+    metering_.correctionCents = correction;
+    metering_.rendererSplices = renderer_.spliceCount();
+}
+
 void PitchEngineV1::processFrame(const float* input,
                                  float* output,
                                  int channels,
@@ -50,27 +86,29 @@ void PitchEngineV1::processFrame(const float* input,
         return;
 
     const int usedChannels = std::clamp(channels, 1, channels_);
-    double mono = 0.0;
-    for (int channel = 0; channel < usedChannels; ++channel)
-    {
-        const float x = std::isfinite(input[channel]) ? input[channel] : 0.0f;
-        mono += x;
-    }
-    mono /= static_cast<double>(usedChannels);
+    const auto pitchResult = analyseFrame(input, usedChannels);
+    updateTrajectory(pitchResult, speedMs, amount, humanize);
+    renderer_.processFrame(input, output, usedChannels, metering_.correctionCents);
+    metering_.rendererSplices = renderer_.spliceCount();
+}
 
-    const auto pitchResult = pitchCore_.processSample(static_cast<float>(mono));
-    const double correction = trajectory_.process(
-        pitchResult,
-        quantizer_,
-        std::clamp(amount, 0.0f, 1.0f),
-        std::clamp(humanize, 0.0f, 1.0f),
-        speedMs);
+void PitchEngineV1::processBypassedFrame(const float* input,
+                                         float* output,
+                                         int channels,
+                                         float speedMs,
+                                         float amount,
+                                         float humanize) noexcept
+{
+    if (input == nullptr || output == nullptr)
+        return;
 
-    renderer_.processFrame(input, output, usedChannels, correction);
+    const int usedChannels = std::clamp(channels, 1, channels_);
+    const auto pitchResult = analyseFrame(input, usedChannels);
+    updateTrajectory(pitchResult, speedMs, amount, humanize);
 
-    metering_.pitch = pitchResult;
-    metering_.targetPitchHz = trajectory_.targetPitchHz();
-    metering_.correctionCents = correction;
+    // Host bypass is identity transport through the same renderer. The hidden
+    // trajectory remains current, but uncertainty never creates another path.
+    renderer_.processFrame(input, output, usedChannels, 0.0);
     metering_.rendererSplices = renderer_.spliceCount();
 }
 
