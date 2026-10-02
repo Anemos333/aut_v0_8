@@ -252,6 +252,9 @@ public:
                  float speedMs,
                  float amount)
     {
+        lastSpeedMs_ = std::isfinite(speedMs) ? std::clamp(speedMs, 0.0f, 500.0f) : 50.0f;
+        lastAmount_ = std::isfinite(amount) ? std::clamp(amount, 0.0f, 1.0f) : 1.0f;
+
         auto& engine = activeEngine();
         static_cast<void>(engine.setScale(scaleRatios,
                                           numberOfScaleRatios,
@@ -273,7 +276,7 @@ public:
                 input[static_cast<std::size_t>(channel)] = buffer.getSample(channel, sample);
 
             engine.processFrame(input.data(), output.data(), channels,
-                                speedMs, amount, humanize_);
+                                lastSpeedMs_, lastAmount_, humanize_);
 
             for (int channel = 0; channel < channels; ++channel)
                 buffer.setSample(channel, sample, output[static_cast<std::size_t>(channel)]);
@@ -306,6 +309,9 @@ public:
         if (data == nullptr || numberOfSamples <= 0)
             return;
 
+        lastSpeedMs_ = std::isfinite(speedMs) ? std::clamp(speedMs, 0.0f, 500.0f) : 50.0f;
+        lastAmount_ = std::isfinite(amount) ? std::clamp(amount, 0.0f, 1.0f) : 1.0f;
+
         auto& engine = activeEngine();
         static_cast<void>(engine.setScale(scaleRatios.empty() ? nullptr : scaleRatios.data(),
                                           static_cast<int>(scaleRatios.size()),
@@ -315,7 +321,8 @@ public:
         {
             const float input = data[sample];
             float output = 0.0f;
-            engine.processFrame(&input, &output, 1, speedMs, amount, humanize_);
+            engine.processFrame(&input, &output, 1,
+                                lastSpeedMs_, lastAmount_, humanize_);
             data[sample] = output;
             updateStableDuration(engine.metering().pitch.state);
         }
@@ -493,3 +500,7 @@ private:
     std::int64_t expectedNextHostSample_ = 0;
     std::uint64_t sustainedStableSamples_ = 0;
 };
+
+// Temporary source-compatibility alias for UI/processor code that still spells
+// the old type name. It is not the old DSP class and carries no legacy engine.
+using ModernPitchEngine = LivePitchProcessor;
