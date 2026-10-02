@@ -52,6 +52,7 @@ target_sources(Neumaton
         Source/CustomScalePresets.cpp
         Source/CustomScaleEditor.cpp
         Source/PitchCore.cpp
+        Source/PitchEngineV1.cpp
         Source/SinglePathPitchRenderer.cpp
         Source/ModernPitchEngine.cpp
         Source/SingleWetSpectralRenderer.cpp
