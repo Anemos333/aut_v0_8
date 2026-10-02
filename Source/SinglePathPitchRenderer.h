@@ -32,7 +32,12 @@ public:
     [[nodiscard]] float lastSpliceMismatch() const noexcept { return lastSpliceMismatch_; }
 
 private:
-    static constexpr int historySize = 8;
+    // Splice selection is measurement-only, but it still needs enough waveform
+    // context to distinguish neighbouring vocal cycles. Eight samples (~0.17 ms
+    // at 48 kHz) could match a local tangent while choosing the wrong cycle.
+    // 64 samples (~1.33 ms) remain short and cheap while making the match depend
+    // on meaningful waveform shape rather than a handful of adjacent samples.
+    static constexpr int historySize = 64;
 
     double sampleRate_ = 48000.0;
     int channels_ = 1;
