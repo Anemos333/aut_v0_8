@@ -54,8 +54,6 @@ target_sources(Neumaton
         Source/PitchCore.cpp
         Source/PitchEngineV1.cpp
         Source/SinglePathPitchRenderer.cpp
-        Source/ModernPitchEngine.cpp
-        Source/SingleWetSpectralRenderer.cpp
         Source/Tempo.cpp
         Source/Preset.cpp
         Source/ControlRoomPage.cpp
@@ -64,7 +62,7 @@ target_sources(Neumaton
 
 target_compile_definitions(Neumaton
     PRIVATE
-        NEUMATON_CLEAN_MODERN_PITCH_ENGINE=1
+        NEUMATON_PITCH_ENGINE_V1=1
     PUBLIC
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
@@ -93,7 +91,7 @@ target_link_libraries(Neumaton
 )
 
 option(NEUMATON_BUILD_CLEAN_ENGINE_TESTS
-       "Build the clean ModernPitchEngine invariant tests" OFF)
+       "Build the pitch-engine regression and legacy comparison tests" OFF)
 
 if(NEUMATON_BUILD_CLEAN_ENGINE_TESTS)
     add_executable(PitchCoreStressTest
