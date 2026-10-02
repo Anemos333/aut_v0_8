@@ -43,6 +43,16 @@ public:
                       float amount,
                       float humanize) noexcept;
 
+    // Host bypass only. Analysis and correction trajectory keep following the
+    // same input, while the same single renderer transports it at ratio 1.0.
+    // There is no second delay line and no dry/wet branch.
+    void processBypassedFrame(const float* input,
+                              float* output,
+                              int channels,
+                              float speedMs,
+                              float amount,
+                              float humanize) noexcept;
+
     [[nodiscard]] int latencySamples() const noexcept
     {
         return pitch::declaredLatencySamples(mode_);
@@ -59,6 +69,13 @@ public:
     }
 
 private:
+    [[nodiscard]] pitch::PitchResult analyseFrame(const float* input,
+                                                  int channels) noexcept;
+    void updateTrajectory(const pitch::PitchResult& pitchResult,
+                          float speedMs,
+                          float amount,
+                          float humanize) noexcept;
+
     double sampleRate_ = 48000.0;
     int channels_ = 1;
     pitch::LatencyMode mode_ = pitch::LatencyMode::live256;
