@@ -40,38 +40,23 @@ public:
     void getStateInformation (juce::MemoryBlock& destData) override;
     void setStateInformation (const void* data, int sizeInBytes) override;
 
-    // Access to APVTS
     juce::AudioProcessorValueTreeState& getAPVTS() { return apvts; }
-
-    // Custom presets access (thread-safe via message thread only for GUI)
     CustomScalePresets& getCustomPresets() { return customPresets; }
 
-    // Message-thread utilities. The audio callback consumes an immutable,
-    // fixed-capacity snapshot published by refreshScaleSnapshot().
     std::vector<double> getCurrentScaleRatios() const;
     void refreshScaleSnapshot() noexcept;
 
-    // Scale index parameter
     std::atomic<int> currentScaleIndex { 0 };
-
-    // For custom scale: store which custom preset is active (-1 = none, using built-in)
     std::atomic<int> activeCustomPresetIndex { -1 };
+    std::atomic<int> rootNoteIndex { 9 };
 
-    // Root note index: 0-11 = C,C#,D,...,B (12-ET), 12-18 = Ni,Pa,Vu,Ga,Di,Ke,Zo (Byzantine)
-    std::atomic<int> rootNoteIndex { 9 }; // default A
-
-    // Release modes: 1 = Quality, 2 = Live, 3 = Experimental.
-    // Mode 0 was the removed legacy YIN renderer and is never audible.
+    // Release modes: 1 = Studio/512, 2 = Live/256, 3 = Low Latency/128.
     std::atomic<int> processingMode { 1 };
 
-    // Update processing mode — must be called from message thread
     void updateProcessingMode (int newMode);
-
-    // Get the reference frequency for the selected root note
     double getRootFrequency() const;
     void applyFactoryPreset (int index);
 
-    // Lock-free coherent snapshot for the editor/debug overlay.
     [[nodiscard]] LivePitchProcessor::Metering getPitchMetering() const noexcept;
 
 private:
@@ -83,7 +68,7 @@ private:
 
     struct ScaleSnapshot
     {
-        std::array<double, ModernPitchEngine::maxScaleRatios> ratios {};
+        std::array<double, LivePitchProcessor::maxScaleRatios> ratios {};
         int count = 1;
         double rootFrequency = 440.0;
         std::uint64_t generation = 0;
@@ -104,11 +89,9 @@ private:
     std::atomic<std::uint64_t> scaleSnapshotGeneration_ { 0 };
 
     double currentSampleRate = 44100.0;
-
-    // ModernPitchEngine-based live pitch processor (Quality/Live/Experimental modes)
     LivePitchProcessor livePitchProcessor;
-static constexpr int maxAnalogOutputChannels = 2;
 
+    static constexpr int maxAnalogOutputChannels = 2;
     std::array<juce::dsp::IIR::Filter<float>, maxAnalogOutputChannels> analogLowShelfFilters_;
     std::array<juce::dsp::IIR::Filter<float>, maxAnalogOutputChannels> analogHighShelfFilters_;
     bool analogOutputWasActive_ = false;
@@ -122,11 +105,9 @@ static constexpr int maxAnalogOutputChannels = 2;
                             bool analogMode,
                             float outGain) noexcept;
 
-    // Cached block size for mode changes
     int lastSamplesPerBlock = 512;
 
-    // Convert processingMode int to LatencyMode enum
-    static ModernPitchEngine::LatencyMode modeToLatency (int mode) noexcept;
+    static LivePitchProcessor::LatencyMode modeToLatency (int mode) noexcept;
 
     [[nodiscard]] CreativeTempo::Settings getTempoSettings() const noexcept;
     [[nodiscard]] CreativeTempo::HostPosition readHostTempoPosition(
