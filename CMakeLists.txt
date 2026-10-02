@@ -52,6 +52,7 @@ target_sources(Neumaton
         Source/CustomScalePresets.cpp
         Source/CustomScaleEditor.cpp
         Source/PitchCore.cpp
+        Source/SinglePathPitchRenderer.cpp
         Source/ModernPitchEngine.cpp
         Source/SingleWetSpectralRenderer.cpp
         Source/Tempo.cpp
@@ -100,6 +101,22 @@ if(NEUMATON_BUILD_CLEAN_ENGINE_TESTS)
     )
     target_include_directories(PitchCoreStressTest PRIVATE Source)
     set_target_properties(PitchCoreStressTest PROPERTIES
+        CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED ON
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/clean-engine-tests"
+        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/clean-engine-tests"
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/clean-engine-tests"
+        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/clean-engine-tests"
+        RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}/clean-engine-tests"
+    )
+
+    add_executable(SinglePathPitchRendererTest
+        Tests/SinglePathPitchRendererTest.cpp
+        Source/PitchCore.cpp
+        Source/SinglePathPitchRenderer.cpp
+    )
+    target_include_directories(SinglePathPitchRendererTest PRIVATE Source)
+    set_target_properties(SinglePathPitchRendererTest PROPERTIES
         CXX_STANDARD 17
         CXX_STANDARD_REQUIRED ON
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/clean-engine-tests"
@@ -160,9 +177,7 @@ if(NEUMATON_BUILD_CLEAN_ENGINE_TESTS)
         PRIVATE
             juce::juce_audio_basics
             juce::juce_core
-        PUBLIC
-            juce::juce_recommended_config_flags
-            juce::juce_recommended_warning_flags
+        PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags
     )
     set_target_properties(VoiceEvidenceAnalyzerTest PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/clean-engine-tests"
