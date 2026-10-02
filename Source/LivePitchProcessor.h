@@ -1,30 +1,137 @@
 #pragma once
 
-#include "ModernPitchEngine.h"
-#include "VoiceEvidenceAnalyzer.h"
+#include <JuceHeader.h>
+#include "PitchEngineV1.h"
+#include "Tempo.h"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
-#include <limits>
+#include <cstdint>
+#include <cstdlib>
 #include <vector>
 
-// Drop-in-oriented adapter for projects that already use the original
-// LivePitchProcessor interface. All three release engines are prepared before
-// the audio callback starts; a mode change is then a lock-free publication of
-// the already prepared engine plus a bounded state reset on the audio thread.
-//
-// VoiceEvidenceAnalyzer is deliberately analysis-only. It may condition the
-// clean engine's detector/target/formant controls, but it never renders audio,
-// never supplies a dry signal and never scales Amount/correction authority.
+// Thin JUCE/block adapter around the rebuilt V1 engine.
+// Exactly one prepared engine is processed at a time; mode changes only select
+// which 128/256/512-sample engine owns the single audible path.
 class LivePitchProcessor final
 {
 public:
-    using LatencyMode = ModernPitchEngine::LatencyMode;
-    using StereoMode = ModernPitchEngine::StereoMode;
-    using Metering = ModernPitchEngine::Metering;
-    using VoiceEvidence = VoiceEvidenceAnalyzer::Evidence;
+    static constexpr int maxSupportedChannels = 2;
+    static constexpr int maxScaleRatios = neumaton::pitch::ScaleQuantizer::maxDegrees;
+
+    enum class LatencyMode : int
+    {
+        ultraLive = 0, // 128 samples
+        live = 1,      // 256 samples
+        quality = 2    // 512 samples / Studio
+    };
+
+    enum class StereoMode : int
+    {
+        linkedMidSide = 0,
+        dualMono = 1
+    };
+
+    // Compatibility vocabulary for the current UI only. The rebuilt detector
+    // itself has exactly Acquire / Stable / Transition.
+    enum class TrackingState : int
+    {
+        unvoiced = 0,
+        attack,
+        acquire,
+        stable,
+        transition,
+        release
+    };
+
+    // UI compatibility surface. Only fields backed by the new engine are
+    // populated with active data; legacy diagnostics remain zero and have no
+    // path back into the DSP.
+    struct Metering
+    {
+        float detectedPitchHz = 0.0f;
+        float targetPitchHz = 0.0f;
+        float confidence = 0.0f;
+        float voicing = 0.0f;
+        float breathiness = 0.0f;
+        float harmonicity = 0.0f;
+        float noisePath = 0.0f;
+        float noiseReductionDb = 0.0f;
+        float polyphony = 0.0f;
+        float spectralReliability = 0.0f;
+        float maskStability = 1.0f;
+        float sustainedNoteSeconds = 0.0f;
+        float consensus = 0.0f;
+        float correctionCents = 0.0f;
+        float wetMix = 1.0f;
+        float transitionBlend = 0.0f;
+
+        float outputSourceCorrespondence = 0.0f;
+        float outputTargetCoherence = 0.0f;
+        float outputPhysicalHarmonicFit = 0.0f;
+        float outputLedgerHealth = 0.0f;
+        float outputTemporalStability = 0.0f;
+        float outputTargetJumpCents = 0.0f;
+        float outputCorrectionVelocityCentsPerSecond = 0.0f;
+        float outputOctaveConflict = 0.0f;
+        float outputTransitionStress = 0.0f;
+        float outputSourceMirrorFit = 0.0f;
+        float outputDoubleFamilyRisk = 0.0f;
+        float outputLedgerDeficit = 0.0f;
+        float outputSelectiveReconstructionNeed = 0.0f;
+
+        int shadowRidgeObservationCount = 0;
+        int shadowRidgeActiveCount = 0;
+        int shadowRidgeBirthCount = 0;
+        int shadowRidgeCoastCount = 0;
+        int shadowRidgeDeathCount = 0;
+        int shadowRidgeIdentitySwitchCount = 0;
+        float shadowRidgePredictionErrorRadians = 0.0f;
+        float shadowRidgeReliability = 0.0f;
+        float shadowRidgeResolvedBinCoverage = 0.0f;
+        bool shadowRidgeValid = false;
+
+        bool dualSynthesisActive = false;
+        int detectorSupport = 0;
+        int octaveState = 0;
+        int pendingOctaveObservations = 0;
+        TrackingState state = TrackingState::unvoiced;
+
+        std::uint32_t targetRevisionDiagnosticSerial = 0;
+        float targetRevisionBeforeHz = 0.0f;
+        float targetRevisionAfterHz = 0.0f;
+        float targetRevisionJumpCents = 0.0f;
+        bool targetRevisionFromStable = false;
+        bool targetRevisionVoiceEvidenceValid = false;
+        bool targetRevisionTerminalTailVeto = false;
+        bool targetRevisionBodyPresent = false;
+        bool targetRevisionMusicalOnset = false;
+        bool targetRevisionLiveIdentityBreak = false;
+        bool targetRevisionDetectorScaleCommit = false;
+        bool targetRevisionDeepCentreExit = false;
+        bool targetRevisionPersistentBoundaryExit = false;
+        bool targetRevisionTerminalStructure = false;
+        bool targetRevisionSameTailSide = false;
+        bool targetRevisionOutsideStableCore = false;
+        float targetRevisionVoiceBodyEnergy = 0.0f;
+        float targetRevisionVoiceHarmonicity = 0.0f;
+        float targetRevisionVoiceSpectralReliability = 0.0f;
+        float targetRevisionVoiceBreathiness = 0.0f;
+        float targetRevisionVoiceEventStrength = 0.0f;
+        float targetRevisionCorrectionBeforeCents = 0.0f;
+        float targetRevisionCorrectionAfterCents = 0.0f;
+        float targetRevisionCorrectionDeltaCents = 0.0f;
+
+        float tempoBpm = 120.0f;
+        float tempoGridPhase = 0.0f;
+        float tempoGlideTimeMs = 0.0f;
+        bool tempoActive = false;
+        bool tempoWaitingForGrid = false;
+        bool tempoHostSyncValid = false;
+        CreativeTempo::Mode tempoMode = CreativeTempo::Mode::off;
+    };
 
     void prepare(double sampleRate, int maximumExpectedSamplesPerBlock)
     {
@@ -39,161 +146,102 @@ public:
         sampleRate_ = std::isfinite(sampleRate) ? std::max(8000.0, sampleRate)
                                                 : 48000.0;
         maximumBlockSize_ = std::max(1, maximumExpectedSamplesPerBlock);
-        channelCount_ = std::clamp(numberOfChannels, 1,
-                                   ModernPitchEngine::maxSupportedChannels);
+        channelCount_ = std::clamp(numberOfChannels, 1, maxSupportedChannels);
+
         for (int modeIndex = 0; modeIndex < engineCount; ++modeIndex)
         {
-            modernEngines_[static_cast<std::size_t>(modeIndex)].prepare(
-                sampleRate_, maximumBlockSize_, channelCount_,
-                static_cast<LatencyMode>(modeIndex));
-
+            engines_[static_cast<std::size_t>(modeIndex)].prepare(
+                sampleRate_, channelCount_, toPitchMode(static_cast<LatencyMode>(modeIndex)),
+                minimumPitchHz_, maximumPitchHz_);
             resetRequested_[static_cast<std::size_t>(modeIndex)].store(
                 false, std::memory_order_relaxed);
         }
 
-        voiceEvidenceAnalyzer_.prepare(sampleRate_, maximumBlockSize_, channelCount_);
-        voiceEvidencePrimed_ = false;
+        activeModeIndex_.store(toModeIndex(latencyMode), std::memory_order_release);
         hostTransportHistoryValid_ = false;
-        hostPpqHistoryValid_ = false;
         expectedNextHostSample_ = 0;
-        expectedNextHostPpq_ = 0.0;
-        activeModeIndex_.store(toModeIndex(latencyMode),
-                               std::memory_order_release);
+        sustainedStableSamples_ = 0;
         prepared_.store(true, std::memory_order_release);
     }
 
     void reset() noexcept
     {
-        for (auto& engine : modernEngines_)
+        for (auto& engine : engines_)
             engine.reset();
-
         for (auto& request : resetRequested_)
             request.store(false, std::memory_order_relaxed);
-
-        voiceEvidenceAnalyzer_.reset();
-        voiceEvidencePrimed_ = false;
         hostTransportHistoryValid_ = false;
-        hostPpqHistoryValid_ = false;
         expectedNextHostSample_ = 0;
-        expectedNextHostPpq_ = 0.0;
+        sustainedStableSamples_ = 0;
     }
 
-    // Safe from the message thread while audio is running. No prepare(), heap
-    // allocation, mutex or object mutation is performed on the published DSP.
     void setLatencyModeNonRealtime(LatencyMode mode) noexcept
     {
         const int modeIndex = toModeIndex(mode);
         if (modeIndex == activeModeIndex_.load(std::memory_order_acquire))
             return;
 
-        // Only one ModernPitchEngine is audible/processed at a time. We do not
-        // pre-render or crossfade parallel engines: that would violate the
-        // single-audio-path contract. The selected prepared instance is reset
-        // once at the block boundary; mode-switch continuity remains a release
-        // validation item, but no legacy or secondary renderer is introduced.
         resetRequested_[static_cast<std::size_t>(modeIndex)].store(
             true, std::memory_order_release);
         activeModeIndex_.store(modeIndex, std::memory_order_release);
     }
 
-    // LEGACY_AUDIO_POLICY_ARGS_REMOVED_V1:
-    // obsolete soft-path arguments are not part of the active V1 DSP contract.
-    void setAdvancedParameters(float transitionMs,
+    // Compatibility setter. Only Humanize and pitch-range values belong to the
+    // rebuilt V1 contract today; formant/sensitivity/stereo arguments cannot
+    // gain hidden authority over PitchCore or the renderer.
+    void setAdvancedParameters(float /*transitionMs*/,
                                float humanize,
-                               float formantPreservation,
-                               float detectorSensitivity,
-                               float maximumCorrectionSemitones,
+                               float /*formantPreservation*/,
+                               float /*detectorSensitivity*/,
+                               float /*maximumCorrectionSemitones*/,
                                float minimumPitchHz,
                                float maximumPitchHz,
-                               StereoMode stereoMode) noexcept
+                               StereoMode /*stereoMode*/) noexcept
     {
-        parameters_.transitionTimeMs = transitionMs;
-        parameters_.humanize = humanize;
-        parameters_.formantPreservation = formantPreservation;
-        parameters_.detectorSensitivity = detectorSensitivity;
-
-        parameters_.maximumCorrectionSemitones = std::clamp(
-            maximumCorrectionSemitones, 0.0f, 48.0f);
-
-        parameters_.minimumPitchHz = minimumPitchHz;
-        parameters_.maximumPitchHz = maximumPitchHz;
-        parameters_.stereoMode = stereoMode;
+        humanize_ = std::clamp(humanize, 0.0f, 1.0f);
+        minimumPitchHz_ = std::clamp(minimumPitchHz, 25.0f, 500.0f);
+        maximumPitchHz_ = std::clamp(maximumPitchHz,
+                                     minimumPitchHz_ + 20.0f,
+                                     4000.0f);
     }
 
+    // Creative-tempo and old Scale-Lock sub-controls are intentionally not
+    // allowed to modify V1 audio until they are rebuilt against the new
+    // trajectory contract. Values are retained only for UI/state continuity.
     void setTempoSettings(const CreativeTempo::Settings& settings) noexcept
     {
-        parameters_.tempo = settings;
+        tempoSettings_ = settings;
     }
 
     void setScaleLockParameters(bool scaleLock,
                                 float lockHysteresis,
                                 float vibratoPreserve) noexcept
     {
-        parameters_.scaleLock = scaleLock;
-        parameters_.lockHysteresis = std::clamp(lockHysteresis, 0.0f, 80.0f);
-        parameters_.vibratoPreserve = std::clamp(vibratoPreserve, 0.0f, 1.0f);
-        // HOLD_SINGLE_OWNER_V1: Hold is passed literally. There is no hidden
-        // hard-lock/strictness alias and no legacy preserveVibrato mirror.
+        scaleLock_ = scaleLock;
+        lockHysteresis_ = std::clamp(lockHysteresis, 0.0f, 80.0f);
+        vibratoPreserve_ = std::clamp(vibratoPreserve, 0.0f, 1.0f);
     }
 
     void setTempoHostPosition(const CreativeTempo::HostPosition& position) noexcept
     {
-        // TRANSPORT_REPLAY_DETERMINISM_V1
-        // A non-looping seek/restart is a physical observation discontinuity.
-        // Detector, correction, voice-evidence and renderer state from the old
-        // timeline must not seed the new playback. This is transport hygiene,
-        // never a confidence/F0 gate and never runs during contiguous playback.
-        bool transportDiscontinuity = false;
-        if (position.isPlaying && !position.isLooping)
+        bool discontinuity = false;
+        if (position.isPlaying && position.hasTimeInSamples && hostTransportHistoryValid_)
         {
-            if (hostTransportHistoryValid_ && position.hasTimeInSamples)
-            {
-                const auto error = std::llabs(position.timeInSamples
-                                              - expectedNextHostSample_);
-                const auto tolerance = static_cast<std::int64_t>(
-                    std::max(4, std::max(1, position.numberOfSamples) * 2));
-                transportDiscontinuity = error > tolerance;
-            }
-            else if (!position.hasTimeInSamples
-                     && hostPpqHistoryValid_
-                     && position.hasPpq
-                     && position.hasBpm
-                     && std::isfinite(position.ppqAtBlockStart)
-                     && std::isfinite(position.bpm)
-                     && position.bpm > 1.0)
-            {
-                const double expectedTravel = position.bpm
-                    / (60.0 * std::max(8000.0, sampleRate_))
-                    * static_cast<double>(std::max(1, position.numberOfSamples));
-                const double tolerance = std::max(0.01, expectedTravel * 3.0);
-                transportDiscontinuity = std::abs(position.ppqAtBlockStart
-                                                  - expectedNextHostPpq_) > tolerance;
-            }
+            const auto error = std::llabs(position.timeInSamples - expectedNextHostSample_);
+            const auto tolerance = static_cast<std::int64_t>(
+                std::max(4, std::max(1, position.numberOfSamples) * 2));
+            discontinuity = error > tolerance;
         }
 
-        if (transportDiscontinuity)
+        if (discontinuity)
             reset();
 
         tempoHostPosition_ = position;
-
         if (position.isPlaying && position.hasTimeInSamples)
         {
             expectedNextHostSample_ = position.timeInSamples
                 + static_cast<std::int64_t>(std::max(0, position.numberOfSamples));
             hostTransportHistoryValid_ = true;
-        }
-
-        if (position.isPlaying
-            && position.hasPpq
-            && position.hasBpm
-            && std::isfinite(position.ppqAtBlockStart)
-            && std::isfinite(position.bpm)
-            && position.bpm > 1.0)
-        {
-            expectedNextHostPpq_ = position.ppqAtBlockStart
-                + position.bpm / (60.0 * std::max(8000.0, sampleRate_))
-                    * static_cast<double>(std::max(0, position.numberOfSamples));
-            hostPpqHistoryValid_ = true;
         }
     }
 
@@ -204,24 +252,34 @@ public:
                  float speedMs,
                  float amount)
     {
-        parameters_.retuneTimeMs = speedMs;
-        parameters_.amount = amount;
+        auto& engine = activeEngine();
+        static_cast<void>(engine.setScale(scaleRatios,
+                                          numberOfScaleRatios,
+                                          rootFrequency,
+                                          2.0));
 
-        // Use only evidence published before this host block. The analyzer
-        // may inspect the current input to prepare the next block, but it cannot
-        // use future samples from this block to classify its first sample.
-        const auto evidence = voiceEvidenceAnalyzer_.getLatest();
-        const bool evidenceValid = voiceEvidencePrimed_;
-        static_cast<void>(analyseEvidence(buffer));
-        voiceEvidencePrimed_ = true;
-        const auto conditioned = conditionedParameters(evidence, evidenceValid);
+        const int channels = std::min({ buffer.getNumChannels(),
+                                        channelCount_,
+                                        maxSupportedChannels });
+        const int samples = buffer.getNumSamples();
+        if (channels <= 0 || samples <= 0)
+            return;
 
-        activeModernEngine().process(buffer,
-                                     scaleRatios,
-                                     numberOfScaleRatios,
-                                     rootFrequency,
-                                     conditioned,
-                                     tempoHostPosition_);
+        std::array<float, maxSupportedChannels> input {};
+        std::array<float, maxSupportedChannels> output {};
+        for (int sample = 0; sample < samples; ++sample)
+        {
+            for (int channel = 0; channel < channels; ++channel)
+                input[static_cast<std::size_t>(channel)] = buffer.getSample(channel, sample);
+
+            engine.processFrame(input.data(), output.data(), channels,
+                                speedMs, amount, humanize_);
+
+            for (int channel = 0; channel < channels; ++channel)
+                buffer.setSample(channel, sample, output[static_cast<std::size_t>(channel)]);
+
+            updateStableDuration(engine.metering().pitch.state);
+        }
     }
 
     void process(juce::AudioBuffer<float>& buffer,
@@ -248,36 +306,51 @@ public:
         if (data == nullptr || numberOfSamples <= 0)
             return;
 
-        parameters_.retuneTimeMs = speedMs;
-        parameters_.amount = amount;
-
-        float* channels[] { data };
-        juce::AudioBuffer<float> view(channels, 1, numberOfSamples);
-        const auto evidence = voiceEvidenceAnalyzer_.getLatest();
-        const bool evidenceValid = voiceEvidencePrimed_;
-        static_cast<void>(analyseEvidence(view));
-        voiceEvidencePrimed_ = true;
-        const auto conditioned = conditionedParameters(evidence, evidenceValid);
-
-        activeModernEngine().process(view,
-                                     scaleRatios.empty() ? nullptr : scaleRatios.data(),
-                                     static_cast<int>(scaleRatios.size()),
-                                     rootFrequency,
-                                     conditioned);
+        auto& engine = activeEngine();
+        static_cast<void>(engine.setScale(scaleRatios.empty() ? nullptr : scaleRatios.data(),
+                                          static_cast<int>(scaleRatios.size()),
+                                          rootFrequency,
+                                          2.0));
+        for (int sample = 0; sample < numberOfSamples; ++sample)
+        {
+            const float input = data[sample];
+            float output = 0.0f;
+            engine.processFrame(&input, &output, 1, speedMs, amount, humanize_);
+            data[sample] = output;
+            updateStableDuration(engine.metering().pitch.state);
+        }
     }
 
     void processBypassed(juce::AudioBuffer<float>& buffer)
     {
-        // Evidence continues to advance in bypass so air/event/formant state
-        // does not restart from zero. It still does not render any audio.
-        static_cast<void>(analyseEvidence(buffer));
-        voiceEvidencePrimed_ = true;
-        activeModernEngine().processBypassed(buffer);
+        auto& engine = activeEngine();
+        const int channels = std::min({ buffer.getNumChannels(),
+                                        channelCount_,
+                                        maxSupportedChannels });
+        const int samples = buffer.getNumSamples();
+        if (channels <= 0 || samples <= 0)
+            return;
+
+        std::array<float, maxSupportedChannels> input {};
+        std::array<float, maxSupportedChannels> output {};
+        for (int sample = 0; sample < samples; ++sample)
+        {
+            for (int channel = 0; channel < channels; ++channel)
+                input[static_cast<std::size_t>(channel)] = buffer.getSample(channel, sample);
+
+            engine.processBypassedFrame(input.data(), output.data(), channels,
+                                        lastSpeedMs_, lastAmount_, humanize_);
+
+            for (int channel = 0; channel < channels; ++channel)
+                buffer.setSample(channel, sample, output[static_cast<std::size_t>(channel)]);
+
+            updateStableDuration(engine.metering().pitch.state);
+        }
     }
 
     [[nodiscard]] int getLatencySamples() const noexcept
     {
-        return activeModernEngineConst().getLatencySamples();
+        return activeEngineConst().latencySamples();
     }
 
     [[nodiscard]] LatencyMode getLatencyMode() const noexcept
@@ -296,26 +369,41 @@ public:
         return getMetering().confidence;
     }
 
-    [[nodiscard]] VoiceEvidence getVoiceEvidence() const noexcept
-    {
-        return voiceEvidenceAnalyzer_.getLatest();
-    }
-
     [[nodiscard]] Metering getMetering() const noexcept
     {
-        Metering result = activeModernEngineConst().getMetering();
-        const VoiceEvidence evidence = voiceEvidenceAnalyzer_.getLatest();
-
-        // Publish the richer legacy-derived analysis without resurrecting its
-        // rendering logic. wetMix is intentionally fixed at unity because the
-        // clean engine has one authoritative output path.
-        result.harmonicity = evidence.harmonicity;
-        result.breathiness = evidence.breathiness;
-        result.noisePath = evidence.breathiness;
-        result.polyphony = evidence.polyphonyRisk;
-        result.spectralReliability = evidence.spectralReliability;
-        result.maskStability = evidence.formantStability;
+        const auto source = activeEngineConst().metering();
+        Metering result;
+        result.detectedPitchHz = source.pitch.hasStable
+            ? source.pitch.stableHz
+            : source.pitch.measuredHz;
+        result.targetPitchHz = static_cast<float>(source.targetPitchHz);
+        result.confidence = source.pitch.confidence;
+        result.voicing = source.pitch.state == neumaton::pitch::TrackingState::stable
+            ? 1.0f
+            : source.pitch.periodicity;
+        result.harmonicity = source.pitch.periodicity;
+        result.spectralReliability = source.pitch.confidence;
+        result.maskStability = 1.0f;
+        // UI compatibility only: the old "Consensus" meter displays the one
+        // detector's periodicity. No consensus mechanism exists in V1.
+        result.consensus = source.pitch.periodicity;
+        result.correctionCents = static_cast<float>(source.correctionCents);
         result.wetMix = 1.0f;
+        result.detectorSupport = source.pitch.newMeasurement ? 1 : 0;
+        result.octaveState = source.pitch.octaveAmbiguous ? 1 : 0;
+        result.sustainedNoteSeconds = static_cast<float>(
+            static_cast<double>(sustainedStableSamples_) / std::max(8000.0, sampleRate_));
+        result.state = toUiState(source.pitch);
+
+        // Tempo UI is retained as state only until its trajectory semantics are
+        // explicitly rebuilt. It has no audible authority in this engine.
+        result.tempoBpm = tempoHostPosition_.hasBpm
+            ? static_cast<float>(tempoHostPosition_.bpm)
+            : static_cast<float>(tempoSettings_.fallbackBpm);
+        result.tempoMode = tempoSettings_.mode;
+        result.tempoHostSyncValid = tempoHostPosition_.hasBpm;
+        result.tempoActive = false;
+        result.tempoWaitingForGrid = false;
         return result;
     }
 
@@ -327,77 +415,81 @@ private:
         return std::clamp(static_cast<int>(mode), 0, engineCount - 1);
     }
 
-    ModernPitchEngine& activeModernEngine() noexcept
+    [[nodiscard]] static neumaton::pitch::LatencyMode toPitchMode(
+        LatencyMode mode) noexcept
+    {
+        switch (mode)
+        {
+            case LatencyMode::ultraLive: return neumaton::pitch::LatencyMode::lowLatency128;
+            case LatencyMode::live:      return neumaton::pitch::LatencyMode::live256;
+            case LatencyMode::quality:   return neumaton::pitch::LatencyMode::studio512;
+        }
+        return neumaton::pitch::LatencyMode::live256;
+    }
+
+    [[nodiscard]] static TrackingState toUiState(
+        const neumaton::pitch::PitchResult& pitch) noexcept
+    {
+        switch (pitch.state)
+        {
+            case neumaton::pitch::TrackingState::acquire:
+                return pitch.gateOpen ? TrackingState::acquire : TrackingState::unvoiced;
+            case neumaton::pitch::TrackingState::stable:
+                return TrackingState::stable;
+            case neumaton::pitch::TrackingState::transition:
+                return TrackingState::transition;
+        }
+        return TrackingState::unvoiced;
+    }
+
+    neumaton::PitchEngineV1& activeEngine() noexcept
     {
         const int index = activeModeIndex_.load(std::memory_order_acquire);
-        auto& resetRequest = resetRequested_[static_cast<std::size_t>(index)];
-        auto& engine = modernEngines_[static_cast<std::size_t>(index)];
-
-        if (resetRequest.exchange(false, std::memory_order_acq_rel))
+        auto& request = resetRequested_[static_cast<std::size_t>(index)];
+        auto& engine = engines_[static_cast<std::size_t>(index)];
+        if (request.exchange(false, std::memory_order_acq_rel))
+        {
             engine.reset();
-
+            sustainedStableSamples_ = 0;
+        }
         return engine;
     }
 
-    [[nodiscard]] const ModernPitchEngine& activeModernEngineConst() const noexcept
+    [[nodiscard]] const neumaton::PitchEngineV1& activeEngineConst() const noexcept
     {
         const int index = activeModeIndex_.load(std::memory_order_acquire);
-        return modernEngines_[static_cast<std::size_t>(index)];
+        return engines_[static_cast<std::size_t>(index)];
     }
 
-    [[nodiscard]] VoiceEvidence analyseEvidence(
-        const juce::AudioBuffer<float>& buffer) noexcept
+    void updateStableDuration(neumaton::pitch::TrackingState state) noexcept
     {
-        const Metering meter = activeModernEngineConst().getMetering();
-        VoiceEvidenceAnalyzer::Context context;
-        context.detectedPitchHz = meter.detectedPitchHz;
-        context.confidence = meter.confidence;
-        context.periodicity = meter.harmonicity;
-        context.consensus = meter.consensus;
-        context.onsetStrength = meter.state == ModernPitchEngine::TrackingState::attack
-            ? 1.0f : 0.0f;
-        context.detectorSupport = meter.detectorSupport;
-        return voiceEvidenceAnalyzer_.analyse(buffer, context);
+        if (state == neumaton::pitch::TrackingState::stable)
+            ++sustainedStableSamples_;
+        else
+            sustainedStableSamples_ = 0;
     }
 
-    [[nodiscard]] ModernPitchEngine::Parameters conditionedParameters(
-        const VoiceEvidence& evidence,
-        bool evidenceValid) const noexcept
-    {
-        ModernPitchEngine::Parameters conditioned = parameters_;
-
-        // Sensor output is supervision data only. No user-authoritative audio
-        // or correction parameter is multiplied by confidence, breathiness or
-        // state evidence here. In particular Amount, Formant, Transient,
-        // Vibrato and Breath Reduction keep the exact values selected in the UI.
-        conditioned.voiceEvidenceValid = evidenceValid;
-        conditioned.voiceHarmonicity = std::clamp(evidence.harmonicity, 0.0f, 1.0f);
-        conditioned.voiceBreathiness = std::clamp(evidence.breathiness, 0.0f, 1.0f);
-        conditioned.voiceBodyEnergy = std::clamp(evidence.voicedBodyEnergy, 0.0f, 1.0f);
-        conditioned.voiceSpectralReliability = std::clamp(
-            evidence.spectralReliability, 0.0f, 1.0f);
-        conditioned.voiceEventStrength = std::clamp(evidence.eventStrength, 0.0f, 1.0f);
-        conditioned.voiceFormantStability = std::clamp(
-            evidence.formantStability, 0.0f, 1.0f);
-        conditioned.voiceLowerFamilyEvidence = std::clamp(
-            evidence.lowerFamilyEvidence, 0.0f, 1.0f);
-        return conditioned;
-    }
-
-
-    std::array<ModernPitchEngine, engineCount> modernEngines_;
+    std::array<neumaton::PitchEngineV1, engineCount> engines_;
     std::array<std::atomic<bool>, engineCount> resetRequested_ {};
     std::atomic<int> activeModeIndex_ { static_cast<int>(LatencyMode::live) };
     std::atomic<bool> prepared_ { false };
-    ModernPitchEngine::Parameters parameters_;
-    VoiceEvidenceAnalyzer voiceEvidenceAnalyzer_;
-    bool voiceEvidencePrimed_ = false;
-    double sampleRate_ = 0.0;
-    int maximumBlockSize_ = 0;
+
+    double sampleRate_ = 48000.0;
+    int maximumBlockSize_ = 512;
     int channelCount_ = 1;
+    float humanize_ = 0.20f;
+    float minimumPitchHz_ = 45.0f;
+    float maximumPitchHz_ = 1600.0f;
+    float lastSpeedMs_ = 50.0f;
+    float lastAmount_ = 1.0f;
+
+    bool scaleLock_ = false;
+    float lockHysteresis_ = 24.0f;
+    float vibratoPreserve_ = 0.0f;
+    CreativeTempo::Settings tempoSettings_;
     CreativeTempo::HostPosition tempoHostPosition_;
+
     bool hostTransportHistoryValid_ = false;
-    bool hostPpqHistoryValid_ = false;
     std::int64_t expectedNextHostSample_ = 0;
-    double expectedNextHostPpq_ = 0.0;
+    std::uint64_t sustainedStableSamples_ = 0;
 };
