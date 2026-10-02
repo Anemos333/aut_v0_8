@@ -1,0 +1,84 @@
+name: V1 Pitch Engine Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ v1-modern-pitch-engine-rebuild-zero-v1 ]
+    paths:
+      - 'Source/**'
+      - 'Tests/PitchCoreStressTest.cpp'
+      - 'Tests/SinglePathPitchRendererTest.cpp'
+      - 'CMakeLists.txt'
+      - '.github/workflows/v1-pitch-engine-build.yml'
+
+jobs:
+  build-v1-linux:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            ninja-build \
+            pkg-config \
+            libasound2-dev \
+            libjack-jackd2-dev \
+            libfreetype6-dev \
+            libfontconfig1-dev \
+            libx11-dev \
+            libxext-dev \
+            libxinerama-dev \
+            libxrandr-dev \
+            libxcursor-dev \
+            libxcomposite-dev \
+            libxdamage-dev \
+            libxrender-dev \
+            libwebkit2gtk-4.0-dev \
+            libglu1-mesa-dev \
+            mesa-common-dev
+
+      - name: Compile standalone V1 diagnostics
+        run: |
+          mkdir -p build-v1-diagnostics
+          c++ -std=c++17 -O3 -Wall -Wextra -pedantic \
+            -ISource \
+            Tests/PitchCoreStressTest.cpp \
+            Source/PitchCore.cpp \
+            -o build-v1-diagnostics/PitchCoreStressTest
+          c++ -std=c++17 -O3 -Wall -Wextra -pedantic \
+            -ISource \
+            Tests/SinglePathPitchRendererTest.cpp \
+            Source/PitchCore.cpp \
+            Source/SinglePathPitchRenderer.cpp \
+            -o build-v1-diagnostics/SinglePathPitchRendererTest
+
+      - name: Configure V1 plugin
+        run: |
+          cmake -B build-v1 -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=OFF
+
+      - name: Build active VST3 target
+        run: |
+          cmake --build build-v1 --config Release --verbose
+
+      - name: Assert legacy DSP is not in active target
+        run: |
+          if grep -R -E 'ModernPitchEngine\.cpp|SingleWetSpectralRenderer\.cpp' \
+              build-v1/CMakeFiles/Neumaton.dir build-v1/CMakeFiles/Neumaton_VST3.dir 2>/dev/null; then
+            echo 'ERROR: legacy pitch DSP is still compiled into the active VST target'
+            exit 1
+          fi
+          echo 'PASS: active VST target contains only the rebuilt V1 pitch path'
+
+      - name: Inspect VST3 output
+        run: |
+          echo '=== VST3 bundles ==='
+          find build-v1 -name '*.vst3' -print
+          test -n "$(find build-v1 -name '*.vst3' -type d | head -n 1)"
