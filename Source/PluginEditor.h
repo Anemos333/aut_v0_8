@@ -119,6 +119,7 @@ private:
     bool showingScaleEditor = false;
 
     juce::TextButton controlRoomButton { "Control room" };
+    juce::TextButton communityButton { "Community" };
     ControlRoomPage controlRoomPage;
     bool showingControlRoom = false;
 
