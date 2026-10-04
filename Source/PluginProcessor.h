@@ -129,9 +129,9 @@ public:
             if (! scale.visibleInMenu)
                 continue;
             juce::ValueTree node ("Scale");
-            node.setProperty ("stableId", scale.stableId, nullptr);
-            node.setProperty ("name", scale.name, nullptr);
-            node.setProperty ("category", scale.category, nullptr);
+            node.setProperty ("stableId", juce::String (scale.stableId), nullptr);
+            node.setProperty ("name", juce::String (scale.name), nullptr);
+            node.setProperty ("category", juce::String (scale.category), nullptr);
             node.setProperty ("equaveRatio", scale.equaveRatio, nullptr);
             node.setProperty ("ratios", ratiosToString (scale.ratios), nullptr);
             entries.push_back (std::move (node));
