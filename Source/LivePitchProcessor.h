@@ -23,9 +23,9 @@ public:
 
     enum class LatencyMode : int
     {
-        ultraLive = 0, // 128 samples
-        live = 1,      // 256 samples
-        quality = 2    // 512 samples / Studio
+        ultraLive = 0,
+        live = 1,
+        quality = 2
     };
 
     enum class StereoMode : int
@@ -34,8 +34,6 @@ public:
         dualMono = 1
     };
 
-    // Compatibility vocabulary for the current UI only. The rebuilt detector
-    // itself has exactly Acquire / Stable / Transition.
     enum class TrackingState : int
     {
         unvoiced = 0,
@@ -46,9 +44,6 @@ public:
         release
     };
 
-    // UI compatibility surface. Only fields backed by the new engine are
-    // populated with active data; legacy diagnostics remain zero and have no
-    // path back into the DSP.
     struct Metering
     {
         float detectedPitchHz = 0.0f;
@@ -124,6 +119,8 @@ public:
         float targetRevisionCorrectionAfterCents = 0.0f;
         float targetRevisionCorrectionDeltaCents = 0.0f;
 
+        // Retained for state/UI source compatibility. Tempo Lab has no audible
+        // authority in V1 and is no longer exposed by the main editor.
         float tempoBpm = 120.0f;
         float tempoGridPhase = 0.0f;
         float tempoGlideTimeMs = 0.0f;
@@ -151,7 +148,8 @@ public:
         for (int modeIndex = 0; modeIndex < engineCount; ++modeIndex)
         {
             engines_[static_cast<std::size_t>(modeIndex)].prepare(
-                sampleRate_, channelCount_, toPitchMode(static_cast<LatencyMode>(modeIndex)),
+                sampleRate_, channelCount_,
+                toPitchMode(static_cast<LatencyMode>(modeIndex)),
                 minimumPitchHz_, maximumPitchHz_);
             resetRequested_[static_cast<std::size_t>(modeIndex)].store(
                 false, std::memory_order_relaxed);
@@ -186,9 +184,6 @@ public:
         activeModeIndex_.store(modeIndex, std::memory_order_release);
     }
 
-    // Compatibility setter. Only Humanize and pitch-range values belong to the
-    // rebuilt V1 contract today; formant/sensitivity/stereo arguments cannot
-    // gain hidden authority over PitchCore or the renderer.
     void setAdvancedParameters(float /*transitionMs*/,
                                float humanize,
                                float /*formantPreservation*/,
@@ -205,9 +200,8 @@ public:
                                      4000.0f);
     }
 
-    // Creative-tempo and old Scale-Lock sub-controls are intentionally not
-    // allowed to modify V1 audio until they are rebuilt against the new
-    // trajectory contract. Values are retained only for UI/state continuity.
+    // Compatibility state only: V1 does not let Creative Tempo or the legacy
+    // Scale-Lock sub-controls acquire hidden audio authority.
     void setTempoSettings(const CreativeTempo::Settings& settings) noexcept
     {
         tempoSettings_ = settings;
@@ -250,16 +244,18 @@ public:
                  int numberOfScaleRatios,
                  double rootFrequency,
                  float speedMs,
-                 float amount)
+                 float amount,
+                 double equaveRatio = 2.0)
     {
         lastSpeedMs_ = std::isfinite(speedMs) ? std::clamp(speedMs, 0.0f, 500.0f) : 50.0f;
         lastAmount_ = std::isfinite(amount) ? std::clamp(amount, 0.0f, 1.0f) : 1.0f;
+        equaveRatio = sanitiseEquave(equaveRatio);
 
         auto& engine = activeEngine();
         static_cast<void>(engine.setScale(scaleRatios,
                                           numberOfScaleRatios,
                                           rootFrequency,
-                                          2.0));
+                                          equaveRatio));
 
         const int channels = std::min({ buffer.getNumChannels(),
                                         channelCount_,
@@ -289,14 +285,16 @@ public:
                  const std::vector<double>& scaleRatios,
                  double rootFrequency,
                  float speedMs,
-                 float amount)
+                 float amount,
+                 double equaveRatio = 2.0)
     {
         process(buffer,
                 scaleRatios.empty() ? nullptr : scaleRatios.data(),
                 static_cast<int>(scaleRatios.size()),
                 rootFrequency,
                 speedMs,
-                amount);
+                amount,
+                equaveRatio);
     }
 
     void process(float* data,
@@ -304,7 +302,8 @@ public:
                  const std::vector<double>& scaleRatios,
                  double rootFrequency,
                  float speedMs,
-                 float amount)
+                 float amount,
+                 double equaveRatio = 2.0)
     {
         if (data == nullptr || numberOfSamples <= 0)
             return;
@@ -313,10 +312,12 @@ public:
         lastAmount_ = std::isfinite(amount) ? std::clamp(amount, 0.0f, 1.0f) : 1.0f;
 
         auto& engine = activeEngine();
-        static_cast<void>(engine.setScale(scaleRatios.empty() ? nullptr : scaleRatios.data(),
-                                          static_cast<int>(scaleRatios.size()),
-                                          rootFrequency,
-                                          2.0));
+        static_cast<void>(engine.setScale(
+            scaleRatios.empty() ? nullptr : scaleRatios.data(),
+            static_cast<int>(scaleRatios.size()),
+            rootFrequency,
+            sanitiseEquave(equaveRatio)));
+
         for (int sample = 0; sample < numberOfSamples; ++sample)
         {
             const float input = data[sample];
@@ -386,13 +387,10 @@ public:
         result.targetPitchHz = static_cast<float>(source.targetPitchHz);
         result.confidence = source.pitch.confidence;
         result.voicing = source.pitch.state == neumaton::pitch::TrackingState::stable
-            ? 1.0f
-            : source.pitch.periodicity;
+            ? 1.0f : source.pitch.periodicity;
         result.harmonicity = source.pitch.periodicity;
         result.spectralReliability = source.pitch.confidence;
         result.maskStability = 1.0f;
-        // UI compatibility only: the old "Consensus" meter displays the one
-        // detector's periodicity. No consensus mechanism exists in V1.
         result.consensus = source.pitch.periodicity;
         result.correctionCents = static_cast<float>(source.correctionCents);
         result.wetMix = 1.0f;
@@ -402,8 +400,6 @@ public:
             static_cast<double>(sustainedStableSamples_) / std::max(8000.0, sampleRate_));
         result.state = toUiState(source.pitch);
 
-        // Tempo UI is retained as state only until its trajectory semantics are
-        // explicitly rebuilt. It has no audible authority in this engine.
         result.tempoBpm = tempoHostPosition_.hasBpm
             ? static_cast<float>(tempoHostPosition_.bpm)
             : static_cast<float>(tempoSettings_.fallbackBpm);
@@ -416,6 +412,11 @@ public:
 
 private:
     static constexpr int engineCount = 3;
+
+    [[nodiscard]] static double sanitiseEquave(double equave) noexcept
+    {
+        return std::isfinite(equave) && equave > 1.0 ? equave : 2.0;
+    }
 
     [[nodiscard]] static int toModeIndex(LatencyMode mode) noexcept
     {
@@ -501,6 +502,5 @@ private:
     std::uint64_t sustainedStableSamples_ = 0;
 };
 
-// Temporary source-compatibility alias for UI/processor code that still spells
-// the old type name. It is not the old DSP class and carries no legacy engine.
+// Temporary source-compatibility alias. This is not the removed legacy DSP.
 using ModernPitchEngine = LivePitchProcessor;
