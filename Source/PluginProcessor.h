@@ -5,10 +5,11 @@
 #include "CustomScalePresets.h"
 #include "LivePitchProcessor.h"
 #include "Preset.h"
-#include <vector>
+
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <vector>
 
 class MicrotonalAutotuneAudioProcessor : public juce::AudioProcessor
 {
@@ -44,10 +45,16 @@ public:
     CustomScalePresets& getCustomPresets() { return customPresets; }
 
     std::vector<double> getCurrentScaleRatios() const;
+    double getCurrentScaleEquave() const noexcept;
+    juce::String getCurrentScaleStableId() const;
     void refreshScaleSnapshot() noexcept;
 
     std::atomic<int> currentScaleIndex { 0 };
     std::atomic<int> activeCustomPresetIndex { -1 };
+
+    // New V1 model: musical centre and absolute tuning reference are separate.
+    // 0..11 = C..B. The old rootNoteIndex is retained only for state migration.
+    std::atomic<int> tonalCenterIndex { 9 };
     std::atomic<int> rootNoteIndex { 9 };
 
     // Release modes: 1 = Studio/512, 2 = Live/256, 3 = Low Latency/128.
@@ -71,6 +78,7 @@ private:
         std::array<double, LivePitchProcessor::maxScaleRatios> ratios {};
         int count = 1;
         double rootFrequency = 440.0;
+        double equaveRatio = 2.0;
         std::uint64_t generation = 0;
     };
 
@@ -82,7 +90,11 @@ private:
 
     [[nodiscard]] int acquireScaleSnapshot() noexcept;
     void releaseScaleSnapshot (int slotIndex) noexcept;
-    [[nodiscard]] static double rootFrequencyForIndex (int index) noexcept;
+
+    [[nodiscard]] static double legacyRootFrequencyForIndex (int index) noexcept;
+    [[nodiscard]] double tuningReferenceHz() const noexcept;
+    [[nodiscard]] static double rootFrequencyFromCenter (
+        int centerIndex, double a4ReferenceHz) noexcept;
 
     std::array<ScaleSnapshotSlot, 3> scaleSnapshotSlots_ {};
     std::atomic<int> publishedScaleSnapshot_ { 0 };
@@ -109,6 +121,8 @@ private:
 
     static LivePitchProcessor::LatencyMode modeToLatency (int mode) noexcept;
 
+    // Tempo Lab is hidden in V1. These remain only to read old APVTS state and
+    // preserve session compatibility; LivePitchProcessor gives them no audio authority.
     [[nodiscard]] CreativeTempo::Settings getTempoSettings() const noexcept;
     [[nodiscard]] CreativeTempo::HostPosition readHostTempoPosition(
         int numberOfSamples) const noexcept;
