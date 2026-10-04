@@ -38,6 +38,15 @@ jobs:
         run: |
           cmake --build build --config Release --parallel 4
 
+      - name: Verifica Scale Database V1
+        run: |
+          clang++ -std=c++17 -O2 -ISource \
+            Tests/ScaleDatabaseV1Test.cpp \
+            Source/ScaleDefinitions.cpp \
+            Source/PitchCore.cpp \
+            -o /tmp/scale_database_v1_test
+          /tmp/scale_database_v1_test
+
       - name: Verifica architetture del plugin
         run: |
           BIN=$(find build -path "*VST3/*.vst3/Contents/MacOS/*" -type f | head -n 1)
