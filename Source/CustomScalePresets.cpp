@@ -13,6 +13,18 @@ const CustomScale& CustomScalePresets::getPreset (int index) const
     return presets_[static_cast<std::size_t> (index)];
 }
 
+int CustomScalePresets::findPresetIndexByStableId (const juce::String& stableId) const noexcept
+{
+    if (stableId.isEmpty())
+        return -1;
+
+    for (std::size_t i = 0; i < presets_.size(); ++i)
+        if (presets_[i].stableId == stableId)
+            return static_cast<int> (i);
+
+    return -1;
+}
+
 juce::String CustomScalePresets::makeLocalStableId()
 {
     return "user.scale." + juce::Uuid().toString();
@@ -72,13 +84,17 @@ bool CustomScalePresets::addPreset (const juce::String& name,
     if (static_cast<int> (presets_.size()) >= maxPresets || name.trim().isEmpty())
         return false;
 
+    const auto requestedId = stableId.trim();
+    if (requestedId.isNotEmpty() && findPresetIndexByStableId (requestedId) >= 0)
+        return false;
+
     auto normalised = normaliseRatios (ratios, equaveRatio);
     if (normalised.size() < 3 || normalised.size() > 96)
         return false;
 
     CustomScale scale;
-    scale.stableId = stableId.isNotEmpty() ? stableId : makeLocalStableId();
-    scale.sourcePackId = sourcePackId;
+    scale.stableId = requestedId.isNotEmpty() ? requestedId : makeLocalStableId();
+    scale.sourcePackId = sourcePackId.trim();
     scale.name = name.trim();
     scale.equaveRatio = std::isfinite (equaveRatio) && equaveRatio > 1.0
         ? equaveRatio : 2.0;
@@ -166,6 +182,8 @@ void CustomScalePresets::fromValueTree (const juce::ValueTree& tree)
         scale.stableId = scaleTree.getProperty ("stableId").toString();
         if (scale.stableId.isEmpty())
             scale.stableId = makeLocalStableId();
+        if (findPresetIndexByStableId (scale.stableId) >= 0)
+            scale.stableId = makeLocalStableId();
         scale.sourcePackId = scaleTree.getProperty ("sourcePackId").toString();
         scale.name = name;
         scale.category = scaleTree.getProperty ("category", "User").toString();
@@ -202,4 +220,46 @@ neumaton::sharing::PackDocument CustomScalePresets::makeScalePack (
     }
 
     return pack;
+}
+
+int CustomScalePresets::importScalePack (const neumaton::sharing::PackDocument& pack)
+{
+    if (pack.manifest.schemaVersion > neumaton::sharing::currentPackSchemaVersion)
+        return 0;
+
+    int imported = 0;
+    for (int i = 0; i < pack.scales.getNumChildren(); ++i)
+    {
+        if (static_cast<int> (presets_.size()) >= maxPresets)
+            break;
+
+        const auto scale = pack.scales.getChild (i);
+        if (scale.getType() != juce::Identifier ("Scale"))
+            continue;
+
+        juce::StringArray tokens;
+        tokens.addTokens (scale.getProperty ("ratios").toString(), ",", "");
+
+        std::vector<double> ratios;
+        ratios.reserve (static_cast<std::size_t> (tokens.size()));
+        for (const auto& token : tokens)
+        {
+            const double value = token.getDoubleValue();
+            if (std::isfinite (value) && value > 0.0)
+                ratios.push_back (value);
+        }
+
+        if (addPreset (scale.getProperty ("name").toString(),
+                       ratios,
+                       static_cast<double> (scale.getProperty ("equaveRatio", 2.0)),
+                       scale.getProperty ("stableId").toString(),
+                       pack.manifest.stableId))
+        {
+            auto& inserted = presets_.back();
+            inserted.category = scale.getProperty ("category", "Imported").toString();
+            ++imported;
+        }
+    }
+
+    return imported;
 }
