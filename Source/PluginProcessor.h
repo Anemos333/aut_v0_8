@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 #include "ScaleDefinitions.h"
 #include "CustomScalePresets.h"
+#include "CommunityPackLibrary.h"
 #include "LivePitchProcessor.h"
 #include "Preset.h"
 
@@ -43,6 +44,10 @@ public:
 
     juce::AudioProcessorValueTreeState& getAPVTS() { return apvts; }
     CustomScalePresets& getCustomPresets() { return customPresets; }
+    neumaton::community::CommunityPackLibrary& getCommunityPackLibrary() noexcept
+    {
+        return communityPackLibrary;
+    }
 
     std::vector<double> getCurrentScaleRatios() const;
     double getCurrentScaleEquave() const noexcept;
@@ -66,6 +71,160 @@ public:
     double getRootFrequency() const;
     void applyFactoryPreset (int index);
 
+    // ------------------------------------------------------------------
+    // Community Pack V1 message-thread API. These operations never enter the
+    // audio callback; they only update the same scale snapshot/APVTS state that
+    // the existing GUI already owns.
+    // ------------------------------------------------------------------
+    [[nodiscard]] juce::String saveCurrentCommunityPreset (const juce::String& name)
+    {
+        return communityPackLibrary.addCurrentPreset (
+            name, apvts, processingMode.load (std::memory_order_acquire));
+    }
+
+    bool applyCommunityPreset (const neumaton::community::CommunityPreset& preset)
+    {
+        if (! preset.isValid())
+            return false;
+        preset.applyTo (apvts);
+        updateProcessingMode (preset.processingMode);
+        return true;
+    }
+
+    bool applyCommunityPresetTree (const juce::ValueTree& tree)
+    {
+        return applyCommunityPreset (
+            neumaton::community::CommunityPreset::fromValueTree (tree));
+    }
+
+    [[nodiscard]] juce::String saveCurrentCommunityScene (
+        const juce::String& name,
+        const juce::String& presetStableId)
+    {
+        return communityPackLibrary.addScene (
+            name, getCurrentScaleStableId(), presetStableId);
+    }
+
+    [[nodiscard]] std::vector<juce::ValueTree> getCommunityScaleEntries() const
+    {
+        std::vector<juce::ValueTree> entries;
+        const auto& factory = ScaleDefinitions::getAllScales();
+        entries.reserve (factory.size()
+            + static_cast<std::size_t> (customPresets.getNumPresets()));
+
+        const auto ratiosToString = [] (const std::vector<double>& ratios)
+        {
+            juce::String text;
+            for (std::size_t i = 0; i < ratios.size(); ++i)
+            {
+                if (i != 0)
+                    text += ",";
+                text += juce::String (ratios[i], 12);
+            }
+            return text;
+        };
+
+        for (const auto& scale : factory)
+        {
+            if (! scale.visibleInMenu)
+                continue;
+            juce::ValueTree node ("Scale");
+            node.setProperty ("stableId", scale.stableId, nullptr);
+            node.setProperty ("name", scale.name, nullptr);
+            node.setProperty ("category", scale.category, nullptr);
+            node.setProperty ("equaveRatio", scale.equaveRatio, nullptr);
+            node.setProperty ("ratios", ratiosToString (scale.ratios), nullptr);
+            entries.push_back (std::move (node));
+        }
+
+        for (int i = 0; i < customPresets.getNumPresets(); ++i)
+        {
+            const auto& scale = customPresets.getPreset (i);
+            juce::ValueTree node ("Scale");
+            node.setProperty ("stableId", scale.stableId, nullptr);
+            node.setProperty ("sourcePackId", scale.sourcePackId, nullptr);
+            node.setProperty ("name", scale.name, nullptr);
+            node.setProperty ("category", scale.category, nullptr);
+            node.setProperty ("equaveRatio", scale.equaveRatio, nullptr);
+            node.setProperty ("ratios", ratiosToString (scale.ratios), nullptr);
+            entries.push_back (std::move (node));
+        }
+
+        return entries;
+    }
+
+    bool activateCommunityScale (
+        const juce::String& stableId,
+        const neumaton::sharing::PackDocument* sourcePack = nullptr)
+    {
+        if (stableId.isEmpty())
+            return false;
+
+        const int factoryIndex = ScaleDefinitions::findScaleIndexByStableId (
+            stableId.toStdString());
+        if (factoryIndex >= 0)
+        {
+            currentScaleIndex.store (factoryIndex, std::memory_order_release);
+            activeCustomPresetIndex.store (-1, std::memory_order_release);
+            refreshScaleSnapshot();
+            return true;
+        }
+
+        const int localIndex = customPresets.findPresetIndexByStableId (stableId);
+        if (localIndex >= 0)
+        {
+            activeCustomPresetIndex.store (localIndex, std::memory_order_release);
+            refreshScaleSnapshot();
+            return true;
+        }
+
+        if (sourcePack == nullptr)
+            return false;
+
+        const auto node = neumaton::community::CommunityPackLibrary::findEntryByStableId (
+            sourcePack->scales, stableId);
+        if (! node.isValid())
+            return false;
+
+        neumaton::sharing::PackDocument single;
+        single.manifest = sourcePack->manifest;
+        single.scales.addChild (node.createCopy(), -1, nullptr);
+        if (customPresets.importScalePack (single) <= 0)
+            return false;
+
+        const int importedIndex = customPresets.findPresetIndexByStableId (stableId);
+        if (importedIndex < 0)
+            return false;
+
+        activeCustomPresetIndex.store (importedIndex, std::memory_order_release);
+        refreshScaleSnapshot();
+        return true;
+    }
+
+    bool applyCommunityScene (
+        const neumaton::community::CommunityScene& scene,
+        const neumaton::sharing::PackDocument* sourcePack = nullptr)
+    {
+        if (! scene.isValid())
+            return false;
+
+        const bool scaleApplied = activateCommunityScale (
+            scene.scaleStableId, sourcePack);
+
+        const neumaton::community::CommunityPreset* localPreset =
+            communityPackLibrary.findUserPreset (scene.presetStableId);
+        if (localPreset != nullptr)
+            return scaleApplied && applyCommunityPreset (*localPreset);
+
+        if (sourcePack == nullptr)
+            return false;
+
+        const auto presetTree =
+            neumaton::community::CommunityPackLibrary::findEntryByStableId (
+                sourcePack->presets, scene.presetStableId);
+        return scaleApplied && applyCommunityPresetTree (presetTree);
+    }
+
     [[nodiscard]] LivePitchProcessor::Metering getPitchMetering() const noexcept;
 
 private:
@@ -73,6 +232,7 @@ private:
     juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
     CustomScalePresets customPresets;
+    neumaton::community::CommunityPackLibrary communityPackLibrary;
     int selectedPresetIndex = 3;
 
     struct ScaleSnapshot
