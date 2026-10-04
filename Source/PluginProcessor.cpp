@@ -1,77 +1,116 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
-#include <cmath>
+
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <limits>
 
 namespace
 {
-    constexpr float analogLowShelfHz = 75.0f;
-    constexpr float analogHighShelfHz = 4800.0f;
-    constexpr float analogLowShelfGainDb = -2.0f;
-    constexpr float analogHighShelfGainDb = -1.5f;
-    constexpr float analogShelfQ = 0.70710678f;
+constexpr float analogLowShelfHz = 75.0f;
+constexpr float analogHighShelfHz = 4800.0f;
+constexpr float analogLowShelfGainDb = -2.0f;
+constexpr float analogHighShelfGainDb = -1.5f;
+constexpr float analogShelfQ = 0.70710678f;
 
-    void setParameterNotifyingHost (juce::AudioProcessorValueTreeState& apvts,
-                                    const char* parameterId,
-                                    float plainValue)
+void setParameterNotifyingHost (juce::AudioProcessorValueTreeState& apvts,
+                                const char* parameterId,
+                                float plainValue)
+{
+    if (auto* parameter = apvts.getParameter (parameterId))
     {
-        if (auto* parameter = apvts.getParameter (parameterId))
-        {
-            parameter->beginChangeGesture();
-            parameter->setValueNotifyingHost (
-                parameter->convertTo0to1 (plainValue));
-            parameter->endChangeGesture();
-        }
+        parameter->beginChangeGesture();
+        parameter->setValueNotifyingHost (
+            parameter->convertTo0to1 (plainValue));
+        parameter->endChangeGesture();
     }
-
-    float sanitiseOutputSample (float value) noexcept
-    {
-        if (! std::isfinite (value) || std::fpclassify (value) == FP_SUBNORMAL)
-            return 0.0f;
-
-        return juce::jlimit (-32.0f, 32.0f, value);
-    }
-
-    float fastSoftClip (float x) noexcept
-    {
-        x = sanitiseOutputSample (x);
-
-        if (x < -3.0f) return -1.0f;
-        if (x >  3.0f) return  1.0f;
-
-        const float x2 = x * x;
-        return x * (27.0f + x2) / (27.0f + 9.0f * x2);
-    }
-
-    float outputSafetySoftCeiling (float x) noexcept
-    {
-        x = sanitiseOutputSample (x);
-
-        constexpr float threshold = 0.985f;
-        constexpr float softness = 0.30f;
-
-        const float ax = std::abs (x);
-        if (ax <= threshold)
-            return x;
-
-        const float over = ax - threshold;
-        const float compressed = threshold + over / (1.0f + softness * over);
-        return std::copysign (compressed, x);
-    }
-
-    [[nodiscard]] float constrainRetuneSpeedMs (float speedMs,
-                                           int /*mode*/,
-                                           bool /*scaleLock*/) noexcept
-    {
-        // The clean engine owns the mode-aware trajectory mapping. Preserve
-        // the complete 0..500 ms GUI range without floors or compression.
-        if (! std::isfinite (speedMs))
-            speedMs = 50.0f;
-        return juce::jlimit (0.0f, 500.0f, speedMs);
-    }
-
 }
+
+[[nodiscard]] const char* legacyScaleStableIdForIndex (int index) noexcept
+{
+    // Exact semantic migration from the pre-database ScaleDefinitions order.
+    static constexpr std::array<const char*, 29> ids {
+        "scale_0033",                 // Chromatic -> 12-EDO
+        "scale_0001",                 // Major / Ionian
+        "scale_0005",                 // Dorian
+        "scale_0006",                 // Phrygian
+        "scale_0007",                 // Lydian
+        "scale_0008",                 // Mixolydian
+        "scale_0002",                 // Aeolian
+        "scale_0009",                 // Locrian
+        "scale_0004",                 // Melodic minor
+        "scale_0003",                 // Harmonic minor
+        "scale_0026",                 // Major pentatonic
+        "scale_0025",                 // Minor pentatonic
+        "scale_0037",                 // 24 EDO
+        "scale_0035",                 // 19 EDO
+        "scale_0039",                 // 31 EDO
+        "legacy.scale.pythagorean-12",
+        "legacy.scale.ptolemaic-v0",
+        "scale_0076",                 // Byzantine diatonic
+        "scale_0077",                 // Byzantine soft chromatic
+        "scale_0078",                 // old Mode III geometry
+        "scale_0083",                 // Rast
+        "scale_0084",                 // Bayati
+        "scale_0087",                 // Saba
+        "scale_0085",                 // Hijaz
+        "scale_0082",                 // Nahawand
+        "scale_0080",                 // Ajam
+        "scale_0081",                 // Kurd
+        "scale_0031",                 // old Slendro approximation = 5-EDO
+        "legacy.scale.pelog-v0"
+    };
+
+    if (index < 0 || index >= static_cast<int> (ids.size()))
+        return nullptr;
+    return ids[static_cast<std::size_t> (index)];
+}
+
+float sanitiseOutputSample (float value) noexcept
+{
+    if (! std::isfinite (value) || std::fpclassify (value) == FP_SUBNORMAL)
+        return 0.0f;
+
+    return juce::jlimit (-32.0f, 32.0f, value);
+}
+
+float fastSoftClip (float x) noexcept
+{
+    x = sanitiseOutputSample (x);
+
+    if (x < -3.0f) return -1.0f;
+    if (x >  3.0f) return  1.0f;
+
+    const float x2 = x * x;
+    return x * (27.0f + x2) / (27.0f + 9.0f * x2);
+}
+
+float outputSafetySoftCeiling (float x) noexcept
+{
+    x = sanitiseOutputSample (x);
+
+    constexpr float threshold = 0.985f;
+    constexpr float softness = 0.30f;
+
+    const float ax = std::abs (x);
+    if (ax <= threshold)
+        return x;
+
+    const float over = ax - threshold;
+    const float compressed = threshold + over / (1.0f + softness * over);
+    return std::copysign (compressed, x);
+}
+
+[[nodiscard]] float constrainRetuneSpeedMs (float speedMs,
+                                             int /*mode*/,
+                                             bool /*scaleLock*/) noexcept
+{
+    if (! std::isfinite (speedMs))
+        speedMs = 50.0f;
+    return juce::jlimit (0.0f, 500.0f, speedMs);
+}
+} // namespace
 
 //==============================================================================
 MicrotonalAutotuneAudioProcessor::MicrotonalAutotuneAudioProcessor()
@@ -83,9 +122,10 @@ MicrotonalAutotuneAudioProcessor::MicrotonalAutotuneAudioProcessor()
     refreshScaleSnapshot();
 }
 
-MicrotonalAutotuneAudioProcessor::~MicrotonalAutotuneAudioProcessor() {}
+MicrotonalAutotuneAudioProcessor::~MicrotonalAutotuneAudioProcessor() = default;
 
-juce::AudioProcessorValueTreeState::ParameterLayout MicrotonalAutotuneAudioProcessor::createParameterLayout()
+juce::AudioProcessorValueTreeState::ParameterLayout
+MicrotonalAutotuneAudioProcessor::createParameterLayout()
 {
     std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
 
@@ -101,6 +141,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout MicrotonalAutotuneAudioProce
         juce::ParameterID { "humanize", 1 }, "Humanize",
         juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f), 20.0f));
 
+    // Tempo Lab is not exposed in V1, but these parameters stay in the state
+    // schema so old sessions/presets deserialize without losing data.
     params.push_back (std::make_unique<juce::AudioParameterChoice> (
         juce::ParameterID { "tempoMode", 1 }, "Creative Tempo Mode",
         juce::StringArray { "Off", "Tempo Glide", "Glide Lock" }, 0));
@@ -120,22 +162,25 @@ juce::AudioProcessorValueTreeState::ParameterLayout MicrotonalAutotuneAudioProce
     params.push_back (std::make_unique<juce::AudioParameterBool> (
         juce::ParameterID { "tempoSmartOnset", 1 }, "Smart Onset", true));
 
-    // Modifica A: Scale Lock
+    // Absolute tuning is deliberately separate from the selected musical centre.
+    params.push_back (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { "tuningReferenceHz", 1 }, "Tuning Reference A4",
+        juce::NormalisableRange<float> (300.0f, 600.0f, 0.01f), 440.0f));
+
     params.push_back (std::make_unique<juce::AudioParameterBool> (
         juce::ParameterID { "scaleLock", 1 }, "Scale Lock", false));
-        
+
     params.push_back (std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID { "lockHysteresis", 1 }, "Lock Hysteresis",
         juce::NormalisableRange<float> (0.0f, 80.0f, 1.0f), 24.0f));
-        
+
     params.push_back (std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID { "vibratoPreserve", 1 }, "Vibrato Preserve",
         juce::NormalisableRange<float> (0.0f, 100.0f, 1.0f), 0.0f));
 
-    // Modifica B: Analog Tube
     params.push_back (std::make_unique<juce::AudioParameterBool> (
         juce::ParameterID { "analogMode", 1 }, "Analog Mode", false));
-        
+
     params.push_back (std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID { "outVolume", 1 }, "Output Volume",
         juce::NormalisableRange<float> (-36.0f, 3.0f, 0.1f), 0.0f));
@@ -149,6 +194,7 @@ bool MicrotonalAutotuneAudioProcessor::acceptsMidi() const { return false; }
 bool MicrotonalAutotuneAudioProcessor::producesMidi() const { return false; }
 bool MicrotonalAutotuneAudioProcessor::isMidiEffect() const { return false; }
 double MicrotonalAutotuneAudioProcessor::getTailLengthSeconds() const { return 0.0; }
+
 int MicrotonalAutotuneAudioProcessor::getNumPrograms()
 {
     return FactoryPresets::getNumPresets();
@@ -168,60 +214,56 @@ const juce::String MicrotonalAutotuneAudioProcessor::getProgramName (int index)
 {
     if (index < 0 || index >= FactoryPresets::getNumPresets())
         return {};
-
     return FactoryPresets::getPreset (index).name;
 }
 
 void MicrotonalAutotuneAudioProcessor::changeProgramName (int, const juce::String&)
 {
-    // Factory presets are read-only.
 }
 
-
 //==============================================================================
-ModernPitchEngine::LatencyMode MicrotonalAutotuneAudioProcessor::modeToLatency (int mode) noexcept
+LivePitchProcessor::LatencyMode
+MicrotonalAutotuneAudioProcessor::modeToLatency (int mode) noexcept
 {
     switch (mode)
     {
-        case 1:  return ModernPitchEngine::LatencyMode::quality;
-        case 2:  return ModernPitchEngine::LatencyMode::live;
-        case 3:  return ModernPitchEngine::LatencyMode::ultraLive;
-        default: return ModernPitchEngine::LatencyMode::quality; // fail-safe release mode
+        case 1:  return LivePitchProcessor::LatencyMode::quality;
+        case 2:  return LivePitchProcessor::LatencyMode::live;
+        case 3:  return LivePitchProcessor::LatencyMode::ultraLive;
+        default: return LivePitchProcessor::LatencyMode::quality;
     }
 }
 
-//==============================================================================
-void MicrotonalAutotuneAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
+void MicrotonalAutotuneAudioProcessor::prepareToPlay (double sampleRate,
+                                                       int samplesPerBlock)
 {
-    currentSampleRate = std::isfinite(sampleRate) ? std::max(8000.0, sampleRate)
-                                                    : 44100.0;
+    currentSampleRate = std::isfinite (sampleRate) ? std::max (8000.0, sampleRate)
+                                                   : 44100.0;
     updateAnalogOutputFilters();
     analogOutputWasActive_ = false;
-    lastSamplesPerBlock = std::max(1, samplesPerBlock);
+    lastSamplesPerBlock = std::max (1, samplesPerBlock);
     refreshScaleSnapshot();
-    // The plugin has one audio engine family only. Quality, Live and
-    // Experimental select already-prepared ModernPitchEngine profiles; no
-    // legacy renderer is kept beside them.
+
     const int mode = juce::jlimit (1, 3,
         processingMode.load (std::memory_order_acquire));
     processingMode.store (mode, std::memory_order_release);
+
     livePitchProcessor.prepare (currentSampleRate,
                                 lastSamplesPerBlock,
                                 std::max (1, getTotalNumOutputChannels()),
                                 modeToLatency (mode));
+
     const float humanizeVal = apvts.getRawParameterValue ("humanize")->load() / 100.0f;
-    const float vibratoPreserve = juce::jlimit (0.0f, 1.0f,
-        apvts.getRawParameterValue ("vibratoPreserve")->load() / 100.0f);
     livePitchProcessor.setAdvancedParameters (
-        35.0f,   // transitionMs
+        35.0f,
         humanizeVal,
-        0.90f,   // formantPreservation
-        0.70f,   // detectorSensitivity
-        12.0f,   // maximumCorrectionSemitones
-        45.0f,   // minimumPitchHz
-        1600.0f, // maximumPitchHz
-        LivePitchProcessor::StereoMode::linkedMidSide
-    );
+        0.90f,
+        0.70f,
+        12.0f,
+        45.0f,
+        1600.0f,
+        LivePitchProcessor::StereoMode::linkedMidSide);
+
     setLatencySamples (livePitchProcessor.getLatencySamples());
 }
 
@@ -232,23 +274,19 @@ void MicrotonalAutotuneAudioProcessor::releaseResources()
     analogOutputWasActive_ = false;
 }
 
-bool MicrotonalAutotuneAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
+bool MicrotonalAutotuneAudioProcessor::isBusesLayoutSupported (
+    const BusesLayout& layouts) const
 {
     const auto& mainInput  = layouts.getChannelSet (true,  0);
     const auto& mainOutput = layouts.getChannelSet (false, 0);
 
-    // Support mono or stereo, input and output must match
     if (mainInput != mainOutput)
         return false;
 
-    if (mainInput != juce::AudioChannelSet::mono() &&
-        mainInput != juce::AudioChannelSet::stereo())
-        return false;
-
-    return true;
+    return mainInput == juce::AudioChannelSet::mono()
+        || mainInput == juce::AudioChannelSet::stereo();
 }
 
-//==============================================================================
 void MicrotonalAutotuneAudioProcessor::updateProcessingMode (int newMode)
 {
     newMode = juce::jlimit (1, 3, newMode);
@@ -269,13 +307,30 @@ std::vector<double> MicrotonalAutotuneAudioProcessor::getCurrentScaleRatios() co
         return customPresets.getPreset (customIdx).ratios;
 
     const int scaleIdx = currentScaleIndex.load (std::memory_order_acquire);
-    if (scaleIdx >= 0 && scaleIdx < ScaleDefinitions::getScaleCount())
-        return ScaleDefinitions::getScale (scaleIdx).ratios;
-
-    return ScaleDefinitions::getScale (0).ratios;
+    return ScaleDefinitions::getScale (scaleIdx).ratios;
 }
 
-double MicrotonalAutotuneAudioProcessor::rootFrequencyForIndex (int index) noexcept
+double MicrotonalAutotuneAudioProcessor::getCurrentScaleEquave() const noexcept
+{
+    const int customIdx = activeCustomPresetIndex.load (std::memory_order_acquire);
+    if (customIdx >= 0 && customIdx < customPresets.getNumPresets())
+        return customPresets.getPreset (customIdx).equaveRatio;
+
+    const int scaleIdx = currentScaleIndex.load (std::memory_order_acquire);
+    return ScaleDefinitions::getScale (scaleIdx).equaveRatio;
+}
+
+juce::String MicrotonalAutotuneAudioProcessor::getCurrentScaleStableId() const
+{
+    const int customIdx = activeCustomPresetIndex.load (std::memory_order_acquire);
+    if (customIdx >= 0 && customIdx < customPresets.getNumPresets())
+        return customPresets.getPreset (customIdx).stableId;
+
+    const int scaleIdx = currentScaleIndex.load (std::memory_order_acquire);
+    return juce::String (ScaleDefinitions::getScale (scaleIdx).stableId);
+}
+
+double MicrotonalAutotuneAudioProcessor::legacyRootFrequencyForIndex (int index) noexcept
 {
     static constexpr std::array<double, 19> rootFreqs {
         261.6256, 277.1826, 293.6648, 311.1270, 329.6276, 349.2282,
@@ -288,43 +343,69 @@ double MicrotonalAutotuneAudioProcessor::rootFrequencyForIndex (int index) noexc
         261.6256 * 1.681792830507429,
         261.6256 * 1.851749424574581
     };
+
     return rootFreqs[static_cast<std::size_t> (juce::jlimit (0, 18, index))];
+}
+
+double MicrotonalAutotuneAudioProcessor::tuningReferenceHz() const noexcept
+{
+    const auto* raw = apvts.getRawParameterValue ("tuningReferenceHz");
+    const float value = raw != nullptr ? raw->load() : 440.0f;
+    return std::isfinite (value) ? juce::jlimit (300.0, 600.0, static_cast<double> (value))
+                                 : 440.0;
+}
+
+double MicrotonalAutotuneAudioProcessor::rootFrequencyFromCenter (
+    int centerIndex, double a4ReferenceHz) noexcept
+{
+    centerIndex = juce::jlimit (0, 11, centerIndex);
+    if (! std::isfinite (a4ReferenceHz) || a4ReferenceHz <= 0.0)
+        a4ReferenceHz = 440.0;
+
+    const double semitonesFromA = static_cast<double> (centerIndex - 9);
+    return a4ReferenceHz * std::exp2 (semitonesFromA / 12.0);
 }
 
 double MicrotonalAutotuneAudioProcessor::getRootFrequency() const
 {
-    return rootFrequencyForIndex (rootNoteIndex.load (std::memory_order_acquire));
+    return rootFrequencyFromCenter (
+        tonalCenterIndex.load (std::memory_order_acquire),
+        tuningReferenceHz());
 }
 
 void MicrotonalAutotuneAudioProcessor::refreshScaleSnapshot() noexcept
 {
     const auto ratios = getCurrentScaleRatios(); // message/non-audio thread only
+    double equaveRatio = getCurrentScaleEquave();
+    if (! std::isfinite (equaveRatio) || equaveRatio <= 1.0)
+        equaveRatio = 2.0;
+
+    const double logEquave = std::log2 (equaveRatio);
+
     ScaleSnapshot next;
     next.count = 0;
-
-    // Preserve the musical invariant expected by the modern ScaleQuantizer:
-    // every scale degree lives inside one octave [1.0, 2.0),
-    // unison is present, and duplicate octave-equivalent degrees are removed.
+    next.equaveRatio = equaveRatio;
+    next.rootFrequency = getRootFrequency(); // diagnostic snapshot only
     next.ratios[static_cast<std::size_t> (next.count++)] = 1.0;
-    
+
     for (double ratio : ratios)
     {
-        if (next.count >= ModernPitchEngine::maxScaleRatios)
+        if (next.count >= LivePitchProcessor::maxScaleRatios)
             break;
         if (! std::isfinite (ratio) || ratio <= 0.0)
             continue;
 
-        // O(1) mathematically safe octave folding to [1.0, 2.0)
-        double l = std::log2(ratio);
-        double folded = std::exp2(l - std::floor(l));
-        
-        if (folded >= 2.0) folded = 1.0;
+        double phase = std::fmod (std::log2 (ratio), logEquave);
+        if (phase < 0.0)
+            phase += logEquave;
 
-        next.ratios[static_cast<std::size_t> (next.count++)] = folded;
+        const double folded = std::exp2 (phase);
+        if (std::isfinite (folded) && folded >= 1.0
+            && folded < equaveRatio - 1.0e-10)
+            next.ratios[static_cast<std::size_t> (next.count++)] = folded;
     }
 
-    std::sort (next.ratios.begin(),
-               next.ratios.begin() + next.count);
+    std::sort (next.ratios.begin(), next.ratios.begin() + next.count);
 
     int uniqueCount = 0;
     for (int index = 0; index < next.count; ++index)
@@ -332,11 +413,12 @@ void MicrotonalAutotuneAudioProcessor::refreshScaleSnapshot() noexcept
         const double value = next.ratios[static_cast<std::size_t> (index)];
         if (uniqueCount == 0
             || std::abs (value - next.ratios[static_cast<std::size_t> (uniqueCount - 1)]) > 1.0e-8)
+        {
             next.ratios[static_cast<std::size_t> (uniqueCount++)] = value;
+        }
     }
+
     next.count = std::max (1, uniqueCount);
-    next.rootFrequency = rootFrequencyForIndex (
-        rootNoteIndex.load (std::memory_order_acquire));
     next.generation = scaleSnapshotGeneration_.fetch_add (
         1, std::memory_order_relaxed) + 1;
 
@@ -352,9 +434,6 @@ void MicrotonalAutotuneAudioProcessor::refreshScaleSnapshot() noexcept
             return;
         }
     }
-
-    // One audio reader can occupy only one slot; this branch is defensive.
-    // Keep the previous valid snapshot rather than blocking the message thread.
 }
 
 int MicrotonalAutotuneAudioProcessor::acquireScaleSnapshot() noexcept
@@ -384,18 +463,15 @@ MicrotonalAutotuneAudioProcessor::getTempoSettings() const noexcept
 
     const auto finiteParameter = [this] (const char* parameterId, float fallback) noexcept
     {
-        const float value = apvts.getRawParameterValue (parameterId)->load();
+        const auto* raw = apvts.getRawParameterValue (parameterId);
+        const float value = raw != nullptr ? raw->load() : fallback;
         return std::isfinite (value) ? value : fallback;
     };
 
-    const int mode = static_cast<int> (std::lround (
-        finiteParameter ("tempoMode", 0.0f)));
-    settings.mode = static_cast<CreativeTempo::Mode> (
-        juce::jlimit (0, 2, mode));
-
-    const int division = static_cast<int> (std::lround (
-        finiteParameter ("tempoDivision", 2.0f)));
-    settings.division = CreativeTempo::divisionFromIndex (division);
+    settings.mode = static_cast<CreativeTempo::Mode> (juce::jlimit (0, 2,
+        static_cast<int> (std::lround (finiteParameter ("tempoMode", 0.0f)))));
+    settings.division = CreativeTempo::divisionFromIndex (juce::jlimit (0, 4,
+        static_cast<int> (std::lround (finiteParameter ("tempoDivision", 2.0f)))));
     settings.glideFraction = juce::jlimit (0.05f, 1.0f,
         finiteParameter ("tempoGlidePercent", 35.0f) / 100.0f);
     settings.lockStrength = juce::jlimit (0.0f, 1.0f,
@@ -407,11 +483,10 @@ MicrotonalAutotuneAudioProcessor::getTempoSettings() const noexcept
 }
 
 CreativeTempo::HostPosition
-MicrotonalAutotuneAudioProcessor::readHostTempoPosition(
-    int numberOfSamples) const noexcept
+MicrotonalAutotuneAudioProcessor::readHostTempoPosition (int numberOfSamples) const noexcept
 {
     CreativeTempo::HostPosition result;
-    result.numberOfSamples = std::max(0, numberOfSamples);
+    result.numberOfSamples = std::max (0, numberOfSamples);
 
     if (auto* playHead = getPlayHead())
     {
@@ -420,14 +495,13 @@ MicrotonalAutotuneAudioProcessor::readHostTempoPosition(
             if (const auto bpm = position->getBpm())
             {
                 result.bpm = *bpm;
-                result.hasBpm = std::isfinite(result.bpm)
-                             && result.bpm > 1.0;
+                result.hasBpm = std::isfinite (result.bpm) && result.bpm > 1.0;
             }
 
             if (const auto ppq = position->getPpqPosition())
             {
                 result.ppqAtBlockStart = *ppq;
-                result.hasPpq = std::isfinite(result.ppqAtBlockStart);
+                result.hasPpq = std::isfinite (result.ppqAtBlockStart);
             }
 
             if (const auto sampleTime = position->getTimeInSamples())
@@ -443,6 +517,7 @@ MicrotonalAutotuneAudioProcessor::readHostTempoPosition(
 
     return result;
 }
+
 void MicrotonalAutotuneAudioProcessor::applyFactoryPreset (int index)
 {
     const int count = FactoryPresets::getNumPresets();
@@ -451,50 +526,45 @@ void MicrotonalAutotuneAudioProcessor::applyFactoryPreset (int index)
 
     index = juce::jlimit (0, count - 1, index);
     selectedPresetIndex = index;
-
     const auto& preset = FactoryPresets::getPreset (index);
 
     updateProcessingMode (juce::jlimit (1, 3, preset.processingMode));
+    setParameterNotifyingHost (apvts, "speed", preset.speedMs);
+    setParameterNotifyingHost (apvts, "amount", preset.amount);
+    setParameterNotifyingHost (apvts, "humanize", preset.humanize);
+    setParameterNotifyingHost (apvts, "scaleLock", preset.scaleLock ? 1.0f : 0.0f);
+    setParameterNotifyingHost (apvts, "lockHysteresis", preset.lockHysteresis);
+    setParameterNotifyingHost (apvts, "vibratoPreserve", preset.vibratoPreserve);
 
-    setParameterNotifyingHost (apvts, "speed",              preset.speedMs);
-    setParameterNotifyingHost (apvts, "amount",             preset.amount);
-    setParameterNotifyingHost (apvts, "humanize",           preset.humanize);
+    // Stored for compatibility; Tempo Lab itself is not exposed in V1.
+    setParameterNotifyingHost (apvts, "tempoMode", static_cast<float> (preset.tempoMode));
+    setParameterNotifyingHost (apvts, "tempoDivision", static_cast<float> (preset.tempoDivision));
+    setParameterNotifyingHost (apvts, "tempoGlidePercent", preset.tempoGlidePct);
+    setParameterNotifyingHost (apvts, "tempoLockStrength", preset.tempoLockStrength);
+    setParameterNotifyingHost (apvts, "tempoSmartOnset", preset.tempoSmartOnset ? 1.0f : 0.0f);
 
-    setParameterNotifyingHost (apvts, "scaleLock",          preset.scaleLock ? 1.0f : 0.0f);
-    setParameterNotifyingHost (apvts, "lockHysteresis",     preset.lockHysteresis);
-    setParameterNotifyingHost (apvts, "vibratoPreserve",    preset.vibratoPreserve);
-
-    setParameterNotifyingHost (apvts, "tempoMode",          static_cast<float> (preset.tempoMode));
-    setParameterNotifyingHost (apvts, "tempoDivision",      static_cast<float> (preset.tempoDivision));
-    setParameterNotifyingHost (apvts, "tempoGlidePercent",  preset.tempoGlidePct);
-    setParameterNotifyingHost (apvts, "tempoLockStrength",  preset.tempoLockStrength);
-    setParameterNotifyingHost (apvts, "tempoSmartOnset",    preset.tempoSmartOnset ? 1.0f : 0.0f);
-
-    setParameterNotifyingHost (apvts, "analogMode",         preset.analogMode ? 1.0f : 0.0f);
-    setParameterNotifyingHost (apvts, "outVolume",          preset.outVolumeDb);
+    setParameterNotifyingHost (apvts, "analogMode", preset.analogMode ? 1.0f : 0.0f);
+    setParameterNotifyingHost (apvts, "outVolume", preset.outVolumeDb);
 }
+
+//==============================================================================
 void MicrotonalAutotuneAudioProcessor::updateAnalogOutputFilters()
 {
-    const double sr = std::isfinite(currentSampleRate)
-        ? std::max(8000.0, currentSampleRate)
-        : 44100.0;
+    const double sr = std::isfinite (currentSampleRate)
+        ? std::max (8000.0, currentSampleRate) : 44100.0;
 
-    const auto lowShelfCoeffs = juce::dsp::IIR::Coefficients<float>::makeLowShelf(
-        sr,
-        analogLowShelfHz,
-        analogShelfQ,
-        juce::Decibels::decibelsToGain(analogLowShelfGainDb));
+    const auto lowShelfCoeffs = juce::dsp::IIR::Coefficients<float>::makeLowShelf (
+        sr, analogLowShelfHz, analogShelfQ,
+        juce::Decibels::decibelsToGain (analogLowShelfGainDb));
 
-    const auto highShelfCoeffs = juce::dsp::IIR::Coefficients<float>::makeHighShelf(
-        sr,
-        analogHighShelfHz,
-        analogShelfQ,
-        juce::Decibels::decibelsToGain(analogHighShelfGainDb));
+    const auto highShelfCoeffs = juce::dsp::IIR::Coefficients<float>::makeHighShelf (
+        sr, analogHighShelfHz, analogShelfQ,
+        juce::Decibels::decibelsToGain (analogHighShelfGainDb));
 
     for (int ch = 0; ch < maxAnalogOutputChannels; ++ch)
     {
-        analogLowShelfFilters_[static_cast<std::size_t>(ch)].coefficients = lowShelfCoeffs;
-        analogHighShelfFilters_[static_cast<std::size_t>(ch)].coefficients = highShelfCoeffs;
+        analogLowShelfFilters_[static_cast<std::size_t> (ch)].coefficients = lowShelfCoeffs;
+        analogHighShelfFilters_[static_cast<std::size_t> (ch)].coefficients = highShelfCoeffs;
     }
 
     resetAnalogOutputFilters();
@@ -504,56 +574,57 @@ void MicrotonalAutotuneAudioProcessor::resetAnalogOutputFilters() noexcept
 {
     for (int ch = 0; ch < maxAnalogOutputChannels; ++ch)
     {
-        analogLowShelfFilters_[static_cast<std::size_t>(ch)].reset();
-        analogHighShelfFilters_[static_cast<std::size_t>(ch)].reset();
+        analogLowShelfFilters_[static_cast<std::size_t> (ch)].reset();
+        analogHighShelfFilters_[static_cast<std::size_t> (ch)].reset();
     }
 }
-void MicrotonalAutotuneAudioProcessor::processOutputStage(
+
+void MicrotonalAutotuneAudioProcessor::processOutputStage (
     juce::AudioBuffer<float>& buffer,
     int numChannels,
     int numSamples,
     bool analogMode,
     float outGain) noexcept
 {
-    numChannels = juce::jlimit(0, buffer.getNumChannels(), numChannels);
-    numSamples = juce::jlimit(0, buffer.getNumSamples(), numSamples);
+    numChannels = juce::jlimit (0, buffer.getNumChannels(), numChannels);
+    numSamples = juce::jlimit (0, buffer.getNumSamples(), numSamples);
 
     if (numChannels <= 0 || numSamples <= 0)
         return;
 
-    outGain = std::isfinite(outGain) ? juce::jlimit(0.0f, 8.0f, outGain) : 1.0f;
+    outGain = std::isfinite (outGain) ? juce::jlimit (0.0f, 8.0f, outGain) : 1.0f;
 
     if (analogMode && ! analogOutputWasActive_)
         resetAnalogOutputFilters();
 
     for (int channel = 0; channel < numChannels; ++channel)
     {
-        float* data = buffer.getWritePointer(channel);
-
+        float* data = buffer.getWritePointer (channel);
         for (int sample = 0; sample < numSamples; ++sample)
         {
-            float value = sanitiseOutputSample(data[sample]);
+            float value = sanitiseOutputSample (data[sample]);
 
             if (analogMode)
             {
-                value = fastSoftClip(value);
-
+                value = fastSoftClip (value);
                 if (channel < maxAnalogOutputChannels)
                 {
-                    value = analogLowShelfFilters_[static_cast<std::size_t>(channel)].processSample(value);
-                    value = analogHighShelfFilters_[static_cast<std::size_t>(channel)].processSample(value);
+                    value = analogLowShelfFilters_[static_cast<std::size_t> (channel)].processSample (value);
+                    value = analogHighShelfFilters_[static_cast<std::size_t> (channel)].processSample (value);
                 }
             }
 
             value *= outGain;
-            data[sample] = outputSafetySoftCeiling(value);
+            data[sample] = outputSafetySoftCeiling (value);
         }
     }
 
     analogOutputWasActive_ = analogMode;
 }
+
 //==============================================================================
-void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
+void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
+                                                      juce::MidiBuffer&)
 {
     juce::ScopedNoDenormals noDenormals;
 
@@ -561,66 +632,54 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
     const int totalNumOutputChannels = getTotalNumOutputChannels();
     const int numSamples = buffer.getNumSamples();
 
-    // Clear unused output channels
     for (int i = totalNumInputChannels; i < totalNumOutputChannels; ++i)
         buffer.clear (i, 0, numSamples);
 
     if (numSamples == 0 || totalNumInputChannels == 0)
         return;
 
-    // Get parameters
     float speedMs = apvts.getRawParameterValue ("speed")->load();
     float amountPct = apvts.getRawParameterValue ("amount")->load();
     float humanizePct = apvts.getRawParameterValue ("humanize")->load();
+    const bool scaleLock = apvts.getRawParameterValue ("scaleLock")->load() > 0.5f;
+    const float lockHysteresis = apvts.getRawParameterValue ("lockHysteresis")->load();
+    const float vibratoPreserve = apvts.getRawParameterValue ("vibratoPreserve")->load() / 100.0f;
+    const bool analogMode = apvts.getRawParameterValue ("analogMode")->load() > 0.5f;
+    const float outVolumeDb = apvts.getRawParameterValue ("outVolume")->load();
 
-    bool scaleLock = apvts.getRawParameterValue ("scaleLock")->load() > 0.5f;
-    float lockHysteresis = apvts.getRawParameterValue ("lockHysteresis")->load();
-    float vibratoPreserve = apvts.getRawParameterValue ("vibratoPreserve")->load() / 100.0f; // 0-1
-    bool analogMode = apvts.getRawParameterValue ("analogMode")->load() > 0.5f;
-    float outVolumeDb = apvts.getRawParameterValue ("outVolume")->load();
-    
-    const int mode = juce::jlimit (1, 3, processingMode.load (std::memory_order_relaxed));
+    const int mode = juce::jlimit (1, 3,
+        processingMode.load (std::memory_order_relaxed));
 
     speedMs = constrainRetuneSpeedMs (speedMs, mode, scaleLock);
-    
     amountPct = std::isfinite (amountPct) ? juce::jlimit (0.0f, 100.0f, amountPct) : 0.0f;
     humanizePct = std::isfinite (humanizePct) ? juce::jlimit (0.0f, 100.0f, humanizePct) : 20.0f;
 
     const float amount = amountPct / 100.0f;
     const float humanizeVal = humanizePct / 100.0f;
-    const float outGain = juce::Decibels::decibelsToGain(outVolumeDb);
-
-    // PLUGIN_INPUT_SANITIZE_OWNED_DOWNSTREAM_V1: avoid a third full-buffer
-    // sanitize pass; analysis and public engine DSP boundaries sanitize independently.
+    const float outGain = juce::Decibels::decibelsToGain (outVolumeDb);
 
     const int snapshotIndex = acquireScaleSnapshot();
-    const auto& scaleSnapshot = scaleSnapshotSlots_[static_cast<std::size_t> (snapshotIndex)].value;
+    const auto& scaleSnapshot =
+        scaleSnapshotSlots_[static_cast<std::size_t> (snapshotIndex)].value;
 
-    // SINGLE_PLUGIN_AUDIO_PATH_V1: every release mode uses the same modern
-    // detector -> correction controller -> SingleWetSpectralRenderer chain.
-    // There is no mode-local YIN/circular-buffer renderer and no dry blend.
-    livePitchProcessor.setTempoSettings (getTempoSettings());
-    livePitchProcessor.setTempoHostPosition (
-        readHostTempoPosition (numSamples));
-    livePitchProcessor.setScaleLockParameters(scaleLock, lockHysteresis, vibratoPreserve);
-
+    livePitchProcessor.setScaleLockParameters (scaleLock, lockHysteresis, vibratoPreserve);
     livePitchProcessor.setAdvancedParameters (
-        35.0f,   // transitionMs
+        35.0f,
         humanizeVal,
-        0.90f,   // formantPreservation
-        0.70f,   // detectorSensitivity
-        12.0f,   // maximumCorrectionSemitones
-        45.0f,   // minimumPitchHz
-        1600.0f, // maximumPitchHz
-        LivePitchProcessor::StereoMode::linkedMidSide
-    );
+        0.90f,
+        0.70f,
+        12.0f,
+        45.0f,
+        1600.0f,
+        LivePitchProcessor::StereoMode::linkedMidSide);
 
     livePitchProcessor.process (buffer,
                                 scaleSnapshot.ratios.data(),
                                 scaleSnapshot.count,
-                                scaleSnapshot.rootFrequency,
+                                getRootFrequency(),
                                 speedMs,
-                                amount);
+                                amount,
+                                scaleSnapshot.equaveRatio);
     releaseScaleSnapshot (snapshotIndex);
 
     processOutputStage (buffer,
@@ -629,23 +688,20 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
                         analogMode,
                         outGain);
 }
-//==============================================================================
-void MicrotonalAutotuneAudioProcessor::processBlockBypassed (juce::AudioBuffer<float>& buffer,
-                                                              juce::MidiBuffer&)
+
+void MicrotonalAutotuneAudioProcessor::processBlockBypassed (
+    juce::AudioBuffer<float>& buffer,
+    juce::MidiBuffer&)
 {
-    // HOST_BYPASS_ONLY_DRY_V1: this is the host's explicit plugin bypass, not
-    // a detector/correction decision and not an alternate active audio path.
     livePitchProcessor.processBypassed (buffer);
 }
 
-//==============================================================================
 LivePitchProcessor::Metering
 MicrotonalAutotuneAudioProcessor::getPitchMetering() const noexcept
 {
     return livePitchProcessor.getMetering();
 }
 
-//==============================================================================
 bool MicrotonalAutotuneAudioProcessor::hasEditor() const { return true; }
 
 juce::AudioProcessorEditor* MicrotonalAutotuneAudioProcessor::createEditor()
@@ -656,84 +712,158 @@ juce::AudioProcessorEditor* MicrotonalAutotuneAudioProcessor::createEditor()
 //==============================================================================
 void MicrotonalAutotuneAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
-    // Save APVTS parameters
     auto state = apvts.copyState();
 
-    // Save scale selection
+    const int customIndex = activeCustomPresetIndex.load (std::memory_order_acquire);
+    const bool customActive = customIndex >= 0 && customIndex < customPresets.getNumPresets();
+
+    state.setProperty ("scaleDatabaseSchemaVersion",
+                       ScaleDefinitions::databaseSchemaVersion, nullptr);
+    state.setProperty ("activeScaleKind", customActive ? "custom" : "factory", nullptr);
+    state.setProperty ("activeScaleStableId", getCurrentScaleStableId(), nullptr);
+
+    // Index properties remain for older builds, but stable ids own new persistence.
     state.setProperty ("scaleIndex", currentScaleIndex.load(), nullptr);
-    state.setProperty ("customPresetIndex", activeCustomPresetIndex.load(), nullptr);
-    state.setProperty ("rootNoteIndex", rootNoteIndex.load(), nullptr);
+    state.setProperty ("customPresetIndex", customIndex, nullptr);
+    state.setProperty ("tonalCenterIndex", tonalCenterIndex.load(), nullptr);
+    state.setProperty ("rootNoteIndex", tonalCenterIndex.load(), nullptr);
     state.setProperty ("processingMode", processingMode.load(), nullptr);
     state.setProperty ("factoryPresetIndex", selectedPresetIndex, nullptr);
 
-    // Save custom presets
-    auto customTree = customPresets.toValueTree();
-    state.addChild (customTree, -1, nullptr);
+    state.addChild (customPresets.toValueTree(), -1, nullptr);
 
     std::unique_ptr<juce::XmlElement> xml (state.createXml());
     if (xml != nullptr)
         copyXmlToBinary (*xml, destData);
 }
 
-void MicrotonalAutotuneAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
+void MicrotonalAutotuneAudioProcessor::setStateInformation (const void* data,
+                                                             int sizeInBytes)
 {
     std::unique_ptr<juce::XmlElement> xmlState (getXmlFromBinary (data, sizeInBytes));
+    if (xmlState == nullptr)
+        return;
 
-    if (xmlState != nullptr)
+    auto tree = juce::ValueTree::fromXml (*xmlState);
+    if (! tree.isValid())
+        return;
+
+    apvts.replaceState (tree);
+
+    const auto customTree = tree.getChildWithName ("CustomScales");
+    if (customTree.isValid())
+        customPresets.fromValueTree (customTree);
+
+    bool scaleResolved = false;
+    const auto stableId = tree.getProperty ("activeScaleStableId").toString();
+    const auto kind = tree.getProperty ("activeScaleKind").toString();
+
+    if (stableId.isNotEmpty())
     {
-        auto tree = juce::ValueTree::fromXml (*xmlState);
-
-        if (tree.isValid())
+        if (kind == "custom")
         {
-            apvts.replaceState (tree);
-
-            // Restore scale selection
-            if (tree.hasProperty ("scaleIndex"))
-                currentScaleIndex.store (static_cast<int> (tree.getProperty ("scaleIndex")));
-
-            if (tree.hasProperty ("customPresetIndex"))
-                activeCustomPresetIndex.store (static_cast<int> (tree.getProperty ("customPresetIndex")));
-
-            if (tree.hasProperty ("rootNoteIndex"))
-                rootNoteIndex.store (static_cast<int> (tree.getProperty ("rootNoteIndex")));
-
-            // Restore only the three modern modes. Legacy mode 0 is mapped
-            // forward to Quality instead of resurrecting its removed renderer.
-            if (tree.hasProperty ("processingMode"))
+            const int custom = customPresets.findPresetIndexByStableId (stableId);
+            if (custom >= 0)
             {
-                const int storedMode = static_cast<int> (tree.getProperty ("processingMode"));
-                updateProcessingMode (storedMode == 0 ? 1 : juce::jlimit (1, 3, storedMode));
+                activeCustomPresetIndex.store (custom, std::memory_order_relaxed);
+                scaleResolved = true;
             }
-            else if (tree.hasProperty ("liveModeEnabled"))
+        }
+        else
+        {
+            const int factory = ScaleDefinitions::findScaleIndexByStableId (
+                stableId.toStdString());
+            if (factory >= 0)
             {
-                const bool wasLive = static_cast<int> (tree.getProperty ("liveModeEnabled")) != 0;
-                updateProcessingMode (wasLive ? 2 : 1);
+                currentScaleIndex.store (factory, std::memory_order_relaxed);
+                activeCustomPresetIndex.store (-1, std::memory_order_relaxed);
+                scaleResolved = true;
             }
-            if (tree.hasProperty ("factoryPresetIndex"))
-{
-    selectedPresetIndex = juce::jlimit (
-        0,
-        std::max (0, FactoryPresets::getNumPresets() - 1),
-        static_cast<int> (tree.getProperty ("factoryPresetIndex")));
-}
-
-            // Restore custom presets
-            auto customTree = tree.getChildWithName ("CustomScales");
-            if (customTree.isValid())
-                customPresets.fromValueTree (customTree);
-
-            currentScaleIndex.store (juce::jlimit (0,
-                std::max (0, ScaleDefinitions::getScaleCount() - 1),
-                currentScaleIndex.load()), std::memory_order_relaxed);
-            rootNoteIndex.store (juce::jlimit (0, 18, rootNoteIndex.load()),
-                                 std::memory_order_relaxed);
-            const int customCount = customPresets.getNumPresets();
-            activeCustomPresetIndex.store (juce::jlimit (-1,
-                std::max (-1, customCount - 1), activeCustomPresetIndex.load()),
-                std::memory_order_relaxed);
-            refreshScaleSnapshot();
         }
     }
+
+    if (! scaleResolved && tree.hasProperty ("scaleDatabaseSchemaVersion"))
+    {
+        // Database-era fallback for states created before stable-id persistence.
+        const int storedFactory = static_cast<int> (tree.getProperty ("scaleIndex", 0));
+        const int storedCustom = static_cast<int> (tree.getProperty ("customPresetIndex", -1));
+
+        if (storedCustom >= 0 && storedCustom < customPresets.getNumPresets())
+        {
+            activeCustomPresetIndex.store (storedCustom, std::memory_order_relaxed);
+        }
+        else
+        {
+            currentScaleIndex.store (juce::jlimit (
+                0, std::max (0, ScaleDefinitions::getScaleCount() - 1), storedFactory),
+                std::memory_order_relaxed);
+            activeCustomPresetIndex.store (-1, std::memory_order_relaxed);
+        }
+        scaleResolved = true;
+    }
+
+    if (! scaleResolved)
+    {
+        // Pre-database sessions persisted only an integer scale index.
+        const int legacyIndex = static_cast<int> (tree.getProperty ("scaleIndex", 0));
+        const char* legacyId = legacyScaleStableIdForIndex (legacyIndex);
+        int migrated = legacyId != nullptr
+            ? ScaleDefinitions::findScaleIndexByStableId (legacyId)
+            : -1;
+        if (migrated < 0)
+            migrated = ScaleDefinitions::findScaleIndexByStableId ("scale_0001");
+
+        currentScaleIndex.store (std::max (0, migrated), std::memory_order_relaxed);
+        activeCustomPresetIndex.store (-1, std::memory_order_relaxed);
+    }
+
+    if (tree.hasProperty ("tonalCenterIndex"))
+    {
+        const int center = juce::jlimit (0, 11,
+            static_cast<int> (tree.getProperty ("tonalCenterIndex")));
+        tonalCenterIndex.store (center, std::memory_order_relaxed);
+        rootNoteIndex.store (center, std::memory_order_relaxed);
+    }
+    else
+    {
+        // Exact migration of the old C..B + Ni..Zo frequency table.
+        const int legacyRoot = juce::jlimit (0, 18,
+            static_cast<int> (tree.getProperty ("rootNoteIndex", 9)));
+        const double legacyHz = legacyRootFrequencyForIndex (legacyRoot);
+
+        int center = static_cast<int> (std::lround (
+            9.0 + 12.0 * std::log2 (legacyHz / 440.0)));
+        center = juce::jlimit (0, 11, center);
+
+        const double migratedA4 = legacyHz
+            / std::exp2 (static_cast<double> (center - 9) / 12.0);
+
+        tonalCenterIndex.store (center, std::memory_order_relaxed);
+        rootNoteIndex.store (center, std::memory_order_relaxed);
+        setParameterNotifyingHost (apvts, "tuningReferenceHz",
+                                   static_cast<float> (migratedA4));
+    }
+
+    if (tree.hasProperty ("processingMode"))
+    {
+        const int storedMode = static_cast<int> (tree.getProperty ("processingMode"));
+        updateProcessingMode (storedMode == 0 ? 1 : juce::jlimit (1, 3, storedMode));
+    }
+    else if (tree.hasProperty ("liveModeEnabled"))
+    {
+        const bool wasLive = static_cast<int> (tree.getProperty ("liveModeEnabled")) != 0;
+        updateProcessingMode (wasLive ? 2 : 1);
+    }
+
+    if (tree.hasProperty ("factoryPresetIndex"))
+    {
+        selectedPresetIndex = juce::jlimit (
+            0,
+            std::max (0, FactoryPresets::getNumPresets() - 1),
+            static_cast<int> (tree.getProperty ("factoryPresetIndex")));
+    }
+
+    refreshScaleSnapshot();
 }
 
 //==============================================================================
