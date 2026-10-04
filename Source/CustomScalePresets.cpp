@@ -1,54 +1,90 @@
 #include "CustomScalePresets.h"
+
 #include <algorithm>
+#include <cmath>
 
-CustomScalePresets::CustomScalePresets() {}
-
-int CustomScalePresets::getNumPresets() const
+int CustomScalePresets::getNumPresets() const noexcept
 {
     return static_cast<int> (presets_.size());
 }
 
 const CustomScale& CustomScalePresets::getPreset (int index) const
 {
-    return presets_[static_cast<size_t> (index)];
+    return presets_[static_cast<std::size_t> (index)];
 }
 
-bool CustomScalePresets::addPreset (const juce::String& name, const std::vector<double>& ratios)
+juce::String CustomScalePresets::makeLocalStableId()
 {
-    if (static_cast<int> (presets_.size()) >= maxPresets)
-        return false;
-    if (name.isEmpty())
-        return false;
+    return "user.scale." + juce::Uuid().toString();
+}
 
-    CustomScale cs;
-    cs.name = name;
-    cs.ratios.reserve (std::min<std::size_t> (ratios.size() + 1, 33));
-    cs.ratios.push_back (1.0); // invariant: unison is always part of a scale
+std::vector<double> CustomScalePresets::normaliseRatios (
+    const std::vector<double>& ratios,
+    double equaveRatio)
+{
+    if (! std::isfinite (equaveRatio) || equaveRatio <= 1.0)
+        equaveRatio = 2.0;
+
+    const double logEquave = std::log2 (equaveRatio);
+    std::vector<double> result;
+    result.reserve (std::min<std::size_t> (ratios.size() + 1, 96));
+    result.push_back (1.0);
 
     for (double ratio : ratios)
     {
+        if (result.size() >= 96)
+            break;
         if (! std::isfinite (ratio) || ratio <= 0.0)
             continue;
 
-        // O(1) mathematically safe octave folding to [1.0, 2.0)
-        double l = std::log2(ratio);
-        double folded = std::exp2(l - std::floor(l));
+        double phase = std::fmod (std::log2 (ratio), logEquave);
+        if (phase < 0.0)
+            phase += logEquave;
 
-        // Precision edge-case guard
-        if (folded >= 2.0) folded = 1.0; 
-
-        cs.ratios.push_back (folded);
+        const double folded = std::exp2 (phase);
+        if (std::isfinite (folded) && folded >= 1.0
+            && folded < equaveRatio - 1.0e-10)
+            result.push_back (folded);
     }
 
-    std::sort (cs.ratios.begin(), cs.ratios.end());
-    auto last = std::unique (cs.ratios.begin(), cs.ratios.end(),
-        [] (double a, double b) { return std::abs (a - b) < 1.0e-8; });
-    cs.ratios.erase (last, cs.ratios.end());
+    std::sort (result.begin(), result.end());
+    const auto last = std::unique (result.begin(), result.end(),
+        [] (double a, double b)
+        {
+            return std::abs (a - b) < 1.0e-8;
+        });
+    result.erase (last, result.end());
+    return result;
+}
 
-    if (cs.ratios.size() < 3 || cs.ratios.size() > 33)
+bool CustomScalePresets::addPreset (const juce::String& name,
+                                    const std::vector<double>& ratios)
+{
+    return addPreset (name, ratios, 2.0);
+}
+
+bool CustomScalePresets::addPreset (const juce::String& name,
+                                    const std::vector<double>& ratios,
+                                    double equaveRatio,
+                                    const juce::String& stableId,
+                                    const juce::String& sourcePackId)
+{
+    if (static_cast<int> (presets_.size()) >= maxPresets || name.trim().isEmpty())
         return false;
 
-    presets_.push_back (std::move (cs));
+    auto normalised = normaliseRatios (ratios, equaveRatio);
+    if (normalised.size() < 3 || normalised.size() > 96)
+        return false;
+
+    CustomScale scale;
+    scale.stableId = stableId.isNotEmpty() ? stableId : makeLocalStableId();
+    scale.sourcePackId = sourcePackId;
+    scale.name = name.trim();
+    scale.equaveRatio = std::isfinite (equaveRatio) && equaveRatio > 1.0
+        ? equaveRatio : 2.0;
+    scale.ratios = std::move (normalised);
+
+    presets_.push_back (std::move (scale));
     return true;
 }
 
@@ -64,20 +100,25 @@ bool CustomScalePresets::removePreset (int index)
 juce::ValueTree CustomScalePresets::toValueTree() const
 {
     juce::ValueTree tree ("CustomScales");
+    tree.setProperty ("schemaVersion", schemaVersion, nullptr);
 
     for (const auto& preset : presets_)
     {
         juce::ValueTree scaleTree ("Scale");
+        scaleTree.setProperty ("stableId", preset.stableId, nullptr);
+        scaleTree.setProperty ("sourcePackId", preset.sourcePackId, nullptr);
         scaleTree.setProperty ("name", preset.name, nullptr);
+        scaleTree.setProperty ("category", preset.category, nullptr);
+        scaleTree.setProperty ("equaveRatio", preset.equaveRatio, nullptr);
 
-        juce::String ratioStr;
-        for (size_t i = 0; i < preset.ratios.size(); ++i)
+        juce::String ratioString;
+        for (std::size_t i = 0; i < preset.ratios.size(); ++i)
         {
-            if (i > 0) ratioStr += ",";
-            ratioStr += juce::String (preset.ratios[i], 10);
+            if (i != 0)
+                ratioString += ",";
+            ratioString += juce::String (preset.ratios[i], 12);
         }
-        scaleTree.setProperty ("ratios", ratioStr, nullptr);
-
+        scaleTree.setProperty ("ratios", ratioString, nullptr);
         tree.addChild (scaleTree, -1, nullptr);
     }
 
@@ -91,30 +132,74 @@ void CustomScalePresets::fromValueTree (const juce::ValueTree& tree)
     if (! tree.isValid() || tree.getType() != juce::Identifier ("CustomScales"))
         return;
 
-    for (int i = 0; i < tree.getNumChildren() && i < maxPresets; ++i)
+    for (int i = 0; i < tree.getNumChildren()
+                    && static_cast<int> (presets_.size()) < maxPresets; ++i)
     {
-        auto scaleTree = tree.getChild (i);
+        const auto scaleTree = tree.getChild (i);
         if (scaleTree.getType() != juce::Identifier ("Scale"))
             continue;
 
-        CustomScale cs;
-        cs.name = scaleTree.getProperty ("name").toString();
+        const auto name = scaleTree.getProperty ("name").toString().trim();
+        if (name.isEmpty())
+            continue;
 
-        juce::String ratioStr = scaleTree.getProperty ("ratios").toString();
+        const double equaveRatio = static_cast<double> (
+            scaleTree.getProperty ("equaveRatio", 2.0));
+
         juce::StringArray tokens;
-        tokens.addTokens (ratioStr, ",", "");
+        tokens.addTokens (scaleTree.getProperty ("ratios").toString(), ",", "");
 
+        std::vector<double> ratios;
+        ratios.reserve (static_cast<std::size_t> (tokens.size()));
         for (const auto& token : tokens)
         {
-            double val = token.getDoubleValue();
-            if (val >= 1.0 && val < 2.0)
-                cs.ratios.push_back (val);
+            const double value = token.getDoubleValue();
+            if (std::isfinite (value) && value > 0.0)
+                ratios.push_back (value);
         }
 
-        if (cs.ratios.size() >= 3 && cs.ratios.size() <= 33 && cs.name.isNotEmpty())
-        {
-            std::sort (cs.ratios.begin(), cs.ratios.end());
-            presets_.push_back (std::move (cs));
-        }
+        auto normalised = normaliseRatios (ratios, equaveRatio);
+        if (normalised.size() < 3 || normalised.size() > 96)
+            continue;
+
+        CustomScale scale;
+        scale.stableId = scaleTree.getProperty ("stableId").toString();
+        if (scale.stableId.isEmpty())
+            scale.stableId = makeLocalStableId();
+        scale.sourcePackId = scaleTree.getProperty ("sourcePackId").toString();
+        scale.name = name;
+        scale.category = scaleTree.getProperty ("category", "User").toString();
+        scale.equaveRatio = std::isfinite (equaveRatio) && equaveRatio > 1.0
+            ? equaveRatio : 2.0;
+        scale.ratios = std::move (normalised);
+        presets_.push_back (std::move (scale));
     }
+}
+
+neumaton::sharing::PackDocument CustomScalePresets::makeScalePack (
+    const neumaton::sharing::PackManifest& manifest) const
+{
+    neumaton::sharing::PackDocument pack;
+    pack.manifest = manifest;
+
+    for (const auto& preset : presets_)
+    {
+        juce::ValueTree scale ("Scale");
+        scale.setProperty ("stableId", preset.stableId, nullptr);
+        scale.setProperty ("name", preset.name, nullptr);
+        scale.setProperty ("category", preset.category, nullptr);
+        scale.setProperty ("equaveRatio", preset.equaveRatio, nullptr);
+
+        juce::String ratioString;
+        for (std::size_t i = 0; i < preset.ratios.size(); ++i)
+        {
+            if (i != 0)
+                ratioString += ",";
+            ratioString += juce::String (preset.ratios[i], 12);
+        }
+        scale.setProperty ("ratios", ratioString, nullptr);
+        pack.scales.addChild (scale, -1, nullptr);
+    }
+
+    return pack;
 }
