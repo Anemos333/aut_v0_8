@@ -37,7 +37,7 @@ private:
                     return;
 
                 auto* processor = dynamic_cast<MicrotonalAutotuneAudioProcessor*> (
-                    editor->getAudioProcessor());
+                    &editor->getAudioProcessor());
                 if (processor != nullptr)
                     launchCommunityPackWindow (*processor);
             };
