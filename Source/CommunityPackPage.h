@@ -12,16 +12,15 @@ class CommunityPackPage final : public juce::Component
 public:
     explicit CommunityPackPage (MicrotonalAutotuneAudioProcessor& processor)
         : processorRef_ (processor),
-          scaleList_ ("Community scales", &scaleModel_),
-          presetList_ ("Community presets", &presetModel_),
-          sceneList_ ("Community scenes", &sceneModel_)
+          scaleList_ ("Pack scales", &scaleModel_),
+          presetList_ ("Pack presets", &presetModel_),
+          sceneList_ ("Pack scenes", &sceneModel_)
     {
         setSize (760, 620);
 
-        title_.setText ("Ergasterion Community Packs", juce::dontSendNotification);
-        title_.setFont (juce::FontOptions (22.0f, juce::Font::bold));
-        title_.setJustificationType (juce::Justification::centredLeft);
-        addAndMakeVisible (title_);
+        configureTitle (title_, "Ergasterion Community Packs", 22.0f);
+        configureTitle (createTitle_, "Create pack", 16.0f);
+        configureTitle (libraryTitle_, "Library", 16.0f);
 
         folderLabel_.setText ("Pack folder", juce::dontSendNotification);
         folderLabel_.setFont (juce::FontOptions (13.0f, juce::Font::bold));
@@ -38,13 +37,10 @@ public:
         {
             processorRef_.getCommunityPackLibrary().rescanPacks();
             refreshLoadedPackMenu();
+            setStatus ("Pack folder rescanned.");
         };
         addAndMakeVisible (chooseFolderButton_);
         addAndMakeVisible (rescanButton_);
-
-        createTitle_.setText ("Create pack", juce::dontSendNotification);
-        createTitle_.setFont (juce::FontOptions (16.0f, juce::Font::bold));
-        addAndMakeVisible (createTitle_);
 
         packName_.setTextToShowWhenEmpty ("Pack name", juce::Colours::grey);
         author_.setTextToShowWhenEmpty ("Author / signature", juce::Colours::grey);
@@ -70,22 +66,12 @@ public:
         addAndMakeVisible (presetList_);
         addAndMakeVisible (sceneList_);
 
-        scaleListLabel_.setText ("Scales", juce::dontSendNotification);
-        presetListLabel_.setText ("Presets", juce::dontSendNotification);
-        sceneListLabel_.setText ("Scenes", juce::dontSendNotification);
-        for (auto* label : { &scaleListLabel_, &presetListLabel_, &sceneListLabel_ })
-        {
-            label->setFont (juce::FontOptions (12.5f, juce::Font::bold));
-            label->setJustificationType (juce::Justification::centredLeft);
-            addAndMakeVisible (*label);
-        }
+        configureListLabel (scaleListLabel_, "Scales");
+        configureListLabel (presetListLabel_, "Presets");
+        configureListLabel (sceneListLabel_, "Scenes");
 
         exportButton_.onClick = [this] { exportSelectedPack(); };
         addAndMakeVisible (exportButton_);
-
-        libraryTitle_.setText ("Library", juce::dontSendNotification);
-        libraryTitle_.setFont (juce::FontOptions (16.0f, juce::Font::bold));
-        addAndMakeVisible (libraryTitle_);
 
         packSelector_.setTextWhenNothingSelected ("Author / pack");
         contentType_.addItem ("Scales", 1);
@@ -93,16 +79,18 @@ public:
         contentType_.addItem ("Scenes", 3);
         contentType_.setSelectedId (1, juce::dontSendNotification);
         itemSelector_.setTextWhenNothingSelected ("Choose item");
+
         packSelector_.onChange = [this] { refreshLoadedItemMenu(); };
         contentType_.onChange = [this] { refreshLoadedItemMenu(); };
         applyButton_.onClick = [this] { applyLoadedItem(); };
+
         addAndMakeVisible (packSelector_);
         addAndMakeVisible (contentType_);
         addAndMakeVisible (itemSelector_);
         addAndMakeVisible (applyButton_);
 
-        status_.setJustificationType (juce::Justification::centredLeft);
         status_.setFont (juce::FontOptions (12.0f));
+        status_.setJustificationType (juce::Justification::centredLeft);
         addAndMakeVisible (status_);
 
         refreshLocalContent();
@@ -113,17 +101,8 @@ public:
     void paint (juce::Graphics& g) override
     {
         g.fillAll (juce::Colour (0xFF10131E));
-
-        const auto drawPanel = [&g] (juce::Rectangle<int> bounds)
-        {
-            g.setColour (juce::Colour (0xD0181D2C));
-            g.fillRoundedRectangle (bounds.toFloat(), 9.0f);
-            g.setColour (juce::Colour (0xFF38405F));
-            g.drawRoundedRectangle (bounds.toFloat().reduced (0.5f), 9.0f, 1.0f);
-        };
-
-        drawPanel (createPanel_);
-        drawPanel (libraryPanel_);
+        drawPanel (g, createPanel_);
+        drawPanel (g, libraryPanel_);
     }
 
     void resized() override
@@ -132,31 +111,32 @@ public:
         title_.setBounds (area.removeFromTop (30));
         area.removeFromTop (8);
 
-        auto folderRow = area.removeFromTop (30);
-        folderLabel_.setBounds (folderRow.removeFromLeft (78));
-        chooseFolderButton_.setBounds (folderRow.removeFromRight (104).reduced (3, 1));
-        rescanButton_.setBounds (folderRow.removeFromRight (76).reduced (3, 1));
-        folderPath_.setBounds (folderRow.reduced (3, 1));
+        auto folder = area.removeFromTop (30);
+        folderLabel_.setBounds (folder.removeFromLeft (80));
+        chooseFolderButton_.setBounds (folder.removeFromRight (100).reduced (2, 1));
+        rescanButton_.setBounds (folder.removeFromRight (74).reduced (2, 1));
+        folderPath_.setBounds (folder.reduced (2, 1));
         area.removeFromTop (10);
 
-        createPanel_ = area.removeFromTop (348);
+        createPanel_ = area.removeFromTop (350);
         auto create = createPanel_.reduced (12, 9);
         createTitle_.setBounds (create.removeFromTop (24));
         create.removeFromTop (4);
 
         auto identity = create.removeFromTop (28);
-        packName_.setBounds (identity.removeFromLeft (identity.getWidth() / 2).reduced (2, 1));
+        const int identityHalf = identity.getWidth() / 2;
+        packName_.setBounds (identity.removeFromLeft (identityHalf).reduced (2, 1));
         author_.setBounds (identity.reduced (2, 1));
-        create.removeFromTop (5);
-
-        auto saveRow = create.removeFromTop (28);
-        presetName_.setBounds (saveRow.removeFromLeft (170).reduced (2, 1));
-        savePresetButton_.setBounds (saveRow.removeFromLeft (118).reduced (2, 1));
-        saveRow.removeFromLeft (8);
-        sceneName_.setBounds (saveRow.removeFromLeft (150).reduced (2, 1));
-        scenePresetSelector_.setBounds (saveRow.removeFromLeft (150).reduced (2, 1));
-        saveSceneButton_.setBounds (saveRow.reduced (2, 1));
         create.removeFromTop (6);
+
+        auto save = create.removeFromTop (28);
+        presetName_.setBounds (save.removeFromLeft (160).reduced (2, 1));
+        savePresetButton_.setBounds (save.removeFromLeft (112).reduced (2, 1));
+        save.removeFromLeft (8);
+        sceneName_.setBounds (save.removeFromLeft (136).reduced (2, 1));
+        scenePresetSelector_.setBounds (save.removeFromLeft (160).reduced (2, 1));
+        saveSceneButton_.setBounds (save.reduced (2, 1));
+        create.removeFromTop (7);
 
         auto labels = create.removeFromTop (20);
         const int third = labels.getWidth() / 3;
@@ -164,25 +144,25 @@ public:
         presetListLabel_.setBounds (labels.removeFromLeft (third));
         sceneListLabel_.setBounds (labels);
 
-        auto lists = create.removeFromTop (190);
+        auto lists = create.removeFromTop (192);
         const int listThird = lists.getWidth() / 3;
         scaleList_.setBounds (lists.removeFromLeft (listThird).reduced (2));
         presetList_.setBounds (lists.removeFromLeft (listThird).reduced (2));
         sceneList_.setBounds (lists.reduced (2));
 
-        create.removeFromTop (5);
-        exportButton_.setBounds (create.removeFromBottom (30).removeFromRight (160));
+        create.removeFromTop (6);
+        exportButton_.setBounds (create.removeFromBottom (30).removeFromRight (156));
 
         area.removeFromTop (10);
         libraryPanel_ = area.removeFromTop (112);
         auto library = libraryPanel_.reduced (12, 9);
         libraryTitle_.setBounds (library.removeFromTop (24));
         library.removeFromTop (5);
+
         auto browser = library.removeFromTop (30);
-        const int packW = juce::jmax (190, browser.getWidth() * 38 / 100);
-        packSelector_.setBounds (browser.removeFromLeft (packW).reduced (2, 1));
-        contentType_.setBounds (browser.removeFromLeft (105).reduced (2, 1));
-        applyButton_.setBounds (browser.removeFromRight (80).reduced (2, 1));
+        packSelector_.setBounds (browser.removeFromLeft (230).reduced (2, 1));
+        contentType_.setBounds (browser.removeFromLeft (104).reduced (2, 1));
+        applyButton_.setBounds (browser.removeFromRight (78).reduced (2, 1));
         itemSelector_.setBounds (browser.reduced (2, 1));
 
         area.removeFromTop (6);
@@ -199,7 +179,10 @@ private:
     class SelectionModel final : public juce::ListBoxModel
     {
     public:
-        int getNumRows() override { return static_cast<int> (items.size()); }
+        int getNumRows() override
+        {
+            return static_cast<int> (items.size());
+        }
 
         void paintListBoxItem (int row,
                                juce::Graphics& g,
@@ -209,11 +192,13 @@ private:
         {
             if (row < 0 || row >= static_cast<int> (items.size()))
                 return;
+
             if (selected)
             {
                 g.setColour (juce::Colour (0xFF384E75));
                 g.fillRect (0, 0, width, height);
             }
+
             g.setColour (juce::Colours::white);
             g.setFont (juce::FontOptions (12.0f));
             g.drawFittedText (items[static_cast<std::size_t> (row)].label,
@@ -224,12 +209,41 @@ private:
         std::vector<SelectableItem> items;
     };
 
+    void configureTitle (juce::Label& label,
+                         const juce::String& text,
+                         float size)
+    {
+        label.setText (text, juce::dontSendNotification);
+        label.setFont (juce::FontOptions (size, juce::Font::bold));
+        label.setJustificationType (juce::Justification::centredLeft);
+        addAndMakeVisible (label);
+    }
+
+    void configureListLabel (juce::Label& label, const juce::String& text)
+    {
+        label.setText (text, juce::dontSendNotification);
+        label.setFont (juce::FontOptions (12.5f, juce::Font::bold));
+        label.setJustificationType (juce::Justification::centredLeft);
+        addAndMakeVisible (label);
+    }
+
+    static void drawPanel (juce::Graphics& g, juce::Rectangle<int> bounds)
+    {
+        if (bounds.isEmpty())
+            return;
+        g.setColour (juce::Colour (0xD0181D2C));
+        g.fillRoundedRectangle (bounds.toFloat(), 9.0f);
+        g.setColour (juce::Colour (0xFF38405F));
+        g.drawRoundedRectangle (bounds.toFloat().reduced (0.5f), 9.0f, 1.0f);
+    }
+
     [[nodiscard]] static juce::StringArray selectedIds (
-        const juce::ListBox& list,
-        const SelectionModel& model)
+        juce::ListBox& list,
+        SelectionModel& model)
     {
         juce::StringArray result;
-        for (int row = 0; row < model.getNumRows(); ++row)
+        const int rows = static_cast<int> (model.items.size());
+        for (int row = 0; row < rows; ++row)
             if (list.isRowSelected (row))
                 result.add (model.items[static_cast<std::size_t> (row)].stableId);
         return result;
@@ -245,9 +259,11 @@ private:
 
     void refreshFolderText()
     {
-        const auto& directory = processorRef_.getCommunityPackLibrary().getPackDirectory();
-        folderPath_.setText (directory.isDirectory() ? directory.getFullPathName()
-                                                      : juce::String(),
+        const auto& directory =
+            processorRef_.getCommunityPackLibrary().getPackDirectory();
+        folderPath_.setText (directory.isDirectory()
+                                 ? directory.getFullPathName()
+                                 : juce::String(),
                              juce::dontSendNotification);
     }
 
@@ -259,13 +275,17 @@ private:
             const auto id = entry.getProperty ("stableId").toString();
             const auto category = entry.getProperty ("category").toString();
             const auto name = entry.getProperty ("name").toString();
-            scaleModel_.items.push_back ({ id, category + " — " + name });
+            const auto label = category.isNotEmpty()
+                ? category + " — " + name
+                : name;
+            scaleModel_.items.push_back ({ id, label });
         }
         scaleList_.updateContent();
 
         presetModel_.items.clear();
         scenePresetSelector_.clear (juce::dontSendNotification);
-        const auto& presets = processorRef_.getCommunityPackLibrary().getUserPresets();
+        const auto& presets =
+            processorRef_.getCommunityPackLibrary().getUserPresets();
         for (int i = 0; i < static_cast<int> (presets.size()); ++i)
         {
             const auto& preset = presets[static_cast<std::size_t> (i)];
@@ -275,7 +295,8 @@ private:
         presetList_.updateContent();
 
         sceneModel_.items.clear();
-        for (const auto& scene : processorRef_.getCommunityPackLibrary().getUserScenes())
+        for (const auto& scene :
+             processorRef_.getCommunityPackLibrary().getUserScenes())
             sceneModel_.items.push_back ({ scene.stableId, scene.name });
         sceneList_.updateContent();
     }
@@ -294,6 +315,7 @@ private:
                 const auto folder = chooser.getResult();
                 if (! folder.isDirectory())
                     return;
+
                 processorRef_.getCommunityPackLibrary().setPackDirectory (folder);
                 refreshFolderText();
                 refreshLoadedPackMenu();
@@ -310,8 +332,7 @@ private:
             return;
         }
 
-        const auto id = processorRef_.saveCurrentCommunityPreset (name);
-        if (id.isEmpty())
+        if (processorRef_.saveCurrentCommunityPreset (name).isEmpty())
         {
             setStatus ("Preset could not be saved.", true);
             return;
@@ -326,18 +347,20 @@ private:
     {
         const auto name = sceneName_.getText().trim();
         const int presetIndex = scenePresetSelector_.getSelectedId() - 1;
-        const auto& presets = processorRef_.getCommunityPackLibrary().getUserPresets();
+        const auto& presets =
+            processorRef_.getCommunityPackLibrary().getUserPresets();
 
-        if (name.isEmpty() || presetIndex < 0
+        if (name.isEmpty()
+            || presetIndex < 0
             || presetIndex >= static_cast<int> (presets.size()))
         {
             setStatus ("A scene needs a name and one saved preset.", true);
             return;
         }
 
-        const auto id = processorRef_.saveCurrentCommunityScene (
-            name, presets[static_cast<std::size_t> (presetIndex)].stableId);
-        if (id.isEmpty())
+        const auto& preset = presets[static_cast<std::size_t> (presetIndex)];
+        if (processorRef_.saveCurrentCommunityScene (
+                name, preset.stableId).isEmpty())
         {
             setStatus ("Scene could not be saved.", true);
             return;
@@ -368,7 +391,8 @@ private:
         }
 
         const auto manifest =
-            neumaton::community::CommunityPackLibrary::makeManifest (name, author);
+            neumaton::community::CommunityPackLibrary::makeManifest (
+                name, author);
         auto document = processorRef_.getCommunityPackLibrary().buildPack (
             manifest,
             processorRef_.getCommunityScaleEntries(),
@@ -382,10 +406,12 @@ private:
             return;
         }
 
-        juce::File initial = processorRef_.getCommunityPackLibrary().getPackDirectory();
+        auto initial = processorRef_.getCommunityPackLibrary().getPackDirectory();
         if (! initial.isDirectory())
-            initial = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory);
-        initial = initial.getChildFile (juce::File::createLegalFileName (name) + ".ecpk");
+            initial = juce::File::getSpecialLocation (
+                juce::File::userDocumentsDirectory);
+        initial = initial.getChildFile (
+            juce::File::createLegalFileName (name) + ".ecpk");
 
         chooser_ = std::make_unique<juce::FileChooser> (
             "Export Ergasterion Community Pack", initial, "*.ecpk");
@@ -393,16 +419,19 @@ private:
             juce::FileBrowserComponent::saveMode
                 | juce::FileBrowserComponent::canSelectFiles
                 | juce::FileBrowserComponent::warnAboutOverwriting,
-            [this, document = std::move (document)] (const juce::FileChooser& chooser) mutable
+            [this, document = std::move (document)] (
+                const juce::FileChooser& chooser) mutable
             {
-                auto file = chooser.getResult();
+                const auto file = chooser.getResult();
                 if (file == juce::File())
                     return;
+
                 if (! document.writeToFile (file))
                 {
                     setStatus ("Export failed.", true);
                     return;
                 }
+
                 processorRef_.getCommunityPackLibrary().rescanPacks();
                 refreshLoadedPackMenu();
                 setStatus ("Community pack exported as .ecpk.");
@@ -412,12 +441,14 @@ private:
     void refreshLoadedPackMenu()
     {
         packSelector_.clear (juce::dontSendNotification);
-        const auto& packs = processorRef_.getCommunityPackLibrary().getLoadedPacks();
+        const auto& packs =
+            processorRef_.getCommunityPackLibrary().getLoadedPacks();
 
         juce::String lastAuthor;
         for (int i = 0; i < static_cast<int> (packs.size()); ++i)
         {
-            const auto& manifest = packs[static_cast<std::size_t> (i)].document.manifest;
+            const auto& manifest =
+                packs[static_cast<std::size_t> (i)].document.manifest;
             if (manifest.author != lastAuthor)
             {
                 packSelector_.addSectionHeading (manifest.author);
@@ -435,24 +466,27 @@ private:
     {
         itemSelector_.clear (juce::dontSendNotification);
         const int packIndex = packSelector_.getSelectedId() - 1;
-        const auto& packs = processorRef_.getCommunityPackLibrary().getLoadedPacks();
+        const auto& packs =
+            processorRef_.getCommunityPackLibrary().getLoadedPacks();
         if (packIndex < 0 || packIndex >= static_cast<int> (packs.size()))
             return;
 
-        const auto& document = packs[static_cast<std::size_t> (packIndex)].document;
+        const auto& document =
+            packs[static_cast<std::size_t> (packIndex)].document;
         const int type = contentType_.getSelectedId();
-        const juce::ValueTree* collection = type == 1 ? &document.scales
-            : type == 2 ? &document.presets
-                        : &document.scenes;
+        const auto& collection = type == 1 ? document.scales
+            : type == 2 ? document.presets
+                        : document.scenes;
 
-        for (int i = 0; i < collection->getNumChildren(); ++i)
+        for (int i = 0; i < collection.getNumChildren(); ++i)
         {
-            const auto node = collection->getChild (i);
+            const auto node = collection.getChild (i);
             const auto name = node.getProperty ("name").toString();
-            itemSelector_.addItem (name.isNotEmpty() ? name : "Unnamed", i + 1);
+            itemSelector_.addItem (
+                name.isNotEmpty() ? name : juce::String ("Unnamed"), i + 1);
         }
 
-        if (collection->getNumChildren() > 0)
+        if (collection.getNumChildren() > 0)
             itemSelector_.setSelectedId (1, juce::dontSendNotification);
     }
 
@@ -461,7 +495,9 @@ private:
         const int packIndex = packSelector_.getSelectedId() - 1;
         const int itemIndex = itemSelector_.getSelectedId() - 1;
         const int type = contentType_.getSelectedId();
-        const auto& packs = processorRef_.getCommunityPackLibrary().getLoadedPacks();
+        const auto& packs =
+            processorRef_.getCommunityPackLibrary().getLoadedPacks();
+
         if (packIndex < 0 || packIndex >= static_cast<int> (packs.size())
             || itemIndex < 0)
         {
@@ -469,7 +505,8 @@ private:
             return;
         }
 
-        const auto& document = packs[static_cast<std::size_t> (packIndex)].document;
+        const auto& document =
+            packs[static_cast<std::size_t> (packIndex)].document;
         bool applied = false;
 
         if (type == 1 && itemIndex < document.scales.getNumChildren())
@@ -485,8 +522,9 @@ private:
         }
         else if (type == 3 && itemIndex < document.scenes.getNumChildren())
         {
-            const auto scene = neumaton::community::CommunityScene::fromValueTree (
-                document.scenes.getChild (itemIndex));
+            const auto scene =
+                neumaton::community::CommunityScene::fromValueTree (
+                    document.scenes.getChild (itemIndex));
             applied = processorRef_.applyCommunityScene (scene, &document);
         }
 
