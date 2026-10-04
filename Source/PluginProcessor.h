@@ -49,7 +49,9 @@ public:
     juce::String getCurrentScaleStableId() const;
     void refreshScaleSnapshot() noexcept;
 
-    std::atomic<int> currentScaleIndex { 0 };
+    // Explicit compatibility default: old index 0 was Chromatic. In the new
+    // 120-scale corpus the equivalent entry is scale_0033 (12-EDO), index 32.
+    std::atomic<int> currentScaleIndex { ScaleDefinitions::defaultFactoryScaleIndex };
     std::atomic<int> activeCustomPresetIndex { -1 };
 
     // New V1 model: musical centre and absolute tuning reference are separate.
