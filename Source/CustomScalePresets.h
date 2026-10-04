@@ -4,6 +4,7 @@
 
 #include "ShareablePack.h"
 
+#include <limits>
 #include <vector>
 
 struct CustomScale
@@ -21,9 +22,11 @@ class CustomScalePresets
 public:
     CustomScalePresets() = default;
 
-    // V1 local-editor policy. The pack schema itself is intentionally not limited to 7.
-    static constexpr int maxPresets = 7;
-    static constexpr int schemaVersion = 2;
+    // The original editor exposed seven slots. Community Pack V1 removes that
+    // library limit. Keep the symbol only as source compatibility for the menu;
+    // it now behaves as an effectively unbounded vector policy.
+    static constexpr int maxPresets = std::numeric_limits<int>::max();
+    static constexpr int schemaVersion = 3;
 
     int getNumPresets() const noexcept;
     const CustomScale& getPreset (int index) const;
@@ -43,13 +46,9 @@ public:
     juce::ValueTree toValueTree() const;
     void fromValueTree (const juce::ValueTree& tree);
 
-    // Backend-only V1 pack support. GUI import/export is intentionally deferred.
     [[nodiscard]] neumaton::sharing::PackDocument makeScalePack (
         const neumaton::sharing::PackManifest& manifest) const;
 
-    // Imports as many scale entries as fit in the current local V1 editor bank.
-    // Stable ids and source pack identity survive the round trip, so this API can
-    // later be reused by the full pack manager without changing the scale model.
     int importScalePack (const neumaton::sharing::PackDocument& pack);
 
 private:
