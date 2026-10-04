@@ -47,6 +47,13 @@ jobs:
             -o /tmp/scale_database_v1_test
           /tmp/scale_database_v1_test
 
+      - name: Verifica Community Pack V1
+        run: |
+          clang++ -std=c++17 -O2 \
+            Tests/CommunityPackV1ContractTest.cpp \
+            -o /tmp/community_pack_v1_test
+          /tmp/community_pack_v1_test
+
       - name: Verifica architetture del plugin
         run: |
           BIN=$(find build -path "*VST3/*.vst3/Contents/MacOS/*" -type f | head -n 1)
