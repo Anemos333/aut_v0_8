@@ -49,8 +49,6 @@ enum class ReferenceTuningPolicy
     ensembleMeasuredOrUserNormalized
 };
 
-// Canonical definition used by factory scales and future imported packs.
-// stableId is persistence identity; display names and menu grouping may evolve.
 struct ScaleInfo
 {
     std::string stableId;
@@ -68,10 +66,7 @@ struct ScaleInfo
 
     double equaveRatio = 2.0;
     double defaultReferenceHz = 440.0;
-    std::vector<double> ratios; // sorted [1.0, equaveRatio), unison included
-
-    // Hidden entries exist only for exact migration of pre-database sessions.
-    // They are not part of the 120-scale V1 corpus shown in the browser.
+    std::vector<double> ratios;
     bool visibleInMenu = true;
 };
 
@@ -79,6 +74,8 @@ class ScaleDefinitions
 {
 public:
     static constexpr std::string_view factoryPackId = "neumaton.factory.scales.v1";
+    static constexpr std::string_view defaultScaleStableId = "scale_0033"; // 12-EDO / old Chromatic
+    static constexpr int defaultFactoryScaleIndex = 32; // stable corpus position of scale_0033
     static constexpr int databaseSchemaVersion = 1;
     static constexpr int factoryVisibleScaleCount = 120;
 
