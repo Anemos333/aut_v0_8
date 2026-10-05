@@ -21,6 +21,7 @@ bool near (double a, double b, double tolerance = 1.0e-9)
 int main()
 {
     using neumaton::scaleeditor::Geometry;
+    using neumaton::scaleeditor::SpacingShape;
 
     bool ok = true;
 
@@ -45,6 +46,30 @@ int main()
                  "redistribution_preserves_locked_degree");
     ok &= check (geometry.isStrictlyOrdered(),
                  "redistribution_preserves_order");
+
+    Geometry shaped;
+    shaped.setEqualDivision (12, false);
+    shaped.setLocked (5, true);
+    shaped.setIncluded (2, false);
+    const double shapeAnchor = shaped.degrees()[5].phase;
+    shaped.applySpacingShape (SpacingShape::gentleOpening);
+    const double firstOpeningStep = shaped.degrees()[0].phase;
+    const double secondOpeningStep = shaped.degrees()[1].phase - shaped.degrees()[0].phase;
+    ok &= check (near (shaped.degrees()[5].phase, shapeAnchor)
+                 && shaped.isStrictlyOrdered(),
+                 "spacing_shape_preserves_locked_anchor_and_order");
+    ok &= check (secondOpeningStep > firstOpeningStep,
+                 "gentle_opening_widens_successive_intervals");
+    ok &= check (! shaped.degrees()[2].included,
+                 "spacing_shape_preserves_inclusion_state");
+
+    Geometry reverseShape;
+    reverseShape.setEqualDivision (12, false);
+    reverseShape.applySpacingShape (SpacingShape::wideToTight);
+    const double firstReverseStep = reverseShape.degrees()[0].phase;
+    const double secondReverseStep = reverseShape.degrees()[1].phase - reverseShape.degrees()[0].phase;
+    ok &= check (firstReverseStep > secondReverseStep,
+                 "wide_to_tight_reverses_interval_weighting");
 
     Geometry warp;
     warp.setEqualDivision (12, false);
