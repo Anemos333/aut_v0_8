@@ -47,6 +47,13 @@ jobs:
             -o /tmp/scale_database_v1_test
           /tmp/scale_database_v1_test
 
+      - name: Verifica Scale Editor Geometry
+        run: |
+          clang++ -std=c++17 -O2 -ISource \
+            Tests/ScaleEditorGeometryTest.cpp \
+            -o /tmp/scale_editor_geometry_test
+          /tmp/scale_editor_geometry_test
+
       - name: Verifica Community Pack V1
         run: |
           clang++ -std=c++17 -O2 \
