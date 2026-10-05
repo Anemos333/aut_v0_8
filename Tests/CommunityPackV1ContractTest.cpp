@@ -1,3 +1,4 @@
+// Community Pack V1 contract: portability across fresh sessions and native selection UI.
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -38,7 +39,8 @@ int main()
     const auto library = readFile ("Source/CommunityPackLibrary.h");
     const auto customScales = readFile ("Source/CustomScalePresets.h");
     const auto processor = readFile ("Source/PluginProcessor.h");
-    const auto page = readFile ("Source/CommunityPackPage.h");
+    const auto page = readFile ("Source/CommunityPackPageV2.h");
+    const auto controlRoom = readFile ("Source/ControlRoomPage.h");
 
     bool ok = true;
 
@@ -73,13 +75,27 @@ int main()
         contains (library, "setPackDirectory")
             && contains (library, "findChildFiles")
             && contains (library, "communityPackWildcard")
+            && contains (library, "reloadFromDisk")
             && ! contains (library, "getChildFile (\"CommunityPacks\")")
             && ! contains (library, "getChildFile (\"Packs\")"),
-        "pack_discovery_uses_user_selected_directory");
+        "pack_discovery_uses_user_selected_directory_and_reloads_between_instances");
 
     ok &= check (
         contains (library, "struct CommunityPreset")
-            && contains (library, "addCurrentPreset")
+            && contains (library, "tonalCenterIndex")
+            && contains (library, "\"tuningReferenceHz\"")
+            && contains (processor, "preset.tonalCenterIndex")
+            && contains (processor, "refreshScaleSnapshot()"),
+        "community_preset_restores_center_and_tuning_in_fresh_session");
+
+    ok &= check (
+        contains (library, "tonalCenterIndex = -1")
+            && contains (library, "tree.hasProperty (\"tonalCenterIndex\")")
+            && contains (processor, "preset.tonalCenterIndex >= 0"),
+        "older_schema2_packs_preserve_current_center_instead_of_forcing_default");
+
+    ok &= check (
+        contains (library, "addCurrentPreset")
             && contains (library, "addScene")
             && contains (library, "buildPack"),
         "local_presets_scenes_and_pack_builder_exist");
@@ -91,12 +107,26 @@ int main()
         "processor_exposes_message_thread_pack_application_api");
 
     ok &= check (
+        contains (page, "class CheckRow")
+            && contains (page, "juce::ToggleButton checkbox_")
+            && contains (page, "checkedIds()")
+            && contains (page, "selectAllScales_")
+            && contains (page, "selectAllPresets_")
+            && contains (page, "selectAllScenes_"),
+        "pack_composer_uses_native_checkbox_multi_selection");
+
+    ok &= check (
         contains (page, "Export .ecpk")
             && contains (page, "addSectionHeading (manifest.author)")
             && contains (page, "contentType_.addItem (\"Scales\"")
             && contains (page, "contentType_.addItem (\"Presets\"")
             && contains (page, "contentType_.addItem (\"Scenes\""),
         "browser_groups_pack_content_by_author_and_type");
+
+    ok &= check (
+        contains (controlRoom, "CommunityPackPageV2.h")
+            && contains (controlRoom, "launchCommunityPackWindowV2"),
+        "control_room_launches_fixed_community_page");
 
     ok &= check (
         ! contains (library, "cryptographic")
