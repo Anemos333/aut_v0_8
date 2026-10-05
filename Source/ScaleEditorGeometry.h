@@ -7,6 +7,17 @@
 
 namespace neumaton::scaleeditor
 {
+enum class SpacingShape
+{
+    even = 1,
+    gentleOpening,
+    naturalOpening,
+    steadyOpening,
+    softArc,
+    tightToWide,
+    wideToTight
+};
+
 struct Degree
 {
     double phase = 0.0;   // Normalised logarithmic position in [0, 1].
@@ -206,6 +217,11 @@ public:
 
     void redistributeFreeDegrees()
     {
+        applySpacingShape (SpacingShape::even);
+    }
+
+    void applySpacingShape (SpacingShape shape)
+    {
         if (degrees_.empty())
             return;
 
@@ -227,12 +243,31 @@ public:
                 : degrees_[static_cast<std::size_t> (rightAnchorIndex)].phase;
 
             const int freeCount = rightAnchorIndex - leftAnchorIndex - 1;
-            for (int k = 0; k < freeCount; ++k)
+            const int intervalCount = freeCount + 1;
+            if (freeCount > 0)
             {
-                const double t = static_cast<double> (k + 1)
-                    / static_cast<double> (freeCount + 1);
-                degrees_[static_cast<std::size_t> (leftAnchorIndex + 1 + k)].phase
-                    = leftAnchorPhase + t * (rightAnchorPhase - leftAnchorPhase);
+                std::vector<double> weights;
+                weights.reserve (static_cast<std::size_t> (intervalCount));
+
+                double totalWeight = 0.0;
+                for (int interval = 0; interval < intervalCount; ++interval)
+                {
+                    const double weight = spacingWeight (shape, interval, intervalCount);
+                    weights.push_back (weight);
+                    totalWeight += weight;
+                }
+
+                if (std::isfinite (totalWeight) && totalWeight > 0.0)
+                {
+                    double cumulative = 0.0;
+                    for (int k = 0; k < freeCount; ++k)
+                    {
+                        cumulative += weights[static_cast<std::size_t> (k)];
+                        const double t = cumulative / totalWeight;
+                        degrees_[static_cast<std::size_t> (leftAnchorIndex + 1 + k)].phase
+                            = leftAnchorPhase + t * (rightAnchorPhase - leftAnchorPhase);
+                    }
+                }
             }
 
             leftAnchorIndex = rightAnchorIndex;
@@ -276,6 +311,53 @@ public:
     }
 
 private:
+    [[nodiscard]] static double spacingWeight (SpacingShape shape,
+                                               int intervalIndex,
+                                               int intervalCount) noexcept
+    {
+        const double n = static_cast<double> (intervalIndex + 1);
+        const double t = intervalCount > 1
+            ? static_cast<double> (intervalIndex) / static_cast<double> (intervalCount - 1)
+            : 0.0;
+
+        double weight = 1.0;
+        switch (shape)
+        {
+            case SpacingShape::even:
+                weight = 1.0;
+                break;
+
+            case SpacingShape::gentleOpening:
+                weight = std::exp (0.5 * t);
+                break;
+
+            case SpacingShape::naturalOpening:
+                weight = std::log1p (n);
+                break;
+
+            case SpacingShape::steadyOpening:
+                weight = n;
+                break;
+
+            case SpacingShape::softArc:
+            {
+                constexpr double pi = 3.1415926535897932384626433832795;
+                weight = 0.15 + 0.85 * (0.5 - 0.5 * std::cos (pi * t));
+                break;
+            }
+
+            case SpacingShape::tightToWide:
+                weight = n * n;
+                break;
+
+            case SpacingShape::wideToTight:
+                weight = 1.0 / (n * n);
+                break;
+        }
+
+        return std::isfinite (weight) && weight > 0.0 ? weight : 1.0;
+    }
+
     [[nodiscard]] bool validIndex (int index) const noexcept
     {
         return index >= 0 && index < static_cast<int> (degrees_.size());
