@@ -5,7 +5,7 @@
 
 #include "LivePitchProcessor.h"
 #include "NeumatonLabTheme.h"
-#include "CommunityPackPage.h"
+#include "CommunityPackPageV2.h"
 
 // Standalone UI page for detailed metering. The editor can feed it with
 // processorRef.getPitchMetering() from the normal message-thread timer.
@@ -39,7 +39,7 @@ private:
                 auto* processor = dynamic_cast<MicrotonalAutotuneAudioProcessor*> (
                     editor->getAudioProcessor());
                 if (processor != nullptr)
-                    launchCommunityPackWindow (*processor);
+                    launchCommunityPackWindowV2 (*processor);
             };
         }
 
