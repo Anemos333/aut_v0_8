@@ -168,9 +168,30 @@ private:
         void refresh()
         {
             const int processingMode = owner.processorRef.processingMode.load();
+            const int centerIndex = juce::jlimit (
+                0, 11, owner.processorRef.tonalCenterIndex.load());
             const bool scaleLockActive = owner.scaleLockButton.getToggleState();
             const bool mainPage = ! owner.showingScaleEditor
                 && ! owner.showingControlRoom;
+
+            // Community presets/scenes can update non-APVTS musical state while
+            // this editor remains open. Keep the visible controls authoritative
+            // with the processor without generating another user-change callback.
+            if (owner.centerSelector.getSelectedId() != centerIndex + 1)
+                owner.centerSelector.setSelectedId (
+                    centerIndex + 1, juce::dontSendNotification);
+
+            if (owner.modeSelector.getSelectedId() != processingMode)
+                owner.modeSelector.setSelectedId (
+                    processingMode, juce::dontSendNotification);
+
+            const auto scaleStableId = owner.processorRef.getCurrentScaleStableId();
+            if (scaleStableId != lastScaleStableId_)
+            {
+                lastScaleStableId_ = scaleStableId;
+                owner.buildScaleMenu();
+                owner.updateCenterPresentation();
+            }
 
             owner.humanizeSlider.setEnabled (true);
             owner.humanizeLabel.setEnabled (true);
@@ -199,6 +220,7 @@ private:
         MicrotonalAutotuneAudioProcessorEditor& owner;
         int lastProcessingMode_ = -1;
         bool lastScaleLockState_ = false;
+        juce::String lastScaleStableId_;
     };
 
     AudioControlAvailabilityGuard audioControlAvailabilityGuard_ { *this };
