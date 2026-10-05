@@ -455,7 +455,7 @@ private:
     {
         userPresets_.clear();
         userScenes_.clear();
-        packDirectory_ = {};
+        packDirectory_ = juce::File();
 
         if (! settingsFile_.existsAsFile())
             return;
