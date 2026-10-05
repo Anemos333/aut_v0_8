@@ -66,6 +66,10 @@ private:
     juce::TextButton redistributeButton_ { "Redistribute free" };
     juce::TextButton clearButton_ { "Clear" };
 
+    juce::Label spacingLabel_;
+    juce::ComboBox spacingSelector_;
+    juce::TextButton applySpacingButton_ { "Apply spacing" };
+
     juce::Label valueLabel_;
     juce::ComboBox valueModeSelector_;
     juce::TextEditor valueEditor_;
@@ -80,6 +84,7 @@ private:
     void configureUi();
     void applyEqualDivision();
     void redistributeFreeDegrees();
+    void applySpacingShape();
     void clearScale();
     void applyEquaveEditor();
     void applySelectedValueEditor();
@@ -97,6 +102,7 @@ private:
     [[nodiscard]] double selectedRatio() const noexcept;
     [[nodiscard]] double selectedCents() const noexcept;
     [[nodiscard]] ValueMode valueMode() const noexcept;
+    [[nodiscard]] neumaton::scaleeditor::SpacingShape spacingShape() const noexcept;
     [[nodiscard]] double snappedPhase (double phase) const noexcept;
 
     static bool parsePositiveRatio (juce::String text, double& result);
