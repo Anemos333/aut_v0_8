@@ -96,6 +96,25 @@ void CustomScaleEditor::configureUi()
     clearButton_.onClick = [this] { clearScale(); };
     addAndMakeVisible (clearButton_);
 
+    configureLabel (spacingLabel_, "Spacing");
+    spacingSelector_.addItem ("Even", static_cast<int> (neumaton::scaleeditor::SpacingShape::even));
+    spacingSelector_.addItem ("Gentle Opening", static_cast<int> (neumaton::scaleeditor::SpacingShape::gentleOpening));
+    spacingSelector_.addItem ("Natural Opening", static_cast<int> (neumaton::scaleeditor::SpacingShape::naturalOpening));
+    spacingSelector_.addItem ("Steady Opening", static_cast<int> (neumaton::scaleeditor::SpacingShape::steadyOpening));
+    spacingSelector_.addItem ("Soft Arc", static_cast<int> (neumaton::scaleeditor::SpacingShape::softArc));
+    spacingSelector_.addItem ("Tight -> Wide", static_cast<int> (neumaton::scaleeditor::SpacingShape::tightToWide));
+    spacingSelector_.addItem ("Wide -> Tight", static_cast<int> (neumaton::scaleeditor::SpacingShape::wideToTight));
+    spacingSelector_.setSelectedId (static_cast<int> (neumaton::scaleeditor::SpacingShape::even),
+                                    juce::dontSendNotification);
+    spacingSelector_.setTooltip (
+        "Mathematical spacing curves with musical names. They reshape only unlocked degrees and keep locked anchors fixed.");
+    addAndMakeVisible (spacingSelector_);
+
+    applySpacingButton_.setTooltip (
+        "Apply the selected spacing shape inside each region delimited by locked degrees. The result stays fully editable.");
+    applySpacingButton_.onClick = [this] { applySpacingShape(); };
+    addAndMakeVisible (applySpacingButton_);
+
     configureLabel (valueLabel_, "Selected degree");
     valueModeSelector_.addItem ("Cents", static_cast<int> (ValueMode::cents));
     valueModeSelector_.addItem ("Ratio", static_cast<int> (ValueMode::ratio));
@@ -109,7 +128,7 @@ void CustomScaleEditor::configureUi()
     valueEditor_.onFocusLost = [this] { applySelectedValueEditor(); };
     addAndMakeVisible (valueEditor_);
 
-    lockToggle_.setTooltip ("Locked degrees become fixed anchors for warp and redistribution.");
+    lockToggle_.setTooltip ("Locked degrees become fixed anchors for warp, redistribution and spacing shapes.");
     lockToggle_.onClick = [this]
     {
         if (selectedDegree_ >= 0)
@@ -304,8 +323,15 @@ void CustomScaleEditor::resized()
     generatorRow.removeFromLeft (8);
     clearButton_.setBounds (generatorRow.removeFromLeft (72));
 
-    bounds.removeFromTop (12);
-    const int railHeight = juce::jmax (90, juce::jmin (210, bounds.getHeight() - 112));
+    bounds.removeFromTop (6);
+    auto spacingRow = bounds.removeFromTop (30);
+    spacingLabel_.setBounds (spacingRow.removeFromLeft (58));
+    spacingSelector_.setBounds (spacingRow.removeFromLeft (164));
+    spacingRow.removeFromLeft (8);
+    applySpacingButton_.setBounds (spacingRow.removeFromLeft (112));
+
+    bounds.removeFromTop (10);
+    const int railHeight = juce::jmax (90, juce::jmin (190, bounds.getHeight() - 138));
     scaleRail_ = bounds.removeFromTop (railHeight).reduced (34, 12);
     bounds.removeFromTop (34);
 
@@ -368,11 +394,8 @@ void CustomScaleEditor::mouseDown (const juce::MouseEvent& event)
 
 void CustomScaleEditor::mouseDrag (const juce::MouseEvent& event)
 {
-    if (draggingDegree_ < 0 || ! scaleRail_.isEmpty())
-    {
-        if (draggingDegree_ < 0)
-            return;
-    }
+    if (draggingDegree_ < 0 || scaleRail_.isEmpty())
+        return;
 
     geometry_ = dragStartGeometry_;
     const double target = snappedPhase (phaseFromX (event.position.x));
@@ -459,7 +482,16 @@ void CustomScaleEditor::applyEqualDivision()
 void CustomScaleEditor::redistributeFreeDegrees()
 {
     geometry_.redistributeFreeDegrees();
-    statusMessage_ = "Only unlocked degrees were redistributed.";
+    statusMessage_ = "Only unlocked degrees were redistributed evenly.";
+    refreshSelectedControls();
+    refreshInfo();
+    repaint();
+}
+
+void CustomScaleEditor::applySpacingShape()
+{
+    geometry_.applySpacingShape (spacingShape());
+    statusMessage_ = "Spacing shape applied to unlocked degrees; locked anchors were preserved.";
     refreshSelectedControls();
     refreshInfo();
     repaint();
@@ -735,6 +767,16 @@ CustomScaleEditor::ValueMode CustomScaleEditor::valueMode() const noexcept
     return valueModeSelector_.getSelectedId() == static_cast<int> (ValueMode::ratio)
         ? ValueMode::ratio
         : ValueMode::cents;
+}
+
+neumaton::scaleeditor::SpacingShape CustomScaleEditor::spacingShape() const noexcept
+{
+    const int selected = spacingSelector_.getSelectedId();
+    const int first = static_cast<int> (neumaton::scaleeditor::SpacingShape::even);
+    const int last = static_cast<int> (neumaton::scaleeditor::SpacingShape::wideToTight);
+    if (selected >= first && selected <= last)
+        return static_cast<neumaton::scaleeditor::SpacingShape> (selected);
+    return neumaton::scaleeditor::SpacingShape::even;
 }
 
 double CustomScaleEditor::snappedPhase (double phase) const noexcept
