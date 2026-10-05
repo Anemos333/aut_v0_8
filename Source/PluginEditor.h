@@ -39,7 +39,6 @@ public:
 
     void paint (juce::Graphics&) override;
     void resized() override;
-
     void customScaleEditorClosed() override;
 
 private:
@@ -56,7 +55,6 @@ private:
         }
     };
     neumaton::lab::LabLeverToggleLookAndFeel scaleLockLeverLookAndFeel;
-
     neumaton::lab::LabLeverToggleLookAndFeel analogLeverLookAndFeel {
         neumaton::lab::LabLeverToggleLookAndFeel::Options {
             true,
@@ -70,11 +68,22 @@ private:
     juce::Image bgImage;
     juce::Image bgImageScaleEditor;
 
+    juce::ComboBox presetSelector;
+    juce::Label presetSelectorLabel;
+
     juce::ComboBox scaleSelector;
     juce::Label scaleSelectorLabel;
 
-    juce::ComboBox rootNoteSelector;
-    juce::Label rootNoteSelectorLabel;
+    // V1 musical placement model: the centre/anchor is separate from A4 tuning.
+    juce::ComboBox centerSelector;
+    juce::Label centerSelectorLabel;
+
+    juce::Slider tuningSlider;
+    juce::Label tuningLabel;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> tuningAttachment;
+
+    juce::ComboBox modeSelector;
+    juce::Label modeSelectorLabel;
 
     juce::Slider speedKnob;
     juce::Label speedLabel;
@@ -109,58 +118,26 @@ private:
     std::unique_ptr<CustomScaleEditor> customScaleEditorPage;
     bool showingScaleEditor = false;
 
-    juce::ComboBox modeSelector;
-    juce::Label modeSelectorLabel;
-    juce::ComboBox presetSelector;
-    juce::Label presetSelectorLabel;
     juce::TextButton controlRoomButton { "Control room" };
     ControlRoomPage controlRoomPage;
     bool showingControlRoom = false;
-    void showControlRoom();
-    void closeControlRoom();
 
-    juce::TextButton tempoPageButton { "Tempo" };
-    juce::TextButton tempoBackButton { "Indietro" };
-    juce::TextButton tempoOffButton { "Off" };
-    juce::TextButton tempoGlideButton { "Tempo Glide" };
-    juce::TextButton glideLockButton { "Glide Lock" };
-    juce::ComboBox tempoDivisionSelector;
-    juce::Label tempoDivisionLabel;
-    juce::Slider tempoGlideLength;
-    juce::Label tempoGlideLengthLabel;
-    juce::Slider tempoLockStrength;
-    juce::Label tempoLockStrengthLabel;
-    juce::ToggleButton tempoSmartOnset { "Smart onset" };
-
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment>
-        tempoDivisionAttachment;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>
-        tempoGlideLengthAttachment;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>
-        tempoLockStrengthAttachment;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment>
-        tempoSmartOnsetAttachment;
-    bool showingTempoPage = false;
-
-    void buildScaleMenu();
-    void onScaleSelected();
-    void showCustomScaleEditor();
-    void showTempoPage();
-    void closeTempoPage();
-    void setMainControlsVisible(bool shouldBeVisible);
-    void setTempoControlsVisible(bool shouldBeVisible);
-    void setTempoModeParameter(int modeIndex);
-    void updateTempoModeButtons();
-    void onRootNoteSelected();
-    void onModeSelected();
     void buildPresetMenu();
     void onPresetSelected();
+    void buildScaleMenu();
+    void onScaleSelected();
+    void updateCenterPresentation();
+    void onCenterSelected();
+    void onModeSelected();
+
+    void showCustomScaleEditor();
+    void showControlRoom();
+    void closeControlRoom();
+    void setMainControlsVisible (bool shouldBeVisible);
 
     void timerCallback() override;
     [[nodiscard]] static juce::String trackingStateToString (
-        ModernPitchEngine::TrackingState state);
-    void drawMeterPanel (juce::Graphics& g, juce::Rectangle<int> bounds);
-    void drawTempoPage (juce::Graphics& g, juce::Rectangle<int> bounds);
+        LivePitchProcessor::TrackingState state);
 
     bool lastScaleLockState_ = false;
     bool lastAnalogModeState_ = false;
@@ -169,8 +146,6 @@ private:
     float visualCorrectionGlowCents_ = 0.0f;
     float visualConsensusGlow_ = 0.0f;
 
-    // No placebo controls: this guard changes UI applicability only. It never
-    // rewrites parameter values, sensor authority or correction depth.
     class AudioControlAvailabilityGuard final : private juce::Timer
     {
     public:
@@ -188,24 +163,39 @@ private:
         }
 
     private:
-        void timerCallback() override
-        {
-            refresh();
-        }
+        void timerCallback() override { refresh(); }
 
         void refresh()
         {
             const int processingMode = owner.processorRef.processingMode.load();
+            const int centerIndex = juce::jlimit (
+                0, 11, owner.processorRef.tonalCenterIndex.load());
             const bool scaleLockActive = owner.scaleLockButton.getToggleState();
-            const bool mainPage = !owner.showingTempoPage
-                && !owner.showingScaleEditor
-                && !owner.showingControlRoom;
+            const bool mainPage = ! owner.showingScaleEditor
+                && ! owner.showingControlRoom;
 
-            // All selectable modes share the same modern audio path.
+            // Community presets/scenes can update non-APVTS musical state while
+            // this editor remains open. Keep the visible controls authoritative
+            // with the processor without generating another user-change callback.
+            if (owner.centerSelector.getSelectedId() != centerIndex + 1)
+                owner.centerSelector.setSelectedId (
+                    centerIndex + 1, juce::dontSendNotification);
+
+            if (owner.modeSelector.getSelectedId() != processingMode)
+                owner.modeSelector.setSelectedId (
+                    processingMode, juce::dontSendNotification);
+
+            const auto scaleStableId = owner.processorRef.getCurrentScaleStableId();
+            if (scaleStableId != lastScaleStableId_)
+            {
+                lastScaleStableId_ = scaleStableId;
+                owner.buildScaleMenu();
+                owner.updateCenterPresentation();
+            }
+
             owner.humanizeSlider.setEnabled (true);
             owner.humanizeLabel.setEnabled (true);
             owner.scaleLockButton.setEnabled (true);
-            owner.tempoPageButton.setEnabled (true);
 
             owner.lockHysteresisSlider.setEnabled (scaleLockActive);
             owner.lockHysteresisLabel.setEnabled (scaleLockActive);
@@ -217,32 +207,12 @@ private:
             owner.vibratoPreserveSlider.setVisible (mainPage && scaleLockActive);
             owner.vibratoPreserveLabel.setVisible (mainPage && scaleLockActive);
 
-            const int tempoMode = juce::jlimit (0, 2,
-                static_cast<int> (std::lround (
-                    owner.processorRef.getAPVTS()
-                        .getRawParameterValue ("tempoMode")->load())));
-            const bool tempoShapesTrajectory = tempoMode != 0;
-            const bool glideLockMode = tempoMode == 2;
-
-            owner.tempoOffButton.setEnabled (true);
-            owner.tempoGlideButton.setEnabled (true);
-            owner.glideLockButton.setEnabled (true);
-            owner.tempoDivisionSelector.setEnabled (tempoShapesTrajectory);
-            owner.tempoDivisionLabel.setEnabled (tempoShapesTrajectory);
-            owner.tempoGlideLength.setEnabled (tempoShapesTrajectory);
-            owner.tempoGlideLengthLabel.setEnabled (tempoShapesTrajectory);
-            owner.tempoLockStrength.setEnabled (glideLockMode);
-            owner.tempoLockStrengthLabel.setEnabled (glideLockMode);
-            owner.tempoSmartOnset.setEnabled (glideLockMode);
-
             const bool lockState = owner.scaleLockButton.getToggleState();
             if (processingMode != lastProcessingMode_
                 || lockState != lastScaleLockState_)
             {
                 lastProcessingMode_ = processingMode;
                 lastScaleLockState_ = lockState;
-                // PluginEditor.cpp already maps the displayed Response value to
-                // the exact Scale Lock response curve used by the engine.
                 owner.speedKnob.updateText();
             }
         }
@@ -250,6 +220,7 @@ private:
         MicrotonalAutotuneAudioProcessorEditor& owner;
         int lastProcessingMode_ = -1;
         bool lastScaleLockState_ = false;
+        juce::String lastScaleStableId_;
     };
 
     AudioControlAvailabilityGuard audioControlAvailabilityGuard_ { *this };

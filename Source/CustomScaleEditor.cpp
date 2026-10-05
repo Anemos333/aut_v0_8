@@ -1,8 +1,20 @@
 #include "CustomScaleEditor.h"
 #include "PluginProcessor.h"
+
 #include <algorithm>
 #include <cmath>
-#include <numeric>
+#include <limits>
+
+namespace
+{
+constexpr auto panelColour = 0xB0121724;
+constexpr auto railColour = 0xE0182032;
+constexpr auto railOutline = 0xFF56617A;
+constexpr auto activeDegree = 0xFFFF6B6B;
+constexpr auto lockedDegree = 0xFFFFC857;
+constexpr auto excludedDegree = 0xFF7A8398;
+constexpr auto selectedGlow = 0x5587A7FF;
+}
 
 CustomScaleEditor::CustomScaleEditor (MicrotonalAutotuneAudioProcessor& processor,
                                       CustomScaleEditorListener& listener,
@@ -11,654 +23,833 @@ CustomScaleEditor::CustomScaleEditor (MicrotonalAutotuneAudioProcessor& processo
       listenerRef (listener),
       bgImage (std::move (backgroundImage))
 {
-    // Title
-    titleLabel.setText ("Crea Scala Personalizzata", juce::dontSendNotification);
-    titleLabel.setFont (juce::FontOptions (22.0f, juce::Font::bold));
-    titleLabel.setColour (juce::Label::textColourId, juce::Colours::white);
-    titleLabel.setJustificationType (juce::Justification::centred);
-    addAndMakeVisible (titleLabel);
-
-    // Octave label
-    octaveLabel.setText ("Click: aggiungi divisione | doppio click: rimuovi | Ctrl/Cmd-click al centro: escludi intervallo", juce::dontSendNotification);
-    octaveLabel.setFont (juce::FontOptions (13.0f));
-    octaveLabel.setColour (juce::Label::textColourId, juce::Colours::white);
-    octaveLabel.setJustificationType (juce::Justification::centred);
-    addAndMakeVisible (octaveLabel);
-
-    // Name label
-    nameLabel.setText ("Nome della scala:", juce::dontSendNotification);
-    nameLabel.setFont (juce::FontOptions (14.0f));
-    nameLabel.setColour (juce::Label::textColourId, juce::Colours::white);
-    nameLabel.setJustificationType (juce::Justification::left);
-    addAndMakeVisible (nameLabel);
-
-    // Name editor
-    nameEditor.setFont (juce::FontOptions (14.0f));
-    nameEditor.setMultiLine (false);
-    nameEditor.setTextToShowWhenEmpty ("Inserisci il nome...", juce::Colours::grey);
-    nameEditor.onTextChange = [this]() { updateInfoLabel(); };
-    addAndMakeVisible (nameEditor);
-
-    // Generator labels and controls
-    divisionCountLabel.setText ("Intervalli:", juce::dontSendNotification);
-    divisionCountLabel.setFont (juce::FontOptions (13.0f));
-    divisionCountLabel.setColour (juce::Label::textColourId, juce::Colours::white);
-    addAndMakeVisible (divisionCountLabel);
-
-    spacingLabel.setText ("Spaziatura:", juce::dontSendNotification);
-    spacingLabel.setFont (juce::FontOptions (13.0f));
-    spacingLabel.setColour (juce::Label::textColourId, juce::Colours::white);
-    addAndMakeVisible (spacingLabel);
-
-    exponentLabel.setText ("Curva a < 4:", juce::dontSendNotification);
-    exponentLabel.setFont (juce::FontOptions (13.0f));
-    exponentLabel.setColour (juce::Label::textColourId, juce::Colours::white);
-    addAndMakeVisible (exponentLabel);
-
-    exponentEditor.setFont (juce::FontOptions (13.0f));
-    exponentEditor.setMultiLine (false);
-    exponentEditor.setText ("2.0", juce::dontSendNotification);
-    exponentEditor.setInputRestrictions (6, "0123456789.");
-    exponentEditor.onTextChange = [this]() { updateInfoLabel(); };
-    addAndMakeVisible (exponentEditor);
-
-    buildGeneratorMenus();
-
-    // Allow this component to receive keyboard focus so clicking outside
-    // the text editor unfocuses it.
     setWantsKeyboardFocus (true);
-
-    // Save button
-    saveButton.setEnabled (false);
-    saveButton.onClick = [this]() { onSave(); };
-    addAndMakeVisible (saveButton);
-
-    // Back button
-    backButton.onClick = [this]() { listenerRef.customScaleEditorClosed(); };
-    addAndMakeVisible (backButton);
-
-    generateButton.onClick = [this]() { generateScaleFromControls(); };
-    addAndMakeVisible (generateButton);
-
-    clearButton.onClick = [this]() { clearScale(); };
-    addAndMakeVisible (clearButton);
-
-    // Info label
-    infoLabel.setFont (juce::FontOptions (13.0f));
-    infoLabel.setColour (juce::Label::textColourId, juce::Colours::lightyellow);
-    infoLabel.setJustificationType (juce::Justification::centred);
-    addAndMakeVisible (infoLabel);
-
-    // A useful default: 12 equally spaced intervals.
-    generateScaleFromControls();
-    updateExponentControlState();
-    updateInfoLabel();
+    configureUi();
+    refreshSelectedControls();
+    refreshInfo();
 }
 
-CustomScaleEditor::~CustomScaleEditor() {}
-
-void CustomScaleEditor::buildGeneratorMenus()
+void CustomScaleEditor::configureUi()
 {
-    divisionCountSelector.clear (juce::dontSendNotification);
-    for (int n = minScaleRatios; n <= maxScaleRatios; ++n)
-        divisionCountSelector.addItem (juce::String (n), n);
-
-    divisionCountSelector.setSelectedId (12, juce::dontSendNotification);
-    divisionCountSelector.onChange = [this]() { generateScaleFromControls(); };
-    addAndMakeVisible (divisionCountSelector);
-
-    spacingSelector.clear (juce::dontSendNotification);
-    spacingSelector.addItem ("Equilibrata",       static_cast<int> (SpacingMode::equal));
-    spacingSelector.addItem ("Crescita lineare",  static_cast<int> (SpacingMode::linear));
-    spacingSelector.addItem ("Spinta crescente",  static_cast<int> (SpacingMode::exponential));
-    spacingSelector.addItem ("Crescita naturale", static_cast<int> (SpacingMode::logarithmic));
-    spacingSelector.addItem ("Arco morbido",      static_cast<int> (SpacingMode::cosine));
-    spacingSelector.addItem ("Curva ripida",      static_cast<int> (SpacingMode::power));
-    spacingSelector.addItem ("Curva inversa",     static_cast<int> (SpacingMode::inversePower));
-
-    spacingSelector.setSelectedId (static_cast<int> (SpacingMode::equal), juce::dontSendNotification);
-    spacingSelector.onChange = [this]()
+    const auto configureLabel = [this] (juce::Label& label,
+                                         const juce::String& text,
+                                         float size = 13.0f,
+                                         juce::Justification justification = juce::Justification::centredLeft)
     {
-        updateExponentControlState();
-        generateScaleFromControls();
+        label.setText (text, juce::dontSendNotification);
+        label.setFont (juce::FontOptions (size));
+        label.setColour (juce::Label::textColourId, juce::Colours::white);
+        label.setJustificationType (justification);
+        addAndMakeVisible (label);
     };
-    addAndMakeVisible (spacingSelector);
+
+    configureLabel (titleLabel_, "Custom Scale Editor", 22.0f, juce::Justification::centred);
+    titleLabel_.setFont (juce::FontOptions (22.0f, juce::Font::bold));
+
+    configureLabel (
+        helpLabel_,
+        "Drag a degree  |  Shift-drag: warp its unlocked span  |  Double-click empty: add  |  Double-click degree: remove  |  Cmd/Ctrl-click: include/exclude",
+        11.5f,
+        juce::Justification::centred);
+    helpLabel_.setColour (juce::Label::textColourId, juce::Colour (0xFFD7DCEC));
+
+    configureLabel (nameLabel_, "Scale name");
+    nameEditor_.setMultiLine (false);
+    nameEditor_.setTextToShowWhenEmpty ("Name your scale...", juce::Colours::grey);
+    nameEditor_.onTextChange = [this] { refreshInfo(); };
+    addAndMakeVisible (nameEditor_);
+
+    configureLabel (equaveLabel_, "Period / equave");
+    equaveEditor_.setMultiLine (false);
+    equaveEditor_.setInputRestrictions (18, "0123456789.:/");
+    equaveEditor_.setText ("2:1", juce::dontSendNotification);
+    equaveEditor_.setTooltip ("Free period ratio. Examples: 2:1, 3:1, 1.5");
+    equaveEditor_.onReturnKey = [this] { applyEquaveEditor(); };
+    equaveEditor_.onFocusLost = [this] { applyEquaveEditor(); };
+    addAndMakeVisible (equaveEditor_);
+
+    configureLabel (
+        equaveHintLabel_,
+        "If you're not sure what this does, leave it at 2:1.",
+        11.0f,
+        juce::Justification::centredRight);
+    equaveHintLabel_.setColour (juce::Label::textColourId, juce::Colour (0xFFFFD58A));
+
+    configureLabel (stepsLabel_, "Steps");
+    stepsEditor_.setMultiLine (false);
+    stepsEditor_.setInputRestrictions (3, "0123456789");
+    stepsEditor_.setText ("12", juce::dontSendNotification);
+    stepsEditor_.setTooltip ("Equal divisions of the current period, 3 to 96 pitch classes.");
+    stepsEditor_.onReturnKey = [this] { applyEqualDivision(); };
+    addAndMakeVisible (stepsEditor_);
+
+    divideButton_.setTooltip (
+        "Divide the current period equally. If the topology count is unchanged, locked degrees stay fixed and only free degrees are redistributed.");
+    divideButton_.onClick = [this] { applyEqualDivision(); };
+    addAndMakeVisible (divideButton_);
+
+    redistributeButton_.setTooltip (
+        "Keep every locked degree fixed and distribute only the unlocked degrees evenly between locked anchors.");
+    redistributeButton_.onClick = [this] { redistributeFreeDegrees(); };
+    addAndMakeVisible (redistributeButton_);
+
+    clearButton_.onClick = [this] { clearScale(); };
+    addAndMakeVisible (clearButton_);
+
+    configureLabel (spacingLabel_, "Spacing");
+    spacingSelector_.addItem ("Even", static_cast<int> (neumaton::scaleeditor::SpacingShape::even));
+    spacingSelector_.addItem ("Gentle Opening", static_cast<int> (neumaton::scaleeditor::SpacingShape::gentleOpening));
+    spacingSelector_.addItem ("Natural Opening", static_cast<int> (neumaton::scaleeditor::SpacingShape::naturalOpening));
+    spacingSelector_.addItem ("Steady Opening", static_cast<int> (neumaton::scaleeditor::SpacingShape::steadyOpening));
+    spacingSelector_.addItem ("Soft Arc", static_cast<int> (neumaton::scaleeditor::SpacingShape::softArc));
+    spacingSelector_.addItem ("Tight -> Wide", static_cast<int> (neumaton::scaleeditor::SpacingShape::tightToWide));
+    spacingSelector_.addItem ("Wide -> Tight", static_cast<int> (neumaton::scaleeditor::SpacingShape::wideToTight));
+    spacingSelector_.setSelectedId (static_cast<int> (neumaton::scaleeditor::SpacingShape::even),
+                                    juce::dontSendNotification);
+    spacingSelector_.setTooltip (
+        "Mathematical spacing curves with musical names. They reshape only unlocked degrees and keep locked anchors fixed.");
+    addAndMakeVisible (spacingSelector_);
+
+    applySpacingButton_.setTooltip (
+        "Apply the selected spacing shape inside each region delimited by locked degrees. The result stays fully editable.");
+    applySpacingButton_.onClick = [this] { applySpacingShape(); };
+    addAndMakeVisible (applySpacingButton_);
+
+    configureLabel (valueLabel_, "Selected degree");
+    valueModeSelector_.addItem ("Cents", static_cast<int> (ValueMode::cents));
+    valueModeSelector_.addItem ("Ratio", static_cast<int> (ValueMode::ratio));
+    valueModeSelector_.setSelectedId (static_cast<int> (ValueMode::cents), juce::dontSendNotification);
+    valueModeSelector_.onChange = [this] { refreshSelectedControls(); };
+    addAndMakeVisible (valueModeSelector_);
+
+    valueEditor_.setMultiLine (false);
+    valueEditor_.setInputRestrictions (24, "0123456789.:-/");
+    valueEditor_.onReturnKey = [this] { applySelectedValueEditor(); };
+    valueEditor_.onFocusLost = [this] { applySelectedValueEditor(); };
+    addAndMakeVisible (valueEditor_);
+
+    lockToggle_.setTooltip ("Locked degrees become fixed anchors for warp, redistribution and spacing shapes.");
+    lockToggle_.onClick = [this]
+    {
+        if (selectedDegree_ >= 0)
+        {
+            geometry_.setLocked (selectedDegree_, lockToggle_.getToggleState());
+            statusMessage_ = lockToggle_.getToggleState()
+                ? "Degree locked."
+                : "Degree unlocked.";
+            refreshSelectedControls();
+            refreshInfo();
+            repaint();
+        }
+    };
+    addAndMakeVisible (lockToggle_);
+
+    includeToggle_.setTooltip ("Excluded degrees stay in the editor geometry but are omitted from the saved scale.");
+    includeToggle_.onClick = [this]
+    {
+        if (selectedDegree_ >= 0)
+        {
+            geometry_.setIncluded (selectedDegree_, includeToggle_.getToggleState());
+            statusMessage_ = includeToggle_.getToggleState()
+                ? "Degree included in the saved scale."
+                : "Degree excluded from the saved scale.";
+            refreshSelectedControls();
+            refreshInfo();
+            repaint();
+        }
+    };
+    addAndMakeVisible (includeToggle_);
+
+    snapToggle_.setTooltip ("Round mouse-drag positions to the nearest cent. Numeric entry remains exact.");
+    addAndMakeVisible (snapToggle_);
+
+    infoLabel_.setFont (juce::FontOptions (12.5f));
+    infoLabel_.setColour (juce::Label::textColourId, juce::Colour (0xFFFFE7A8));
+    infoLabel_.setJustificationType (juce::Justification::centred);
+    addAndMakeVisible (infoLabel_);
+
+    saveButton_.onClick = [this] { onSave(); };
+    addAndMakeVisible (saveButton_);
+
+    backButton_.onClick = [this] { listenerRef.customScaleEditorClosed(); };
+    addAndMakeVisible (backButton_);
 }
 
 void CustomScaleEditor::paint (juce::Graphics& g)
 {
-    // Draw background image
     if (bgImage.isValid())
-    {
-        g.drawImage (bgImage, getLocalBounds().toFloat(),
-                     juce::RectanglePlacement::stretchToFit);
-    }
+        g.drawImage (bgImage, getLocalBounds().toFloat(), juce::RectanglePlacement::fillDestination);
     else
-    {
-        g.fillAll (juce::Colour (0xFF1A1A2E));
-    }
+        g.fillAll (juce::Colour (0xFF111521));
 
-    // Semi-transparent overlay for readability
-    g.setColour (juce::Colour (0x99000000));
+    g.setColour (juce::Colour (0x88000000));
     g.fillRect (getLocalBounds());
 
-    // Draw the octave rectangle
-    g.setColour (juce::Colour (0xFF2A2A4A));
-    g.fillRect (octaveRect);
+    auto panel = scaleRail_.expanded (16, 34).toFloat();
+    g.setColour (juce::Colour (panelColour));
+    g.fillRoundedRectangle (panel, 12.0f);
+    g.setColour (juce::Colour (0x556F7E9A));
+    g.drawRoundedRectangle (panel.reduced (0.5f), 12.0f, 1.0f);
 
-    // Draw excluded intervals first, behind the division lines.
-    auto rectF = octaveRect.toFloat();
-    auto boundaries = buildIntervalBoundaries();
-    for (int intervalIndex : excludedIntervalIndices)
+    const auto rail = scaleRail_.toFloat();
+    g.setColour (juce::Colour (railColour));
+    g.fillRoundedRectangle (rail, 8.0f);
+    g.setColour (juce::Colour (railOutline));
+    g.drawRoundedRectangle (rail.reduced (0.5f), 8.0f, 1.5f);
+
+    std::vector<double> boundaries;
+    boundaries.reserve (geometry_.degrees().size() + 2);
+    boundaries.push_back (0.0);
+    for (const auto& degree : geometry_.degrees())
+        boundaries.push_back (degree.phase);
+    boundaries.push_back (1.0);
+
+    for (std::size_t i = 0; i + 1 < boundaries.size(); ++i)
     {
-        if (intervalIndex < 0 || intervalIndex + 1 >= static_cast<int> (boundaries.size()))
-            continue;
-
-        const float x1 = rectF.getX() + static_cast<float> (boundaries[static_cast<size_t> (intervalIndex)]) * rectF.getWidth();
-        const float x2 = rectF.getX() + static_cast<float> (boundaries[static_cast<size_t> (intervalIndex + 1)]) * rectF.getWidth();
-
-        g.setColour (juce::Colour (0x66FFD166));
-        g.fillRect (juce::Rectangle<float> (x1, rectF.getY(), juce::jmax (1.0f, x2 - x1), rectF.getHeight()));
+        const float x1 = xFromPhase (boundaries[i]);
+        const float x2 = xFromPhase (boundaries[i + 1]);
+        if ((i % 2u) == 0u)
+        {
+            g.setColour (juce::Colour (0x1419A5C8));
+            g.fillRect (juce::Rectangle<float> (
+                x1, rail.getY(), juce::jmax (1.0f, x2 - x1), rail.getHeight()));
+        }
     }
 
-    g.setColour (juce::Colour (0xFFCCCCFF));
-    g.drawRect (octaveRect, 2);
+    const float centreY = rail.getCentreY();
+    g.setColour (juce::Colour (0xFF8995AC));
+    g.drawLine (rail.getX() + 4.0f, centreY,
+                rail.getRight() - 4.0f, centreY, 1.5f);
 
-    // Draw frequency labels at start and end
-    g.setFont (juce::FontOptions (12.0f));
+    g.setFont (juce::FontOptions (11.0f));
     g.setColour (juce::Colours::white);
-    g.drawText ("1x", octaveRect.getX(), octaveRect.getBottom() + 2, 30, 16,
+    g.drawText ("1:1", scaleRail_.getX() - 8, scaleRail_.getBottom() + 5, 48, 18,
                 juce::Justification::centredLeft);
-    g.drawText ("2x", octaveRect.getRight() - 30, octaveRect.getBottom() + 2, 30, 16,
+    g.drawText (formatRatio (equaveRatio_), scaleRail_.getRight() - 76,
+                scaleRail_.getBottom() + 5, 84, 18,
                 juce::Justification::centredRight);
 
-    // Draw divisions as vertical lines
-    for (int i = 0; i < static_cast<int> (divisions.size()); ++i)
+    const auto& degrees = geometry_.degrees();
+    const bool drawAllValues = degrees.size() <= 24;
+    const double periodCents = equaveCents();
+
+    for (int i = 0; i < static_cast<int> (degrees.size()); ++i)
     {
-        const double logPos = divisions[static_cast<size_t> (i)]; // [0, 1] in log2 space
-        const float xPos = rectF.getX() + static_cast<float> (logPos) * rectF.getWidth();
-        const bool skipped = shouldSkipDivisionOnSave (i);
+        const auto& degree = degrees[static_cast<std::size_t> (i)];
+        const float x = xFromPhase (degree.phase);
+        const bool selected = i == selectedDegree_;
 
-        g.setColour (skipped ? juce::Colour (0xFF888888) : juce::Colour (0xFFFF6B6B));
-        g.drawLine (xPos, rectF.getY(), xPos, rectF.getBottom(), skipped ? 1.0f : 2.0f);
+        if (selected)
+        {
+            g.setColour (juce::Colour (selectedGlow));
+            g.fillEllipse (x - 12.0f, centreY - 12.0f, 24.0f, 24.0f);
+        }
 
-        // Draw cents value above the line
-        const double cents = logPos * 1200.0;
-        const juce::String centsStr = juce::String (static_cast<int> (std::round (cents))) + "c";
-        g.setFont (juce::FontOptions (10.0f));
-        g.drawText (centsStr, static_cast<int> (xPos) - 20, octaveRect.getY() - 16, 40, 14,
-                    juce::Justification::centred);
+        const auto colour = ! degree.included
+            ? juce::Colour (excludedDegree)
+            : degree.locked ? juce::Colour (lockedDegree)
+                            : juce::Colour (activeDegree);
+
+        g.setColour (colour.withAlpha (0.70f));
+        g.drawLine (x, rail.getY() + 5.0f, x, rail.getBottom() - 5.0f,
+                    selected ? 2.4f : 1.4f);
+
+        const float radius = selected ? 6.5f : 5.0f;
+        if (degree.included)
+        {
+            g.setColour (colour);
+            g.fillEllipse (x - radius, centreY - radius, radius * 2.0f, radius * 2.0f);
+        }
+        else
+        {
+            g.setColour (colour);
+            g.drawEllipse (x - radius, centreY - radius, radius * 2.0f, radius * 2.0f, 1.8f);
+        }
+
+        if (degree.locked)
+        {
+            g.setFont (juce::FontOptions (9.0f, juce::Font::bold));
+            g.setColour (juce::Colour (lockedDegree));
+            g.drawText ("L", static_cast<int> (x) - 7, scaleRail_.getY() + 4, 14, 12,
+                        juce::Justification::centred);
+        }
+
+        if (drawAllValues || selected)
+        {
+            const auto text = juce::String (degree.phase * periodCents, selected ? 2 : 0) + "c";
+            g.setFont (juce::FontOptions (selected ? 10.5f : 9.0f));
+            g.setColour (degree.included ? juce::Colours::white
+                                         : juce::Colour (excludedDegree));
+            g.drawText (text, static_cast<int> (x) - 31, scaleRail_.getY() - 22, 62, 18,
+                        juce::Justification::centred);
+        }
     }
+
+    g.setColour (juce::Colour (0xFFB9C3D6));
+    g.setFont (juce::FontOptions (10.5f));
+    g.drawText ("period " + juce::String (periodCents, 3) + " cents",
+                scaleRail_.getX(), scaleRail_.getBottom() + 5,
+                scaleRail_.getWidth(), 18, juce::Justification::centred);
 }
 
 void CustomScaleEditor::resized()
 {
-    auto bounds = getLocalBounds().reduced (20);
+    auto bounds = getLocalBounds().reduced (24, 18);
 
-    // Title at top
-    titleLabel.setBounds (bounds.removeFromTop (30));
+    titleLabel_.setBounds (bounds.removeFromTop (30));
+    bounds.removeFromTop (4);
+    helpLabel_.setBounds (bounds.removeFromTop (22));
     bounds.removeFromTop (8);
 
-    // Octave label
-    octaveLabel.setBounds (bounds.removeFromTop (22));
-    bounds.removeFromTop (8);
+    auto identityRow = bounds.removeFromTop (30);
+    auto nameArea = identityRow.removeFromLeft (juce::roundToInt (identityRow.getWidth() * 0.56f));
+    identityRow.removeFromLeft (12);
+    auto equaveArea = identityRow;
 
-    // Generator row 1
+    nameLabel_.setBounds (nameArea.removeFromLeft (78));
+    nameEditor_.setBounds (nameArea);
+    equaveLabel_.setBounds (equaveArea.removeFromLeft (108));
+    equaveEditor_.setBounds (equaveArea.removeFromLeft (98));
+    equaveHintLabel_.setBounds (equaveArea);
+
+    bounds.removeFromTop (8);
     auto generatorRow = bounds.removeFromTop (30);
-    divisionCountLabel.setBounds (generatorRow.removeFromLeft (80));
-    divisionCountSelector.setBounds (generatorRow.removeFromLeft (72));
-    generatorRow.removeFromLeft (12);
-    spacingLabel.setBounds (generatorRow.removeFromLeft (82));
-    spacingSelector.setBounds (generatorRow);
+    stepsLabel_.setBounds (generatorRow.removeFromLeft (42));
+    stepsEditor_.setBounds (generatorRow.removeFromLeft (54));
+    generatorRow.removeFromLeft (8);
+    divideButton_.setBounds (generatorRow.removeFromLeft (82));
+    generatorRow.removeFromLeft (8);
+    redistributeButton_.setBounds (generatorRow.removeFromLeft (142));
+    generatorRow.removeFromLeft (8);
+    clearButton_.setBounds (generatorRow.removeFromLeft (72));
+
     bounds.removeFromTop (6);
+    auto spacingRow = bounds.removeFromTop (30);
+    spacingLabel_.setBounds (spacingRow.removeFromLeft (58));
+    spacingSelector_.setBounds (spacingRow.removeFromLeft (164));
+    spacingRow.removeFromLeft (8);
+    applySpacingButton_.setBounds (spacingRow.removeFromLeft (112));
 
-    // Generator row 2
-    auto generatorRow2 = bounds.removeFromTop (30);
-    exponentLabel.setBounds (generatorRow2.removeFromLeft (88));
-    exponentEditor.setBounds (generatorRow2.removeFromLeft (70));
-    generatorRow2.removeFromLeft (12);
-    generateButton.setBounds (generatorRow2.removeFromLeft (100));
-    generatorRow2.removeFromLeft (10);
-    clearButton.setBounds (generatorRow2.removeFromLeft (100));
     bounds.removeFromTop (10);
+    const int railHeight = juce::jmax (90, juce::jmin (190, bounds.getHeight() - 138));
+    scaleRail_ = bounds.removeFromTop (railHeight).reduced (34, 12);
+    bounds.removeFromTop (34);
 
-    // Octave rectangle — central, good height
-    const int rectHeight = juce::jmax (60, bounds.getHeight() / 4);
-    const int rectMargin = bounds.getWidth() / 10;
-    octaveRect = bounds.removeFromTop (rectHeight).reduced (rectMargin, 0);
-    bounds.removeFromTop (25); // space for cents labels + gap
+    auto selectedRow = bounds.removeFromTop (30);
+    valueLabel_.setBounds (selectedRow.removeFromLeft (104));
+    valueModeSelector_.setBounds (selectedRow.removeFromLeft (78));
+    selectedRow.removeFromLeft (6);
+    valueEditor_.setBounds (selectedRow.removeFromLeft (126));
+    selectedRow.removeFromLeft (12);
+    lockToggle_.setBounds (selectedRow.removeFromLeft (82));
+    includeToggle_.setBounds (selectedRow.removeFromLeft (92));
+    snapToggle_.setBounds (selectedRow.removeFromLeft (84));
 
-    // Info label
-    infoLabel.setBounds (bounds.removeFromTop (24));
-    bounds.removeFromTop (8);
+    bounds.removeFromTop (7);
+    infoLabel_.setBounds (bounds.removeFromTop (24));
+    bounds.removeFromTop (7);
 
-    // Name section
-    auto nameRow = bounds.removeFromTop (30);
-    nameLabel.setBounds (nameRow.removeFromLeft (130));
-    nameEditor.setBounds (nameRow);
-    bounds.removeFromTop (10);
-
-    // Buttons
-    auto buttonRow = bounds.removeFromTop (35);
-    const int btnWidth = 120;
-    const int gap = 20;
-    const int totalBtnWidth = btnWidth * 2 + gap;
-    const int startX = buttonRow.getCentreX() - totalBtnWidth / 2;
-
-    backButton.setBounds (startX, buttonRow.getY(), btnWidth, 35);
-    saveButton.setBounds (startX + btnWidth + gap, buttonRow.getY(), btnWidth, 35);
+    auto buttonRow = bounds.removeFromTop (36);
+    const int width = 126;
+    const int gap = 16;
+    const int total = width * 2 + gap;
+    const int x = buttonRow.getCentreX() - total / 2;
+    backButton_.setBounds (x, buttonRow.getY(), width, 34);
+    saveButton_.setBounds (x + width + gap, buttonRow.getY(), width, 34);
 }
 
 void CustomScaleEditor::mouseDown (const juce::MouseEvent& event)
 {
-    const auto clickPos = event.getPosition();
-
-    // Clicking anywhere outside the text/exponent editors unfocuses them.
-    if (! nameEditor.getBounds().contains (clickPos) && ! exponentEditor.getBounds().contains (clickPos))
-    {
-        nameEditor.unfocusAllComponents();
-        exponentEditor.unfocusAllComponents();
-        grabKeyboardFocus();
-    }
-
-    if (! octaveRect.contains (clickPos))
+    const auto point = event.getPosition();
+    if (! scaleRail_.contains (point))
         return;
 
-    // Convert click position to log2 ratio position [0, 1].
-    float relX = static_cast<float> (clickPos.getX() - octaveRect.getX())
-                 / static_cast<float> (octaveRect.getWidth());
-    relX = juce::jlimit (0.0f, 1.0f, relX);
-    const double logPos = static_cast<double> (relX);
-
-    const bool modifierClick = event.mods.isCommandDown() || event.mods.isCtrlDown();
-    if (modifierClick)
+    const int degree = findDegreeAt (point);
+    if (degree < 0)
     {
-        toggleExcludedIntervalAt (logPos);
-        updateInfoLabel();
+        selectDegree (-1);
+        return;
+    }
+
+    selectDegree (degree);
+
+    if (event.mods.isCommandDown() || event.mods.isCtrlDown())
+    {
+        const auto& current = geometry_.degrees()[static_cast<std::size_t> (degree)];
+        geometry_.setIncluded (degree, ! current.included);
+        statusMessage_ = current.included ? "Degree excluded." : "Degree included.";
+        refreshSelectedControls();
+        refreshInfo();
         repaint();
         return;
     }
 
-    const double pixelTolerance = octaveRect.getWidth() > 0
-        ? 8.0 / static_cast<double> (octaveRect.getWidth())
-        : manualMinDistance;
-    const double removeTolerance = juce::jmax (manualMinDistance, pixelTolerance);
-
-    if (event.getNumberOfClicks() >= 2)
+    if (! geometry_.degrees()[static_cast<std::size_t> (degree)].locked)
     {
-        const int closestIndex = findClosestDivisionIndex (logPos, removeTolerance);
-        if (closestIndex >= 0)
-            removeDivisionAtIndex (closestIndex);
-
-        return;
+        draggingDegree_ = degree;
+        draggingWarp_ = event.mods.isShiftDown();
+        dragStartGeometry_ = geometry_;
     }
+}
 
-    if (static_cast<int> (divisions.size()) >= maxScaleRatios - 1)
+void CustomScaleEditor::mouseDrag (const juce::MouseEvent& event)
+{
+    if (draggingDegree_ < 0 || scaleRail_.isEmpty())
         return;
 
-    // Avoid exact boundaries when manually adding points.
-    const double newLogPos = juce::jlimit (0.01, 0.99, logPos);
+    geometry_ = dragStartGeometry_;
+    const double target = snappedPhase (phaseFromX (event.position.x));
 
-    // Check that we don't place too close to an existing division.
-    if (findClosestDivisionIndex (newLogPos, manualMinDistance) >= 0)
+    const bool moved = draggingWarp_
+        ? geometry_.warpAroundDegree (draggingDegree_, target)
+        : geometry_.setDegreePhase (draggingDegree_, target);
+
+    if (! moved)
         return;
 
-    divisions.push_back (newLogPos);
-    std::sort (divisions.begin(), divisions.end());
-
-    // Manual topology edits change interval indices, so previous exclusions
-    // would become ambiguous. Clear them rather than silently moving them.
-    excludedIntervalIndices.clear();
-
-    updateInfoLabel();
+    statusMessage_ = draggingWarp_
+        ? "Warping unlocked degrees between the nearest locked anchors."
+        : "Degree moved.";
+    refreshSelectedControls();
+    refreshInfo();
     repaint();
 }
 
-void CustomScaleEditor::generateScaleFromControls()
+void CustomScaleEditor::mouseUp (const juce::MouseEvent&)
 {
-    const int intervalCount = getSelectedIntervalCount();
-    const auto mode = getSelectedSpacingMode();
-    const double exponent = getExponentFromEditor();
+    draggingDegree_ = -1;
+    draggingWarp_ = false;
+}
 
-    std::vector<double> weights;
-    weights.reserve (static_cast<size_t> (intervalCount));
-
-    for (int i = 0; i < intervalCount; ++i)
-    {
-        const double n = static_cast<double> (i + 1);
-        const double t = intervalCount > 1 ? static_cast<double> (i) / static_cast<double> (intervalCount - 1) : 0.0;
-
-        double weight = 1.0;
-        switch (mode)
-        {
-            case SpacingMode::equal:
-                weight = 1.0;
-                break;
-
-            case SpacingMode::linear:
-                weight = n;
-                break;
-
-            case SpacingMode::exponential:
-                // Bounded exponential: musically usable, no enormous exp(33) range.
-                weight = std::exp (0.5 * t);
-                break;
-
-            case SpacingMode::logarithmic:
-                weight = std::log1p (n);
-                break;
-
-            case SpacingMode::cosine:
-                // Positive cosine-derived envelope: small intervals first, wider later.
-                weight = 0.15 + 0.85 * (0.5 - 0.5 * std::cos (juce::MathConstants<double>::pi * t));
-                break;
-
-            case SpacingMode::power:
-                weight = std::pow (n, exponent);
-                break;
-
-            case SpacingMode::inversePower:
-                weight = 1.0 / std::pow (n, exponent);
-                break;
-        }
-
-        if (! std::isfinite (weight) || weight <= 0.0)
-            weight = 1.0;
-
-        weights.push_back (weight);
-    }
-
-    const double totalWeight = std::accumulate (weights.begin(), weights.end(), 0.0);
-    if (totalWeight <= 0.0 || ! std::isfinite (totalWeight))
+void CustomScaleEditor::mouseDoubleClick (const juce::MouseEvent& event)
+{
+    const auto point = event.getPosition();
+    if (! scaleRail_.contains (point))
         return;
 
-    divisions.clear();
-    divisions.reserve (static_cast<size_t> (juce::jmax (0, intervalCount - 1)));
-
-    double cumulative = 0.0;
-    for (int i = 0; i < intervalCount - 1; ++i)
+    const int degree = findDegreeAt (point);
+    if (degree >= 0)
     {
-        cumulative += weights[static_cast<size_t> (i)];
-        const double logPos = juce::jlimit (1.0e-6, 1.0 - 1.0e-6, cumulative / totalWeight);
-        divisions.push_back (logPos);
+        if (geometry_.removeDegree (degree))
+        {
+            statusMessage_ = "Degree removed.";
+            selectDegree (-1);
+            updateStepsEditorFromGeometry();
+            refreshInfo();
+            repaint();
+        }
+        else
+        {
+            statusMessage_ = "Unlock this degree before removing it.";
+            refreshInfo();
+        }
+        return;
     }
 
-    std::sort (divisions.begin(), divisions.end());
-    excludedIntervalIndices.clear();
+    if (geometry_.addDegree (snappedPhase (phaseFromX (event.position.x))))
+    {
+        const int inserted = findDegreeAt (point, 14.0f);
+        selectDegree (inserted);
+        updateStepsEditorFromGeometry();
+        statusMessage_ = "Degree added.";
+        refreshInfo();
+        repaint();
+    }
+}
 
-    updateInfoLabel();
+void CustomScaleEditor::applyEqualDivision()
+{
+    const int steps = stepsEditor_.getText().getIntValue();
+    if (steps < neumaton::scaleeditor::Geometry::minPitchClasses
+        || steps > neumaton::scaleeditor::Geometry::maxPitchClasses)
+    {
+        statusMessage_ = "Steps must be between 3 and 96.";
+        refreshInfo();
+        return;
+    }
+
+    const bool sameTopology = steps == geometry_.intervalCount();
+    geometry_.setEqualDivision (steps, true);
+    selectedDegree_ = -1;
+    statusMessage_ = sameTopology
+        ? "Free degrees redistributed; locked degrees kept fixed."
+        : "Equal division created; topology changed, so degree locks were reset.";
+    refreshSelectedControls();
+    refreshInfo();
+    repaint();
+}
+
+void CustomScaleEditor::redistributeFreeDegrees()
+{
+    geometry_.redistributeFreeDegrees();
+    statusMessage_ = "Only unlocked degrees were redistributed evenly.";
+    refreshSelectedControls();
+    refreshInfo();
+    repaint();
+}
+
+void CustomScaleEditor::applySpacingShape()
+{
+    geometry_.applySpacingShape (spacingShape());
+    statusMessage_ = "Spacing shape applied to unlocked degrees; locked anchors were preserved.";
+    refreshSelectedControls();
+    refreshInfo();
     repaint();
 }
 
 void CustomScaleEditor::clearScale()
 {
-    divisions.clear();
-    excludedIntervalIndices.clear();
-    updateInfoLabel();
+    geometry_.clear();
+    selectedDegree_ = -1;
+    statusMessage_ = "Scale cleared. Double-click the rail to add degrees, or use Divide.";
+    refreshSelectedControls();
+    refreshInfo();
     repaint();
 }
 
-void CustomScaleEditor::updateExponentControlState()
+void CustomScaleEditor::applyEquaveEditor()
 {
-    const auto mode = getSelectedSpacingMode();
-    const bool needsExponent = mode == SpacingMode::power || mode == SpacingMode::inversePower;
-
-    exponentLabel.setEnabled (needsExponent);
-    exponentEditor.setEnabled (needsExponent);
-    exponentLabel.setAlpha (needsExponent ? 1.0f : 0.45f);
-    exponentEditor.setAlpha (needsExponent ? 1.0f : 0.45f);
-}
-
-double CustomScaleEditor::getExponentFromEditor() const
-{
-    double exponent = exponentEditor.getText().getDoubleValue();
-    if (! std::isfinite (exponent) || exponent >= 4.0)
-        exponent = 3.0;
-
-    return juce::jlimit (1.2, 3.9, exponent);
-}
-
-int CustomScaleEditor::getSelectedIntervalCount() const
-{
-    const int selected = divisionCountSelector.getSelectedId();
-    if (selected >= minScaleRatios && selected <= maxScaleRatios)
-        return selected;
-
-    return 12;
-}
-
-CustomScaleEditor::SpacingMode CustomScaleEditor::getSelectedSpacingMode() const
-{
-    const int selected = spacingSelector.getSelectedId();
-    if (selected >= static_cast<int> (SpacingMode::equal)
-        && selected <= static_cast<int> (SpacingMode::inversePower))
-        return static_cast<SpacingMode> (selected);
-
-    return SpacingMode::equal;
-}
-
-std::vector<double> CustomScaleEditor::buildIntervalBoundaries() const
-{
-    std::vector<double> boundaries;
-    boundaries.reserve (divisions.size() + 2);
-    boundaries.push_back (0.0);
-
-    for (double d : divisions)
+    double parsed = 0.0;
+    if (! parsePositiveRatio (equaveEditor_.getText(), parsed)
+        || ! std::isfinite (parsed)
+        || parsed <= 1.0)
     {
-        if (std::isfinite (d) && d > 0.0 && d < 1.0)
-            boundaries.push_back (d);
+        equaveEditor_.setText (formatRatio (equaveRatio_), juce::dontSendNotification);
+        statusMessage_ = "Period must be a finite ratio greater than 1:1.";
+        refreshInfo();
+        return;
     }
 
-    std::sort (boundaries.begin(), boundaries.end());
-    auto last = std::unique (boundaries.begin(), boundaries.end(),
-        [] (double a, double b) { return std::abs (a - b) < 1.0e-9; });
-    boundaries.erase (last, boundaries.end());
-
-    boundaries.push_back (1.0);
-    return boundaries;
+    equaveRatio_ = parsed;
+    equaveEditor_.setText (formatRatio (equaveRatio_), juce::dontSendNotification);
+    statusMessage_ = "Period changed; degree geometry was preserved proportionally.";
+    refreshSelectedControls();
+    refreshInfo();
+    repaint();
 }
 
-int CustomScaleEditor::findClosestDivisionIndex (double logPos, double maxDistance) const
+void CustomScaleEditor::applySelectedValueEditor()
 {
-    int closestIndex = -1;
-    double bestDistance = maxDistance;
+    if (selectedDegree_ < 0
+        || selectedDegree_ >= static_cast<int> (geometry_.degrees().size()))
+        return;
 
-    for (int i = 0; i < static_cast<int> (divisions.size()); ++i)
+    const auto& selected = geometry_.degrees()[static_cast<std::size_t> (selectedDegree_)];
+    if (selected.locked)
     {
-        const double distance = std::abs (divisions[static_cast<size_t> (i)] - logPos);
-        if (distance <= bestDistance)
+        statusMessage_ = "Unlock this degree before editing its value.";
+        refreshSelectedControls();
+        refreshInfo();
+        return;
+    }
+
+    double phase = selected.phase;
+    if (valueMode() == ValueMode::cents)
+    {
+        const double cents = valueEditor_.getText().getDoubleValue();
+        const double period = equaveCents();
+        if (! std::isfinite (cents) || cents <= 0.0 || cents >= period)
         {
-            bestDistance = distance;
-            closestIndex = i;
+            statusMessage_ = "Degree cents must lie strictly inside the current period.";
+            refreshSelectedControls();
+            refreshInfo();
+            return;
         }
+        phase = cents / period;
     }
-
-    return closestIndex;
-}
-
-int CustomScaleEditor::findIntervalIndexAt (double logPos) const
-{
-    const auto boundaries = buildIntervalBoundaries();
-    if (boundaries.size() < 2)
-        return -1;
-
-    for (int i = 0; i < static_cast<int> (boundaries.size()) - 1; ++i)
-    {
-        const double left = boundaries[static_cast<size_t> (i)];
-        const double right = boundaries[static_cast<size_t> (i + 1)];
-
-        if (logPos >= left && logPos <= right)
-            return i;
-    }
-
-    return static_cast<int> (boundaries.size()) - 2;
-}
-
-int CustomScaleEditor::getEffectiveRatioCount() const
-{
-    int count = 1; // unison is always saved
-    for (int i = 0; i < static_cast<int> (divisions.size()); ++i)
-    {
-        if (! shouldSkipDivisionOnSave (i))
-            ++count;
-    }
-
-    return count;
-}
-
-bool CustomScaleEditor::shouldSkipDivisionOnSave (int divisionIndex) const
-{
-    if (divisionIndex < 0 || divisionIndex >= static_cast<int> (divisions.size()))
-        return false;
-
-    // A division is the right edge of interval `divisionIndex`.
-    // Muting that interval removes its right-edge note from the saved scale.
-    if (excludedIntervalIndices.count (divisionIndex) > 0)
-        return true;
-
-    // The final interval has no octave ratio in the saved preset. If the user
-    // mutes it, remove the previous visible degree instead, which is the only
-    // storable neighbour of that interval in the current preset format.
-    const int finalIntervalIndex = static_cast<int> (divisions.size());
-    const bool isLastDivision = divisionIndex == static_cast<int> (divisions.size()) - 1;
-    if (isLastDivision && excludedIntervalIndices.count (finalIntervalIndex) > 0)
-        return true;
-
-    return false;
-}
-
-void CustomScaleEditor::removeDivisionAtIndex (int divisionIndex)
-{
-    if (divisionIndex < 0 || divisionIndex >= static_cast<int> (divisions.size()))
-        return;
-
-    divisions.erase (divisions.begin() + divisionIndex);
-    excludedIntervalIndices.clear();
-
-    updateInfoLabel();
-    repaint();
-}
-
-void CustomScaleEditor::toggleExcludedIntervalAt (double logPos)
-{
-    if (divisions.empty())
-        return;
-
-    const int intervalIndex = findIntervalIndexAt (logPos);
-    if (intervalIndex < 0)
-        return;
-
-    if (excludedIntervalIndices.count (intervalIndex) > 0)
-        excludedIntervalIndices.erase (intervalIndex);
     else
-        excludedIntervalIndices.insert (intervalIndex);
-
-    sanitiseExcludedIntervals();
-}
-
-void CustomScaleEditor::sanitiseExcludedIntervals()
-{
-    const int intervalCount = static_cast<int> (divisions.size()) + 1;
-    for (auto it = excludedIntervalIndices.begin(); it != excludedIntervalIndices.end();)
     {
-        if (*it < 0 || *it >= intervalCount)
-            it = excludedIntervalIndices.erase (it);
-        else
-            ++it;
-    }
-}
-
-void CustomScaleEditor::updateInfoLabel()
-{
-    sanitiseExcludedIntervals();
-
-    const int intervalCount = static_cast<int> (divisions.size()) + 1;
-    const int effectiveCount = getEffectiveRatioCount();
-
-    juce::String text = "Intervalli: " + juce::String (intervalCount)
-                      + " | note salvate: " + juce::String (effectiveCount);
-
-    if (! excludedIntervalIndices.empty())
-        text += " | esclusi: " + juce::String (static_cast<int> (excludedIntervalIndices.size()));
-
-    if (effectiveCount < minScaleRatios)
-        text += " (servono almeno " + juce::String (minScaleRatios) + " note)";
-    else if (effectiveCount >= maxScaleRatios)
-        text += " (massimo raggiunto)";
-
-    const auto mode = getSelectedSpacingMode();
-    if ((mode == SpacingMode::power || mode == SpacingMode::inversePower)
-        && exponentEditor.getText().getDoubleValue() <= 4.0)
-    {
-        text += " | a corretto a 5.0";
+        double ratio = 0.0;
+        if (! parsePositiveRatio (valueEditor_.getText(), ratio)
+            || ratio <= 1.0 || ratio >= equaveRatio_)
+        {
+            statusMessage_ = "Degree ratio must lie strictly between 1:1 and the current period.";
+            refreshSelectedControls();
+            refreshInfo();
+            return;
+        }
+        phase = std::log2 (ratio) / std::log2 (equaveRatio_);
     }
 
-    infoLabel.setText (text, juce::dontSendNotification);
+    if (geometry_.setDegreePhase (selectedDegree_, phase))
+        statusMessage_ = "Degree value updated.";
 
-    const bool canSave = effectiveCount >= minScaleRatios
-                         && effectiveCount <= maxScaleRatios
-                         && nameEditor.getText().trim().isNotEmpty();
-    saveButton.setEnabled (canSave);
+    refreshSelectedControls();
+    refreshInfo();
+    repaint();
 }
 
 void CustomScaleEditor::onSave()
 {
-    const juce::String name = nameEditor.getText().trim();
+    const auto name = nameEditor_.getText().trim();
+    const auto ratios = geometry_.toRatios (equaveRatio_);
+
     if (name.isEmpty())
     {
-        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
-            "Errore", "Inserisci un nome per la scala.");
+        juce::AlertWindow::showMessageBoxAsync (
+            juce::MessageBoxIconType::WarningIcon,
+            "Scale name required",
+            "Enter a name before saving the scale.");
         return;
     }
 
-    if (getEffectiveRatioCount() < minScaleRatios)
+    if (ratios.size() < static_cast<std::size_t> (neumaton::scaleeditor::Geometry::minPitchClasses)
+        || ratios.size() > static_cast<std::size_t> (neumaton::scaleeditor::Geometry::maxPitchClasses))
     {
-        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
-            "Errore", "Servono almeno 3 note salvabili. Riduci gli intervalli esclusi o aggiungi divisioni.");
+        juce::AlertWindow::showMessageBoxAsync (
+            juce::MessageBoxIconType::WarningIcon,
+            "Invalid scale",
+            "The saved scale must contain between 3 and 96 included pitch classes.");
         return;
     }
 
-    // Convert log positions to frequency ratios.
-    // Each division position d (in [0,1] log2 space) -> ratio = 2^d.
-    std::vector<double> ratios;
-    ratios.reserve (static_cast<size_t> (getEffectiveRatioCount()));
-    ratios.push_back (1.0); // Always include unison
+    const bool success = processorRef.getCustomPresets().addPreset (
+        name, ratios, equaveRatio_);
 
-    for (int i = 0; i < static_cast<int> (divisions.size()); ++i)
+    if (! success)
     {
-        if (shouldSkipDivisionOnSave (i))
-            continue;
-
-        ratios.push_back (std::pow (2.0, divisions[static_cast<size_t> (i)]));
-    }
-
-    std::sort (ratios.begin(), ratios.end());
-
-    // Remove duplicates.
-    auto last = std::unique (ratios.begin(), ratios.end(),
-        [](double a, double b) { return std::abs (a - b) < 1e-8; });
-    ratios.erase (last, ratios.end());
-
-    if (static_cast<int> (ratios.size()) < minScaleRatios
-        || static_cast<int> (ratios.size()) > maxScaleRatios)
-    {
-        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
-            "Errore", "La scala deve contenere tra 3 e 33 note salvabili.");
+        juce::AlertWindow::showMessageBoxAsync (
+            juce::MessageBoxIconType::WarningIcon,
+            "Could not save scale",
+            "The scale data was rejected by the custom-scale library.");
         return;
     }
 
-    const bool success = processorRef.getCustomPresets().addPreset (name, ratios);
+    processorRef.refreshScaleSnapshot();
+    juce::AlertWindow::showMessageBoxAsync (
+        juce::MessageBoxIconType::InfoIcon,
+        "Scale saved",
+        "The scale \"" + name + "\" was added to your custom library.");
+    listenerRef.customScaleEditorClosed();
+}
 
-    if (success)
+void CustomScaleEditor::selectDegree (int index)
+{
+    if (index < 0 || index >= static_cast<int> (geometry_.degrees().size()))
+        selectedDegree_ = -1;
+    else
+        selectedDegree_ = index;
+
+    refreshSelectedControls();
+    refreshInfo();
+    repaint();
+}
+
+void CustomScaleEditor::refreshSelectedControls()
+{
+    const bool valid = selectedDegree_ >= 0
+        && selectedDegree_ < static_cast<int> (geometry_.degrees().size());
+
+    valueModeSelector_.setEnabled (valid);
+    valueEditor_.setEnabled (valid);
+    lockToggle_.setEnabled (valid);
+    includeToggle_.setEnabled (valid);
+
+    if (! valid)
     {
-        processorRef.refreshScaleSnapshot();
-        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon,
-            "Scala salvata", "La scala \"" + name + "\" e' stata salvata con successo.");
-        listenerRef.customScaleEditorClosed();
+        valueEditor_.setText ({}, juce::dontSendNotification);
+        lockToggle_.setToggleState (false, juce::dontSendNotification);
+        includeToggle_.setToggleState (false, juce::dontSendNotification);
+        return;
+    }
+
+    const auto& degree = geometry_.degrees()[static_cast<std::size_t> (selectedDegree_)];
+    lockToggle_.setToggleState (degree.locked, juce::dontSendNotification);
+    includeToggle_.setToggleState (degree.included, juce::dontSendNotification);
+
+    if (valueMode() == ValueMode::cents)
+        valueEditor_.setText (juce::String (selectedCents(), 4), juce::dontSendNotification);
+    else
+        valueEditor_.setText (formatRatio (selectedRatio()), juce::dontSendNotification);
+}
+
+void CustomScaleEditor::refreshInfo()
+{
+    const int topologyPitchClasses = geometry_.intervalCount();
+    const int included = geometry_.includedPitchClassCount();
+
+    int locked = 0;
+    for (const auto& degree : geometry_.degrees())
+        if (degree.locked)
+            ++locked;
+
+    juce::String text = "Topology: " + juce::String (topologyPitchClasses)
+        + " pitch classes  |  saved: " + juce::String (included)
+        + "  |  locked: " + juce::String (locked)
+        + "  |  period: " + formatRatio (equaveRatio_)
+        + " (" + juce::String (equaveCents(), 3) + "c)";
+
+    if (statusMessage_.isNotEmpty())
+        text += "  —  " + statusMessage_;
+
+    infoLabel_.setText (text, juce::dontSendNotification);
+
+    const bool validCount = included >= neumaton::scaleeditor::Geometry::minPitchClasses
+        && included <= neumaton::scaleeditor::Geometry::maxPitchClasses;
+    saveButton_.setEnabled (validCount
+                            && geometry_.isStrictlyOrdered()
+                            && nameEditor_.getText().trim().isNotEmpty()
+                            && std::isfinite (equaveRatio_)
+                            && equaveRatio_ > 1.0);
+}
+
+void CustomScaleEditor::updateStepsEditorFromGeometry()
+{
+    stepsEditor_.setText (juce::String (geometry_.intervalCount()), juce::dontSendNotification);
+}
+
+int CustomScaleEditor::findDegreeAt (juce::Point<int> point, float tolerancePixels) const
+{
+    if (! scaleRail_.expanded (static_cast<int> (std::ceil (tolerancePixels))).contains (point))
+        return -1;
+
+    int closest = -1;
+    float best = tolerancePixels;
+    for (int i = 0; i < static_cast<int> (geometry_.degrees().size()); ++i)
+    {
+        const float distance = std::abs (xFromPhase (
+            geometry_.degrees()[static_cast<std::size_t> (i)].phase)
+            - static_cast<float> (point.x));
+        if (distance <= best)
+        {
+            best = distance;
+            closest = i;
+        }
+    }
+    return closest;
+}
+
+double CustomScaleEditor::phaseFromX (float x) const noexcept
+{
+    if (scaleRail_.getWidth() <= 0)
+        return 0.0;
+    return juce::jlimit (
+        0.0, 1.0,
+        static_cast<double> ((x - static_cast<float> (scaleRail_.getX()))
+            / static_cast<float> (scaleRail_.getWidth())));
+}
+
+float CustomScaleEditor::xFromPhase (double phase) const noexcept
+{
+    return static_cast<float> (scaleRail_.getX())
+        + static_cast<float> (juce::jlimit (0.0, 1.0, phase))
+            * static_cast<float> (scaleRail_.getWidth());
+}
+
+double CustomScaleEditor::equaveCents() const noexcept
+{
+    return 1200.0 * std::log2 (equaveRatio_);
+}
+
+double CustomScaleEditor::selectedRatio() const noexcept
+{
+    if (selectedDegree_ < 0
+        || selectedDegree_ >= static_cast<int> (geometry_.degrees().size()))
+        return 1.0;
+
+    return std::exp2 (
+        geometry_.degrees()[static_cast<std::size_t> (selectedDegree_)].phase
+        * std::log2 (equaveRatio_));
+}
+
+double CustomScaleEditor::selectedCents() const noexcept
+{
+    if (selectedDegree_ < 0
+        || selectedDegree_ >= static_cast<int> (geometry_.degrees().size()))
+        return 0.0;
+
+    return geometry_.degrees()[static_cast<std::size_t> (selectedDegree_)].phase
+        * equaveCents();
+}
+
+CustomScaleEditor::ValueMode CustomScaleEditor::valueMode() const noexcept
+{
+    return valueModeSelector_.getSelectedId() == static_cast<int> (ValueMode::ratio)
+        ? ValueMode::ratio
+        : ValueMode::cents;
+}
+
+neumaton::scaleeditor::SpacingShape CustomScaleEditor::spacingShape() const noexcept
+{
+    const int selected = spacingSelector_.getSelectedId();
+    const int first = static_cast<int> (neumaton::scaleeditor::SpacingShape::even);
+    const int last = static_cast<int> (neumaton::scaleeditor::SpacingShape::wideToTight);
+    if (selected >= first && selected <= last)
+        return static_cast<neumaton::scaleeditor::SpacingShape> (selected);
+    return neumaton::scaleeditor::SpacingShape::even;
+}
+
+double CustomScaleEditor::snappedPhase (double phase) const noexcept
+{
+    phase = juce::jlimit (0.0, 1.0, phase);
+    if (! snapToggle_.getToggleState())
+        return phase;
+
+    const double period = equaveCents();
+    if (! std::isfinite (period) || period <= 0.0)
+        return phase;
+
+    const double cents = std::round (phase * period);
+    return juce::jlimit (0.0, 1.0, cents / period);
+}
+
+bool CustomScaleEditor::parsePositiveRatio (juce::String text, double& result)
+{
+    text = text.trim();
+    if (text.isEmpty())
+        return false;
+
+    int separator = text.indexOfChar (':');
+    if (separator < 0)
+        separator = text.indexOfChar ('/');
+
+    double numerator = 0.0;
+    double denominator = 1.0;
+    if (separator >= 0)
+    {
+        numerator = text.substring (0, separator).trim().getDoubleValue();
+        denominator = text.substring (separator + 1).trim().getDoubleValue();
     }
     else
     {
-        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
-            "Errore", "Impossibile salvare la scala. Verifica che ci siano meno di 7 preset.");
+        numerator = text.getDoubleValue();
     }
+
+    if (! std::isfinite (numerator)
+        || ! std::isfinite (denominator)
+        || numerator <= 0.0
+        || denominator <= 0.0)
+        return false;
+
+    result = numerator / denominator;
+    return std::isfinite (result) && result > 0.0;
+}
+
+juce::String CustomScaleEditor::formatRatio (double ratio)
+{
+    if (! std::isfinite (ratio) || ratio <= 0.0)
+        return "-";
+
+    int bestNumerator = 1;
+    int bestDenominator = 1;
+    double bestErrorCents = std::numeric_limits<double>::infinity();
+
+    for (int denominator = 1; denominator <= 64; ++denominator)
+    {
+        const int numerator = juce::jmax (1, juce::roundToInt (ratio * denominator));
+        const double candidate = static_cast<double> (numerator)
+            / static_cast<double> (denominator);
+        const double error = std::abs (1200.0 * std::log2 (ratio / candidate));
+        if (error < bestErrorCents)
+        {
+            bestErrorCents = error;
+            bestNumerator = numerator;
+            bestDenominator = denominator;
+        }
+    }
+
+    if (bestErrorCents <= 0.15)
+        return juce::String (bestNumerator) + ":" + juce::String (bestDenominator);
+
+    return juce::String (ratio, 7);
 }

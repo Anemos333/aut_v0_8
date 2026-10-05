@@ -2,14 +2,12 @@
 
 #include <JuceHeader.h>
 #include "CustomScalePresets.h"
-#include <set>
+#include "ScaleEditorGeometry.h"
+
 #include <vector>
 
-//==============================================================================
-// Forward declaration
 class MicrotonalAutotuneAudioProcessor;
 
-// Callback interface for when the editor should close
 class CustomScaleEditorListener
 {
 public:
@@ -17,92 +15,98 @@ public:
     virtual void customScaleEditorClosed() = 0;
 };
 
-//==============================================================================
-class CustomScaleEditor : public juce::Component
+class CustomScaleEditor final : public juce::Component
 {
 public:
     CustomScaleEditor (MicrotonalAutotuneAudioProcessor& processor,
                        CustomScaleEditorListener& listener,
                        juce::Image backgroundImage);
-    ~CustomScaleEditor() override;
+    ~CustomScaleEditor() override = default;
 
     void paint (juce::Graphics& g) override;
     void resized() override;
     void mouseDown (const juce::MouseEvent& event) override;
+    void mouseDrag (const juce::MouseEvent& event) override;
+    void mouseUp (const juce::MouseEvent& event) override;
+    void mouseDoubleClick (const juce::MouseEvent& event) override;
 
 private:
-    enum class SpacingMode
+    enum class ValueMode
     {
-        equal = 1,
-        linear,
-        exponential,
-        logarithmic,
-        cosine,
-        power,
-        inversePower
+        cents = 1,
+        ratio = 2
     };
 
     MicrotonalAutotuneAudioProcessor& processorRef;
     CustomScaleEditorListener& listenerRef;
     juce::Image bgImage;
 
-    // The octave rectangle area (set in resized)
-    juce::Rectangle<int> octaveRect;
+    neumaton::scaleeditor::Geometry geometry_;
+    neumaton::scaleeditor::Geometry dragStartGeometry_;
+    double equaveRatio_ = 2.0;
+    int selectedDegree_ = -1;
+    int draggingDegree_ = -1;
+    bool draggingWarp_ = false;
 
-    // Division positions as ratios [0, 1] in log space.
-    // Each value is a position in [0, 1] representing log2(ratio).
-    // Boundaries 0.0 (unison) and 1.0 (octave) are implicit.
-    std::vector<double> divisions;
+    juce::Rectangle<int> scaleRail_;
+    juce::String statusMessage_;
 
-    // Interval indices muted by Ctrl/Command-click.
-    // For interval count N, valid indices are [0, N - 1].
-    std::set<int> excludedIntervalIndices;
+    juce::Label titleLabel_;
+    juce::Label helpLabel_;
+    juce::Label nameLabel_;
+    juce::TextEditor nameEditor_;
 
-    static constexpr int minScaleRatios = 3;
-    static constexpr int maxScaleRatios = 33;
-    static constexpr double manualMinDistance = 0.01; // ~12 cents
+    juce::Label equaveLabel_;
+    juce::TextEditor equaveEditor_;
+    juce::Label equaveHintLabel_;
 
-    // UI components
-    juce::TextEditor nameEditor;
-    juce::TextButton saveButton     { "Salva" };
-    juce::TextButton backButton     { "Indietro" };
-    juce::TextButton generateButton { "Genera" };
-    juce::TextButton clearButton    { "Pulisci" };
+    juce::Label stepsLabel_;
+    juce::TextEditor stepsEditor_;
+    juce::TextButton divideButton_ { "Divide" };
+    juce::TextButton redistributeButton_ { "Redistribute free" };
+    juce::TextButton clearButton_ { "Clear" };
 
-    juce::Label titleLabel;
-    juce::Label nameLabel;
-    juce::Label octaveLabel;
-    juce::Label infoLabel;
+    juce::Label spacingLabel_;
+    juce::ComboBox spacingSelector_;
+    juce::TextButton applySpacingButton_ { "Apply spacing" };
 
-    juce::Label divisionCountLabel;
-    juce::ComboBox divisionCountSelector;
+    juce::Label valueLabel_;
+    juce::ComboBox valueModeSelector_;
+    juce::TextEditor valueEditor_;
+    juce::ToggleButton lockToggle_ { "Locked" };
+    juce::ToggleButton includeToggle_ { "Included" };
+    juce::ToggleButton snapToggle_ { "Snap 1c" };
 
-    juce::Label spacingLabel;
-    juce::ComboBox spacingSelector;
+    juce::Label infoLabel_;
+    juce::TextButton saveButton_ { "Save scale" };
+    juce::TextButton backButton_ { "Back" };
 
-    juce::Label exponentLabel;
-    juce::TextEditor exponentEditor;
-
-    void updateInfoLabel();
+    void configureUi();
+    void applyEqualDivision();
+    void redistributeFreeDegrees();
+    void applySpacingShape();
+    void clearScale();
+    void applyEquaveEditor();
+    void applySelectedValueEditor();
     void onSave();
 
-    void buildGeneratorMenus();
-    void generateScaleFromControls();
-    void clearScale();
-    void updateExponentControlState();
+    void selectDegree (int index);
+    void refreshSelectedControls();
+    void refreshInfo();
+    void updateStepsEditorFromGeometry();
 
-    double getExponentFromEditor() const;
-    int getSelectedIntervalCount() const;
-    SpacingMode getSelectedSpacingMode() const;
+    [[nodiscard]] int findDegreeAt (juce::Point<int> point, float tolerancePixels = 10.0f) const;
+    [[nodiscard]] double phaseFromX (float x) const noexcept;
+    [[nodiscard]] float xFromPhase (double phase) const noexcept;
+    [[nodiscard]] double equaveCents() const noexcept;
+    [[nodiscard]] double selectedRatio() const noexcept;
+    [[nodiscard]] double selectedCents() const noexcept;
+    [[nodiscard]] ValueMode valueMode() const noexcept;
+    [[nodiscard]] neumaton::scaleeditor::SpacingShape spacingShape() const noexcept;
+    [[nodiscard]] double snappedPhase (double phase) const noexcept;
 
-    std::vector<double> buildIntervalBoundaries() const;
-    int findClosestDivisionIndex (double logPos, double maxDistance) const;
-    int findIntervalIndexAt (double logPos) const;
-    int getEffectiveRatioCount() const;
-    bool shouldSkipDivisionOnSave (int divisionIndex) const;
-    void removeDivisionAtIndex (int divisionIndex);
-    void toggleExcludedIntervalAt (double logPos);
-    void sanitiseExcludedIntervals();
+    static bool parsePositiveRatio (juce::String text, double& result);
+    static juce::String formatRatio (double ratio);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CustomScaleEditor)
 };

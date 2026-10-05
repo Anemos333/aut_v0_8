@@ -13,8 +13,8 @@ jobs:
     steps:
       - name: Checkout del codice
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
+        # JUCE is fetched by CMake FetchContent. Do not recurse into stale
+        # build-directory gitlinks that are not repository submodules.
 
       - name: Mostra ambiente di build
         run: |
@@ -37,6 +37,29 @@ jobs:
       - name: Compila il Plugin
         run: |
           cmake --build build --config Release --parallel 4
+
+      - name: Verifica Scale Database V1
+        run: |
+          clang++ -std=c++17 -O2 -ISource \
+            Tests/ScaleDatabaseV1Test.cpp \
+            Source/ScaleDefinitions.cpp \
+            Source/PitchCore.cpp \
+            -o /tmp/scale_database_v1_test
+          /tmp/scale_database_v1_test
+
+      - name: Verifica Scale Editor Geometry
+        run: |
+          clang++ -std=c++17 -O2 -ISource \
+            Tests/ScaleEditorGeometryTest.cpp \
+            -o /tmp/scale_editor_geometry_test
+          /tmp/scale_editor_geometry_test
+
+      - name: Verifica Community Pack V1
+        run: |
+          clang++ -std=c++17 -O2 \
+            Tests/CommunityPackV1ContractTest.cpp \
+            -o /tmp/community_pack_v1_test
+          /tmp/community_pack_v1_test
 
       - name: Verifica architetture del plugin
         run: |
