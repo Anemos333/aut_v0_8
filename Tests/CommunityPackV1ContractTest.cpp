@@ -1,3 +1,4 @@
+// Community Pack V1 contract: portability across fresh sessions and native selection UI.
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
