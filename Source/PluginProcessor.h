@@ -79,15 +79,28 @@ public:
     [[nodiscard]] juce::String saveCurrentCommunityPreset (const juce::String& name)
     {
         return communityPackLibrary.addCurrentPreset (
-            name, apvts, processingMode.load (std::memory_order_acquire));
+            name,
+            apvts,
+            processingMode.load (std::memory_order_acquire),
+            tonalCenterIndex.load (std::memory_order_acquire));
     }
 
     bool applyCommunityPreset (const neumaton::community::CommunityPreset& preset)
     {
         if (! preset.isValid())
             return false;
+
         preset.applyTo (apvts);
+
+        if (preset.tonalCenterIndex >= 0)
+        {
+            const int center = juce::jlimit (0, 11, preset.tonalCenterIndex);
+            tonalCenterIndex.store (center, std::memory_order_release);
+            rootNoteIndex.store (center, std::memory_order_release);
+        }
+
         updateProcessingMode (preset.processingMode);
+        refreshScaleSnapshot();
         return true;
     }
 
