@@ -10,9 +10,9 @@
 
 namespace neumaton::community
 {
-inline const std::array<const char*, 8>& sharedPresetParameterIds() noexcept
+inline const std::array<const char*, 9>& sharedPresetParameterIds() noexcept
 {
-    static const std::array<const char*, 8> ids {
+    static const std::array<const char*, 9> ids {
         "speed",
         "amount",
         "humanize",
@@ -20,7 +20,8 @@ inline const std::array<const char*, 8>& sharedPresetParameterIds() noexcept
         "lockHysteresis",
         "vibratoPreserve",
         "analogMode",
-        "outVolume"
+        "outVolume",
+        "tuningReferenceHz"
     };
     return ids;
 }
@@ -31,6 +32,12 @@ struct CommunityPreset
     juce::String sourcePackId;
     juce::String name;
     int processingMode = 1;
+
+    // -1 means "not stored" for backwards compatibility with schema-2 packs.
+    // New presets always persist the tonal centre explicitly so a preset/scene
+    // sounds the same when applied in a fresh plugin instance.
+    int tonalCenterIndex = -1;
+
     juce::ValueTree values { "Values" };
 
     [[nodiscard]] bool isValid() const noexcept
@@ -47,6 +54,8 @@ struct CommunityPreset
         tree.setProperty ("sourcePackId", sourcePackId, nullptr);
         tree.setProperty ("name", name, nullptr);
         tree.setProperty ("processingMode", juce::jlimit (1, 3, processingMode), nullptr);
+        if (tonalCenterIndex >= 0)
+            tree.setProperty ("tonalCenterIndex", juce::jlimit (0, 11, tonalCenterIndex), nullptr);
         tree.addChild (values.createCopy(), -1, nullptr);
         return tree;
     }
@@ -63,6 +72,10 @@ struct CommunityPreset
         result.processingMode = juce::jlimit (1, 3,
             static_cast<int> (tree.getProperty ("processingMode", 1)));
 
+        if (tree.hasProperty ("tonalCenterIndex"))
+            result.tonalCenterIndex = juce::jlimit (0, 11,
+                static_cast<int> (tree.getProperty ("tonalCenterIndex")));
+
         const auto child = tree.getChildWithName ("Values");
         if (child.isValid())
             result.values = child.createCopy();
@@ -73,12 +86,14 @@ struct CommunityPreset
     [[nodiscard]] static CommunityPreset capture (
         const juce::String& presetName,
         juce::AudioProcessorValueTreeState& apvts,
-        int mode)
+        int mode,
+        int tonalCenter)
     {
         CommunityPreset result;
         result.stableId = "user.preset." + juce::Uuid().toString();
         result.name = presetName.trim();
         result.processingMode = juce::jlimit (1, 3, mode);
+        result.tonalCenterIndex = juce::jlimit (0, 11, tonalCenter);
 
         for (const auto* parameterId : sharedPresetParameterIds())
         {
@@ -168,8 +183,7 @@ public:
                 .getChildFile ("Neumaton");
         static_cast<void> (base.createDirectory());
         settingsFile_ = base.getChildFile ("community-library.xml");
-        loadLocalSettings();
-        rescanPacks();
+        reloadFromDisk();
     }
 
     [[nodiscard]] const std::vector<CommunityPreset>& getUserPresets() const noexcept
@@ -190,6 +204,15 @@ public:
     [[nodiscard]] const juce::File& getPackDirectory() const noexcept
     {
         return packDirectory_;
+    }
+
+    // Re-read the shared Community library before presenting it. This makes a
+    // newly opened plugin instance see folder/preset/scene changes written by a
+    // previous instance without requiring a host restart.
+    void reloadFromDisk()
+    {
+        loadLocalSettings();
+        rescanPacks();
     }
 
     void setPackDirectory (const juce::File& directory)
@@ -246,9 +269,11 @@ public:
     [[nodiscard]] juce::String addCurrentPreset (
         const juce::String& name,
         juce::AudioProcessorValueTreeState& apvts,
-        int processingMode)
+        int processingMode,
+        int tonalCenter)
     {
-        auto preset = CommunityPreset::capture (name, apvts, processingMode);
+        auto preset = CommunityPreset::capture (
+            name, apvts, processingMode, tonalCenter);
         if (! preset.isValid())
             return {};
 
@@ -418,10 +443,6 @@ public:
                 continue;
 
             addUniqueNode (pack.scenes, scene->toValueTree(), manifest.stableId);
-
-            // A scene is portable by itself: custom/local dependencies are folded
-            // into the pack automatically. Factory scales may also be embedded;
-            // stable ids prevent duplicate entries.
             addUniqueNode (pack.scales, findScale (scene->scaleStableId), manifest.stableId);
             addPresetById (scene->presetStableId);
         }
@@ -434,6 +455,7 @@ private:
     {
         userPresets_.clear();
         userScenes_.clear();
+        packDirectory_ = {};
 
         if (! settingsFile_.existsAsFile())
             return;
