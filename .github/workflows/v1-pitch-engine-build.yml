@@ -3,7 +3,7 @@ name: V1 Pitch Engine Build
 on:
   workflow_dispatch:
   push:
-    branches: [ v1-modern-pitch-engine-rebuild-zero-v1 ]
+    branches: [ main, v1-modern-pitch-engine-rebuild-zero-v1 ]
     paths:
       - 'Source/**'
       - 'Tests/PitchCoreStressTest.cpp'
