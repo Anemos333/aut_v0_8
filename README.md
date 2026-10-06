@@ -2,9 +2,9 @@
 
 **Experimental microtonal vocal pitch-correction plugin built with C++17 and JUCE 8.0.12.**
 
-> **Project status: active development / pre-release.**
+> **Project status: closed beta.**
 >
-> Neumaton is a functioning VST3 plugin with a rebuilt low-latency pitch engine now serving as the main architecture. The current focus is real-world validation, tail/splice continuity, difficult transitions, timbre under strong correction, and release readiness.
+> The rebuilt V1 pitch engine is now the accepted Neumaton architecture. A multi-voice dry/wet validation matrix, targeted low-latency splice retests, and cross-platform CI have passed the closed-beta gate. Development from this point is refinement and release validation, not a return to the previous pitch engine architecture.
 
 ---
 
@@ -125,9 +125,9 @@ It uses one fractional read head over one input history buffer with four-point c
 
 This comparison is measurement only: there is still no overlap/crossfade or second audible path.
 
-The current splice selector uses a longer waveform context than the first V1 implementation so that a recentering decision is based on meaningful vocal-cycle structure rather than only a very short local slope.
+The splice selector uses a longer waveform context than the first V1 implementation so that a recentering decision is based on meaningful vocal-cycle structure rather than only a very short local slope. In the 128-sample profile the selector also evaluates the immediate splice edge and local slope, preventing a history match from winning when it would create a one-sample discontinuity.
 
-This area is currently undergoing real-world listening tests, especially on long vowels and note tails under extreme settings.
+This low-latency continuity fix passed the targeted closed-beta retest on the previously failing real-vocal material.
 
 ---
 
@@ -190,10 +190,12 @@ Some older Scale Lock sub-controls and Creative Tempo values are currently retai
 | Microtonal/custom scales | Active |
 | Stable/Transition target hold | Active |
 | Legacy detector/renderer in active VST target | Removed |
-| Timbre under strong correction | Much improved; still being validated |
-| Tail / splice continuity | Active real-world validation |
-| Difficult attacks and vocal transitions | Active validation |
+| Timbre under strong correction | Passed closed-beta voice matrix; continued refinement |
+| Tail / splice continuity | Passed closed-beta gate; sparse scales remain a known stress case |
+| Low-latency 128-sample splice continuity | Targeted blocker fixed and retested |
+| Difficult attacks and vocal transitions | Continued beta validation |
 | Broad DAW/platform matrix | Incomplete |
+| Closed beta readiness | Accepted |
 | Public release readiness | Not yet |
 
 The previous `ModernPitchEngine` / `SingleWetSpectralRenderer` implementation is no longer part of the active VST target. Some legacy source and tests remain in the repository as development history and regression material.
@@ -202,7 +204,7 @@ The previous `ModernPitchEngine` / `SingleWetSpectralRenderer` implementation is
 
 ## What currently matters most
 
-The new architecture has shifted the development problem from “make a large fragile engine behave” to much smaller, testable questions.
+The new architecture has shifted the development problem from “make a large fragile engine behave” to much smaller, testable questions. The architecture itself is frozen for closed beta: changes should now be local, evidence-driven fixes or release work rather than structural rewrites.
 
 The main validation targets now are:
 
@@ -215,7 +217,7 @@ The main validation targets now are:
 - extreme correction without octave or subharmonic capture;
 - real DAW behaviour at small block sizes.
 
-Some transitions to another scale degree during long vowels can be musically intentional under extreme settings. The bug class currently being isolated is different: short holes or discontinuities that pull the rendered voice away from the intended trajectory without a legitimate target change.
+Some transitions to another scale degree during long vowels can be musically intentional under extreme settings. Sparse scales with widely separated centres remain a known stress case for tail behaviour, but the closed-beta matrix did not show a persistent false-target failure class. The previously identified one-sample low-latency splice discontinuity has been fixed and retested.
 
 ---
 
@@ -308,11 +310,13 @@ Strong or robotic correction is not treated as a failure mode when the user expl
 
 ---
 
-## Release warning
+## Closed beta status
 
-Neumaton is still pre-release software.
+Neumaton is now in **closed beta**.
 
-The rebuilt V1 architecture is substantially simpler and has performed better than the previous engine in current development tests, but broad validation is still in progress. Keep backups or rendered stems when using development builds in important sessions.
+The V1 architecture is the accepted production direction for the project. The closed-beta gate included multiple real vocal recordings processed through repeated preset/scale configurations, explicit inspection of correction behaviour, timbre, tails and low-latency splice continuity, plus successful Linux, Windows and macOS VST3 CI builds.
+
+This is still pre-release software. Closed beta does not mean public-release readiness: latency still deserves dedicated end-to-end measurement, the GUI is awaiting its final artwork/workflow pass, sparse-scale tail behaviour remains a known stress case, and broader DAW/platform validation is still required. Keep backups or rendered stems when using beta builds in important sessions.
 
 ---
 
