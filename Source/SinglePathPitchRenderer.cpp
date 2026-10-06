@@ -128,7 +128,52 @@ double SinglePathPitchRenderer::spliceScore(double candidateReadPosition) const 
         }
     }
 
-    return error / reference;
+    const double historyScore = error / reference;
+
+    // The 128-sample profile has the narrowest recentering geometry. A candidate
+    // may match the previous 64 samples well yet still begin on the wrong side
+    // of a vocal cycle, producing a one-sample discontinuity. Keep the longer
+    // waveform match as the primary evidence, but make the actual splice edge
+    // part of the score in Low Latency mode only.
+    if (latencySamples_ <= 128 && historyAvailable_ >= 2)
+    {
+        double edgeError = 0.0;
+        const double meanHistoryEnergy = reference
+            / static_cast<double>(std::max(1, historySize * channels_));
+
+        const int lastIndex = (historyWrite_ - 1 + historySize) % historySize;
+        const int previousIndex = (historyWrite_ - 2 + historySize) % historySize;
+
+        for (int channel = 0; channel < channels_; ++channel)
+        {
+            const auto channelIndex = static_cast<std::size_t>(channel);
+            const double emittedLast =
+                outputHistory_[channelIndex][static_cast<std::size_t>(lastIndex)];
+            const double emittedPrevious =
+                outputHistory_[channelIndex][static_cast<std::size_t>(previousIndex)];
+
+            const double sourceBefore =
+                readInterpolated(channel, candidateReadPosition - 1.0);
+            const double sourceNow =
+                readInterpolated(channel, candidateReadPosition);
+
+            const double continuityError = sourceNow - emittedLast;
+            const double emittedSlope = emittedLast - emittedPrevious;
+            const double sourceSlope = sourceNow - sourceBefore;
+            const double slopeError = sourceSlope - emittedSlope;
+
+            edgeError += continuityError * continuityError
+                       + slopeError * slopeError;
+        }
+
+        // Dimensionless and level-aware: the edge terms are normalized by the
+        // recent emitted energy, so there is no absolute amplitude threshold.
+        const double edgeReference = 1.0e-9
+            + meanHistoryEnergy * static_cast<double>(channels_);
+        return historyScore + edgeError / edgeReference;
+    }
+
+    return historyScore;
 }
 
 void SinglePathPitchRenderer::recenterReadHead(double ratio) noexcept
