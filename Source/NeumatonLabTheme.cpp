@@ -1121,23 +1121,31 @@ void Painter::drawCorrectionGauge (juce::Graphics& g,
                      true);
 }
 
-void Painter::drawConsensusGauge (juce::Graphics& g,
-                                  juce::Rectangle<int> bounds,
-                                  float consensus,
-                                  float glowConsensus)
+void Painter::drawScaleDegreeGauge (juce::Graphics& g,
+                                    juce::Rectangle<int> bounds,
+                                    int degreeIndex,
+                                    int degreeCount)
 {
-    const float normalised = safeNormalise (consensus);
-    const float glowNormalised = safeNormalise (glowConsensus);
+    const bool valid = degreeCount > 0
+        && degreeIndex >= 0
+        && degreeIndex < degreeCount;
+    const float normalised = valid && degreeCount > 1
+        ? static_cast<float> (degreeIndex)
+            / static_cast<float> (degreeCount - 1)
+        : 0.5f;
+    const juce::String valueText = valid
+        ? juce::String (degreeIndex + 1) + " / " + juce::String (degreeCount)
+        : "--";
 
     drawNeedleMeter (g,
                      bounds.toFloat(),
                      normalised,
-                     glowNormalised,
-                     "Consensus",
-                     juce::String (normalised * 100.0f, 0) + "%",
+                     normalised,
+                     "Scale degree",
+                     valueText,
                      palette().blueGlow,
                      false,
-                      false);
+                     false);
 }
 float Painter::frequencyToLogPosition (float hz,
                                        float minimumHz,
