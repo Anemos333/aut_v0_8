@@ -13,15 +13,8 @@ struct FactoryPreset
     float amount;
     float humanize;
 
-    bool scaleLock;
     float lockHysteresis;
     float vibratoPreserve;
-
-    int tempoMode;       // 0 Off, 1 Tempo Glide, 2 Glide Lock
-    int tempoDivision;   // 0..4
-    float tempoGlidePct;
-    float tempoLockStrength;
-    bool tempoSmartOnset;
 
     bool analogMode;
     float outVolumeDb;
