@@ -102,9 +102,7 @@ float outputSafetySoftCeiling (float x) noexcept
     return std::copysign (compressed, x);
 }
 
-[[nodiscard]] float constrainRetuneSpeedMs (float speedMs,
-                                             int /*mode*/,
-                                             bool /*scaleLock*/) noexcept
+[[nodiscard]] float constrainRetuneSpeedMs (float speedMs) noexcept
 {
     if (! std::isfinite (speedMs))
         speedMs = 50.0f;
@@ -141,37 +139,15 @@ MicrotonalAutotuneAudioProcessor::createParameterLayout()
         juce::ParameterID { "humanize", 1 }, "Humanize",
         juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f), 20.0f));
 
-    // Tempo Lab is not exposed in V1, but these parameters stay in the state
-    // schema so old sessions/presets deserialize without losing data.
-    params.push_back (std::make_unique<juce::AudioParameterChoice> (
-        juce::ParameterID { "tempoMode", 1 }, "Creative Tempo Mode",
-        juce::StringArray { "Off", "Tempo Glide", "Glide Lock" }, 0));
-
-    params.push_back (std::make_unique<juce::AudioParameterChoice> (
-        juce::ParameterID { "tempoDivision", 1 }, "Tempo Division",
-        juce::StringArray { "1/128", "1/64", "1/32", "1/16", "1/8" }, 2));
-
-    params.push_back (std::make_unique<juce::AudioParameterFloat> (
-        juce::ParameterID { "tempoGlidePercent", 1 }, "Tempo Glide Length",
-        juce::NormalisableRange<float> (5.0f, 100.0f, 1.0f), 35.0f));
-
-    params.push_back (std::make_unique<juce::AudioParameterFloat> (
-        juce::ParameterID { "tempoLockStrength", 1 }, "Glide Lock Strength",
-        juce::NormalisableRange<float> (0.0f, 100.0f, 1.0f), 100.0f));
-
-    params.push_back (std::make_unique<juce::AudioParameterBool> (
-        juce::ParameterID { "tempoSmartOnset", 1 }, "Smart Onset", true));
-
     // Absolute tuning is deliberately separate from the selected musical centre.
     params.push_back (std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID { "tuningReferenceHz", 1 }, "Tuning Reference A4",
         juce::NormalisableRange<float> (300.0f, 600.0f, 0.01f), 440.0f));
 
-    params.push_back (std::make_unique<juce::AudioParameterBool> (
-        juce::ParameterID { "scaleLock", 1 }, "Scale Lock", false));
-
+    // Historical ID retained for DAW automation/session compatibility. In V1
+    // this visible control is simply named Hold; there is no Scale Lock mode.
     params.push_back (std::make_unique<juce::AudioParameterFloat> (
-        juce::ParameterID { "lockHysteresis", 1 }, "Lock Hysteresis",
+        juce::ParameterID { "lockHysteresis", 1 }, "Hold",
         juce::NormalisableRange<float> (0.0f, 80.0f, 1.0f), 24.0f));
 
     params.push_back (std::make_unique<juce::AudioParameterFloat> (
@@ -253,15 +229,11 @@ void MicrotonalAutotuneAudioProcessor::prepareToPlay (double sampleRate,
                                 std::max (1, getTotalNumOutputChannels()),
                                 modeToLatency (mode));
 
-    const float humanizeVal = apvts.getRawParameterValue ("humanize")->load() / 100.0f;
+    const float humanizeVal =
+        apvts.getRawParameterValue ("humanize")->load() / 100.0f;
     livePitchProcessor.setAdvancedParameters (
-        35.0f,
-        humanizeVal,
-        0.90f,
-        0.70f,
-        12.0f,
-        45.0f,
-        1600.0f,
+        0.0f, humanizeVal, 0.0f, 0.0f, 0.0f,
+        45.0f, 1600.0f,
         LivePitchProcessor::StereoMode::linkedMidSide);
 
     setLatencySamples (livePitchProcessor.getLatencySamples());
@@ -456,68 +428,6 @@ void MicrotonalAutotuneAudioProcessor::releaseScaleSnapshot (int slotIndex) noex
 }
 
 //==============================================================================
-CreativeTempo::Settings
-MicrotonalAutotuneAudioProcessor::getTempoSettings() const noexcept
-{
-    CreativeTempo::Settings settings;
-
-    const auto finiteParameter = [this] (const char* parameterId, float fallback) noexcept
-    {
-        const auto* raw = apvts.getRawParameterValue (parameterId);
-        const float value = raw != nullptr ? raw->load() : fallback;
-        return std::isfinite (value) ? value : fallback;
-    };
-
-    settings.mode = static_cast<CreativeTempo::Mode> (juce::jlimit (0, 2,
-        static_cast<int> (std::lround (finiteParameter ("tempoMode", 0.0f)))));
-    settings.division = CreativeTempo::divisionFromIndex (juce::jlimit (0, 4,
-        static_cast<int> (std::lround (finiteParameter ("tempoDivision", 2.0f)))));
-    settings.glideFraction = juce::jlimit (0.05f, 1.0f,
-        finiteParameter ("tempoGlidePercent", 35.0f) / 100.0f);
-    settings.lockStrength = juce::jlimit (0.0f, 1.0f,
-        finiteParameter ("tempoLockStrength", 100.0f) / 100.0f);
-    settings.smartOnset = finiteParameter ("tempoSmartOnset", 1.0f) >= 0.5f;
-    settings.smartOnsetWindow = 0.18f;
-    settings.fallbackBpm = 120.0;
-    return settings;
-}
-
-CreativeTempo::HostPosition
-MicrotonalAutotuneAudioProcessor::readHostTempoPosition (int numberOfSamples) const noexcept
-{
-    CreativeTempo::HostPosition result;
-    result.numberOfSamples = std::max (0, numberOfSamples);
-
-    if (auto* playHead = getPlayHead())
-    {
-        if (const auto position = playHead->getPosition())
-        {
-            if (const auto bpm = position->getBpm())
-            {
-                result.bpm = *bpm;
-                result.hasBpm = std::isfinite (result.bpm) && result.bpm > 1.0;
-            }
-
-            if (const auto ppq = position->getPpqPosition())
-            {
-                result.ppqAtBlockStart = *ppq;
-                result.hasPpq = std::isfinite (result.ppqAtBlockStart);
-            }
-
-            if (const auto sampleTime = position->getTimeInSamples())
-            {
-                result.timeInSamples = *sampleTime;
-                result.hasTimeInSamples = true;
-            }
-
-            result.isPlaying = position->getIsPlaying();
-            result.isLooping = position->getIsLooping();
-        }
-    }
-
-    return result;
-}
-
 void MicrotonalAutotuneAudioProcessor::applyFactoryPreset (int index)
 {
     const int count = FactoryPresets::getNumPresets();
@@ -532,17 +442,8 @@ void MicrotonalAutotuneAudioProcessor::applyFactoryPreset (int index)
     setParameterNotifyingHost (apvts, "speed", preset.speedMs);
     setParameterNotifyingHost (apvts, "amount", preset.amount);
     setParameterNotifyingHost (apvts, "humanize", preset.humanize);
-    setParameterNotifyingHost (apvts, "scaleLock", preset.scaleLock ? 1.0f : 0.0f);
     setParameterNotifyingHost (apvts, "lockHysteresis", preset.lockHysteresis);
     setParameterNotifyingHost (apvts, "vibratoPreserve", preset.vibratoPreserve);
-
-    // Stored for compatibility; Tempo Lab itself is not exposed in V1.
-    setParameterNotifyingHost (apvts, "tempoMode", static_cast<float> (preset.tempoMode));
-    setParameterNotifyingHost (apvts, "tempoDivision", static_cast<float> (preset.tempoDivision));
-    setParameterNotifyingHost (apvts, "tempoGlidePercent", preset.tempoGlidePct);
-    setParameterNotifyingHost (apvts, "tempoLockStrength", preset.tempoLockStrength);
-    setParameterNotifyingHost (apvts, "tempoSmartOnset", preset.tempoSmartOnset ? 1.0f : 0.0f);
-
     setParameterNotifyingHost (apvts, "analogMode", preset.analogMode ? 1.0f : 0.0f);
     setParameterNotifyingHost (apvts, "outVolume", preset.outVolumeDb);
 }
@@ -641,16 +542,14 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
     float speedMs = apvts.getRawParameterValue ("speed")->load();
     float amountPct = apvts.getRawParameterValue ("amount")->load();
     float humanizePct = apvts.getRawParameterValue ("humanize")->load();
-    const bool scaleLock = apvts.getRawParameterValue ("scaleLock")->load() > 0.5f;
-    const float lockHysteresis = apvts.getRawParameterValue ("lockHysteresis")->load();
-    const float vibratoPreserve = apvts.getRawParameterValue ("vibratoPreserve")->load() / 100.0f;
-    const bool analogMode = apvts.getRawParameterValue ("analogMode")->load() > 0.5f;
+    const bool analogMode =
+        apvts.getRawParameterValue ("analogMode")->load() > 0.5f;
     const float outVolumeDb = apvts.getRawParameterValue ("outVolume")->load();
 
     const int mode = juce::jlimit (1, 3,
         processingMode.load (std::memory_order_relaxed));
 
-    speedMs = constrainRetuneSpeedMs (speedMs, mode, scaleLock);
+    speedMs = constrainRetuneSpeedMs (speedMs);
     amountPct = std::isfinite (amountPct) ? juce::jlimit (0.0f, 100.0f, amountPct) : 0.0f;
     humanizePct = std::isfinite (humanizePct) ? juce::jlimit (0.0f, 100.0f, humanizePct) : 20.0f;
 
@@ -662,15 +561,9 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
     const auto& scaleSnapshot =
         scaleSnapshotSlots_[static_cast<std::size_t> (snapshotIndex)].value;
 
-    livePitchProcessor.setScaleLockParameters (scaleLock, lockHysteresis, vibratoPreserve);
     livePitchProcessor.setAdvancedParameters (
-        35.0f,
-        humanizeVal,
-        0.90f,
-        0.70f,
-        12.0f,
-        45.0f,
-        1600.0f,
+        0.0f, humanizeVal, 0.0f, 0.0f, 0.0f,
+        45.0f, 1600.0f,
         LivePitchProcessor::StereoMode::linkedMidSide);
 
     livePitchProcessor.process (buffer,
