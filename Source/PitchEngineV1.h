@@ -20,6 +20,8 @@ public:
         pitch::PitchResult pitch;
         double targetPitchHz = 0.0;
         double correctionCents = 0.0;
+        int targetDegreeIndex = -1;
+        int targetDegreeCount = 0;
         std::uint64_t rendererSplices = 0;
     };
 
