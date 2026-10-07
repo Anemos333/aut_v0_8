@@ -101,10 +101,10 @@ static void drawCorrectionGauge (juce::Graphics& g,
                                  float correctionCents,
                                  float glowCorrectionCents);
 
-static void drawConsensusGauge (juce::Graphics& g,
-                                juce::Rectangle<int> bounds,
-                                float consensus,
-                                float glowConsensus);
+static void drawScaleDegreeGauge (juce::Graphics& g,
+                                  juce::Rectangle<int> bounds,
+                                  int degreeIndex,
+                                  int degreeCount);
 
     static void drawRadioTarget (juce::Graphics& g,
                                  juce::Rectangle<int> bounds,
