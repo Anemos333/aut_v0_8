@@ -12,11 +12,10 @@ namespace neumaton::community
 {
 inline const std::array<const char*, 9>& sharedPresetParameterIds() noexcept
 {
-    static const std::array<const char*, 9> ids {
+    static const std::array<const char*, 8> ids {
         "speed",
         "amount",
         "humanize",
-        "scaleLock",
         "lockHysteresis",
         "vibratoPreserve",
         "analogMode",
