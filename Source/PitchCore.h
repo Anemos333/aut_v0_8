@@ -171,6 +171,8 @@ public:
         double targetHz = 0.0;
         double correctionCents = 0.0;
         double liveWindowCents = 0.0;
+        int degreeIndex = -1;
+        int degreeCount = 0;
         bool valid = false;
     };
 
