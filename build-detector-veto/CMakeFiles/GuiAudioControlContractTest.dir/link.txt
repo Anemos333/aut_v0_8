@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/GuiAudioControlContractTest.dir/Tests/GuiAudioControlContractTest.cpp.o -o clean-engine-tests/GuiAudioControlContractTest

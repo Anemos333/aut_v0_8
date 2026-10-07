@@ -4,19 +4,20 @@
 
 namespace
 {
-[[nodiscard]] juce::String trackingStateToString (ModernPitchEngine::TrackingState state)
+juce::String stateText (LivePitchProcessor::TrackingState state)
 {
     switch (state)
     {
-        case ModernPitchEngine::TrackingState::unvoiced:   return "Unvoiced";
-        case ModernPitchEngine::TrackingState::attack:     return "Attack";
-        case ModernPitchEngine::TrackingState::acquire:    return "Acquire";
-        case ModernPitchEngine::TrackingState::stable:     return "Stable";
-        case ModernPitchEngine::TrackingState::transition: return "Transition";
-        case ModernPitchEngine::TrackingState::release:    return "Release";
+        case LivePitchProcessor::TrackingState::stable:     return "Stable";
+        case LivePitchProcessor::TrackingState::transition: return "Transition";
+        case LivePitchProcessor::TrackingState::acquire:    return "Acquire";
+        default:                                          return "Unvoiced";
     }
+}
 
-    return "Unknown";
+float safe01 (float value)
+{
+    return std::isfinite (value) ? juce::jlimit (0.0f, 1.0f, value) : 0.0f;
 }
 } // namespace
 
@@ -30,762 +31,198 @@ ControlRoomPage::ControlRoomPage()
     addAndMakeVisible (backButton);
 }
 
-void ControlRoomPage::setMetering (const LivePitchProcessor::Metering& newMetering)
+void ControlRoomPage::setPresentation (const LivePitchProcessor::Metering& newMetering,
+                                       const neumaton::ui::ScaleDegreeDisplay& degree,
+                                       int latencySamples, double sampleRate,
+                                       bool analogTexture, float outputDb)
 {
     metering_ = newMetering;
-    repaint();
+    degree_ = degree;
+    latencySamples_ = latencySamples;
+    sampleRate_ = sampleRate;
+    analogTexture_ = analogTexture;
+    outputDb_ = outputDb;
+    if (isVisible())
+        repaint();
 }
 
 void ControlRoomPage::paint (juce::Graphics& g)
 {
     using neumaton::lab::Painter;
-    const auto bounds = getLocalBounds();
-    Painter::drawBackground (g, bounds, {});
-
-    auto area = bounds.reduced (24, 18);
+    Painter::drawBackground (g, getLocalBounds(), {});
+    auto area = getLocalBounds().reduced (24, 18);
     drawHeader (g, area.removeFromTop (58));
     area.removeFromTop (10);
-
-    auto topMeters = area.removeFromTop (138);
-const int meterW = topMeters.getWidth() / 3;
-
-Painter::drawCorrectionGauge (
-    g,
-    topMeters.removeFromLeft (meterW).reduced (4),
-    static_cast<float> (metering_.correctionCents),
-    static_cast<float> (metering_.correctionCents));
-
-Painter::drawRadioTarget (
-    g,
-    topMeters.removeFromLeft (meterW).reduced (4),
-    static_cast<float> (metering_.detectedPitchHz),
-    static_cast<float> (metering_.targetPitchHz));
-
-Painter::drawConsensusGauge (
-    g,
-    topMeters.reduced (4),
-    static_cast<float> (metering_.consensus),
-    static_cast<float> (metering_.consensus));
-
-area.removeFromTop (12);
-drawDiagnosticGrid (g, area);
+    auto meters = area.removeFromTop (124);
+    const int width = meters.getWidth() / 3;
+    Painter::drawCorrectionGauge (g, meters.removeFromLeft (width).reduced (4),
+        metering_.correctionCents, metering_.correctionCents);
+    Painter::drawRadioTarget (g, meters.removeFromLeft (width).reduced (4),
+        metering_.detectedPitchHz, metering_.targetPitchHz);
+    Painter::drawScaleDegree (g, meters.reduced (4), degree_);
+    area.removeFromTop (10);
+    drawDiagnosticGrid (g, area);
 }
 
 void ControlRoomPage::resized()
 {
-    auto area = getLocalBounds().reduced (24, 18);
-    backButton.setBounds (area.removeFromTop (32).removeFromLeft (88));
+    backButton.setBounds (24, 18, 88, 32);
 }
 
 void ControlRoomPage::drawHeader (juce::Graphics& g, juce::Rectangle<int> area)
 {
     const auto& p = neumaton::lab::palette();
     neumaton::lab::Painter::drawPanel (g, area.toFloat(), 12.0f, 0.92f);
-
-    auto textArea = area.reduced (12, 0);
-    textArea.removeFromLeft (104); // spazio per Back
-
+    auto textArea = area.reduced (12, 0).withTrimmedLeft (104).withTrimmedRight (124);
     g.setColour (p.ink);
-    g.setFont (juce::FontOptions (22.0f, juce::Font::bold));
-    g.drawText (Neumaton::UI::Labels::Main::controlRoom, textArea.removeFromTop (30), juce::Justification::centred);
-
-    g.setFont (juce::FontOptions (12.5f));
+    g.setFont (juce::FontOptions (21.0f, juce::Font::bold));
+    g.drawText (Neumaton::UI::Labels::Main::controlRoom,
+                textArea.removeFromTop (30), juce::Justification::centred);
+    g.setFont (juce::FontOptions (11.5f));
     g.setColour (p.ink.withAlpha (0.78f));
-
-    juce::String status = "State: " + trackingStateToString (metering_.state)
-        + "   |   Paths: " + juce::String (metering_.detectorSupport) + "/4"
-        + "   |   Octave: " + juce::String (metering_.octaveState);
-
-    if (metering_.dualSynthesisActive)
-        status += "   |   Dual " + juce::String (metering_.transitionBlend * 100.0f, 0) + "%";
-
-    g.drawText (status, textArea, juce::Justification::centred);
+    juce::String latencyText = juce::String (latencySamples_) + " samples";
+    if (std::isfinite (sampleRate_) && sampleRate_ > 0.0)
+        latencyText += " / " + juce::String (1000.0 * latencySamples_ / sampleRate_, 2) + " ms";
+    g.drawFittedText (stateText (metering_.state) + "  |  " + latencyText,
+                     textArea, juce::Justification::centred, 1);
 }
+
 void ControlRoomPage::drawDiagnosticGrid (juce::Graphics& g, juce::Rectangle<int> area)
 {
     using neumaton::lab::Painter;
-
     const auto& p = neumaton::lab::palette();
+    const auto audio = juce::Colour (0xFF20D8FF);
+    const auto analysis = juce::Colour (0xFF39FF7A);
+    const auto target = juce::Colour (0xFF9B5CFF);
+    const auto amber = juce::Colour (0xFFFFA02B);
+    const bool stable = metering_.state == LivePitchProcessor::TrackingState::stable;
+    const bool analysisActive = stable || metering_.state == LivePitchProcessor::TrackingState::acquire;
+    const bool hasTarget = std::isfinite (metering_.targetPitchHz) && metering_.targetPitchHz > 0.0f;
 
-    const auto safe01 = [] (float value) -> float
-    {
-        if (! std::isfinite (value))
-            return 0.0f;
-
-        return juce::jlimit (0.0f, 1.0f, value);
-    };
-
-    const auto percentText = [&safe01] (float value) -> juce::String
-    {
-        return juce::String (safe01 (value) * 100.0f, 0) + "%";
-    };
-
-    const auto electricBlue     = juce::Colour (0xFF20D8FF);
-    const auto analysisGreen    = juce::Colour (0xFF39FF7A);
-    const auto syntheticViolet  = juce::Colour (0xFF9B5CFF);
-    const auto amber            = juce::Colour (0xFFFFA02B);
-    const auto warningRed       = juce::Colour (0xFFFF2A4A);
-    const auto vapourBlue       = juce::Colour (0xFF9BE7FF);
-    const auto harmonicGreen    = juce::Colour (0xFFB6FF7A);
-
-    // ---------------------------------------------------------------------
-    // Base panel.
-    // ---------------------------------------------------------------------
     Painter::drawPanel (g, area.toFloat(), 12.0f, 0.72f);
-
-    auto content = area.reduced (15, 11);
-
+    auto content = area.reduced (14, 10);
     auto title = content.removeFromTop (24);
-
-    g.setColour (p.ink.withAlpha (0.94f));
     g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
+    g.setColour (p.ink);
     g.drawText ("Internal Machine", title, juce::Justification::centredLeft);
-
-    g.setColour (p.ink.withAlpha (0.52f));
     g.setFont (juce::FontOptions (10.5f));
-    g.drawText ("audio path / analysis taps / correction logic",
-                title,
-                juce::Justification::centredRight);
+    g.setColour (p.ink.withAlpha (0.62f));
+    g.drawText ("V1 / one audio path", title, juce::Justification::centredRight);
 
-    auto footer = content.removeFromBottom (28);
-    content.removeFromBottom (3);
-
-    auto machine = content.reduced (2, 1);
-
-    // ---------------------------------------------------------------------
-    // Geometry helpers.
-    // ---------------------------------------------------------------------
-    const auto makeRect = [machine] (float centreX,
-                                     float centreY,
-                                     float widthNorm,
-                                     float heightNorm) -> juce::Rectangle<int>
+    auto legend = content.removeFromBottom (18);
+    auto metrics = content.removeFromBottom (46);
+    content.removeFromBottom (8);
+    auto machine = content.reduced (2, 3);
+    constexpr int gap = 14;
+    const int nodeW = (machine.getWidth() - 3 * gap) / 4;
+    const int nodeH = juce::jlimit (46, 64, (machine.getHeight() - 26) / 2);
+    const int upperY = machine.getY();
+    const int lowerY = machine.getBottom() - nodeH;
+    const auto node = [&] (int column, int y)
     {
-        const int w = juce::jmax (34, juce::roundToInt (
-            static_cast<float> (machine.getWidth()) * widthNorm));
-
-        const int h = juce::jmax (28, juce::roundToInt (
-            static_cast<float> (machine.getHeight()) * heightNorm));
-
-        const int cx = machine.getX() + juce::roundToInt (
-            static_cast<float> (machine.getWidth()) * centreX);
-
-        const int cy = machine.getY() + juce::roundToInt (
-            static_cast<float> (machine.getHeight()) * centreY);
-
-        return juce::Rectangle<int> (cx - w / 2, cy - h / 2, w, h)
-            .getIntersection (machine);
+        return juce::Rectangle<int> (machine.getX() + column * (nodeW + gap), y, nodeW, nodeH);
     };
+    const auto inputNode = node (0, upperY);
+    const auto gateNode = node (1, upperY);
+    const auto detectorNode = node (2, upperY);
+    const auto targetNode = node (3, upperY);
+    const auto rendererNode = node (2, lowerY);
+    const auto outputNode = node (3, lowerY);
 
-    const auto centreLeft = [] (juce::Rectangle<int> r) -> juce::Point<float>
+    const auto right = [] (juce::Rectangle<int> r) { return r.toFloat().getCentre().withX (static_cast<float> (r.getRight())); };
+    const auto left = [] (juce::Rectangle<int> r) { return r.toFloat().getCentre().withX (static_cast<float> (r.getX())); };
+    const auto bottom = [] (juce::Rectangle<int> r) { return r.toFloat().getCentre().withY (static_cast<float> (r.getBottom())); };
+    const auto top = [] (juce::Rectangle<int> r) { return r.toFloat().getCentre().withY (static_cast<float> (r.getY())); };
+    const auto cable = [&] (juce::Point<float> a, juce::Point<float> b,
+                            juce::Colour colour, bool active)
     {
-        return {
-            static_cast<float> (r.getX()),
-            static_cast<float> (r.getCentreY())
-        };
-    };
-
-    const auto centreRight = [] (juce::Rectangle<int> r) -> juce::Point<float>
-    {
-        return {
-            static_cast<float> (r.getRight()),
-            static_cast<float> (r.getCentreY())
-        };
-    };
-
-    const auto centreTop = [] (juce::Rectangle<int> r) -> juce::Point<float>
-    {
-        return {
-            static_cast<float> (r.getCentreX()),
-            static_cast<float> (r.getY())
-        };
-    };
-
-    const auto centreBottom = [] (juce::Rectangle<int> r) -> juce::Point<float>
-    {
-        return {
-            static_cast<float> (r.getCentreX()),
-            static_cast<float> (r.getBottom())
-        };
-    };
-
-    const auto rectCentre = [] (juce::Rectangle<int> r) -> juce::Point<float>
-    {
-        return {
-            static_cast<float> (r.getCentreX()),
-            static_cast<float> (r.getCentreY())
-        };
-    };
-
-    // ---------------------------------------------------------------------
-    // Main audio path nodes.
-    // ---------------------------------------------------------------------
-    auto inputNode = makeRect (0.075f, 0.50f, 0.095f, 0.22f);
-    auto senseTap  = makeRect (0.315f, 0.50f, 0.125f, 0.22f);
-    auto coreNode  = makeRect (0.675f, 0.50f, 0.205f, 0.31f);
-    auto outputNode = makeRect (0.925f, 0.50f, 0.105f, 0.22f);
-
-    // ---------------------------------------------------------------------
-    // Eight instruments: one parameter, one instrument, one value.
-    // ---------------------------------------------------------------------
-    auto voicingInstrument = makeRect (0.145f, 0.18f, 0.145f, 0.23f);
-    auto confidenceInstrument = makeRect (0.330f, 0.18f, 0.145f, 0.23f);
-    auto spectralInstrument = makeRect (0.600f, 0.18f, 0.170f, 0.23f);
-    auto maskInstrument = makeRect (0.790f, 0.18f, 0.150f, 0.23f);
-
-    auto breathInstrument = makeRect (0.145f, 0.82f, 0.145f, 0.23f);
-    auto harmonicInstrument = makeRect (0.330f, 0.82f, 0.155f, 0.23f);
-    auto noiseInstrument = makeRect (0.535f, 0.82f, 0.155f, 0.23f);
-    auto polyInstrument = makeRect (0.745f, 0.82f, 0.145f, 0.23f);
-
-    const float analysisActivity = safe01 (
-        (metering_.voicing + metering_.confidence) * 0.5f);
-
-    const float correctionActivity = juce::jlimit (
-        0.0f,
-        1.0f,
-        std::abs (static_cast<float> (metering_.correctionCents)) / 100.0f);
-
-    const bool strongCorrection =
-        std::abs (static_cast<float> (metering_.correctionCents)) > 30.0f;
-
-    const auto coreColour = strongCorrection
-        ? syntheticViolet.interpolatedWith (warningRed, 0.42f)
-        : syntheticViolet;
-
-    // ---------------------------------------------------------------------
-    // Link drawing: audio path and analysis probes.
-    // ---------------------------------------------------------------------
-    const auto drawCable = [&g] (juce::Point<float> a,
-                                 juce::Point<float> b,
-                                 juce::Colour colour,
-                                 float activity,
-                                 float width,
-                                 bool audioPath)
-    {
-        activity = juce::jlimit (0.0f, 1.0f, activity);
-
-        // Shadow.
-        g.setColour (juce::Colours::black.withAlpha (audioPath ? 0.46f : 0.34f));
-        g.drawLine (juce::Line<float> (a.translated (0.0f, 1.2f),
-                                       b.translated (0.0f, 1.2f)),
-                    width + (audioPath ? 3.0f : 1.6f));
-
-        // Brass / dark body.
-        g.setColour (juce::Colour (0xFF5B4020).withAlpha (audioPath ? 0.92f : 0.66f));
-        g.drawLine (juce::Line<float> (a, b), width);
-
-        // Inner light.
-        g.setColour (colour.withAlpha ((audioPath ? 0.22f : 0.14f) + 0.34f * activity));
-        g.drawLine (juce::Line<float> (a, b), width + (audioPath ? 2.4f : 1.0f));
-
-        g.setColour (colour.withAlpha ((audioPath ? 0.62f : 0.48f) + 0.28f * activity));
-        g.drawLine (juce::Line<float> (a, b), audioPath ? 1.55f : 0.95f);
-    };
-
-    // ---------------------------------------------------------------------
-    // Node drawing: process nodes show no fast values, only process position.
-    // ---------------------------------------------------------------------
-    const auto drawProcessNode = [&] (juce::Rectangle<int> r,
-                                      const juce::String& label,
-                                      juce::Colour accent,
-                                      float activity,
-                                      bool core)
-    {
-        activity = safe01 (activity);
-
-        auto f = r.toFloat();
-        const float corner = core ? 10.0f : 7.0f;
-
-        g.setColour (juce::Colours::black.withAlpha (0.34f));
-        g.fillRoundedRectangle (f.translated (0.0f, 1.4f), corner);
-
-        juce::ColourGradient body (
-            juce::Colour (0xFF17110D),
-            f.getX(),
-            f.getY(),
-            juce::Colour (0xFF07090D),
-            f.getRight(),
-            f.getBottom(),
-            true);
-
-        g.setGradientFill (body);
-        g.fillRoundedRectangle (f, corner);
-
-        if (core)
+        g.setColour (p.brassDark.withAlpha (0.80f));
+        g.drawLine (juce::Line<float> (a, b), 4.0f);
+        g.setColour (colour.withAlpha (active ? 0.90f : 0.30f));
+        g.drawLine (juce::Line<float> (a, b), 1.6f);
+        const auto direction = b - a;
+        const float length = direction.getDistanceFromOrigin();
+        if (length > 1.0f)
         {
-            g.setColour (accent.withAlpha (0.14f + 0.28f * activity));
-            g.fillRoundedRectangle (f.reduced (2.0f), corner - 2.0f);
-
-            if (strongCorrection)
-            {
-                g.setColour (warningRed.withAlpha (0.18f));
-                g.fillRoundedRectangle (f.reduced (5.0f), corner - 3.0f);
-            }
+            const auto unit = direction / length;
+            const auto perpendicular = juce::Point<float> (-unit.y, unit.x);
+            juce::Path arrow;
+            arrow.startNewSubPath (b);
+            arrow.lineTo (b - unit * 5.0f + perpendicular * 2.8f);
+            arrow.lineTo (b - unit * 5.0f - perpendicular * 2.8f);
+            arrow.closeSubPath();
+            g.fillPath (arrow);
         }
-
-        g.setColour (p.brassDark.withAlpha (0.88f));
-        g.drawRoundedRectangle (f.reduced (0.5f), corner, core ? 1.25f : 0.9f);
-
-        g.setColour (accent.withAlpha (0.28f + 0.42f * activity));
-        g.drawRoundedRectangle (f.reduced (2.0f), corner - 2.0f, core ? 1.2f : 0.8f);
-
-        // Small glass wash.
-        juce::ColourGradient glass (
-            juce::Colours::white.withAlpha (0.10f),
-            f.getX(),
-            f.getY(),
-            juce::Colours::transparentWhite,
-            f.getX(),
-            f.getBottom(),
-            false);
-
-        g.setGradientFill (glass);
-        g.fillRoundedRectangle (f.reduced (2.0f), corner - 2.0f);
-
-        g.setFont (juce::FontOptions (core ? 11.5f : 10.5f, juce::Font::bold));
-        g.setColour (p.ink.withAlpha (0.94f));
-        g.drawFittedText (label, r.reduced (5, 3), juce::Justification::centred, 2);
     };
+    cable (right (inputNode), left (gateNode), analysis, analysisActive);
+    cable (right (gateNode), left (detectorNode), analysis, analysisActive);
+    cable (right (detectorNode), left (targetNode), target, stable);
+    cable (bottom (targetNode), top (rendererNode), hasTarget && ! stable ? amber : target, hasTarget);
+    const auto audioCorner = bottom (inputNode).withY (left (rendererNode).y);
+    cable (bottom (inputNode), audioCorner, audio, true);
+    cable (audioCorner, left (rendererNode), audio, true);
+    cable (right (rendererNode), left (outputNode), audio, true);
 
-    // ---------------------------------------------------------------------
-    // Instrument drawing.
-    // ---------------------------------------------------------------------
-    enum class InstrumentKind
+    const auto process = [&] (juce::Rectangle<int> bounds, const juce::String& name,
+                              const juce::String& value, juce::Colour accent, bool active)
     {
-        vessel,
-        lock,
-        resonance,
-        branch,
-        focus,
-        clamp
+        Painter::drawPanel (g, bounds.toFloat(), 7.0f, 0.94f);
+        g.setColour (accent.withAlpha (active ? 0.80f : 0.28f));
+        g.drawRoundedRectangle (bounds.toFloat().reduced (1.5f), 6.0f, 1.2f);
+        auto text = bounds.reduced (5, 5);
+        g.setColour (p.ink.withAlpha (0.95f));
+        g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+        g.drawFittedText (name, text.removeFromTop (18), juce::Justification::centred, 1);
+        g.setFont (juce::FontOptions (10.0f));
+        g.setColour (accent.withAlpha (0.90f));
+        g.drawFittedText (value, text, juce::Justification::centred, 2);
     };
+    process (inputNode, "Input", "Mono / stereo", audio, true);
+    process (gateNode, "Gate", "Periodicity", analysis, true);
+    process (detectorNode, "PitchCore", stateText (metering_.state), analysis, analysisActive);
+    const auto degreeText = degree_.degree > 0
+        ? "Degree " + juce::String (degree_.degree) + "/" + juce::String (degree_.count)
+        : juce::String ("Awaiting target");
+    process (targetNode, "Scale / trajectory", degreeText + (hasTarget && ! stable ? " / held" : ""),
+             stable ? target : amber, hasTarget);
+    process (rendererNode, "Single renderer", juce::String (metering_.correctionCents, 1) + " ct", audio, true);
+    process (outputNode, "Output", (analogTexture_ ? "Analog / " : "")
+             + juce::String (outputDb_, 1) + " dB", amber, true);
 
-    const auto drawMiniValueBar = [&g] (juce::Rectangle<float> r,
-                                        float value,
-                                        juce::Colour accent)
+    // Only values populated by LivePitchProcessor::getMetering() are displayed.
+    const int metricW = metrics.getWidth() / 3;
+    const auto metric = [&] (juce::Rectangle<int> bounds, const juce::String& label,
+                             const juce::String& value, float normalised)
     {
-        value = juce::jlimit (0.0f, 1.0f, std::isfinite (value) ? value : 0.0f);
-
-        g.setColour (juce::Colours::black.withAlpha (0.34f));
-        g.fillRoundedRectangle (r, 2.5f);
-
-        auto fill = r.reduced (1.0f);
-        fill.setWidth (fill.getWidth() * value);
-
-        if (fill.getWidth() > 1.0f)
-        {
-            g.setColour (accent.withAlpha (0.72f));
-            g.fillRoundedRectangle (fill, 2.0f);
-
-            g.setColour (accent.withAlpha (0.20f));
-            g.fillRoundedRectangle (fill.expanded (0.0f, 1.0f), 2.5f);
-        }
-
-        g.setColour (juce::Colours::white.withAlpha (0.11f));
-        g.drawRoundedRectangle (r.reduced (0.4f), 2.5f, 0.7f);
+        bounds = bounds.reduced (5, 2);
+        auto labelArea = bounds.removeFromTop (14);
+        g.setFont (juce::FontOptions (10.5f));
+        g.setColour (p.ink.withAlpha (0.70f));
+        g.drawText (label, labelArea, juce::Justification::centred);
+        g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+        g.setColour (p.ink);
+        g.drawText (value, bounds.withTrimmedBottom (5), juce::Justification::centred);
+        auto bar = bounds.removeFromBottom (3).toFloat();
+        g.setColour (p.brassDark);
+        g.fillRoundedRectangle (bar, 1.0f);
+        bar.setWidth (bar.getWidth() * safe01 (normalised));
+        g.setColour (analysis.withAlpha (0.75f));
+        g.fillRoundedRectangle (bar, 1.0f);
     };
-
-    const auto drawInstrument = [&] (juce::Rectangle<int> r,
-                                     const juce::String& label,
-                                     float value,
-                                     juce::Colour accent,
-                                     InstrumentKind kind)
-    {
-        value = safe01 (value);
-
-        auto f = r.toFloat();
-
-        g.setColour (juce::Colours::black.withAlpha (0.27f));
-        g.fillRoundedRectangle (f.translated (0.0f, 1.1f), 7.0f);
-
-        g.setColour (juce::Colour (0xD0100B08));
-        g.fillRoundedRectangle (f, 7.0f);
-
-        g.setColour (p.brassDark.withAlpha (0.70f));
-        g.drawRoundedRectangle (f.reduced (0.5f), 7.0f, 0.8f);
-
-        g.setColour (accent.withAlpha (0.20f + 0.34f * value));
-        g.drawRoundedRectangle (f.reduced (2.0f), 5.5f, 0.75f);
-
-        auto inner = r.reduced (6, 4);
-
-        auto labelArea = inner.removeFromTop (14);
-        auto valueArea = inner.removeFromBottom (13);
-        auto instrumentArea = inner.reduced (2, 1).toFloat();
-
-        g.setFont (juce::FontOptions (8.8f, juce::Font::bold));
-        g.setColour (p.ink.withAlpha (0.90f));
-        g.drawFittedText (label, labelArea, juce::Justification::centred, 1);
-
-        // Common dark glass well.
-        g.setColour (juce::Colours::black.withAlpha (0.28f));
-        g.fillRoundedRectangle (instrumentArea, 4.0f);
-
-        g.setColour (juce::Colours::white.withAlpha (0.08f));
-        g.drawRoundedRectangle (instrumentArea.reduced (0.5f), 4.0f, 0.7f);
-
-        if (kind == InstrumentKind::vessel)
-        {
-            auto chamber = instrumentArea.reduced (instrumentArea.getWidth() * 0.30f, 3.0f);
-
-            g.setColour (juce::Colours::white.withAlpha (0.08f));
-            g.fillRoundedRectangle (chamber, 5.0f);
-
-            auto fill = chamber.reduced (2.0f);
-            const float fullH = fill.getHeight();
-            fill.setY (fill.getBottom() - fullH * value);
-            fill.setHeight (fullH * value);
-
-            g.setColour (accent.withAlpha (0.28f));
-            g.fillRoundedRectangle (fill.expanded (2.0f, 1.0f), 4.0f);
-
-            g.setColour (accent.withAlpha (0.78f));
-            g.fillRoundedRectangle (fill, 3.5f);
-
-            g.setColour (juce::Colours::white.withAlpha (0.16f));
-            g.drawRoundedRectangle (chamber.reduced (0.4f), 5.0f, 0.8f);
-        }
-        else if (kind == InstrumentKind::lock || kind == InstrumentKind::focus || kind == InstrumentKind::clamp)
-        {
-            const auto c = instrumentArea.getCentre();
-            const float radius = juce::jmin (instrumentArea.getWidth(), instrumentArea.getHeight()) * 0.33f;
-
-            g.setColour (accent.withAlpha (0.14f + 0.20f * value));
-            g.fillEllipse (juce::Rectangle<float> (radius * 2.1f, radius * 2.1f).withCentre (c));
-
-            g.setColour (juce::Colours::white.withAlpha (0.16f + 0.20f * value));
-            g.drawEllipse (juce::Rectangle<float> (radius * 2.0f, radius * 2.0f).withCentre (c), 0.9f);
-
-            const float start = -2.35f;
-            const float end = 0.75f;
-            const float angle = juce::jmap (value, start, end);
-
-            const auto needleEnd = c + juce::Point<float> (std::cos (angle), std::sin (angle)) * radius;
-
-            g.setColour (accent.withAlpha (0.70f));
-            g.drawLine (juce::Line<float> (c, needleEnd), 1.4f);
-
-            if (kind == InstrumentKind::clamp)
-            {
-                const float clampW = radius * (0.65f + 0.35f * value);
-                g.setColour (p.brass.withAlpha (0.72f));
-                g.drawLine (c.x - clampW, c.y + radius * 0.52f,
-                            c.x + clampW, c.y + radius * 0.52f,
-                            1.5f);
-            }
-        }
-        else if (kind == InstrumentKind::resonance)
-        {
-            const float x1 = instrumentArea.getX() + 6.0f;
-            const float x2 = instrumentArea.getRight() - 6.0f;
-            const float cy = instrumentArea.getCentreY();
-
-            for (int i = -1; i <= 1; ++i)
-            {
-                const float y = cy + static_cast<float> (i) * 5.0f;
-                const float alpha = 0.20f + 0.55f * value;
-
-                juce::Path wave;
-                wave.startNewSubPath (x1, y);
-
-                const float amp = 1.5f + value * 3.5f;
-                wave.cubicTo (x1 + (x2 - x1) * 0.25f, y - amp,
-                              x1 + (x2 - x1) * 0.50f, y + amp,
-                              x1 + (x2 - x1) * 0.75f, y - amp);
-                wave.cubicTo (x1 + (x2 - x1) * 0.86f, y - amp * 0.4f,
-                              x2 - 2.0f, y + amp * 0.4f,
-                              x2, y);
-
-                g.setColour (accent.withAlpha (alpha));
-                g.strokePath (wave, juce::PathStrokeType (0.9f + value * 0.8f));
-            }
-        }
-        else if (kind == InstrumentKind::branch)
-        {
-            const auto c = instrumentArea.getCentre();
-
-            const float left = instrumentArea.getX() + 6.0f;
-            const float right = instrumentArea.getRight() - 6.0f;
-
-            const auto startPoint = juce::Point<float> (left, c.y);
-            const auto midPoint = juce::Point<float> (c.x, c.y);
-
-            g.setColour (accent.withAlpha (0.34f + 0.44f * value));
-            g.drawLine (juce::Line<float> (startPoint, midPoint), 1.3f);
-
-            const int activeBranches = 1 + juce::roundToInt (value * 2.0f);
-
-            for (int i = 0; i < 3; ++i)
-            {
-                const float offset = static_cast<float> (i - 1) * 5.0f;
-                const auto endPoint = juce::Point<float> (right, c.y + offset);
-
-                g.setColour (accent.withAlpha (i < activeBranches ? 0.78f : 0.18f));
-                g.drawLine (juce::Line<float> (midPoint, endPoint), i < activeBranches ? 1.4f : 0.8f);
-            }
-
-            g.setColour (juce::Colours::white.withAlpha (0.16f));
-            g.fillEllipse (juce::Rectangle<float> (4.0f, 4.0f).withCentre (midPoint));
-        }
-
-        // Small value bar and small numeric readout.
-        drawMiniValueBar (
-            juce::Rectangle<float> (
-                static_cast<float> (valueArea.getX() + 2),
-                static_cast<float> (valueArea.getY() + 1),
-                static_cast<float> (valueArea.getWidth() - 4),
-                4.0f),
-            value,
-            accent);
-
-        g.setFont (juce::FontOptions (8.5f));
-        g.setColour (juce::Colours::white.withAlpha (0.62f));
-        g.drawFittedText (percentText (value),
-                          valueArea.withTrimmedTop (4),
-                          juce::Justification::centred,
-                          1);
-
-        // Glass wash.
-        juce::ColourGradient glass (
-            juce::Colours::white.withAlpha (0.08f),
-            f.getX(),
-            f.getY(),
-            juce::Colours::transparentWhite,
-            f.getX(),
-            f.getBottom(),
-            false);
-
-        g.setGradientFill (glass);
-        g.fillRoundedRectangle (f.reduced (2.0f), 5.5f);
-    };
-
-    // ---------------------------------------------------------------------
-    // Draw audio path first.
-    // ---------------------------------------------------------------------
-    drawCable (centreRight (inputNode),
-               centreLeft (senseTap),
-               electricBlue,
-               analysisActivity,
-               5.2f,
-               true);
-
-    drawCable (centreRight (senseTap),
-               centreLeft (coreNode),
-               electricBlue.interpolatedWith (syntheticViolet, 0.42f),
-               safe01 (metering_.confidence),
-               5.2f,
-               true);
-
-    drawCable (centreRight (coreNode),
-               centreLeft (outputNode),
-               coreColour,
-               juce::jmax (correctionActivity, safe01 (metering_.maskStability)),
-               5.2f,
-               true);
-
-    // ---------------------------------------------------------------------
-    // Instrument probes.
-    // ---------------------------------------------------------------------
-    drawCable (centreBottom (voicingInstrument),
-               centreTop (inputNode),
-               analysisGreen,
-               safe01 (metering_.voicing),
-               1.8f,
-               false);
-
-    drawCable (centreBottom (confidenceInstrument),
-               centreTop (senseTap),
-               electricBlue,
-               safe01 (metering_.confidence),
-               1.8f,
-               false);
-
-    drawCable (centreBottom (spectralInstrument),
-               centreTop (coreNode),
-               vapourBlue,
-               safe01 (metering_.spectralReliability),
-               1.8f,
-               false);
-
-    drawCable (centreBottom (maskInstrument),
-               centreTop (coreNode).translated (coreNode.getWidth() * 0.18f, 0.0f),
-               analysisGreen,
-               safe01 (metering_.maskStability),
-               1.8f,
-               false);
-
-    drawCable (centreTop (breathInstrument),
-               centreBottom (senseTap).translated (-senseTap.getWidth() * 0.18f, 0.0f),
-               vapourBlue,
-               safe01 (metering_.breathiness),
-               1.7f,
-               false);
-
-    drawCable (centreTop (harmonicInstrument),
-               centreBottom (senseTap).translated (senseTap.getWidth() * 0.18f, 0.0f),
-               harmonicGreen,
-               safe01 (metering_.harmonicity),
-               1.7f,
-               false);
-
-    drawCable (centreTop (noiseInstrument),
-               centreBottom (senseTap).translated (senseTap.getWidth() * 0.45f, 0.0f),
-               amber,
-               safe01 (metering_.noisePath),
-               1.7f,
-               false);
-
-    drawCable (centreTop (noiseInstrument).translated (noiseInstrument.getWidth() * 0.18f, 0.0f),
-               centreBottom (coreNode).translated (-coreNode.getWidth() * 0.20f, 0.0f),
-               amber,
-               safe01 (metering_.noisePath),
-               1.3f,
-               false);
-
-    drawCable (centreTop (polyInstrument),
-               centreBottom (coreNode).translated (coreNode.getWidth() * 0.20f, 0.0f),
-               syntheticViolet,
-               safe01 (metering_.polyphony),
-               1.7f,
-               false);
-
-    // ---------------------------------------------------------------------
-    // Draw nodes.
-    // ---------------------------------------------------------------------
-    drawProcessNode (inputNode,
-                     "INPUT",
-                     electricBlue,
-                     safe01 (metering_.voicing),
-                     false);
-
-    drawProcessNode (senseTap,
-                     "SENSE TAP",
-                     electricBlue.interpolatedWith (analysisGreen, 0.30f),
-                     analysisActivity,
-                     false);
-
-    drawProcessNode (coreNode,
-                     "CORRECTION CORE",
-                     coreColour,
-                     juce::jmax (correctionActivity, safe01 (metering_.maskStability)),
-                     true);
-
-    drawProcessNode (outputNode,
-                     "OUTPUT",
-                     amber,
-                     juce::jmax (correctionActivity, safe01 (metering_.maskStability)),
-                     false);
-
-    // ---------------------------------------------------------------------
-    // Draw instruments on top.
-    // ---------------------------------------------------------------------
-    drawInstrument (voicingInstrument,
-                    "VOICING",
-                    metering_.voicing,
-                    analysisGreen,
-                    InstrumentKind::vessel);
-
-    drawInstrument (confidenceInstrument,
-                    "CONFIDENCE",
-                    metering_.confidence,
-                    electricBlue,
-                    InstrumentKind::lock);
-
-    drawInstrument (spectralInstrument,
-                    "SPECTRAL",
-                    metering_.spectralReliability,
-                    vapourBlue,
-                    InstrumentKind::focus);
-
-    drawInstrument (maskInstrument,
-                    "MASK",
-                    metering_.maskStability,
-                    analysisGreen,
-                    InstrumentKind::clamp);
-
-    drawInstrument (breathInstrument,
-                    "BREATH",
-                    metering_.breathiness,
-                    vapourBlue,
-                    InstrumentKind::vessel);
-
-    drawInstrument (harmonicInstrument,
-                    "HARMONIC",
-                    metering_.harmonicity,
-                    harmonicGreen,
-                    InstrumentKind::resonance);
-
-    drawInstrument (noiseInstrument,
-                    "NOISE PATH",
-                    metering_.noisePath,
-                    amber,
-                    InstrumentKind::branch);
-
-    drawInstrument (polyInstrument,
-                    "POLYPHONY",
-                    metering_.polyphony,
-                    syntheticViolet,
-                    InstrumentKind::branch);
-
-    // ---------------------------------------------------------------------
-    // Footer: compact debug strip, not the protagonist of the page.
-    // ---------------------------------------------------------------------
-    g.setColour (juce::Colours::black.withAlpha (0.24f));
-    g.fillRoundedRectangle (footer.toFloat(), 6.0f);
-
-    g.setColour (p.glassEdge.withAlpha (0.28f));
-    g.drawRoundedRectangle (footer.toFloat().reduced (0.5f), 6.0f, 0.8f);
-
-    g.setColour (p.ink.withAlpha (0.76f));
-    g.setFont (juce::FontOptions (11.0f));
-
-    juce::String line = "State: " + trackingStateToString (metering_.state)
-        + "   |   Paths " + juce::String (metering_.detectorSupport) + "/4"
-        + "   |   Octave " + juce::String (metering_.octaveState);
-
-    if (metering_.pendingOctaveObservations > 0)
-        line += "   |   Confirm " + juce::String (metering_.pendingOctaveObservations);
-
-    // TARGET_REVISION_DIAGNOSTIC_LATCH_V1
-    if (metering_.targetRevisionDiagnosticSerial > 0)
-    {
-        line += "   |   Rev#" + juce::String (
-            static_cast<int> (metering_.targetRevisionDiagnosticSerial))
-            + " " + juce::String (metering_.targetRevisionBeforeHz, 1)
-            + ">" + juce::String (metering_.targetRevisionAfterHz, 1)
-            + "Hz " + juce::String (metering_.targetRevisionJumpCents, 0) + "c";
-        if (metering_.targetRevisionFromStable)
-            line += " S";
-        line += metering_.targetRevisionVoiceEvidenceValid ? " V1" : " V0";
-        line += metering_.targetRevisionTerminalTailVeto ? " T1" : " T0";
-        line += metering_.targetRevisionBodyPresent ? " B1" : " B0";
-        line += metering_.targetRevisionMusicalOnset ? " O1" : " O0";
-        line += metering_.targetRevisionLiveIdentityBreak ? " I1" : " I0";
-
-        // TARGET_REVISION_DIAGNOSTIC_LATCH_V2
-        line += metering_.targetRevisionDetectorScaleCommit ? " D1" : " D0";
-        line += metering_.targetRevisionDeepCentreExit ? " C1" : " C0";
-        line += metering_.targetRevisionPersistentBoundaryExit ? " P1" : " P0";
-        line += metering_.targetRevisionTerminalStructure ? " TS1" : " TS0";
-        line += metering_.targetRevisionSameTailSide ? " SS1" : " SS0";
-        line += metering_.targetRevisionOutsideStableCore ? " X1" : " X0";
-        line += " | vE " + juce::String (metering_.targetRevisionVoiceBodyEnergy, 2)
-            + " h " + juce::String (metering_.targetRevisionVoiceHarmonicity, 2)
-            + " r " + juce::String (metering_.targetRevisionVoiceSpectralReliability, 2)
-            + " br " + juce::String (metering_.targetRevisionVoiceBreathiness, 2)
-            + " ev " + juce::String (metering_.targetRevisionVoiceEventStrength, 2);
-        line += " | corr "
-            + juce::String (metering_.targetRevisionCorrectionBeforeCents, 0)
-            + ">" + juce::String (metering_.targetRevisionCorrectionAfterCents, 0)
-            + " d" + juce::String (metering_.targetRevisionCorrectionDeltaCents, 0);
-    }
-
-    line += "   |   Tempo ";
-    line += metering_.tempoActive ? "active" : "off";
-    line += metering_.tempoHostSyncValid ? " / host" : " / free";
-
-    g.drawFittedText (line,
-                      footer.reduced (10, 4),
-                      juce::Justification::centredLeft,
-                      2);
+    // Candidate quality is exported only on a valid analysis-hop sample.
+    // Between hops the adapter contains zero placeholders, not a 0% estimate.
+    const bool hasMeasurement = metering_.detectorSupport > 0;
+    metric (metrics.removeFromLeft (metricW), "Confidence",
+            hasMeasurement ? juce::String (safe01 (metering_.confidence) * 100.0f, 0) + "%" : "--",
+            hasMeasurement ? metering_.confidence : 0.0f);
+    metric (metrics.removeFromLeft (metricW), "Periodicity",
+            hasMeasurement ? juce::String (safe01 (metering_.harmonicity) * 100.0f, 0) + "%" : "--",
+            hasMeasurement ? metering_.harmonicity : 0.0f);
+    metric (metrics, "Stable duration", juce::String (metering_.sustainedNoteSeconds, 2) + " s",
+            metering_.sustainedNoteSeconds / 2.0f);
+
+    g.setFont (juce::FontOptions (10.0f));
+    g.setColour (p.ink.withAlpha (0.60f));
+    g.drawFittedText ("Blue: audio   Green: analysis   Violet: target   Amber: held / output",
+                      legend, juce::Justification::centred, 1);
 }

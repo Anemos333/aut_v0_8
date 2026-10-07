@@ -1,5 +1,6 @@
 
 #include "NeumatonLabTheme.h"
+#include "NeumatonUILabels.h"
 
 #include <cmath>
 
@@ -962,7 +963,7 @@ void Painter::drawNeedleMeter (juce::Graphics& g,
     // Se visivamente ruota dalla parte sbagliata, cambia +halfPi in -halfPi.
    // Arco luminoso ruotato di 90° in senso orario.
 // Per Correction parte dal centro: 0 cent.
-// Per Consensus parte dall'inizio scala, come un normale meter 0..100.
+// Unipolar meters start at the beginning of the dial.
 const float glowRotation = juce::MathConstants<float>::halfPi;
 
 const float zeroAngle = juce::jmap (0.5f, start, end);
@@ -1114,31 +1115,53 @@ void Painter::drawCorrectionGauge (juce::Graphics& g,
                      bounds.toFloat(),
                      normalised,
                      glowNormalised,
-                     "Correction",
+                     Neumaton::UI::Labels::Meter::correction,
                      juce::String (correctionCents, 1) + " ct",
                      palette().warningRed,
                      redWarning,
                      true);
 }
 
-void Painter::drawConsensusGauge (juce::Graphics& g,
-                                  juce::Rectangle<int> bounds,
-                                  float consensus,
-                                  float glowConsensus)
+void Painter::drawScaleDegree (juce::Graphics& g,
+                                juce::Rectangle<int> bounds,
+                                const neumaton::ui::ScaleDegreeDisplay& degree)
 {
-    const float normalised = safeNormalise (consensus);
-    const float glowNormalised = safeNormalise (glowConsensus);
-
-    drawNeedleMeter (g,
-                     bounds.toFloat(),
-                     normalised,
-                     glowNormalised,
-                     "Consensus",
-                     juce::String (normalised * 100.0f, 0) + "%",
-                     palette().blueGlow,
-                     false,
-                      false);
+    const auto& p = palette();
+    drawPanel (g, bounds.toFloat(), 10.0f, 0.46f);
+    auto area = bounds.reduced (8, 6);
+    g.setColour (p.ink.withAlpha (0.90f));
+    g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
+    g.drawText (Neumaton::UI::Labels::Meter::scaleDegree, area.removeFromTop (18), juce::Justification::centred);
+    auto status = area.removeFromBottom (16);
+    const auto dial = area.toFloat();
+    const auto centre = dial.getCentre();
+    const float radius = juce::jmin (dial.getWidth() * 0.43f, dial.getHeight() * 0.48f);
+    const auto accent = degree.held ? juce::Colour (0xFFFFA02B) : p.greenFluid;
+    const int steps = juce::jmax (1, degree.count);
+    for (int i = 0; i < steps; ++i)
+    {
+        const float angle = juce::MathConstants<float>::twoPi
+            * static_cast<float> (i) / static_cast<float> (steps)
+            - juce::MathConstants<float>::halfPi;
+        const auto direction = juce::Point<float> (std::cos (angle), std::sin (angle));
+        const bool selected = degree.degree == i + 1;
+        g.setColour (selected ? accent : p.brassDark.withAlpha (0.72f));
+        g.drawLine (juce::Line<float> (centre + direction * (radius - 4.0f),
+                                      centre + direction * radius), selected ? 2.7f : 1.0f);
+    }
+    g.setColour (degree.degree > 0 ? accent : p.ink.withAlpha (0.45f));
+    g.setFont (juce::FontOptions (23.0f, juce::Font::bold));
+    const auto text = degree.degree > 0
+        ? juce::String (degree.degree) + " / " + juce::String (degree.count)
+        : juce::String ("--");
+    g.drawText (text, area, juce::Justification::centred);
+    g.setFont (juce::FontOptions (10.5f));
+    g.setColour (p.ink.withAlpha (0.70f));
+    g.drawText (degree.degree == 0 ? "Awaiting target"
+                : degree.held ? "Held target" : "Scale target",
+                status, juce::Justification::centred);
 }
+
 float Painter::frequencyToLogPosition (float hz,
                                        float minimumHz,
                                        float maximumHz) noexcept

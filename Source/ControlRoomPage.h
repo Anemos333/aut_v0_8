@@ -14,7 +14,10 @@ class ControlRoomPage final : public juce::Component
 public:
     ControlRoomPage();
 
-    void setMetering (const LivePitchProcessor::Metering& newMetering);
+    void setPresentation (const LivePitchProcessor::Metering& newMetering,
+                          const neumaton::ui::ScaleDegreeDisplay& degree,
+                          int latencySamples, double sampleRate,
+                          bool analogTexture, float outputDb);
 
     std::function<void()> onBack;
 
@@ -53,6 +56,11 @@ private:
     };
 
     LivePitchProcessor::Metering metering_;
+    neumaton::ui::ScaleDegreeDisplay degree_;
+    int latencySamples_ = 0;
+    double sampleRate_ = 0.0;
+    bool analogTexture_ = false;
+    float outputDb_ = 0.0f;
     juce::TextButton backButton { "Back" };
     CommunityLauncherButton communityLauncher_ { *this };
 

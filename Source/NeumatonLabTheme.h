@@ -1,6 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include "ScaleDegreeDisplay.h"
 
 // First UI chantier for Neumaton.
 // This file intentionally contains only drawing helpers: no APVTS attachments,
@@ -101,10 +102,9 @@ static void drawCorrectionGauge (juce::Graphics& g,
                                  float correctionCents,
                                  float glowCorrectionCents);
 
-static void drawConsensusGauge (juce::Graphics& g,
-                                juce::Rectangle<int> bounds,
-                                float consensus,
-                                float glowConsensus);
+    static void drawScaleDegree (juce::Graphics& g,
+                                 juce::Rectangle<int> bounds,
+                                 const neumaton::ui::ScaleDegreeDisplay& degree);
 
     static void drawRadioTarget (juce::Graphics& g,
                                  juce::Rectangle<int> bounds,

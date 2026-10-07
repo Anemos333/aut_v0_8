@@ -214,9 +214,9 @@ MicrotonalAutotuneAudioProcessorEditor::MicrotonalAutotuneAudioProcessorEditor (
 
     configureHeaderLabel (modeSelectorLabel, Neumaton::UI::Labels::Main::mode);
     modeSelector.setJustificationType (juce::Justification::centredLeft);
-    modeSelector.addItem ("Quality", 1);
+    modeSelector.addItem ("Studio", 1);
     modeSelector.addItem ("Live", 2);
-    modeSelector.addItem ("Experimental", 3);
+    modeSelector.addItem ("Low Latency", 3);
     modeSelector.setSelectedId (processorRef.processingMode.load(), juce::dontSendNotification);
     modeSelector.onChange = [this] { onModeSelected(); };
     addAndMakeVisible (modeSelector);
@@ -227,23 +227,12 @@ MicrotonalAutotuneAudioProcessorEditor::MicrotonalAutotuneAudioProcessorEditor (
     speedKnob.setColour (juce::Slider::thumbColourId, juce::Colours::white);
     speedKnob.setLookAndFeel (&mainValveLookAndFeel);
     speedKnob.setMouseCursor (juce::MouseCursor::PointingHandCursor);
-    speedKnob.textFromValueFunction = [this] (double val)
+    speedKnob.setTextValueSuffix (" ms");
+    speedKnob.textFromValueFunction = [] (double val)
     {
-        if (scaleLockButton.getToggleState())
-        {
-            const int mode = processorRef.processingMode.load();
-            if (mode > 0)
-            {
-                const double norm = std::pow (
-                    juce::jlimit (0.0, 1.0, val / 500.0), 1.35);
-                const double mappedVal = mode == 1 ? 3.0 + 2.0 * norm
-                    : mode == 2 ? 1.5 + 1.5 * norm
-                                : 0.35 + 1.15 * norm;
-                return juce::String (mappedVal, 2) + " ms";
-            }
-        }
-        return juce::String (val, 1) + " ms";
+        return juce::String (val, 1);
     };
+    speedKnob.setTooltip ("Time to reach approximately 95% of the requested correction.");
     addAndMakeVisible (speedKnob);
     configureHeaderLabel (speedLabel, Neumaton::UI::Labels::Main::response,
                           juce::Justification::centred);
@@ -287,24 +276,10 @@ MicrotonalAutotuneAudioProcessorEditor::MicrotonalAutotuneAudioProcessorEditor (
     humanizeAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
         processorRef.getAPVTS(), "humanize", humanizeSlider);
 
-    scaleLockButton.setButtonText (Neumaton::UI::Labels::Main::scaleLock);
-    scaleLockButton.setLookAndFeel (&scaleLockLeverLookAndFeel);
-    scaleLockButton.setColour (juce::ToggleButton::tickColourId, juce::Colour (0xFF39FF7A));
-    scaleLockButton.setColour (juce::ToggleButton::textColourId, juce::Colours::white);
-    addAndMakeVisible (scaleLockButton);
-    scaleLockAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
-        processorRef.getAPVTS(), "scaleLock", scaleLockButton);
-    scaleLockButton.onClick = [this]
-    {
-        const bool lockOn = scaleLockButton.getToggleState();
-        const bool mainVisible = ! showingScaleEditor && ! showingControlRoom;
-        lockHysteresisSlider.setVisible (lockOn && mainVisible);
-        lockHysteresisLabel.setVisible (lockOn && mainVisible);
-        vibratoPreserveSlider.setVisible (lockOn && mainVisible);
-        vibratoPreserveLabel.setVisible (lockOn && mainVisible);
-        resized();
-        repaint();
-    };
+    compatibilityLabel.setText ("Legacy controls - inactive in V1", juce::dontSendNotification);
+    compatibilityLabel.setFont (juce::FontOptions (11.0f));
+    compatibilityLabel.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.65f));
+    addAndMakeVisible (compatibilityLabel);
 
     lockHysteresisSlider.setSliderStyle (juce::Slider::LinearHorizontal);
     lockHysteresisSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 60, 20);
@@ -358,11 +333,19 @@ MicrotonalAutotuneAudioProcessorEditor::MicrotonalAutotuneAudioProcessorEditor (
 
     updateCenterPresentation();
 
-    setSize (640, 510);
+    setSize (720, 560);
     setResizable (true, true);
-    setResizeLimits (520, 460, 1200, 820);
+    setResizeLimits (640, 510, 1200, 820);
 
+    const auto legacyTooltip = "Stored for session compatibility; the current V1 engine does not use this control.";
+    lockHysteresisSlider.setTooltip (legacyTooltip);
+    vibratoPreserveSlider.setTooltip (legacyTooltip);
+    lockHysteresisSlider.setEnabled (false);
+    vibratoPreserveSlider.setEnabled (false);
+    lockHysteresisLabel.setEnabled (false);
+    vibratoPreserveLabel.setEnabled (false);
     displayedMetering = processorRef.getPitchMetering();
+    updateMeterPresentation();
     startTimerHz (30);
 }
 
@@ -374,7 +357,6 @@ MicrotonalAutotuneAudioProcessorEditor::~MicrotonalAutotuneAudioProcessorEditor(
     lockHysteresisSlider.setLookAndFeel (nullptr);
     vibratoPreserveSlider.setLookAndFeel (nullptr);
     outVolumeSlider.setLookAndFeel (nullptr);
-    scaleLockButton.setLookAndFeel (nullptr);
     analogModeButton.setLookAndFeel (nullptr);
     setLookAndFeel (nullptr);
     stopTimer();
@@ -401,17 +383,16 @@ void MicrotonalAutotuneAudioProcessorEditor::setMainControlsVisible (bool visibl
     humanizeSlider.setVisible (visible);
     humanizeLabel.setVisible (visible);
 
-    scaleLockButton.setVisible (visible);
+    compatibilityLabel.setVisible (visible);
     analogModeButton.setVisible (visible);
     outVolumeSlider.setVisible (visible);
     outVolumeLabel.setVisible (visible);
     controlRoomButton.setVisible (visible);
 
-    const bool lockOn = scaleLockButton.getToggleState();
-    lockHysteresisSlider.setVisible (visible && lockOn);
-    lockHysteresisLabel.setVisible (visible && lockOn);
-    vibratoPreserveSlider.setVisible (visible && lockOn);
-    vibratoPreserveLabel.setVisible (visible && lockOn);
+    lockHysteresisSlider.setVisible (visible);
+    lockHysteresisLabel.setVisible (visible);
+    vibratoPreserveSlider.setVisible (visible);
+    vibratoPreserveLabel.setVisible (visible);
 }
 
 void MicrotonalAutotuneAudioProcessorEditor::showControlRoom()
@@ -422,7 +403,7 @@ void MicrotonalAutotuneAudioProcessorEditor::showControlRoom()
     showingControlRoom = true;
     setMainControlsVisible (false);
     controlRoomPage.setVisible (true);
-    controlRoomPage.setMetering (displayedMetering);
+    updateMeterPresentation();
     resized();
     repaint();
 }
@@ -679,26 +660,24 @@ void MicrotonalAutotuneAudioProcessorEditor::customScaleEditorClosed()
 }
 
 //==============================================================================
-juce::String MicrotonalAutotuneAudioProcessorEditor::trackingStateToString (
-    LivePitchProcessor::TrackingState state)
+void MicrotonalAutotuneAudioProcessorEditor::updateMeterPresentation()
 {
-    switch (state)
-    {
-        case LivePitchProcessor::TrackingState::unvoiced:   return "Unvoiced";
-        case LivePitchProcessor::TrackingState::attack:     return "Attack";
-        case LivePitchProcessor::TrackingState::acquire:    return "Acquire";
-        case LivePitchProcessor::TrackingState::stable:     return "Stable";
-        case LivePitchProcessor::TrackingState::transition: return "Transition";
-        case LivePitchProcessor::TrackingState::release:    return "Release";
-    }
-    return "Unknown";
+    displayedDegree = neumaton::ui::describeScaleTarget (
+        displayedMetering.targetPitchHz,
+        processorRef.getRootFrequency(),
+        processorRef.getCurrentScaleEquave(),
+        processorRef.getCurrentScaleRatios(),
+        displayedMetering.state != LivePitchProcessor::TrackingState::stable);
+    controlRoomPage.setPresentation (
+        displayedMetering, displayedDegree,
+        processorRef.getLatencySamples(), processorRef.getSampleRate(),
+        analogModeButton.getToggleState(), static_cast<float> (outVolumeSlider.getValue()));
 }
 
 void MicrotonalAutotuneAudioProcessorEditor::timerCallback()
 {
     displayedMetering = processorRef.getPitchMetering();
-    if (showingControlRoom)
-        controlRoomPage.setMetering (displayedMetering);
+    updateMeterPresentation();
 
     const auto smoothTowards = [] (float current, float target, float amount)
     {
@@ -711,26 +690,6 @@ void MicrotonalAutotuneAudioProcessorEditor::timerCallback()
         visualCorrectionGlowCents_,
         static_cast<float> (displayedMetering.correctionCents),
         0.065f);
-    visualConsensusGlow_ = smoothTowards (
-        visualConsensusGlow_,
-        static_cast<float> (displayedMetering.consensus),
-        0.065f);
-
-    const bool lockIsOn = scaleLockButton.getToggleState();
-    if (lockIsOn != lastScaleLockState_)
-    {
-        lastScaleLockState_ = lockIsOn;
-        speedKnob.setColour (juce::Slider::rotarySliderFillColourId,
-                             lockIsOn ? juce::Colour (0xFFFF0066)
-                                      : juce::Colour (0xFF6C63FF));
-        speedKnob.updateText();
-        scaleLockButton.setColour (juce::ToggleButton::textColourId,
-                                   lockIsOn ? juce::Colour (0xFF00CC66)
-                                            : juce::Colours::white);
-        lockHysteresisSlider.setEnabled (lockIsOn);
-        vibratoPreserveSlider.setEnabled (lockIsOn);
-    }
-
     const bool analogIsOn = analogModeButton.getToggleState();
     if (analogIsOn != lastAnalogModeState_)
     {
@@ -797,31 +756,27 @@ void MicrotonalAutotuneAudioProcessorEditor::paint (juce::Graphics& g)
         .expanded (14, 10);
     drawPanel (headerPanel);
 
-    auto scaleLockPanel = scaleLockButton.getBounds();
-    if (scaleLockButton.getToggleState())
-    {
-        scaleLockPanel = scaleLockPanel
-            .getUnion (lockHysteresisSlider.getBounds())
-            .getUnion (lockHysteresisLabel.getBounds())
-            .getUnion (vibratoPreserveSlider.getBounds())
-            .getUnion (vibratoPreserveLabel.getBounds());
-    }
-    drawPanel (scaleLockPanel.expanded (14, 10));
+    const auto compatibilityPanel = compatibilityLabel.getBounds()
+        .getUnion (lockHysteresisSlider.getBounds())
+        .getUnion (lockHysteresisLabel.getBounds())
+        .getUnion (vibratoPreserveSlider.getBounds())
+        .getUnion (vibratoPreserveLabel.getBounds());
+    drawPanel (compatibilityPanel.expanded (10, 8));
 
     const auto outputStagePanel = analogModeButton.getBounds()
         .getUnion (outVolumeSlider.getBounds())
         .getUnion (outVolumeLabel.getBounds());
-    drawPanel (outputStagePanel.expanded (14, 10));
+    drawPanel (outputStagePanel.expanded (10, 8));
 
-    auto lowerArea = getLocalBounds();
+    auto lowerArea = getLocalBounds().reduced (24, 18);
     auto titleArea = lowerArea.removeFromBottom (38);
-    auto titleTextArea = titleArea.reduced (24, 0);
+    auto titleTextArea = titleArea;
     auto instrumentArea = lowerArea.removeFromBottom (112).reduced (18, 4);
     auto instrumentContent = instrumentArea;
 
     const int sideMeterW = juce::jlimit (128, 164, instrumentContent.getWidth() / 4);
     auto correctionArea = instrumentContent.removeFromLeft (sideMeterW).reduced (4);
-    auto consensusArea = instrumentContent.removeFromRight (sideMeterW).reduced (4);
+    auto degreeArea = instrumentContent.removeFromRight (sideMeterW).reduced (4);
     auto targetArea = instrumentContent.reduced (8, 0);
     targetArea.removeFromTop (32);
     targetArea = targetArea.reduced (2);
@@ -834,10 +789,7 @@ void MicrotonalAutotuneAudioProcessorEditor::paint (juce::Graphics& g)
         g, targetArea,
         displayedMetering.detectedPitchHz,
         displayedMetering.targetPitchHz);
-    neumaton::lab::Painter::drawConsensusGauge (
-        g, consensusArea,
-        static_cast<float> (displayedMetering.consensus),
-        visualConsensusGlow_);
+    neumaton::lab::Painter::drawScaleDegree (g, degreeArea, displayedDegree);
 
     g.setColour (juce::Colours::white);
     g.setFont (juce::FontOptions (24.0f, juce::Font::bold));
@@ -873,7 +825,6 @@ void MicrotonalAutotuneAudioProcessorEditor::resized()
     }
 
     auto area = getLocalBounds().reduced (24, 18);
-    const bool lockOn = scaleLockButton.getToggleState();
 
     auto headerArea = area.removeFromTop (82);
     area.removeFromTop (10);
@@ -930,10 +881,13 @@ void MicrotonalAutotuneAudioProcessorEditor::resized()
         bounds = bounds.reduced (4, 0);
         constexpr int labelH = 24;
         const int knobSize = juce::jlimit (
-            122, 148,
+            98, 148,
             juce::jmin (bounds.getWidth() - 8,
                         bounds.getHeight() - labelH - 2));
-        const int labelY = bounds.getBottom() - labelH;
+        const int sharedValveSize = juce::jlimit (98, 148, bounds.getHeight() - labelH - 2);
+        const int labelY = bounds.getY()
+            + (bounds.getHeight() - sharedValveSize - labelH - 2) / 2
+            + sharedValveSize + 2;
         const int knobY = labelY - knobSize - 2;
         const int knobX = bounds.getCentreX() - knobSize / 2;
         knob.setBounds (knobX, knobY, knobSize, knobSize);
@@ -950,7 +904,10 @@ void MicrotonalAutotuneAudioProcessorEditor::resized()
             68, 84,
             juce::jmin (bounds.getWidth() - 8,
                         bounds.getHeight() - labelH - 2));
-        const int labelY = bounds.getBottom() - labelH;
+        const int sharedValveSize = juce::jlimit (98, 148, bounds.getHeight() - labelH - 2);
+        const int labelY = bounds.getY()
+            + (bounds.getHeight() - sharedValveSize - labelH - 2) / 2
+            + sharedValveSize + 2;
         const int knobY = labelY - knobSize - 2;
         const int knobX = bounds.getCentreX() - knobSize / 2;
         knob.setBounds (knobX, knobY, knobSize, knobSize);
@@ -968,28 +925,14 @@ void MicrotonalAutotuneAudioProcessorEditor::resized()
     utility.removeFromRight (moduleGap);
     auto lockModule = utility;
 
-    auto lockRow = lockModule.removeFromTop (30);
-    scaleLockButton.setBounds (lockRow.removeFromLeft (124).reduced (2));
-
-    if (lockOn)
-    {
-        lockRow.removeFromLeft (8);
-        auto holdArea = lockRow.reduced (4, 2);
-        lockHysteresisLabel.setBounds (holdArea.removeFromLeft (52));
-        lockHysteresisSlider.setBounds (holdArea);
-
-        lockModule.removeFromTop (6);
-        auto vibratoRow = lockModule.removeFromTop (28).reduced (4, 2);
-        vibratoPreserveLabel.setBounds (vibratoRow.removeFromLeft (184));
-        vibratoPreserveSlider.setBounds (vibratoRow);
-    }
-    else
-    {
-        lockHysteresisLabel.setBounds ({});
-        lockHysteresisSlider.setBounds ({});
-        vibratoPreserveLabel.setBounds ({});
-        vibratoPreserveSlider.setBounds ({});
-    }
+    compatibilityLabel.setBounds (lockModule.removeFromTop (18));
+    auto holdRow = lockModule.removeFromTop (24).reduced (4, 1);
+    lockHysteresisLabel.setBounds (holdRow.removeFromLeft (52));
+    lockHysteresisSlider.setBounds (holdRow);
+    lockModule.removeFromTop (4);
+    auto vibratoRow = lockModule.removeFromTop (24).reduced (4, 1);
+    vibratoPreserveLabel.setBounds (vibratoRow.removeFromLeft (130));
+    vibratoPreserveSlider.setBounds (vibratoRow);
 
     auto outputStage = outputModule.reduced (4, 2);
     analogModeButton.setBounds (outputStage.removeFromTop (24).reduced (2, 1));
