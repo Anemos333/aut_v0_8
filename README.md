@@ -196,9 +196,57 @@ Some older Scale Lock sub-controls and Creative Tempo values are currently retai
 | Difficult attacks and vocal transitions | Continued beta validation |
 | Broad DAW/platform matrix | Incomplete |
 | Closed beta readiness | Accepted |
+| Licensing / entitlement skeleton | Active; isolated from DSP |
+| Community Pack integrity | Schema 3 SHA-256 + future signature boundary |
 | Public release readiness | Not yet |
 
 The previous `ModernPitchEngine` / `SingleWetSpectralRenderer` implementation is no longer part of the active VST target. Some legacy source and tests remain in the repository as development history and regression material.
+
+---
+
+
+## Licensing and Community Packs
+
+Neumaton's planned licensing model keeps the **audio engine identical across tiers**. The Free edition is intended to remain a complete, unrestricted VST for music creation; paid tiers add supporter/creator benefits rather than unlocking better pitch correction.
+
+The current release plan is:
+
+| Tier | Planned rights / extras |
+| --- | --- |
+| **Free** | Complete VST, normal commercial use of music made with Neumaton, creation/export of Community Packs for free redistribution |
+| **Supporter — €30 planned** | Same complete VST, additional skins/factory content, roadmap/early access, commercial creator right for Neumaton packs, up to 5 activated devices |
+| **Supporter Studio — €50 planned, future** | Same Supporter rights with a larger device allowance, currently planned as 15 devices |
+
+These prices and commercial terms are pre-release plans, not yet the repository's legal software licence.
+
+### Licensing architecture
+
+Licensing is deliberately outside the signal path. `PitchCore`, `PitchEngineV1`, `SinglePathPitchRenderer`, `LivePitchProcessor` and `ModernPitchEngine` do not consult entitlement state, and `processBlock()` does not perform licence checks.
+
+The current closed-beta skeleton consists of:
+
+- `EntitlementManager` with `Free`, `Supporter`, `Supporter Studio` and `Beta` tiers;
+- a small policy layer for supporter content, early access, commercial pack export and future device limits;
+- no account/login flow, network dependency, hardware fingerprinting or DSP-side DRM;
+- safe fallback to the Free tier when a future entitlement cannot be validated.
+
+The closed-beta build currently defaults to the `Beta` entitlement. Beta exposes supporter-facing content for testing but is intentionally **not** treated as a paid commercial creator licence.
+
+### Community Pack schema 3
+
+The existing inspectable `.ecpk` format remains the Community Pack container. Schema 3 adds:
+
+- `Community` / `Commercial` licence metadata;
+- optional creator identity metadata;
+- a deterministic SHA-256 digest of scales, presets and scenes;
+- reserved `keyId` and `signature` fields;
+- a stable signing payload for a future server-side signature verifier.
+
+Local packs remain readable and portable rather than encrypted. A locally edited or corrupted schema-3 payload fails its integrity check. A pack that merely claims to be `Commercial` without a valid future server signature is never considered a verified commercial pack.
+
+Schema 1/2 packs remain readable and are conservatively interpreted as legacy Community Packs.
+
+The future production design keeps private signing keys on the Neumaton server. The plugin will contain only public verification material; account activation, payment and server-side device counting are intentionally not part of the closed-beta skeleton.
 
 ---
 
@@ -264,10 +312,17 @@ The current development architecture lives on `main`.
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 ```
 
-To include the standalone diagnostics:
+To include the standalone DSP diagnostics:
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_CLEAN_ENGINE_TESTS=ON
+```
+
+To build the licensing / pack-integrity contract test:
+
+```bash
+cmake -S . -B build-licensing -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_LICENSING_TESTS=ON
+cmake --build build-licensing --target LicensingSkeletonTest
 ```
 
 ### Build
@@ -291,6 +346,10 @@ The most relevant active V1 files are:
 - `Source/LivePitchProcessor.h` — JUCE/block adapter and mode selection
 - `Source/PluginProcessor.cpp` — plugin integration, state and output stage
 - `Source/ScaleDefinitions.*` / `CustomScalePresets.*` — tuning material
+- `Source/Entitlement.h` — tier/policy skeleton; no audio authority
+- `Source/ShareablePack.h` — versioned `.ecpk` container and schema-3 payload integrity
+- `Source/PackVerifier.h` — future signature-verification boundary
+- `Source/CommunityPackLibrary.h` — local Community Pack discovery/composition
 
 For the current audible plugin, the CMake target source list is the primary source of truth. Files belonging to older engines may still exist for regression/reference work without being compiled into the active VST.
 
@@ -322,6 +381,8 @@ This is still pre-release software. Closed beta does not mean public-release rea
 
 ## License
 
-A public redistribution license is not currently defined.
+A public repository/software redistribution licence is not currently defined.
 
-A clear license should be added before treating the repository as a finished open-source or redistributable release.
+The planned Free / Supporter / Supporter Studio product tiers described above govern the intended product and Community Pack model; they do **not** yet replace a formal software EULA, Community Pack licence, Commercial Pack creator licence or repository source-code licence.
+
+Those legal documents should be finalised before public release or a production marketplace.

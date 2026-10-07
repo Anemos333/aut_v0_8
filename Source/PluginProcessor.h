@@ -4,6 +4,7 @@
 #include "ScaleDefinitions.h"
 #include "CustomScalePresets.h"
 #include "CommunityPackLibrary.h"
+#include "Entitlement.h"
 #include "LivePitchProcessor.h"
 #include "Preset.h"
 
@@ -47,6 +48,16 @@ public:
     neumaton::community::CommunityPackLibrary& getCommunityPackLibrary() noexcept
     {
         return communityPackLibrary;
+    }
+
+    neumaton::licensing::EntitlementManager& getEntitlementManager() noexcept
+    {
+        return entitlementManager;
+    }
+
+    const neumaton::licensing::EntitlementManager& getEntitlementManager() const noexcept
+    {
+        return entitlementManager;
     }
 
     std::vector<double> getCurrentScaleRatios() const;
@@ -246,6 +257,7 @@ private:
 
     CustomScalePresets customPresets;
     neumaton::community::CommunityPackLibrary communityPackLibrary;
+    neumaton::licensing::EntitlementManager entitlementManager;
     int selectedPresetIndex = 3;
 
     struct ScaleSnapshot

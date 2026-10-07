@@ -63,6 +63,7 @@ target_sources(Neumaton
 target_compile_definitions(Neumaton
     PRIVATE
         NEUMATON_PITCH_ENGINE_V1=1
+        NEUMATON_CLOSED_BETA=1
     PUBLIC
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
@@ -79,6 +80,7 @@ target_link_libraries(Neumaton
         juce::juce_audio_processors
         juce::juce_audio_utils
         juce::juce_core
+        juce::juce_cryptography
         juce::juce_data_structures
         juce::juce_events
         juce::juce_graphics
@@ -89,6 +91,44 @@ target_link_libraries(Neumaton
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags
 )
+
+
+option(NEUMATON_BUILD_LICENSING_TESTS
+       "Build the licensing and pack-integrity contract tests" OFF)
+
+if(NEUMATON_BUILD_LICENSING_TESTS)
+    juce_add_console_app(LicensingSkeletonTest
+        PRODUCT_NAME LicensingSkeletonTest
+    )
+    juce_generate_juce_header(LicensingSkeletonTest)
+    target_sources(LicensingSkeletonTest
+        PRIVATE
+            Tests/LicensingSkeletonTest.cpp
+    )
+    target_include_directories(LicensingSkeletonTest PRIVATE Source)
+    target_compile_definitions(LicensingSkeletonTest
+        PRIVATE
+            NEUMATON_CLOSED_BETA=1
+            JUCE_WEB_BROWSER=0
+            JUCE_USE_CURL=0
+    )
+    target_link_libraries(LicensingSkeletonTest
+        PRIVATE
+            juce::juce_core
+            juce::juce_cryptography
+            juce::juce_data_structures
+        PUBLIC
+            juce::juce_recommended_config_flags
+            juce::juce_recommended_warning_flags
+    )
+    set_target_properties(LicensingSkeletonTest PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/licensing-tests"
+        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/licensing-tests"
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/licensing-tests"
+        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/licensing-tests"
+        RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}/licensing-tests"
+    )
+endif()
 
 option(NEUMATON_BUILD_CLEAN_ENGINE_TESTS
        "Build the pitch-engine regression and legacy comparison tests" OFF)

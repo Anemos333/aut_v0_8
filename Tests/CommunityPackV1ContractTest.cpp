@@ -47,8 +47,8 @@ int main()
     ok &= check (
         contains (pack, "communityPackExtension = \".ecpk\"")
             && contains (pack, "ErgasterionCommunityPack")
-            && contains (pack, "currentPackSchemaVersion = 2"),
-        "ecpk_has_versioned_ergasterion_container");
+            && contains (pack, "currentPackSchemaVersion = 3"),
+        "ecpk_has_versioned_ergasterion_container_schema3");
 
     ok &= check (
         contains (pack, "name.trim().isNotEmpty()")

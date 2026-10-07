@@ -2,13 +2,119 @@
 
 #include <JuceHeader.h>
 
+#include "Entitlement.h"
+
+#include <algorithm>
 #include <memory>
+#include <vector>
 
 namespace neumaton::sharing
 {
-inline constexpr int currentPackSchemaVersion = 2;
+inline constexpr int currentPackSchemaVersion = 3;
 inline constexpr const char* communityPackExtension = ".ecpk";
 inline constexpr const char* communityPackWildcard = "*.ecpk";
+
+using PackLicense = licensing::PackLicense;
+
+[[nodiscard]] inline const char* packLicenseToString (PackLicense license) noexcept
+{
+    return license == PackLicense::commercial ? "commercial" : "community";
+}
+
+[[nodiscard]] inline PackLicense packLicenseFromString (const juce::String& text) noexcept
+{
+    return text.trim().equalsIgnoreCase ("commercial")
+        ? PackLicense::commercial
+        : PackLicense::community;
+}
+
+enum class PackIntegrityStatus
+{
+    legacyUnsigned,
+    valid,
+    missingHash,
+    hashMismatch
+};
+
+namespace detail
+{
+inline void appendField (juce::String& destination,
+                         const juce::String& name,
+                         const juce::String& value)
+{
+    destination << juce::String (name.getNumBytesAsUTF8()) << ":" << name
+                << juce::String (value.getNumBytesAsUTF8()) << ":" << value;
+}
+
+[[nodiscard]] inline juce::String canonicalVar (const juce::var& value)
+{
+    if (value.isVoid())
+        return "void:";
+    if (value.isBool())
+        return value ? "bool:1" : "bool:0";
+    if (value.isInt())
+        return "int:" + juce::String (static_cast<int> (value));
+    if (value.isInt64())
+        return "int64:" + juce::String (static_cast<juce::int64> (value));
+    if (value.isDouble())
+        return "double:" + juce::String (static_cast<double> (value), 17);
+
+    return "string:" + value.toString();
+}
+
+[[nodiscard]] inline juce::String canonicalTree (const juce::ValueTree& tree)
+{
+    if (! tree.isValid())
+        return "invalid";
+
+    juce::String result;
+    appendField (result, "type", tree.getType().toString());
+
+    std::vector<juce::String> properties;
+    properties.reserve (static_cast<std::size_t> (tree.getNumProperties()));
+    for (int i = 0; i < tree.getNumProperties(); ++i)
+    {
+        const auto name = tree.getPropertyName (i).toString();
+        juce::String encoded;
+        appendField (encoded, name, canonicalVar (tree.getProperty (tree.getPropertyName (i))));
+        properties.push_back (std::move (encoded));
+    }
+
+    std::sort (properties.begin(), properties.end(),
+        [] (const juce::String& a, const juce::String& b)
+        {
+            return a.compare (b) < 0;
+        });
+
+    for (const auto& property : properties)
+        appendField (result, "property", property);
+
+    std::vector<juce::String> children;
+    children.reserve (static_cast<std::size_t> (tree.getNumChildren()));
+    for (int i = 0; i < tree.getNumChildren(); ++i)
+        children.push_back (canonicalTree (tree.getChild (i)));
+
+    // Pack collections are semantic sets keyed by stable ids. Sorting the
+    // canonical child representation keeps the hash independent of UI order.
+    std::sort (children.begin(), children.end(),
+        [] (const juce::String& a, const juce::String& b)
+        {
+            return a.compare (b) < 0;
+        });
+
+    for (const auto& child : children)
+        appendField (result, "child", child);
+
+    return result;
+}
+
+[[nodiscard]] inline juce::String sha256 (const juce::String& text)
+{
+    const auto* bytes = text.toRawUTF8();
+    const auto byteCount = static_cast<std::size_t> (text.getNumBytesAsUTF8());
+    return juce::SHA256 (bytes, byteCount).toHexString();
+}
+} // namespace detail
 
 struct PackManifest
 {
@@ -17,6 +123,18 @@ struct PackManifest
     juce::String author;
     juce::String version { "1.0.0" };
     juce::String description;
+
+    // Schema 3 licensing/integrity metadata. creatorId may stay empty for
+    // locally-authored community packs until an account/server exists.
+    juce::String creatorId;
+    PackLicense license = PackLicense::community;
+    juce::String payloadSha256;
+
+    // Reserved for the future server signature. No private key is ever stored
+    // in the plugin; unsigned local packs remain normal Community Packs.
+    juce::String keyId;
+    juce::String signature;
+
     int schemaVersion = currentPackSchemaVersion;
 
     [[nodiscard]] bool isValid() const noexcept
@@ -28,6 +146,16 @@ struct PackManifest
             && schemaVersion <= currentPackSchemaVersion;
     }
 
+    [[nodiscard]] bool hasCompleteSignature() const noexcept
+    {
+        return keyId.trim().isNotEmpty() && signature.trim().isNotEmpty();
+    }
+
+    [[nodiscard]] bool hasPartialSignature() const noexcept
+    {
+        return keyId.trim().isNotEmpty() != signature.trim().isNotEmpty();
+    }
+
     [[nodiscard]] juce::ValueTree toValueTree() const
     {
         juce::ValueTree tree ("Manifest");
@@ -37,6 +165,16 @@ struct PackManifest
         tree.setProperty ("author", author, nullptr);
         tree.setProperty ("version", version, nullptr);
         tree.setProperty ("description", description, nullptr);
+
+        if (schemaVersion >= 3)
+        {
+            tree.setProperty ("creatorId", creatorId, nullptr);
+            tree.setProperty ("license", packLicenseToString (license), nullptr);
+            tree.setProperty ("payloadSha256", payloadSha256, nullptr);
+            tree.setProperty ("keyId", keyId, nullptr);
+            tree.setProperty ("signature", signature, nullptr);
+        }
+
         return tree;
     }
 
@@ -53,13 +191,30 @@ struct PackManifest
         result.author = tree.getProperty ("author").toString();
         result.version = tree.getProperty ("version", "1.0.0").toString();
         result.description = tree.getProperty ("description").toString();
+
+        if (result.schemaVersion >= 3)
+        {
+            result.creatorId = tree.getProperty ("creatorId").toString();
+            result.license = packLicenseFromString (
+                tree.getProperty ("license", "community").toString());
+            result.payloadSha256 = tree.getProperty ("payloadSha256").toString();
+            result.keyId = tree.getProperty ("keyId").toString();
+            result.signature = tree.getProperty ("signature").toString();
+        }
+        else
+        {
+            // Old packs predate commercial creator rights. Treating them as
+            // Community is the safe backwards-compatible interpretation.
+            result.license = PackLicense::community;
+        }
+
         return result;
     }
 };
 
-// Ergasterion Community Pack. The V1 container is deliberately plain XML under
-// the .ecpk extension: inspectable, versioned and easy to migrate. A later binary
-// or signed transport can wrap the same logical ValueTree schema.
+// Ergasterion Community Pack. The container deliberately remains plain XML
+// under .ecpk: inspectable, versioned and easy to migrate. Schema 3 adds a
+// deterministic content digest and signature slots without encrypting content.
 struct PackDocument
 {
     PackManifest manifest;
@@ -75,10 +230,52 @@ struct PackDocument
             && scenes.isValid();
     }
 
+    [[nodiscard]] juce::String calculatePayloadSha256() const
+    {
+        juce::String canonical;
+        detail::appendField (canonical, "scales", detail::canonicalTree (scales));
+        detail::appendField (canonical, "presets", detail::canonicalTree (presets));
+        detail::appendField (canonical, "scenes", detail::canonicalTree (scenes));
+        return detail::sha256 (canonical);
+    }
+
+    void sealIntegrity()
+    {
+        if (manifest.schemaVersion >= 3)
+            manifest.payloadSha256 = calculatePayloadSha256();
+    }
+
+    [[nodiscard]] PackIntegrityStatus verifyIntegrity() const
+    {
+        if (manifest.schemaVersion < 3)
+            return PackIntegrityStatus::legacyUnsigned;
+
+        if (manifest.payloadSha256.trim().isEmpty())
+            return PackIntegrityStatus::missingHash;
+
+        return manifest.payloadSha256.equalsIgnoreCase (calculatePayloadSha256())
+            ? PackIntegrityStatus::valid
+            : PackIntegrityStatus::hashMismatch;
+    }
+
+    // This is the exact logical message that a future server-side Ed25519
+    // implementation should sign. Changing Community -> Commercial changes the
+    // message even when the preset payload itself is unchanged.
+    [[nodiscard]] juce::String signingPayload() const
+    {
+        juce::String result;
+        detail::appendField (result, "schemaVersion", juce::String (manifest.schemaVersion));
+        detail::appendField (result, "stableId", manifest.stableId);
+        detail::appendField (result, "creatorId", manifest.creatorId);
+        detail::appendField (result, "license", packLicenseToString (manifest.license));
+        detail::appendField (result, "payloadSha256", manifest.payloadSha256);
+        return result;
+    }
+
     [[nodiscard]] juce::ValueTree toValueTree() const
     {
         juce::ValueTree root ("ErgasterionCommunityPack");
-        root.setProperty ("schemaVersion", currentPackSchemaVersion, nullptr);
+        root.setProperty ("schemaVersion", manifest.schemaVersion, nullptr);
         root.addChild (manifest.toValueTree(), -1, nullptr);
         root.addChild (scales.createCopy(), -1, nullptr);
         root.addChild (presets.createCopy(), -1, nullptr);
@@ -92,8 +289,6 @@ struct PackDocument
         if (! root.isValid())
             return result;
 
-        // Accept the provisional V1 root too: no public pack files existed yet,
-        // but retaining the parser costs nothing and keeps development builds safe.
         const bool knownRoot = root.getType() == juce::Identifier ("ErgasterionCommunityPack")
             || root.getType() == juce::Identifier ("NeumatonPack");
         if (! knownRoot)
@@ -109,6 +304,7 @@ struct PackDocument
 
         result.manifest = PackManifest::fromValueTree (
             root.getChildWithName ("Manifest"));
+        result.manifest.schemaVersion = rootSchema;
 
         const auto scaleTree = root.getChildWithName ("Scales");
         if (scaleTree.isValid())
@@ -126,6 +322,9 @@ struct PackDocument
         if (! result.scenes.isValid())
             result.scenes = juce::ValueTree ("Scenes");
 
+        if (rootSchema < 3)
+            result.manifest.license = PackLicense::community;
+
         return result;
     }
 
@@ -137,7 +336,10 @@ struct PackDocument
         if (! target.hasFileExtension (communityPackExtension))
             target = target.withFileExtension (communityPackExtension);
 
-        const auto xml = toValueTree().createXml();
+        auto sealed = *this;
+        sealed.sealIntegrity();
+
+        const auto xml = sealed.toValueTree().createXml();
         if (xml == nullptr)
             return false;
 
