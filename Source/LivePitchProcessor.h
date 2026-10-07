@@ -2,14 +2,12 @@
 
 #include <JuceHeader.h>
 #include "PitchEngineV1.h"
-#include "Tempo.h"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
-#include <cstdlib>
 #include <vector>
 
 // Thin JUCE/block adapter around the rebuilt V1 engine.
@@ -44,90 +42,24 @@ public:
         release
     };
 
+    // Only quantities produced by the active V1 path belong here.
     struct Metering
     {
         float detectedPitchHz = 0.0f;
         float targetPitchHz = 0.0f;
         float confidence = 0.0f;
-        float voicing = 0.0f;
-        float breathiness = 0.0f;
-        float harmonicity = 0.0f;
-        float noisePath = 0.0f;
-        float noiseReductionDb = 0.0f;
-        float polyphony = 0.0f;
-        float spectralReliability = 0.0f;
-        float maskStability = 1.0f;
-        float sustainedNoteSeconds = 0.0f;
-        float consensus = 0.0f;
+        float periodicity = 0.0f;
         float correctionCents = 0.0f;
-        float wetMix = 1.0f;
-        float transitionBlend = 0.0f;
+        float sustainedNoteSeconds = 0.0f;
 
-        float outputSourceCorrespondence = 0.0f;
-        float outputTargetCoherence = 0.0f;
-        float outputPhysicalHarmonicFit = 0.0f;
-        float outputLedgerHealth = 0.0f;
-        float outputTemporalStability = 0.0f;
-        float outputTargetJumpCents = 0.0f;
-        float outputCorrectionVelocityCentsPerSecond = 0.0f;
-        float outputOctaveConflict = 0.0f;
-        float outputTransitionStress = 0.0f;
-        float outputSourceMirrorFit = 0.0f;
-        float outputDoubleFamilyRisk = 0.0f;
-        float outputLedgerDeficit = 0.0f;
-        float outputSelectiveReconstructionNeed = 0.0f;
+        int targetDegreeIndex = -1;
+        int targetDegreeCount = 0;
 
-        int shadowRidgeObservationCount = 0;
-        int shadowRidgeActiveCount = 0;
-        int shadowRidgeBirthCount = 0;
-        int shadowRidgeCoastCount = 0;
-        int shadowRidgeDeathCount = 0;
-        int shadowRidgeIdentitySwitchCount = 0;
-        float shadowRidgePredictionErrorRadians = 0.0f;
-        float shadowRidgeReliability = 0.0f;
-        float shadowRidgeResolvedBinCoverage = 0.0f;
-        bool shadowRidgeValid = false;
-
-        bool dualSynthesisActive = false;
-        int detectorSupport = 0;
-        int octaveState = 0;
-        int pendingOctaveObservations = 0;
+        bool gateOpen = false;
+        bool newMeasurement = false;
+        bool octaveAmbiguous = false;
+        std::uint64_t rendererSplices = 0;
         TrackingState state = TrackingState::unvoiced;
-
-        std::uint32_t targetRevisionDiagnosticSerial = 0;
-        float targetRevisionBeforeHz = 0.0f;
-        float targetRevisionAfterHz = 0.0f;
-        float targetRevisionJumpCents = 0.0f;
-        bool targetRevisionFromStable = false;
-        bool targetRevisionVoiceEvidenceValid = false;
-        bool targetRevisionTerminalTailVeto = false;
-        bool targetRevisionBodyPresent = false;
-        bool targetRevisionMusicalOnset = false;
-        bool targetRevisionLiveIdentityBreak = false;
-        bool targetRevisionDetectorScaleCommit = false;
-        bool targetRevisionDeepCentreExit = false;
-        bool targetRevisionPersistentBoundaryExit = false;
-        bool targetRevisionTerminalStructure = false;
-        bool targetRevisionSameTailSide = false;
-        bool targetRevisionOutsideStableCore = false;
-        float targetRevisionVoiceBodyEnergy = 0.0f;
-        float targetRevisionVoiceHarmonicity = 0.0f;
-        float targetRevisionVoiceSpectralReliability = 0.0f;
-        float targetRevisionVoiceBreathiness = 0.0f;
-        float targetRevisionVoiceEventStrength = 0.0f;
-        float targetRevisionCorrectionBeforeCents = 0.0f;
-        float targetRevisionCorrectionAfterCents = 0.0f;
-        float targetRevisionCorrectionDeltaCents = 0.0f;
-
-        // Retained for state/UI source compatibility. Tempo Lab has no audible
-        // authority in V1 and is no longer exposed by the main editor.
-        float tempoBpm = 120.0f;
-        float tempoGridPhase = 0.0f;
-        float tempoGlideTimeMs = 0.0f;
-        bool tempoActive = false;
-        bool tempoWaitingForGrid = false;
-        bool tempoHostSyncValid = false;
-        CreativeTempo::Mode tempoMode = CreativeTempo::Mode::off;
     };
 
     void prepare(double sampleRate, int maximumExpectedSamplesPerBlock)
@@ -156,10 +88,7 @@ public:
         }
 
         activeModeIndex_.store(toModeIndex(latencyMode), std::memory_order_release);
-        hostTransportHistoryValid_ = false;
-        expectedNextHostSample_ = 0;
         sustainedStableSamples_ = 0;
-        prepared_.store(true, std::memory_order_release);
     }
 
     void reset() noexcept
@@ -168,8 +97,6 @@ public:
             engine.reset();
         for (auto& request : resetRequested_)
             request.store(false, std::memory_order_relaxed);
-        hostTransportHistoryValid_ = false;
-        expectedNextHostSample_ = 0;
         sustainedStableSamples_ = 0;
     }
 
@@ -184,6 +111,9 @@ public:
         activeModeIndex_.store(modeIndex, std::memory_order_release);
     }
 
+    // Kept as the small processor-facing setup API. Only Humanize and the pitch
+    // range are meaningful in V1; the remaining arguments are intentionally
+    // ignored instead of reviving legacy detector/renderer authority.
     void setAdvancedParameters(float /*transitionMs*/,
                                float humanize,
                                float /*formantPreservation*/,
@@ -200,45 +130,6 @@ public:
                                      4000.0f);
     }
 
-    // Compatibility state only: V1 does not let Creative Tempo or the legacy
-    // Scale-Lock sub-controls acquire hidden audio authority.
-    void setTempoSettings(const CreativeTempo::Settings& settings) noexcept
-    {
-        tempoSettings_ = settings;
-    }
-
-    void setScaleLockParameters(bool scaleLock,
-                                float lockHysteresis,
-                                float vibratoPreserve) noexcept
-    {
-        scaleLock_ = scaleLock;
-        lockHysteresis_ = std::clamp(lockHysteresis, 0.0f, 80.0f);
-        vibratoPreserve_ = std::clamp(vibratoPreserve, 0.0f, 1.0f);
-    }
-
-    void setTempoHostPosition(const CreativeTempo::HostPosition& position) noexcept
-    {
-        bool discontinuity = false;
-        if (position.isPlaying && position.hasTimeInSamples && hostTransportHistoryValid_)
-        {
-            const auto error = std::llabs(position.timeInSamples - expectedNextHostSample_);
-            const auto tolerance = static_cast<std::int64_t>(
-                std::max(4, std::max(1, position.numberOfSamples) * 2));
-            discontinuity = error > tolerance;
-        }
-
-        if (discontinuity)
-            reset();
-
-        tempoHostPosition_ = position;
-        if (position.isPlaying && position.hasTimeInSamples)
-        {
-            expectedNextHostSample_ = position.timeInSamples
-                + static_cast<std::int64_t>(std::max(0, position.numberOfSamples));
-            hostTransportHistoryValid_ = true;
-        }
-    }
-
     void process(juce::AudioBuffer<float>& buffer,
                  const double* scaleRatios,
                  int numberOfScaleRatios,
@@ -247,15 +138,16 @@ public:
                  float amount,
                  double equaveRatio = 2.0)
     {
-        lastSpeedMs_ = std::isfinite(speedMs) ? std::clamp(speedMs, 0.0f, 500.0f) : 50.0f;
-        lastAmount_ = std::isfinite(amount) ? std::clamp(amount, 0.0f, 1.0f) : 1.0f;
-        equaveRatio = sanitiseEquave(equaveRatio);
+        lastSpeedMs_ = std::isfinite(speedMs)
+            ? std::clamp(speedMs, 0.0f, 500.0f) : 50.0f;
+        lastAmount_ = std::isfinite(amount)
+            ? std::clamp(amount, 0.0f, 1.0f) : 1.0f;
 
         auto& engine = activeEngine();
         static_cast<void>(engine.setScale(scaleRatios,
                                           numberOfScaleRatios,
                                           rootFrequency,
-                                          equaveRatio));
+                                          sanitiseEquave(equaveRatio)));
 
         const int channels = std::min({ buffer.getNumChannels(),
                                         channelCount_,
@@ -269,13 +161,15 @@ public:
         for (int sample = 0; sample < samples; ++sample)
         {
             for (int channel = 0; channel < channels; ++channel)
-                input[static_cast<std::size_t>(channel)] = buffer.getSample(channel, sample);
+                input[static_cast<std::size_t>(channel)] =
+                    buffer.getSample(channel, sample);
 
             engine.processFrame(input.data(), output.data(), channels,
                                 lastSpeedMs_, lastAmount_, humanize_);
 
             for (int channel = 0; channel < channels; ++channel)
-                buffer.setSample(channel, sample, output[static_cast<std::size_t>(channel)]);
+                buffer.setSample(channel, sample,
+                                 output[static_cast<std::size_t>(channel)]);
 
             updateStableDuration(engine.metering().pitch.state);
         }
@@ -308,8 +202,10 @@ public:
         if (data == nullptr || numberOfSamples <= 0)
             return;
 
-        lastSpeedMs_ = std::isfinite(speedMs) ? std::clamp(speedMs, 0.0f, 500.0f) : 50.0f;
-        lastAmount_ = std::isfinite(amount) ? std::clamp(amount, 0.0f, 1.0f) : 1.0f;
+        lastSpeedMs_ = std::isfinite(speedMs)
+            ? std::clamp(speedMs, 0.0f, 500.0f) : 50.0f;
+        lastAmount_ = std::isfinite(amount)
+            ? std::clamp(amount, 0.0f, 1.0f) : 1.0f;
 
         auto& engine = activeEngine();
         static_cast<void>(engine.setScale(
@@ -344,13 +240,15 @@ public:
         for (int sample = 0; sample < samples; ++sample)
         {
             for (int channel = 0; channel < channels; ++channel)
-                input[static_cast<std::size_t>(channel)] = buffer.getSample(channel, sample);
+                input[static_cast<std::size_t>(channel)] =
+                    buffer.getSample(channel, sample);
 
             engine.processBypassedFrame(input.data(), output.data(), channels,
                                         lastSpeedMs_, lastAmount_, humanize_);
 
             for (int channel = 0; channel < channels; ++channel)
-                buffer.setSample(channel, sample, output[static_cast<std::size_t>(channel)]);
+                buffer.setSample(channel, sample,
+                                 output[static_cast<std::size_t>(channel)]);
 
             updateStableDuration(engine.metering().pitch.state);
         }
@@ -386,27 +284,18 @@ public:
             : source.pitch.measuredHz;
         result.targetPitchHz = static_cast<float>(source.targetPitchHz);
         result.confidence = source.pitch.confidence;
-        result.voicing = source.pitch.state == neumaton::pitch::TrackingState::stable
-            ? 1.0f : source.pitch.periodicity;
-        result.harmonicity = source.pitch.periodicity;
-        result.spectralReliability = source.pitch.confidence;
-        result.maskStability = 1.0f;
-        result.consensus = source.pitch.periodicity;
+        result.periodicity = source.pitch.periodicity;
         result.correctionCents = static_cast<float>(source.correctionCents);
-        result.wetMix = 1.0f;
-        result.detectorSupport = source.pitch.newMeasurement ? 1 : 0;
-        result.octaveState = source.pitch.octaveAmbiguous ? 1 : 0;
+        result.targetDegreeIndex = source.targetDegreeIndex;
+        result.targetDegreeCount = source.targetDegreeCount;
+        result.gateOpen = source.pitch.gateOpen;
+        result.newMeasurement = source.pitch.newMeasurement;
+        result.octaveAmbiguous = source.pitch.octaveAmbiguous;
+        result.rendererSplices = source.rendererSplices;
         result.sustainedNoteSeconds = static_cast<float>(
-            static_cast<double>(sustainedStableSamples_) / std::max(8000.0, sampleRate_));
+            static_cast<double>(sustainedStableSamples_)
+            / std::max(8000.0, sampleRate_));
         result.state = toUiState(source.pitch);
-
-        result.tempoBpm = tempoHostPosition_.hasBpm
-            ? static_cast<float>(tempoHostPosition_.bpm)
-            : static_cast<float>(tempoSettings_.fallbackBpm);
-        result.tempoMode = tempoSettings_.mode;
-        result.tempoHostSyncValid = tempoHostPosition_.hasBpm;
-        result.tempoActive = false;
-        result.tempoWaitingForGrid = false;
         return result;
     }
 
@@ -428,9 +317,12 @@ private:
     {
         switch (mode)
         {
-            case LatencyMode::ultraLive: return neumaton::pitch::LatencyMode::lowLatency128;
-            case LatencyMode::live:      return neumaton::pitch::LatencyMode::live256;
-            case LatencyMode::quality:   return neumaton::pitch::LatencyMode::studio512;
+            case LatencyMode::ultraLive:
+                return neumaton::pitch::LatencyMode::lowLatency128;
+            case LatencyMode::live:
+                return neumaton::pitch::LatencyMode::live256;
+            case LatencyMode::quality:
+                return neumaton::pitch::LatencyMode::studio512;
         }
         return neumaton::pitch::LatencyMode::live256;
     }
@@ -441,7 +333,8 @@ private:
         switch (pitch.state)
         {
             case neumaton::pitch::TrackingState::acquire:
-                return pitch.gateOpen ? TrackingState::acquire : TrackingState::unvoiced;
+                return pitch.gateOpen ? TrackingState::acquire
+                                      : TrackingState::unvoiced;
             case neumaton::pitch::TrackingState::stable:
                 return TrackingState::stable;
             case neumaton::pitch::TrackingState::transition:
@@ -480,7 +373,6 @@ private:
     std::array<neumaton::PitchEngineV1, engineCount> engines_;
     std::array<std::atomic<bool>, engineCount> resetRequested_ {};
     std::atomic<int> activeModeIndex_ { static_cast<int>(LatencyMode::live) };
-    std::atomic<bool> prepared_ { false };
 
     double sampleRate_ = 48000.0;
     int maximumBlockSize_ = 512;
@@ -490,17 +382,5 @@ private:
     float maximumPitchHz_ = 1600.0f;
     float lastSpeedMs_ = 50.0f;
     float lastAmount_ = 1.0f;
-
-    bool scaleLock_ = false;
-    float lockHysteresis_ = 24.0f;
-    float vibratoPreserve_ = 0.0f;
-    CreativeTempo::Settings tempoSettings_;
-    CreativeTempo::HostPosition tempoHostPosition_;
-
-    bool hostTransportHistoryValid_ = false;
-    std::int64_t expectedNextHostSample_ = 0;
     std::uint64_t sustainedStableSamples_ = 0;
 };
-
-// Temporary source-compatibility alias. This is not the removed legacy DSP.
-using ModernPitchEngine = LivePitchProcessor;
