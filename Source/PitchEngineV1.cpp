@@ -72,6 +72,8 @@ void PitchEngineV1::updateTrajectory(const pitch::PitchResult& pitchResult,
     metering_.pitch = pitchResult;
     metering_.targetPitchHz = trajectory_.targetPitchHz();
     metering_.correctionCents = correction;
+    metering_.targetDegreeIndex = trajectory_.targetDegreeIndex();
+    metering_.targetDegreeCount = trajectory_.targetDegreeCount();
     metering_.rendererSplices = renderer_.spliceCount();
 }
 
