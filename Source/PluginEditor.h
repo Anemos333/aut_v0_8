@@ -54,7 +54,6 @@ private:
             1.0f
         }
     };
-    neumaton::lab::LabLeverToggleLookAndFeel scaleLockLeverLookAndFeel;
     neumaton::lab::LabLeverToggleLookAndFeel analogLeverLookAndFeel {
         neumaton::lab::LabLeverToggleLookAndFeel::Options {
             true,
@@ -97,9 +96,6 @@ private:
     juce::Label humanizeLabel;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> humanizeAttachment;
 
-    juce::ToggleButton scaleLockButton { "Scale Lock" };
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> scaleLockAttachment;
-
     juce::Slider lockHysteresisSlider;
     juce::Label lockHysteresisLabel;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> lockHysteresisAttachment;
@@ -139,12 +135,10 @@ private:
     [[nodiscard]] static juce::String trackingStateToString (
         LivePitchProcessor::TrackingState state);
 
-    bool lastScaleLockState_ = false;
     bool lastAnalogModeState_ = false;
 
     LivePitchProcessor::Metering displayedMetering;
     float visualCorrectionGlowCents_ = 0.0f;
-    float visualConsensusGlow_ = 0.0f;
 
     class AudioControlAvailabilityGuard final : private juce::Timer
     {
@@ -170,7 +164,6 @@ private:
             const int processingMode = owner.processorRef.processingMode.load();
             const int centerIndex = juce::jlimit (
                 0, 11, owner.processorRef.tonalCenterIndex.load());
-            const bool scaleLockActive = owner.scaleLockButton.getToggleState();
             const bool mainPage = ! owner.showingScaleEditor
                 && ! owner.showingControlRoom;
 
@@ -195,31 +188,25 @@ private:
 
             owner.humanizeSlider.setEnabled (true);
             owner.humanizeLabel.setEnabled (true);
-            owner.scaleLockButton.setEnabled (true);
+            owner.lockHysteresisSlider.setEnabled (true);
+            owner.lockHysteresisLabel.setEnabled (true);
+            owner.vibratoPreserveSlider.setEnabled (true);
+            owner.vibratoPreserveLabel.setEnabled (true);
 
-            owner.lockHysteresisSlider.setEnabled (scaleLockActive);
-            owner.lockHysteresisLabel.setEnabled (scaleLockActive);
-            owner.vibratoPreserveSlider.setEnabled (scaleLockActive);
-            owner.vibratoPreserveLabel.setEnabled (scaleLockActive);
+            owner.lockHysteresisSlider.setVisible (mainPage);
+            owner.lockHysteresisLabel.setVisible (mainPage);
+            owner.vibratoPreserveSlider.setVisible (mainPage);
+            owner.vibratoPreserveLabel.setVisible (mainPage);
 
-            owner.lockHysteresisSlider.setVisible (mainPage && scaleLockActive);
-            owner.lockHysteresisLabel.setVisible (mainPage && scaleLockActive);
-            owner.vibratoPreserveSlider.setVisible (mainPage && scaleLockActive);
-            owner.vibratoPreserveLabel.setVisible (mainPage && scaleLockActive);
-
-            const bool lockState = owner.scaleLockButton.getToggleState();
-            if (processingMode != lastProcessingMode_
-                || lockState != lastScaleLockState_)
+            if (processingMode != lastProcessingMode_)
             {
                 lastProcessingMode_ = processingMode;
-                lastScaleLockState_ = lockState;
                 owner.speedKnob.updateText();
             }
         }
 
         MicrotonalAutotuneAudioProcessorEditor& owner;
         int lastProcessingMode_ = -1;
-        bool lastScaleLockState_ = false;
         juce::String lastScaleStableId_;
     };
 
