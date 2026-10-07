@@ -1,0 +1,75 @@
+name: Validate Licensing Skeleton V1
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "Source/Entitlement.h"
+      - "Source/ShareablePack.h"
+      - "Source/PackVerifier.h"
+      - "Source/CommunityPackLibrary.h"
+      - "Source/PluginProcessor.h"
+      - "Tests/LicensingSkeletonTest.cpp"
+      - "Tests/LicensingAudioIsolationContractTest.cpp"
+      - "Tests/CommunityPackV1ContractTest.cpp"
+      - "CMakeLists.txt"
+      - ".github/workflows/validate-licensing-skeleton-v1.yml"
+
+jobs:
+  licensing-contract:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            ninja-build \
+            pkg-config \
+            libasound2-dev \
+            libjack-jackd2-dev \
+            libfreetype6-dev \
+            libfontconfig1-dev \
+            libx11-dev \
+            libxext-dev \
+            libxinerama-dev \
+            libxrandr-dev \
+            libxcursor-dev \
+            libxcomposite-dev \
+            libxdamage-dev \
+            libxrender-dev \
+            libwebkit2gtk-4.0-dev \
+            libglu1-mesa-dev \
+            mesa-common-dev
+
+      - name: Configure licensing test
+        run: |
+          cmake -B build-licensing -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DNEUMATON_BUILD_LICENSING_TESTS=ON \
+            -DJUCE_BUILD_EXTRAS=OFF \
+            -DJUCE_BUILD_EXAMPLES=OFF
+
+      - name: Build and run licensing test
+        run: |
+          cmake --build build-licensing --target LicensingSkeletonTest --parallel 2
+          build-licensing/licensing-tests/LicensingSkeletonTest
+
+      - name: Verify audio isolation contract
+        run: |
+          g++ -std=c++17 -O2 \
+            Tests/LicensingAudioIsolationContractTest.cpp \
+            -o /tmp/licensing_audio_isolation_test
+          /tmp/licensing_audio_isolation_test
+
+      - name: Re-run Community Pack contract
+        run: |
+          g++ -std=c++17 -O2 \
+            Tests/CommunityPackV1ContractTest.cpp \
+            -o /tmp/community_pack_contract_test
+          /tmp/community_pack_contract_test

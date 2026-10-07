@@ -241,6 +241,13 @@ public:
             if (! document.isValid())
                 continue;
 
+            const auto integrity = document.verifyIntegrity();
+            if (integrity == sharing::PackIntegrityStatus::missingHash
+                || integrity == sharing::PackIntegrityStatus::hashMismatch)
+            {
+                continue;
+            }
+
             const auto duplicate = std::find_if (
                 loadedPacks_.begin(), loadedPacks_.end(),
                 [&document] (const LoadedPack& candidate)
@@ -379,13 +386,17 @@ public:
     [[nodiscard]] static sharing::PackManifest makeManifest (
         const juce::String& name,
         const juce::String& author,
-        const juce::String& description = {})
+        const juce::String& description = {},
+        sharing::PackLicense license = sharing::PackLicense::community,
+        const juce::String& creatorId = {})
     {
         sharing::PackManifest manifest;
         manifest.stableId = "community.pack." + juce::Uuid().toString();
         manifest.name = name.trim();
         manifest.author = author.trim();
         manifest.description = description.trim();
+        manifest.license = license;
+        manifest.creatorId = creatorId.trim();
         return manifest;
     }
 
@@ -447,6 +458,7 @@ public:
             addPresetById (scene->presetStableId);
         }
 
+        pack.sealIntegrity();
         return pack;
     }
 
