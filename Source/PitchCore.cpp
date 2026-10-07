@@ -872,6 +872,7 @@ ScaleQuantizer::Target ScaleQuantizer::quantize(double fundamentalHz,
     const double base = std::floor(relative);
     double bestRelative = relative;
     double bestDistance = std::numeric_limits<double>::max();
+    int bestDegreeIndex = -1;
 
     for (int i = 0; i < count_; ++i)
     {
@@ -884,12 +885,15 @@ ScaleQuantizer::Target ScaleQuantizer::quantize(double fundamentalHz,
             {
                 bestDistance = distance;
                 bestRelative = candidate;
+                bestDegreeIndex = i;
             }
         }
     }
 
     result.targetHz = referenceHz_ * std::exp(bestRelative * logEquave_);
     result.correctionCents = 1200.0 * std::log2(result.targetHz / fundamentalHz);
+    result.degreeIndex = bestDegreeIndex;
+    result.degreeCount = count_;
 
     const double a = std::clamp(static_cast<double>(amount), 0.0, 1.0);
     const double h = std::clamp(static_cast<double>(humanize), 0.0, 1.0);
