@@ -308,11 +308,5 @@ private:
 
     static LivePitchProcessor::LatencyMode modeToLatency (int mode) noexcept;
 
-    // Tempo Lab is hidden in V1. These remain only to read old APVTS state and
-    // preserve session compatibility; LivePitchProcessor gives them no audio authority.
-    [[nodiscard]] CreativeTempo::Settings getTempoSettings() const noexcept;
-    [[nodiscard]] CreativeTempo::HostPosition readHostTempoPosition(
-        int numberOfSamples) const noexcept;
-
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MicrotonalAutotuneAudioProcessor)
 };
