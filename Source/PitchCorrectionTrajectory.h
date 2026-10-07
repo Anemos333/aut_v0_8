@@ -30,6 +30,8 @@ public:
         desiredCorrectionCents_ = 0.0;
         currentCorrectionCents_ = 0.0;
         targetPitchHz_ = 0.0;
+        targetDegreeIndex_ = -1;
+        targetDegreeCount_ = 0;
         hasStableTransport_ = false;
     }
 
@@ -59,6 +61,8 @@ public:
                     -maximumCorrectionCents_,
                     maximumCorrectionCents_);
                 targetPitchHz_ = target.targetHz;
+                targetDegreeIndex_ = target.degreeIndex;
+                targetDegreeCount_ = target.degreeCount;
                 hasStableTransport_ = true;
             }
         }
@@ -70,6 +74,8 @@ public:
             // correction=0.
             desiredCorrectionCents_ = 0.0;
             targetPitchHz_ = 0.0;
+            targetDegreeIndex_ = -1;
+            targetDegreeCount_ = 0;
         }
 
         const double safeSpeedMs = std::isfinite(speedMs)
@@ -114,6 +120,16 @@ public:
         return targetPitchHz_;
     }
 
+    [[nodiscard]] int targetDegreeIndex() const noexcept
+    {
+        return targetDegreeIndex_;
+    }
+
+    [[nodiscard]] int targetDegreeCount() const noexcept
+    {
+        return targetDegreeCount_;
+    }
+
     [[nodiscard]] bool hasStableTransport() const noexcept
     {
         return hasStableTransport_;
@@ -125,6 +141,8 @@ private:
     double desiredCorrectionCents_ = 0.0;
     double currentCorrectionCents_ = 0.0;
     double targetPitchHz_ = 0.0;
+    int targetDegreeIndex_ = -1;
+    int targetDegreeCount_ = 0;
     bool hasStableTransport_ = false;
 };
 
