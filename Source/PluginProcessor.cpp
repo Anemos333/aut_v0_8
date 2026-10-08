@@ -178,6 +178,15 @@ MicrotonalAutotuneAudioProcessor::createParameterLayout()
         juce::ParameterID { "vibratoPreserve", 1 }, "Vibrato Preserve",
         juce::NormalisableRange<float> (0.0f, 100.0f, 1.0f), 0.0f));
 
+    // Separate new IDs preserve legacy Hold/Vibrato session automation.
+    params.push_back (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { "boundaryStability", 1 }, "Boundary Stability",
+        juce::NormalisableRange<float> (0.0f, 100.0f, 1.0f), 50.0f));
+
+    params.push_back (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { "outputDrive", 1 }, "Output Drive",
+        juce::NormalisableRange<float> (0.0f, 100.0f, 1.0f), 0.0f));
+
     params.push_back (std::make_unique<juce::AudioParameterBool> (
         juce::ParameterID { "analogMode", 1 }, "Analog Mode", false));
 
@@ -575,7 +584,8 @@ void MicrotonalAutotuneAudioProcessor::processOutputStage (
     int numChannels,
     int numSamples,
     bool analogMode,
-    float outGain) noexcept
+    float outGain,
+    float outputDrive) noexcept
 {
     numChannels = juce::jlimit (0, buffer.getNumChannels(), numChannels);
     numSamples = juce::jlimit (0, buffer.getNumSamples(), numSamples);
@@ -584,6 +594,11 @@ void MicrotonalAutotuneAudioProcessor::processOutputStage (
         return;
 
     outGain = std::isfinite (outGain) ? juce::jlimit (0.0f, 8.0f, outGain) : 1.0f;
+    const float drive = std::isfinite (outputDrive)
+        ? juce::jlimit (0.0f, 1.0f, outputDrive) : 0.0f;
+    const float driveGain = 1.0f + 2.0f * drive;
+    const float driveNormalisation = drive > 0.0f
+        ? std::max (0.1f, fastSoftClip (driveGain)) : 1.0f;
 
     if (analogMode && ! analogOutputWasActive_)
         resetAnalogOutputFilters();
@@ -604,6 +619,10 @@ void MicrotonalAutotuneAudioProcessor::processOutputStage (
                     value = analogHighShelfFilters_[static_cast<std::size_t> (channel)].processSample (value);
                 }
             }
+
+            // Zero drive preserves the pre-existing output processing exactly.
+            if (drive > 0.0f)
+                value = fastSoftClip (value * driveGain) / driveNormalisation;
 
             value *= outGain;
             data[sample] = outputSafetySoftCeiling (value);
@@ -637,6 +656,8 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
     const float vibratoPreserve = apvts.getRawParameterValue ("vibratoPreserve")->load() / 100.0f;
     const bool analogMode = apvts.getRawParameterValue ("analogMode")->load() > 0.5f;
     const float outVolumeDb = apvts.getRawParameterValue ("outVolume")->load();
+    const float boundaryStability = apvts.getRawParameterValue ("boundaryStability")->load();
+    const float outputDrive = apvts.getRawParameterValue ("outputDrive")->load();
 
     const int mode = juce::jlimit (1, 3,
         processingMode.load (std::memory_order_relaxed));
@@ -654,6 +675,9 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
         scaleSnapshotSlots_[static_cast<std::size_t> (snapshotIndex)].value;
 
     livePitchProcessor.setScaleLockParameters (scaleLock, lockHysteresis, vibratoPreserve);
+    livePitchProcessor.setBoundaryStability (
+        std::isfinite (boundaryStability)
+            ? juce::jlimit (0.0f, 1.0f, boundaryStability / 100.0f) : 0.5f);
     livePitchProcessor.setAdvancedParameters (
         35.0f,
         humanizeVal,
@@ -677,7 +701,8 @@ void MicrotonalAutotuneAudioProcessor::processBlock (juce::AudioBuffer<float>& b
                         totalNumInputChannels,
                         numSamples,
                         analogMode,
-                        outGain);
+                        outGain,
+                        outputDrive / 100.0f);
 }
 
 void MicrotonalAutotuneAudioProcessor::processBlockBypassed (
