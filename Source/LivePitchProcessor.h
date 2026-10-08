@@ -200,6 +200,11 @@ public:
                                      4000.0f);
     }
 
+    void setBoundaryStability(float value) noexcept
+    {
+        boundaryStability_ = std::clamp(value, 0.0f, 1.0f);
+    }
+
     // Compatibility state only: V1 does not let Creative Tempo or the legacy
     // Scale-Lock sub-controls acquire hidden audio authority.
     void setTempoSettings(const CreativeTempo::Settings& settings) noexcept
@@ -252,6 +257,7 @@ public:
         equaveRatio = sanitiseEquave(equaveRatio);
 
         auto& engine = activeEngine();
+        engine.setBoundaryStability(boundaryStability_);
         static_cast<void>(engine.setScale(scaleRatios,
                                           numberOfScaleRatios,
                                           rootFrequency,
@@ -312,6 +318,7 @@ public:
         lastAmount_ = std::isfinite(amount) ? std::clamp(amount, 0.0f, 1.0f) : 1.0f;
 
         auto& engine = activeEngine();
+        engine.setBoundaryStability(boundaryStability_);
         static_cast<void>(engine.setScale(
             scaleRatios.empty() ? nullptr : scaleRatios.data(),
             static_cast<int>(scaleRatios.size()),
@@ -486,6 +493,7 @@ private:
     int maximumBlockSize_ = 512;
     int channelCount_ = 1;
     float humanize_ = 0.20f;
+    float boundaryStability_ = 0.5f;
     float minimumPitchHz_ = 45.0f;
     float maximumPitchHz_ = 1600.0f;
     float lastSpeedMs_ = 50.0f;
