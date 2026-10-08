@@ -31,24 +31,88 @@ public:
         currentCorrectionCents_ = 0.0;
         targetPitchHz_ = 0.0;
         hasStableTransport_ = false;
+        ambiguousUpperHz_ = 0.0;
+        ambiguousLowerHz_ = 0.0;
+        ambiguousMidpointHz_ = 0.0;
+        ambiguityWidthCents_ = 0.0;
+        lowerExitObservations_ = 0;
     }
 
     [[nodiscard]] double process(const pitch::PitchResult& observation,
                                  const pitch::ScaleQuantizer& quantizer,
                                  float amount,
                                  float humanize,
-                                 float speedMs) noexcept
+                                 float speedMs,
+                                 float boundaryStability = 0.5f) noexcept
     {
         if (observation.state == pitch::TrackingState::stable
             && observation.hasStable
             && std::isfinite(observation.stableHz)
             && observation.stableHz > 0.0f)
         {
-            const auto target = quantizer.quantize(observation.stableHz,
-                                                   amount,
-                                                   humanize);
+            auto target = quantizer.quantize(observation.stableHz,
+                                             amount, humanize,
+                                             boundaryStability);
             if (target.valid)
             {
+                // The upper legal degree owns the microscopic tie region.
+                // Retain it across slight downward jitter; leaving the region
+                // must be supported by two fresh, clearly lower measurements.
+                if (target.ambiguousBoundary)
+                {
+                    ambiguousUpperHz_ = target.targetHz;
+                    ambiguousLowerHz_ = target.lowerTargetHz;
+                    ambiguousMidpointHz_ = target.boundaryMidpointHz;
+                    ambiguityWidthCents_ = target.boundaryHalfWidthCents;
+                    lowerExitObservations_ = 0;
+                }
+                else if (ambiguousUpperHz_ > 0.0)
+                {
+                    const auto sameNote = [](double a, double b) noexcept
+                    {
+                        return a > 0.0 && b > 0.0
+                            && std::abs(1200.0 * std::log2(a / b)) < 0.1;
+                    };
+                    const auto legalCheck = quantizer.quantize(
+                        ambiguousUpperHz_, 1.0f, 0.0f, boundaryStability);
+                    if (!legalCheck.valid
+                        || !sameNote(legalCheck.targetHz, ambiguousUpperHz_))
+                    {
+                        ambiguousUpperHz_ = 0.0; // Scale or root changed.
+                    }
+                    else if (sameNote(target.targetHz, ambiguousLowerHz_))
+                    {
+                        const double gap = std::abs(1200.0
+                            * std::log2(ambiguousUpperHz_ / ambiguousLowerHz_));
+                        const double exitCents = std::min(0.25 * gap,
+                            std::max(ambiguityWidthCents_ + 3.0, 5.0));
+                        const bool distinctlyLower = observation.stableHz
+                            < ambiguousMidpointHz_ * std::exp2(-exitCents / 1200.0);
+                        if (!distinctlyLower)
+                            lowerExitObservations_ = 0;
+                        else if (observation.newMeasurement)
+                            ++lowerExitObservations_;
+
+                        if (lowerExitObservations_ < 2)
+                        {
+                            target.targetHz = ambiguousUpperHz_;
+                            target.correctionCents = 1200.0
+                                * std::log2(target.targetHz / observation.stableHz);
+                        }
+                        else
+                        {
+                            ambiguousUpperHz_ = 0.0;
+                            lowerExitObservations_ = 0;
+                        }
+                    }
+                    else
+                    {
+                        // Normal note changes keep their original response.
+                        ambiguousUpperHz_ = 0.0;
+                        lowerExitObservations_ = 0;
+                    }
+                }
+
                 const double required = target.correctionCents;
                 const double window = std::max(0.0, target.liveWindowCents);
                 const double residual = std::copysign(
@@ -126,6 +190,11 @@ private:
     double currentCorrectionCents_ = 0.0;
     double targetPitchHz_ = 0.0;
     bool hasStableTransport_ = false;
+    double ambiguousUpperHz_ = 0.0;
+    double ambiguousLowerHz_ = 0.0;
+    double ambiguousMidpointHz_ = 0.0;
+    double ambiguityWidthCents_ = 0.0;
+    int lowerExitObservations_ = 0;
 };
 
 } // namespace neumaton::render
