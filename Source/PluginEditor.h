@@ -193,12 +193,12 @@ private:
 
             owner.humanizeSlider.setEnabled (true);
             owner.humanizeLabel.setEnabled (true);
-            // These legacy parameters are retained by the processor for saved
-            // sessions, but have no audio authority in V1. Keep them visible.
-            owner.lockHysteresisSlider.setEnabled (false);
-            owner.lockHysteresisLabel.setEnabled (false);
-            owner.vibratoPreserveSlider.setEnabled (false);
-            owner.vibratoPreserveLabel.setEnabled (false);
+            // The two repurposed controls use fresh parameter IDs so old
+            // session Hold/Vibrato values cannot silently change the sound.
+            owner.lockHysteresisSlider.setEnabled (true);
+            owner.lockHysteresisLabel.setEnabled (true);
+            owner.vibratoPreserveSlider.setEnabled (true);
+            owner.vibratoPreserveLabel.setEnabled (true);
             owner.compatibilityLabel.setVisible (mainPage);
             owner.lockHysteresisSlider.setVisible (mainPage);
             owner.lockHysteresisLabel.setVisible (mainPage);
