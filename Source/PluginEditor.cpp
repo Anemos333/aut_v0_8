@@ -276,14 +276,14 @@ MicrotonalAutotuneAudioProcessorEditor::MicrotonalAutotuneAudioProcessorEditor (
     humanizeAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
         processorRef.getAPVTS(), "humanize", humanizeSlider);
 
-    compatibilityLabel.setText ("Legacy controls - inactive in V1", juce::dontSendNotification);
+    compatibilityLabel.setText ("Boundary / Output controls", juce::dontSendNotification);
     compatibilityLabel.setFont (juce::FontOptions (11.0f));
     compatibilityLabel.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.65f));
     addAndMakeVisible (compatibilityLabel);
 
     lockHysteresisSlider.setSliderStyle (juce::Slider::LinearHorizontal);
     lockHysteresisSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 60, 20);
-    lockHysteresisSlider.setTextValueSuffix (" c");
+    lockHysteresisSlider.setTextValueSuffix (" %");
     lockHysteresisSlider.setLookAndFeel (&utilityRailLookAndFeel);
     lockHysteresisSlider.setColour (juce::Slider::trackColourId, juce::Colour (0xFFFF4FB3));
     lockHysteresisSlider.setColour (juce::Slider::thumbColourId, juce::Colours::white);
@@ -291,7 +291,7 @@ MicrotonalAutotuneAudioProcessorEditor::MicrotonalAutotuneAudioProcessorEditor (
     configureHeaderLabel (lockHysteresisLabel, Neumaton::UI::Labels::Main::hold,
                           juce::Justification::centredLeft);
     lockHysteresisAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
-        processorRef.getAPVTS(), "lockHysteresis", lockHysteresisSlider);
+        processorRef.getAPVTS(), "boundaryStability", lockHysteresisSlider);
 
     vibratoPreserveSlider.setSliderStyle (juce::Slider::LinearHorizontal);
     vibratoPreserveSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 60, 20);
@@ -303,7 +303,7 @@ MicrotonalAutotuneAudioProcessorEditor::MicrotonalAutotuneAudioProcessorEditor (
     configureHeaderLabel (vibratoPreserveLabel, Neumaton::UI::Labels::Main::vibratoPreserve,
                           juce::Justification::centredLeft);
     vibratoPreserveAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
-        processorRef.getAPVTS(), "vibratoPreserve", vibratoPreserveSlider);
+        processorRef.getAPVTS(), "outputDrive", vibratoPreserveSlider);
 
     analogModeButton.setButtonText (Neumaton::UI::Labels::Main::analogTexture);
     analogModeButton.setLookAndFeel (&analogLeverLookAndFeel);
@@ -337,13 +337,11 @@ MicrotonalAutotuneAudioProcessorEditor::MicrotonalAutotuneAudioProcessorEditor (
     setResizable (true, true);
     setResizeLimits (640, 510, 1200, 820);
 
-    const auto legacyTooltip = "Stored for session compatibility; the current V1 engine does not use this control.";
-    lockHysteresisSlider.setTooltip (legacyTooltip);
-    vibratoPreserveSlider.setTooltip (legacyTooltip);
-    lockHysteresisSlider.setEnabled (false);
-    vibratoPreserveSlider.setEnabled (false);
-    lockHysteresisLabel.setEnabled (false);
-    vibratoPreserveLabel.setEnabled (false);
+    lockHysteresisSlider.setTooltip (
+        "Width of the tiny ambiguous region between two legal notes. "
+        "The upper degree wins a tie, without changing normal scale boundaries.");
+    vibratoPreserveSlider.setTooltip (
+        "Optional post-correction saturation. 0% preserves the existing output.");
     displayedMetering = processorRef.getPitchMetering();
     updateMeterPresentation();
     startTimerHz (30);
@@ -952,7 +950,7 @@ void MicrotonalAutotuneAudioProcessorEditor::resized()
 
     compatibilityLabel.setBounds (lockModule.removeFromTop (18));
     auto holdRow = lockModule.removeFromTop (24).reduced (4, 1);
-    lockHysteresisLabel.setBounds (holdRow.removeFromLeft (52));
+    lockHysteresisLabel.setBounds (holdRow.removeFromLeft (132));
     lockHysteresisSlider.setBounds (holdRow);
     lockModule.removeFromTop (4);
     auto vibratoRow = lockModule.removeFromTop (24).reduced (4, 1);
