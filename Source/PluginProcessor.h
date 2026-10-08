@@ -302,7 +302,8 @@ private:
                             int numChannels,
                             int numSamples,
                             bool analogMode,
-                            float outGain) noexcept;
+                            float outGain,
+                            float outputDrive) noexcept;
 
     int lastSamplesPerBlock = 512;
 
