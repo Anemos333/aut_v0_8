@@ -1,0 +1,26 @@
+name: Active V1 Boundary Ownership
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'Source/PitchCore.cpp'
+      - 'Source/PitchCore.h'
+      - 'Source/PitchCorrectionTrajectory.h'
+      - 'Tests/BoundaryOwnershipV1Test.cpp'
+      - '.github/workflows/boundary-ownership-v1.yml'
+  workflow_dispatch:
+
+jobs:
+  boundary-regression:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile active-engine scale ownership regression
+        run: |
+          c++ -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror \
+            -ISource \
+            Tests/BoundaryOwnershipV1Test.cpp Source/PitchCore.cpp \
+            -o boundary-ownership-test
+      - name: Run midpoint, microtonal, equave, and no-chatter cases
+        run: ./boundary-ownership-test
