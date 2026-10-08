@@ -435,9 +435,33 @@ void MicrotonalAutotuneAudioProcessorEditor::buildPresetMenu()
         presetSelector.addItem (preset.name, i + 1);
     }
 
-    presetSelector.setSelectedId (
-        processorRef.getCurrentProgram() + 1,
-        juce::dontSendNotification);
+    presetSelector.setTextWhenNothingSelected ("Custom");
+    updatePresetPresentation();
+}
+
+void MicrotonalAutotuneAudioProcessorEditor::updatePresetPresentation()
+{
+    if (presetSelector.getNumItems() == 0)
+        return;
+
+    const int index = processorRef.getCurrentProgram();
+    const auto& preset = FactoryPresets::getPreset (index);
+    const auto matches = [this] (const char* id, float expected)
+    {
+        const auto* value = processorRef.getAPVTS().getRawParameterValue (id);
+        return value != nullptr && std::abs (value->load() - expected) < 0.01f;
+    };
+    const bool recalled = processorRef.processingMode.load() == preset.processingMode
+        && matches ("speed", preset.speedMs)
+        && matches ("amount", preset.amount)
+        && matches ("humanize", preset.humanize)
+        && matches ("analogMode", preset.analogMode ? 1.0f : 0.0f)
+        && matches ("outVolume", preset.outVolumeDb);
+    const int selectedId = recalled ? index + 1 : 0;
+    if (presetSelector.getSelectedId() != selectedId)
+        presetSelector.setSelectedId (selectedId, juce::dontSendNotification);
+    presetSelector.setTooltip (recalled ? preset.description
+        : "Custom settings. Select a factory preset to recall its controls.");
 }
 
 void MicrotonalAutotuneAudioProcessorEditor::onPresetSelected()
@@ -447,6 +471,7 @@ void MicrotonalAutotuneAudioProcessorEditor::onPresetSelected()
         return;
 
     processorRef.applyFactoryPreset (index);
+    updatePresetPresentation();
     modeSelector.setSelectedId (processorRef.processingMode.load(), juce::dontSendNotification);
     setMainControlsVisible (! showingScaleEditor && ! showingControlRoom);
     resized();

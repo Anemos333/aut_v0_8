@@ -3,22 +3,36 @@
 
 namespace
 {
+    // Preserve the twelve program slots used by saved sessions/host programs.
+    // Settings change only when a factory program is explicitly recalled.
     constexpr FactoryPreset presets[] =
     {
-        { "Studio Gentle",       "Studio", 1, 80.0f, 45.0f, 55.0f, false, 24.0f, 60.0f, 0, 2, 35.0f, 100.0f, true,  false,  -1.2f },
-        { "Natural Vibrato",     "Studio", 1, 120.0f, 55.0f, 75.0f, false, 30.0f, 85.0f, 0, 2, 35.0f, 100.0f, true,  false,  -1.2f },
-        { "Clean Correction",    "Studio", 1, 45.0f, 75.0f, 35.0f, true,  22.0f, 45.0f, 0, 2, 35.0f, 100.0f, true,  false,  -0.3f },
-        { "Hard Tune Studio",    "Studio", 1, 12.0f, 100.0f, 8.0f, true,  12.0f, 10.0f, 0, 2, 35.0f, 100.0f, true,  false, -1.0f },
+        { "Studio Gentle", "Studio", "A soft pull toward the scale with room for pitch drift.",
+          1, 80.0f, 45.0f, 55.0f, false, -1.2f },
+        { "Slow Drift", "Studio", "Slower correction and a wider pitch window for flexible phrases.",
+          1, 120.0f, 55.0f, 75.0f, false, -1.2f },
+        { "Clean Correction", "Studio", "A quick response with a small pitch window around each scale target.",
+          1, 45.0f, 75.0f, 35.0f, false, -0.3f },
+        { "Full Correction", "Studio", "Immediate correction to the scale target with zero pitch window.",
+          1, 0.0f, 100.0f, 0.0f, false, -1.0f },
 
-        { "Live Anchor",         "Live",   2, 55.0f, 65.0f, 45.0f, true,  28.0f, 55.0f, 0, 2, 35.0f, 100.0f, true,  false,  -1.5f },
-        { "Live Natural",        "Live",   2, 90.0f, 50.0f, 70.0f, false, 30.0f, 80.0f, 0, 2, 35.0f, 100.0f, true,  false,  -1.8f },
-        { "Backing Track Lock",  "Live",   2, 25.0f, 85.0f, 25.0f, true,  18.0f, 30.0f, 0, 2, 35.0f, 100.0f, true,  false,  -0.9f },
-        { "Emergency Tight",     "Live",   3, 8.0f,  100.0f, 5.0f, true,  8.0f,  5.0f,  0, 2, 35.0f, 100.0f, true,  false, -1.5f },
+        { "Live Anchor", "Live", "A balanced live response with moderate room around the target.",
+          2, 55.0f, 65.0f, 45.0f, false, -1.5f },
+        { "Live Drift", "Live", "A slower live response with room for expressive pitch movement.",
+          2, 90.0f, 50.0f, 70.0f, false, -1.8f },
+        { "Stage Tight", "Live", "Fast live correction with a narrow pitch window.",
+          2, 25.0f, 85.0f, 25.0f, false, -0.9f },
+        { "Emergency Tight", "Live", "Low Latency mode with a very fast response and a tiny pitch window.",
+          3, 8.0f, 100.0f, 5.0f, false, -1.5f },
 
-        { "Robot Rite",          "Lab",    1, 0.0f,  100.0f, 0.0f, true,  4.0f,  0.0f,  0, 2, 35.0f, 100.0f, true,  true,  -2.0f },
-        { "Tempo Glide",         "Lab",    1, 45.0f, 90.0f, 20.0f, true,  16.0f, 20.0f, 1, 2, 45.0f, 100.0f, true,  false,  -1.2f },
-        { "Glide Lock",          "Lab",    1, 25.0f, 100.0f, 8.0f, true,  10.0f, 5.0f,  2, 2, 35.0f, 100.0f, true,  false, -1.0f },
-        { "Experimental Window", "Lab",    3, 4.0f,  100.0f, 5.0f, true,  6.0f,  0.0f,  0, 2, 35.0f, 100.0f, true,  false, -1.5f }
+        { "Robot Rite", "Lab", "Immediate exact-target correction with Analog Texture.",
+          1, 0.0f, 100.0f, 0.0f, true, -2.0f },
+        { "Slow Orbit", "Lab", "A long slide toward each scale target with room for drift.",
+          1, 350.0f, 75.0f, 65.0f, false, -1.2f },
+        { "Liquid Steps", "Lab", "A gradual slide all the way to each scale target with Analog Texture.",
+          1, 160.0f, 100.0f, 0.0f, true, -2.0f },
+        { "Open Window", "Lab", "Slow retuning and a broad pitch window in Low Latency mode.",
+          3, 240.0f, 25.0f, 100.0f, false, -1.5f }
     };
 }
 

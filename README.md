@@ -115,6 +115,11 @@ Neumaton includes conventional scales, microtonal systems and custom scale suppo
 
 At the rigid endpoint the intended target is the scale centre itself. `Amount` and `Humanize` control how strongly the trajectory is allowed to approach that target; they do not redefine the mathematical centre of the scale degree.
 
+The current [factory preset bank](PRESETS_V1.md) includes Full Correction and
+creative profiles built from the active V1 controls. Factory recall keeps the
+selected scale, tonal centre and A4 tuning, and no longer writes retired Scale
+Lock or Tempo controls.
+
 ---
 
 ## Renderer

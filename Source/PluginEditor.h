@@ -122,6 +122,7 @@ private:
 
     void buildPresetMenu();
     void onPresetSelected();
+    void updatePresetPresentation();
     void buildScaleMenu();
     void onScaleSelected();
     void updateCenterPresentation();
@@ -179,6 +180,8 @@ private:
             if (owner.modeSelector.getSelectedId() != processingMode)
                 owner.modeSelector.setSelectedId (
                     processingMode, juce::dontSendNotification);
+
+            owner.updatePresetPresentation();
 
             const auto scaleStableId = owner.processorRef.getCurrentScaleStableId();
             if (scaleStableId != lastScaleStableId_)

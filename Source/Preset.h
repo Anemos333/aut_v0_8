@@ -1,27 +1,16 @@
 #pragma once
 
-#include <cstddef>
-
 struct FactoryPreset
 {
     const char* name;
     const char* group;
+    const char* description;
 
-    int processingMode; // 0 High Latency, 1 Quality, 2 Live, 3 Experimental
+    int processingMode; // 1 Studio/512, 2 Live/256, 3 Low Latency/128
 
     float speedMs;
-    float amount;
-    float humanize;
-
-    bool scaleLock;
-    float lockHysteresis;
-    float vibratoPreserve;
-
-    int tempoMode;       // 0 Off, 1 Tempo Glide, 2 Glide Lock
-    int tempoDivision;   // 0..4
-    float tempoGlidePct;
-    float tempoLockStrength;
-    bool tempoSmartOnset;
+    float amount;   // 0..100 narrows the allowed pitch window
+    float humanize; // 0..100 adds room around the target
 
     bool analogMode;
     float outVolumeDb;

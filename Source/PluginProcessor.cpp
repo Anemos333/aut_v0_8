@@ -532,17 +532,8 @@ void MicrotonalAutotuneAudioProcessor::applyFactoryPreset (int index)
     setParameterNotifyingHost (apvts, "speed", preset.speedMs);
     setParameterNotifyingHost (apvts, "amount", preset.amount);
     setParameterNotifyingHost (apvts, "humanize", preset.humanize);
-    setParameterNotifyingHost (apvts, "scaleLock", preset.scaleLock ? 1.0f : 0.0f);
-    setParameterNotifyingHost (apvts, "lockHysteresis", preset.lockHysteresis);
-    setParameterNotifyingHost (apvts, "vibratoPreserve", preset.vibratoPreserve);
-
-    // Stored for compatibility; Tempo Lab itself is not exposed in V1.
-    setParameterNotifyingHost (apvts, "tempoMode", static_cast<float> (preset.tempoMode));
-    setParameterNotifyingHost (apvts, "tempoDivision", static_cast<float> (preset.tempoDivision));
-    setParameterNotifyingHost (apvts, "tempoGlidePercent", preset.tempoGlidePct);
-    setParameterNotifyingHost (apvts, "tempoLockStrength", preset.tempoLockStrength);
-    setParameterNotifyingHost (apvts, "tempoSmartOnset", preset.tempoSmartOnset ? 1.0f : 0.0f);
-
+    // Factory presets own only current audible controls. Compatibility-only
+    // parameters and the user's scale, centre and A4 tuning remain untouched.
     setParameterNotifyingHost (apvts, "analogMode", preset.analogMode ? 1.0f : 0.0f);
     setParameterNotifyingHost (apvts, "outVolume", preset.outVolumeDb);
 }

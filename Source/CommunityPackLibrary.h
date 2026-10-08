@@ -10,15 +10,14 @@
 
 namespace neumaton::community
 {
-inline const std::array<const char*, 9>& sharedPresetParameterIds() noexcept
+// Capture/apply only current V1 controls. Legacy Values properties still
+// round-trip unchanged in old packs, preserving their content/integrity hashes.
+inline const std::array<const char*, 6>& sharedPresetParameterIds() noexcept
 {
-    static const std::array<const char*, 9> ids {
+    static const std::array<const char*, 6> ids {
         "speed",
         "amount",
         "humanize",
-        "scaleLock",
-        "lockHysteresis",
-        "vibratoPreserve",
         "analogMode",
         "outVolume",
         "tuningReferenceHz"
