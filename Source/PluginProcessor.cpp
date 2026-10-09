@@ -623,13 +623,19 @@ void MicrotonalAutotuneAudioProcessor::processOutputStage (
                 // At zero Drive this is precisely the original Analog Texture
                 // soft clipper. Raising Drive feeds it harder without adding an
                 // independent saturator or latency.
-                const float clipGain = 1.0f + 1.8f * smoothDrive;
-                const float baseClip = fastSoftClip (1.0f);
-                const float normalization = smoothDrive > 1.0e-6f
-                    ? fastSoftClip (clipGain) / baseClip : 1.0f;
-                const float saturated = smoothDrive > 1.0e-6f
-                    ? fastSoftClip (value * clipGain) / normalization
-                    : fastSoftClip (value);
+                const float cleanClip = fastSoftClip (value);
+                float saturated = cleanClip;
+                if (smoothDrive > 1.0e-6f)
+                {
+                    const float clipGain = 1.0f + 1.5f * smoothDrive;
+                    const float levelCompensation = 1.0f + 1.15f * smoothDrive;
+                    const float drivenClip = fastSoftClip (value * clipGain)
+                        / levelCompensation;
+                    // A mild level-compensated parallel drive: very little
+                    // low-level gain change, increasingly rounded peaks.
+                    saturated += (0.75f * smoothDrive)
+                        * (drivenClip - cleanClip);
+                }
                 value = saturated;
 
                 if (channel < maxAnalogOutputChannels)
