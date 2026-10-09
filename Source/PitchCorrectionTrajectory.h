@@ -73,10 +73,13 @@ public:
                         return a > 0.0 && b > 0.0
                             && std::abs(1200.0 * std::log2(a / b)) < 0.1;
                     };
-                    const auto legalCheck = quantizer.quantize(
-                        ambiguousUpperHz_, 1.0f, 0.0f, boundaryStability);
-                    if (!legalCheck.valid
-                        || !sameNote(legalCheck.targetHz, ambiguousUpperHz_))
+                    // No extra scale search at audio sample rate. A changed
+                    // scale is revalidated on fresh detector observations only.
+                    const bool scaleStillLegal = !observation.newMeasurement
+                        || sameNote(quantizer.quantize(
+                            ambiguousUpperHz_, 1.0f, 0.0f,
+                            boundaryStability).targetHz, ambiguousUpperHz_);
+                    if (!scaleStillLegal)
                     {
                         ambiguousUpperHz_ = 0.0; // Scale or root changed.
                     }
@@ -84,8 +87,17 @@ public:
                     {
                         const double gap = std::abs(1200.0
                             * std::log2(ambiguousUpperHz_ / ambiguousLowerHz_));
-                        const double exitCents = std::min(0.25 * gap,
-                            std::max(ambiguityWidthCents_ + 3.0, 5.0));
+                        // Schmitt-style exit lives well beyond the tiny upper
+                        // tie-preference region. A piano's periodic estimator
+                        // may wander on the wrong side without representing a
+                        // *new note*. This is scaled to the local step.
+                        const double stability = std::clamp(
+                            static_cast<double>(boundaryStability), 0.0, 1.0);
+                        const double exitCents = std::min(0.35 * gap,
+                            std::max(ambiguityWidthCents_ + 3.0,
+                                     (0.15 + 0.12 * stability) * gap));
+                        const int requiredFreshObservations = 3
+                            + static_cast<int>(std::lround(5.0 * stability));
                         const bool distinctlyLower = observation.stableHz
                             < ambiguousMidpointHz_ * std::exp2(-exitCents / 1200.0);
                         if (!distinctlyLower)
@@ -93,7 +105,7 @@ public:
                         else if (observation.newMeasurement)
                             ++lowerExitObservations_;
 
-                        if (lowerExitObservations_ < 2)
+                        if (lowerExitObservations_ < requiredFreshObservations)
                         {
                             target.targetHz = ambiguousUpperHz_;
                             target.correctionCents = 1200.0
