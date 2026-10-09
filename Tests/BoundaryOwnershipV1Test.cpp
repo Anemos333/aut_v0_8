@@ -81,20 +81,27 @@ void testScale(const std::vector<double>& ratios,
             "trajectory arms the upper ambiguous owner");
     for (int n = 0; n < 24; ++n)
     {
-        const double jitter = n % 2 == 0 ? -2.6 : 1.7;
+        // Several-cent midpoint excursions: deliberately cross the quantizer's
+        // instantaneous upper-preference and lower-nearest partitions.
+        const double jitter = n % 2 == 0
+            ? -std::min(0.12 * (upperCents - lowerCents), 20.0)
+            : std::min(0.08 * (upperCents - lowerCents), 12.0);
         require(nearTarget(advance(midpoint + jitter), upperHz),
                 "boundary jitter never alternates audible target");
     }
-    const double exitDelta = std::min(0.30 * (upperCents - lowerCents), 12.0);
+    const double exitDelta = 0.40 * (upperCents - lowerCents);
     for (int n = 0; n < 16; ++n)
     {
         require(nearTarget(advance(midpoint - exitDelta, false), upperHz),
                 "sample repetition cannot count as independent confirmation");
     }
-    require(nearTarget(advance(midpoint - exitDelta, true), upperHz),
-            "one lower measurement cannot flip ownership");
+    for (int n = 0; n < 5; ++n)
+        require(nearTarget(advance(midpoint - exitDelta, true), upperHz),
+                "isolated lower challenges cannot steal ambiguous ownership");
     require(nearTarget(advance(midpoint - exitDelta, true), lowerHz),
-            "two distinctly lower observations release ownership");
+            "six consecutive fresh, deep lower observations release ownership");
+    require(nearTarget(advance(lowerCents, false), lowerHz),
+            "once a real lower note commits it remains stable");
     trajectory.reset();
     require(nearTarget(advance(lowerCents), lowerHz),
             "reset drops boundary memory and returns normal nearest-note selection");
