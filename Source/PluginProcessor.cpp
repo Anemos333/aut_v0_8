@@ -250,6 +250,9 @@ void MicrotonalAutotuneAudioProcessor::prepareToPlay (double sampleRate,
                                                    : 44100.0;
     updateAnalogOutputFilters();
     analogOutputWasActive_ = false;
+    analogDriveSmoothed_ = 0.0f;
+    analogDriveSmoothingCoefficient_ = static_cast<float> (
+        1.0 - std::exp (-1.0 / (0.012 * currentSampleRate)));
     lastSamplesPerBlock = std::max (1, samplesPerBlock);
     refreshScaleSnapshot();
 
@@ -594,11 +597,12 @@ void MicrotonalAutotuneAudioProcessor::processOutputStage (
         return;
 
     outGain = std::isfinite (outGain) ? juce::jlimit (0.0f, 8.0f, outGain) : 1.0f;
-    const float drive = std::isfinite (outputDrive)
+    // Output Drive only belongs to Analog Texture. With the lever off it
+    // cannot add saturation, shelving, gain or a second output path.
+    const float drive = analogMode && std::isfinite (outputDrive)
         ? juce::jlimit (0.0f, 1.0f, outputDrive) : 0.0f;
-    const float driveGain = 1.0f + 2.0f * drive;
-    const float driveNormalisation = drive > 0.0f
-        ? std::max (0.1f, fastSoftClip (driveGain)) : 1.0f;
+    if (! analogMode)
+        analogDriveSmoothed_ = 0.0f;
 
     if (analogMode && ! analogOutputWasActive_)
         resetAnalogOutputFilters();
@@ -612,17 +616,33 @@ void MicrotonalAutotuneAudioProcessor::processOutputStage (
 
             if (analogMode)
             {
-                value = fastSoftClip (value);
+                analogDriveSmoothed_ += analogDriveSmoothingCoefficient_
+                    * (drive - analogDriveSmoothed_);
+                const float smoothDrive = analogDriveSmoothed_;
+
+                // At zero Drive this is precisely the original Analog Texture
+                // soft clipper. Raising Drive feeds it harder without adding an
+                // independent saturator or latency.
+                const float clipGain = 1.0f + 1.8f * smoothDrive;
+                const float baseClip = fastSoftClip (1.0f);
+                const float normalization = smoothDrive > 1.0e-6f
+                    ? fastSoftClip (clipGain) / baseClip : 1.0f;
+                const float saturated = smoothDrive > 1.0e-6f
+                    ? fastSoftClip (value * clipGain) / normalization
+                    : fastSoftClip (value);
+                value = saturated;
+
                 if (channel < maxAnalogOutputChannels)
                 {
                     value = analogLowShelfFilters_[static_cast<std::size_t> (channel)].processSample (value);
                     value = analogHighShelfFilters_[static_cast<std::size_t> (channel)].processSample (value);
                 }
-            }
 
-            // Zero drive preserves the pre-existing output processing exactly.
-            if (drive > 0.0f)
-                value = fastSoftClip (value * driveGain) / driveNormalisation;
+                // Reuse the existing 75 Hz / 4.8 kHz shelves. Morph at most
+                // 12% of their *existing* response: only a few tenths of a dB,
+                // no extra filters or per-block IIR coefficient allocations.
+                value += (0.12f * smoothDrive) * (value - saturated);
+            }
 
             value *= outGain;
             data[sample] = outputSafetySoftCeiling (value);
