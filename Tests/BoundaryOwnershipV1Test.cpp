@@ -100,8 +100,18 @@ void testScale(const std::vector<double>& ratios,
                 "isolated lower challenges cannot steal ambiguous ownership");
     require(nearTarget(advance(midpoint - exitDelta, true), lowerHz),
             "six consecutive fresh, deep lower observations release ownership");
-    require(nearTarget(advance(lowerCents, false), lowerHz),
-            "once a real lower note commits it remains stable");
+    // The new *exit* boundary must not become a fresh oscillation point.
+    // Lower ownership also requires sustained evidence before relinquishing.
+    for (int n = 0; n < 5; ++n)
+        require(nearTarget(advance(midpoint + (n % 2 ? 0.2 : -0.2), true), lowerHz),
+                "lower owner survives five ambiguous midpoint samples");
+    require(nearTarget(advance(midpoint, true), upperHz),
+            "persistently ambiguous pitch eventually belongs to the upper note");
+    for (int n = 0; n < 32; ++n)
+        require(nearTarget(advance(midpoint + (n % 2 ? -0.8 : 0.8), true), upperHz),
+                "after reacquiring upper owner the target does not chatter");
+    require(nearTarget(advance(upperCents, true), upperHz),
+            "real higher note commits without additional latency");
     trajectory.reset();
     require(nearTarget(advance(lowerCents), lowerHz),
             "reset drops boundary memory and returns normal nearest-note selection");
