@@ -197,8 +197,10 @@ private:
             // session Hold/Vibrato values cannot silently change the sound.
             owner.lockHysteresisSlider.setEnabled (true);
             owner.lockHysteresisLabel.setEnabled (true);
-            owner.vibratoPreserveSlider.setEnabled (true);
-            owner.vibratoPreserveLabel.setEnabled (true);
+            const bool analogEnabled = owner.processorRef.getAPVTS()
+                .getRawParameterValue ("analogMode")->load() > 0.5f;
+            owner.vibratoPreserveSlider.setEnabled (analogEnabled);
+            owner.vibratoPreserveLabel.setEnabled (analogEnabled);
             owner.compatibilityLabel.setVisible (mainPage);
             owner.lockHysteresisSlider.setVisible (mainPage);
             owner.lockHysteresisLabel.setVisible (mainPage);
