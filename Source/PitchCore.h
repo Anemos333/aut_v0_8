@@ -172,6 +172,11 @@ public:
         double correctionCents = 0.0;
         double liveWindowCents = 0.0;
         bool valid = false;
+        // Adjacent legal pitches are almost equidistant; the upper owns the tie.
+        bool ambiguousBoundary = false;
+        double lowerTargetHz = 0.0;
+        double boundaryMidpointHz = 0.0;
+        double boundaryHalfWidthCents = 0.0;
     };
 
     bool setScale(const double* ratios,
@@ -181,7 +186,8 @@ public:
 
     [[nodiscard]] Target quantize(double fundamentalHz,
                                   float amount,
-                                  float humanize) const noexcept;
+                                  float humanize,
+                                  float boundaryStability = 0.5f) const noexcept;
 
     [[nodiscard]] double equaveRatio() const noexcept { return equaveRatio_; }
     [[nodiscard]] int size() const noexcept { return count_; }

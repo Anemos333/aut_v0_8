@@ -862,7 +862,8 @@ bool ScaleQuantizer::setScale(const double* ratios,
 
 ScaleQuantizer::Target ScaleQuantizer::quantize(double fundamentalHz,
                                                 float amount,
-                                                float humanize) const noexcept
+                                                float humanize,
+                                                float boundaryStability) const noexcept
 {
     Target result;
     if (count_ <= 0 || !std::isfinite(fundamentalHz) || fundamentalHz <= 0.0)
@@ -872,6 +873,8 @@ ScaleQuantizer::Target ScaleQuantizer::quantize(double fundamentalHz,
     const double base = std::floor(relative);
     double bestRelative = relative;
     double bestDistance = std::numeric_limits<double>::max();
+    double secondDistance = std::numeric_limits<double>::max();
+    double secondRelative = relative;
 
     for (int i = 0; i < count_; ++i)
     {
@@ -882,10 +885,43 @@ ScaleQuantizer::Target ScaleQuantizer::quantize(double fundamentalHz,
             const double distance = std::abs(candidate - relative);
             if (distance < bestDistance)
             {
+                secondDistance = bestDistance;
+                secondRelative = bestRelative;
                 bestDistance = distance;
                 bestRelative = candidate;
             }
+            else if (distance < secondDistance
+                     && std::abs(candidate - bestRelative) > 1.0e-9)
+            {
+                secondDistance = distance;
+                secondRelative = candidate;
+            }
         }
+    }
+
+    // Bias only a very narrow region surrounding a genuine adjacent-degree
+    // midpoint. Never shift the general nearest-note boundaries.
+    const double centsPerEquave = 1200.0 * std::log2(equaveRatio_);
+    const double gapCents = std::abs(secondRelative - bestRelative) * centsPerEquave;
+    // Real piano partials can move the detector estimate by several cents.
+    // Keep this a strictly local tie preference, scaled to the actual step:
+    // a 39-cent microtonal interval never inherits a 200-cent-scale radius.
+    const double preferenceWidthCents = std::min(
+        0.20 * gapCents,
+        2.0 + 24.0 * std::clamp(static_cast<double>(boundaryStability), 0.0, 1.0));
+    if (count_ > 1 && gapCents > 1.0e-6
+        && std::isfinite(secondDistance)
+        && std::abs(secondDistance - bestDistance) * centsPerEquave
+            <= 2.0 * preferenceWidthCents)
+    {
+        const double upperRelative = std::max(bestRelative, secondRelative);
+        const double lowerRelative = std::min(bestRelative, secondRelative);
+        bestRelative = upperRelative;
+        result.ambiguousBoundary = true;
+        result.lowerTargetHz = referenceHz_ * std::exp(lowerRelative * logEquave_);
+        result.boundaryMidpointHz = referenceHz_
+            * std::exp(0.5 * (lowerRelative + upperRelative) * logEquave_);
+        result.boundaryHalfWidthCents = preferenceWidthCents;
     }
 
     result.targetHz = referenceHz_ * std::exp(bestRelative * logEquave_);

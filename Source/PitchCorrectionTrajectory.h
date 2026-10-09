@@ -31,24 +31,191 @@ public:
         currentCorrectionCents_ = 0.0;
         targetPitchHz_ = 0.0;
         hasStableTransport_ = false;
+        ambiguousUpperHz_ = 0.0;
+        ambiguousLowerHz_ = 0.0;
+        ambiguousMidpointHz_ = 0.0;
+        ambiguityWidthCents_ = 0.0;
+        lowerExitObservations_ = 0;
+        upperEntryObservations_ = 0;
+        lowerOwnsBoundary_ = false;
     }
 
     [[nodiscard]] double process(const pitch::PitchResult& observation,
                                  const pitch::ScaleQuantizer& quantizer,
                                  float amount,
                                  float humanize,
-                                 float speedMs) noexcept
+                                 float speedMs,
+                                 float boundaryStability = 0.5f) noexcept
     {
         if (observation.state == pitch::TrackingState::stable
             && observation.hasStable
             && std::isfinite(observation.stableHz)
             && observation.stableHz > 0.0f)
         {
-            const auto target = quantizer.quantize(observation.stableHz,
-                                                   amount,
-                                                   humanize);
+            auto target = quantizer.quantize(observation.stableHz,
+                                             amount, humanize,
+                                             boundaryStability);
             if (target.valid)
             {
+                // The upper adjacent degree owns a true ambiguous midpoint.
+                // Keep a two-sided, evidence-gated musical decision: crossing
+                // either Schmitt boundary never switches a target by itself.
+                const auto sameNote = [](double a, double b) noexcept
+                {
+                    return a > 0.0 && b > 0.0
+                        && std::abs(1200.0 * std::log2(a / b)) < 0.1;
+                };
+                const double stability = std::clamp(
+                    static_cast<double>(boundaryStability), 0.0, 1.0);
+                const int lowerConfirmations = 3
+                    + static_cast<int>(std::lround(5.0 * stability));
+                const int upperConfirmations = 4
+                    + static_cast<int>(std::lround(4.0 * stability));
+                const auto keepTarget = [&](double targetHz) noexcept
+                {
+                    target.targetHz = targetHz;
+                    target.correctionCents = 1200.0
+                        * std::log2(targetHz / observation.stableHz);
+                };
+                const auto forgetBoundary = [&]() noexcept
+                {
+                    ambiguousUpperHz_ = 0.0;
+                    ambiguousLowerHz_ = 0.0;
+                    ambiguousMidpointHz_ = 0.0;
+                    ambiguityWidthCents_ = 0.0;
+                    lowerOwnsBoundary_ = false;
+                    lowerExitObservations_ = 0;
+                    upperEntryObservations_ = 0;
+                };
+
+                // Revalidate only on fresh F0 evidence, never per audio sample.
+                if (ambiguousUpperHz_ > 0.0 && observation.newMeasurement)
+                {
+                    const auto legalCheck = quantizer.quantize(
+                        ambiguousUpperHz_, 1.0f, 0.0f, boundaryStability);
+                    if (!legalCheck.valid
+                        || !sameNote(legalCheck.targetHz, ambiguousUpperHz_))
+                        forgetBoundary();
+                }
+
+                if (target.ambiguousBoundary)
+                {
+                    const bool samePair = sameNote(target.targetHz, ambiguousUpperHz_)
+                        && sameNote(target.lowerTargetHz, ambiguousLowerHz_);
+                    if (!samePair)
+                    {
+                        // A new midpoint gets upper priority on first contact.
+                        ambiguousUpperHz_ = target.targetHz;
+                        ambiguousLowerHz_ = target.lowerTargetHz;
+                        ambiguousMidpointHz_ = target.boundaryMidpointHz;
+                        ambiguityWidthCents_ = target.boundaryHalfWidthCents;
+                        lowerOwnsBoundary_ = false;
+                        upperEntryObservations_ = 0;
+                    }
+
+                    if (lowerOwnsBoundary_)
+                    {
+                        if (observation.newMeasurement)
+                            ++upperEntryObservations_;
+                        if (upperEntryObservations_ < upperConfirmations)
+                            keepTarget(ambiguousLowerHz_);
+                        else
+                        {
+                            lowerOwnsBoundary_ = false;
+                            upperEntryObservations_ = 0;
+                        }
+                    }
+                    lowerExitObservations_ = 0;
+                }
+                else if (ambiguousUpperHz_ > 0.0)
+                {
+                    const double gapCents = std::abs(1200.0
+                        * std::log2(ambiguousUpperHz_ / ambiguousLowerHz_));
+                    const double exitCents = std::min(0.35 * gapCents,
+                        std::max(ambiguityWidthCents_ + 3.0,
+                                 (0.15 + 0.12 * stability) * gapCents));
+                    const double signedMidpointCents = 1200.0
+                        * std::log2(observation.stableHz / ambiguousMidpointHz_);
+
+                    if (sameNote(target.targetHz, ambiguousLowerHz_))
+                    {
+                        if (lowerOwnsBoundary_)
+                        {
+                            // A lower-owned note must itself gather upper evidence
+                            // around the old midpoint before ownership returns.
+                            if (signedMidpointCents
+                                >= -1.5 * ambiguityWidthCents_)
+                            {
+                                if (observation.newMeasurement)
+                                    ++upperEntryObservations_;
+                            }
+                            else
+                            {
+                                upperEntryObservations_ = 0;
+                            }
+                            if (upperEntryObservations_ >= upperConfirmations)
+                            {
+                                lowerOwnsBoundary_ = false;
+                                upperEntryObservations_ = 0;
+                                keepTarget(ambiguousUpperHz_);
+                            }
+                        }
+                        else
+                        {
+                            if (signedMidpointCents < -exitCents)
+                            {
+                                if (observation.newMeasurement)
+                                    ++lowerExitObservations_;
+                            }
+                            else
+                            {
+                                lowerExitObservations_ = 0;
+                            }
+
+                            if (lowerExitObservations_ < lowerConfirmations)
+                                keepTarget(ambiguousUpperHz_);
+                            else
+                            {
+                                lowerOwnsBoundary_ = true;
+                                lowerExitObservations_ = 0;
+                            }
+                        }
+                    }
+                    else if (sameNote(target.targetHz, ambiguousUpperHz_))
+                    {
+                        if (lowerOwnsBoundary_)
+                        {
+                            // A genuinely higher note has already moved well
+                            // inside the upper scale cell: do not delay legato.
+                            const bool deepUpper = signedMidpointCents
+                                >= 0.25 * gapCents;
+                            if (deepUpper)
+                            {
+                                lowerOwnsBoundary_ = false;
+                                upperEntryObservations_ = 0;
+                            }
+                            else
+                            {
+                                if (observation.newMeasurement)
+                                    ++upperEntryObservations_;
+                                if (upperEntryObservations_ < upperConfirmations)
+                                    keepTarget(ambiguousLowerHz_);
+                                else
+                                {
+                                    lowerOwnsBoundary_ = false;
+                                    upperEntryObservations_ = 0;
+                                }
+                            }
+                        }
+                        lowerExitObservations_ = 0;
+                    }
+                    else
+                    {
+                        // Non-adjacent/other musical changes are unaffected.
+                        forgetBoundary();
+                    }
+                }
+
                 const double required = target.correctionCents;
                 const double window = std::max(0.0, target.liveWindowCents);
                 const double residual = std::copysign(
@@ -126,6 +293,13 @@ private:
     double currentCorrectionCents_ = 0.0;
     double targetPitchHz_ = 0.0;
     bool hasStableTransport_ = false;
+    double ambiguousUpperHz_ = 0.0;
+    double ambiguousLowerHz_ = 0.0;
+    double ambiguousMidpointHz_ = 0.0;
+    double ambiguityWidthCents_ = 0.0;
+    int lowerExitObservations_ = 0;
+    int upperEntryObservations_ = 0;
+    bool lowerOwnsBoundary_ = false;
 };
 
 } // namespace neumaton::render

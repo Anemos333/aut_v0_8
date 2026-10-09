@@ -5,6 +5,7 @@
 #include "SinglePathPitchRenderer.h"
 
 #include <cstdint>
+#include <algorithm>
 
 namespace neumaton
 {
@@ -35,6 +36,11 @@ public:
                   int count,
                   double referenceHz,
                   double equaveRatio = 2.0) noexcept;
+
+    void setBoundaryStability(float value) noexcept
+    {
+        boundaryStability_ = std::clamp(value, 0.0f, 1.0f);
+    }
 
     void processFrame(const float* input,
                       float* output,
@@ -80,6 +86,7 @@ private:
     int channels_ = 1;
     pitch::LatencyMode mode_ = pitch::LatencyMode::live256;
 
+    float boundaryStability_ = 0.5f;
     pitch::PitchCore pitchCore_;
     pitch::ScaleQuantizer quantizer_;
     render::PitchCorrectionTrajectory trajectory_;

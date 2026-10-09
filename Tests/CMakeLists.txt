@@ -53,7 +53,20 @@ if (AUTOTUNE_ENABLE_SANITIZERS AND NOT MSVC)
     endforeach()
 endif()
 
+# Active V1 boundary-ownership test: no deprecated ModernPitchEngine path.
+add_executable(AutotuneBoundaryOwnershipV1
+    "${CMAKE_CURRENT_LIST_DIR}/BoundaryOwnershipV1Test.cpp"
+    "${AUTOTUNE_SOURCE_DIR}/PitchCore.cpp")
+target_include_directories(AutotuneBoundaryOwnershipV1 PRIVATE
+    "${AUTOTUNE_SOURCE_DIR}")
+if (MSVC)
+    target_compile_options(AutotuneBoundaryOwnershipV1 PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(AutotuneBoundaryOwnershipV1 PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 enable_testing()
+add_test(NAME BoundaryOwnershipV1 COMMAND AutotuneBoundaryOwnershipV1)
 add_test(NAME CommercialRegression
     COMMAND AutotuneCommercialRegression "${CMAKE_BINARY_DIR}/commercial_regression.csv")
 add_test(NAME SanitizerSmoke COMMAND AutotuneSanitizerSmoke)

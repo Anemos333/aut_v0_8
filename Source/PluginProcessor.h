@@ -294,6 +294,8 @@ private:
     std::array<juce::dsp::IIR::Filter<float>, maxAnalogOutputChannels> analogLowShelfFilters_;
     std::array<juce::dsp::IIR::Filter<float>, maxAnalogOutputChannels> analogHighShelfFilters_;
     bool analogOutputWasActive_ = false;
+    float analogDriveSmoothed_ = 0.0f;
+    float analogDriveSmoothingCoefficient_ = 0.0f;
 
     void updateAnalogOutputFilters();
     void resetAnalogOutputFilters() noexcept;
@@ -302,7 +304,8 @@ private:
                             int numChannels,
                             int numSamples,
                             bool analogMode,
-                            float outGain) noexcept;
+                            float outGain,
+                            float outputDrive) noexcept;
 
     int lastSamplesPerBlock = 512;
 

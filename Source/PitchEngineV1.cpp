@@ -67,7 +67,8 @@ void PitchEngineV1::updateTrajectory(const pitch::PitchResult& pitchResult,
         quantizer_,
         std::clamp(amount, 0.0f, 1.0f),
         std::clamp(humanize, 0.0f, 1.0f),
-        speedMs);
+        speedMs,
+        boundaryStability_);
 
     metering_.pitch = pitchResult;
     metering_.targetPitchHz = trajectory_.targetPitchHz();

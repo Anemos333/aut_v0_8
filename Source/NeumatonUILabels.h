@@ -12,8 +12,8 @@ namespace Main
     inline constexpr const char* correctionAmount = "Correction Amount";
     inline constexpr const char* response         = "Response";
     inline constexpr const char* humanize         = "Human Drift";
-    inline constexpr const char* hold             = "Hold";
-    inline constexpr const char* vibratoPreserve   = "Vibrato Preserve";
+    inline constexpr const char* hold             = "Boundary Stability";
+    inline constexpr const char* vibratoPreserve   = "Output Drive";
     inline constexpr const char* analogTexture    = "Analog Texture";
     inline constexpr const char* output           = "Output";
     inline constexpr const char* controlRoom      = "Control Room";
