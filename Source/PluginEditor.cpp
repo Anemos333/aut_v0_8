@@ -341,7 +341,8 @@ MicrotonalAutotuneAudioProcessorEditor::MicrotonalAutotuneAudioProcessorEditor (
         "Width of the tiny ambiguous region between two legal notes. "
         "The upper degree wins a tie, without changing normal scale boundaries.");
     vibratoPreserveSlider.setTooltip (
-        "Optional post-correction saturation. 0% preserves the existing output.");
+        "Analog Texture only: raise saturation and gently strengthen the existing "
+        "75 Hz and 4.8 kHz shelves. Neutral at 0%.");
     displayedMetering = processorRef.getPitchMetering();
     updateMeterPresentation();
     startTimerHz (30);
