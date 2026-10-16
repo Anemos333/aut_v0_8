@@ -41,7 +41,7 @@ Delays are specified in samples and are reported to the host. These figures are 
 
 ## Musical interface
 
-The main UI provides scale selection, tonal centre, A4 tuning reference, the three processing modes, factory presets, **Response** (Speed, 0–500 ms), **Amount**, **Human Drift** (Humanize), **Boundary Stability** (stored as `boundaryStability`), **Output Drive** (stored as `outputDrive`), **Analog Texture**, output volume and a separate Control Room.
+The main UI provides scale selection, tonal centre, A4 tuning reference, the three processing modes, factory presets, **Response** (Speed, 0–50 ms), **Amount**, **Human Drift** (Humanize), **Boundary Stability** (stored as `boundaryStability`), **Output Drive** (stored as `outputDrive`), **Analog Texture**, output volume and a separate Control Room.
 
 The Control Room displays meaningful pitch/target/scale-degree metering and a colour-coded schematic of the current single-path audio machine. The schematic is informational: it does not imply that old consensus trackers or additional spectral paths run behind the scenes.
 
