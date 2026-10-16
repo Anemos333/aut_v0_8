@@ -130,185 +130,42 @@ if(NEUMATON_BUILD_LICENSING_TESTS)
     )
 endif()
 
-option(NEUMATON_BUILD_CLEAN_ENGINE_TESTS
-       "Build the pitch-engine regression and legacy comparison tests" OFF)
+option(NEUMATON_BUILD_V1_TESTS
+       "Build active V1 detector, renderer, scale and UI model tests" OFF)
 
-if(NEUMATON_BUILD_CLEAN_ENGINE_TESTS)
+if(NEUMATON_BUILD_V1_TESTS)
     add_executable(PitchCoreStressTest
         Tests/PitchCoreStressTest.cpp
         Source/PitchCore.cpp
     )
-    target_include_directories(PitchCoreStressTest PRIVATE Source)
-    set_target_properties(PitchCoreStressTest PROPERTIES
-        CXX_STANDARD 17
-        CXX_STANDARD_REQUIRED ON
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}/clean-engine-tests"
-    )
-
     add_executable(SinglePathPitchRendererTest
         Tests/SinglePathPitchRendererTest.cpp
         Source/PitchCore.cpp
         Source/SinglePathPitchRenderer.cpp
     )
-    target_include_directories(SinglePathPitchRendererTest PRIVATE Source)
-    set_target_properties(SinglePathPitchRendererTest PROPERTIES
-        CXX_STANDARD 17
-        CXX_STANDARD_REQUIRED ON
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}/clean-engine-tests"
+    add_executable(ScaleDatabaseV1Test
+        Tests/ScaleDatabaseV1Test.cpp
+        Source/PitchCore.cpp
+        Source/ScaleDefinitions.cpp
+    )
+    add_executable(ScaleDegreeDisplayTest
+        Tests/ScaleDegreeDisplayTest.cpp
+    )
+    add_executable(ScaleEditorGeometryTest
+        Tests/ScaleEditorGeometryTest.cpp
     )
 
-    juce_add_console_app(CleanModernPitchEngineTest
-        PRODUCT_NAME CleanModernPitchEngineTest
-    )
-    juce_generate_juce_header(CleanModernPitchEngineTest)
-    target_sources(CleanModernPitchEngineTest
-        PRIVATE
-            Tests/CleanModernPitchEngineTest.cpp
-            Source/ModernPitchEngine.cpp
-            Source/SingleWetSpectralRenderer.cpp
-            Source/Tempo.cpp
-    )
-    target_include_directories(CleanModernPitchEngineTest PRIVATE Source)
-    target_compile_definitions(CleanModernPitchEngineTest
-        PRIVATE
-            JUCE_WEB_BROWSER=0
-            JUCE_USE_CURL=0
-    )
-    target_link_libraries(CleanModernPitchEngineTest
-        PRIVATE
-            juce::juce_audio_basics
-            juce::juce_core
-        PUBLIC
-            juce::juce_recommended_config_flags
-            juce::juce_recommended_warning_flags
-    )
-    set_target_properties(CleanModernPitchEngineTest PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}/clean-engine-tests"
-    )
-
-    juce_add_console_app(VoiceEvidenceAnalyzerTest
-        PRODUCT_NAME VoiceEvidenceAnalyzerTest
-    )
-    juce_generate_juce_header(VoiceEvidenceAnalyzerTest)
-    target_sources(VoiceEvidenceAnalyzerTest
-        PRIVATE
-            Tests/VoiceEvidenceAnalyzerTest.cpp
-    )
-    target_include_directories(VoiceEvidenceAnalyzerTest PRIVATE Source)
-    target_compile_definitions(VoiceEvidenceAnalyzerTest
-        PRIVATE
-            JUCE_WEB_BROWSER=0
-            JUCE_USE_CURL=0
-    )
-    target_link_libraries(VoiceEvidenceAnalyzerTest
-        PRIVATE
-            juce::juce_audio_basics
-            juce::juce_core
-        PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags
-    )
-    set_target_properties(VoiceEvidenceAnalyzerTest PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}/clean-engine-tests"
-    )
-
-    juce_add_console_app(SupervisorContinuityTest
-        PRODUCT_NAME SupervisorContinuityTest
-    )
-    juce_generate_juce_header(SupervisorContinuityTest)
-    target_sources(SupervisorContinuityTest
-        PRIVATE
-            Tests/SupervisorContinuityTest.cpp
-            Tests/SupervisorModernPitchEngineCompile.cpp
-            Source/SingleWetSpectralRenderer.cpp
-            Source/Tempo.cpp
-    )
-    target_include_directories(SupervisorContinuityTest PRIVATE Source)
-    target_compile_definitions(SupervisorContinuityTest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
-    target_link_libraries(SupervisorContinuityTest
-        PRIVATE juce::juce_audio_basics juce::juce_core
-        PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags
-    )
-    set_target_properties(SupervisorContinuityTest PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}/clean-engine-tests"
-    )
-
-    juce_add_console_app(GuiAudibilityTest
-        PRODUCT_NAME GuiAudibilityTest
-    )
-    juce_generate_juce_header(GuiAudibilityTest)
-    target_sources(GuiAudibilityTest
-        PRIVATE
-            Tests/GuiAudibilityTest.cpp
-            Source/ModernPitchEngine.cpp
-            Source/SingleWetSpectralRenderer.cpp
-            Source/Tempo.cpp
-    )
-    target_include_directories(GuiAudibilityTest PRIVATE Source)
-    target_compile_definitions(GuiAudibilityTest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
-    target_link_libraries(GuiAudibilityTest
-        PRIVATE juce::juce_audio_basics juce::juce_core
-        PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags
-    )
-    set_target_properties(GuiAudibilityTest PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}/clean-engine-tests"
-    )
-
-    add_executable(GuiAudioControlContractTest
-        Tests/GuiAudioControlContractTest.cpp
-    )
-    set_target_properties(GuiAudioControlContractTest PROPERTIES
-        CXX_STANDARD 17
-        CXX_STANDARD_REQUIRED ON
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}/clean-engine-tests"
-    )
-
-    juce_add_console_app(SingleWetSpectralRendererTest
-        PRODUCT_NAME SingleWetSpectralRendererTest
-    )
-    juce_generate_juce_header(SingleWetSpectralRendererTest)
-    target_sources(SingleWetSpectralRendererTest
-        PRIVATE
-            Tests/SingleWetSpectralRendererTest.cpp
-            Source/SingleWetSpectralRenderer.cpp
-    )
-    target_include_directories(SingleWetSpectralRendererTest PRIVATE Source)
-    target_compile_definitions(SingleWetSpectralRendererTest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
-    target_link_libraries(SingleWetSpectralRendererTest
-        PRIVATE juce::juce_core
-        PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags
-    )
-    set_target_properties(SingleWetSpectralRendererTest PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/clean-engine-tests"
-        RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}/clean-engine-tests"
-    )
+    foreach(test_target IN ITEMS
+            PitchCoreStressTest
+            SinglePathPitchRendererTest
+            ScaleDatabaseV1Test
+            ScaleDegreeDisplayTest
+            ScaleEditorGeometryTest)
+        target_include_directories(${test_target} PRIVATE Source)
+        set_target_properties(${test_target} PROPERTIES
+            CXX_STANDARD 17
+            CXX_STANDARD_REQUIRED ON
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/v1-tests"
+        )
+    endforeach()
 endif()

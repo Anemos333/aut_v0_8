@@ -59,9 +59,6 @@ all their properties during serialization, so their integrity hashes remain
 valid; applying a preset ignores retired properties. Existing user packs are not
 rewritten on disk.
 
-The complete pre-cleanup main is preserved on branch
-`backup/main-before-preset-cleanup-20261008` at commit
-`9fa58414198505733b38bda032afcfc97124763e`.
 
 ## Verification
 

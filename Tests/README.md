@@ -1,28 +1,14 @@
-# Test standalone del core DSP
+# Current Neumaton V1 tests
 
-Questi target compilano `ModernPitchEngine` e `Tempo` senza JUCE completa, usando uno stub minimo di `juce::AudioBuffer`. Non sostituiscono la compilazione del plug-in o pluginval.
-
-```bash
-cmake -S Tests -B build-tests -DCMAKE_BUILD_TYPE=Release
-cmake --build build-tests --config Release
-ctest --test-dir build-tests -C Release --output-on-failure
-```
-
-Per il corpus:
+The repository keeps tests for the **current** `PitchCore + PitchCorrectionTrajectory + SinglePathPitchRenderer` architecture, scale data and editor geometry, factory presets, licensing and Community Packs.
 
 ```bash
-cmake -S Tests -B build-tests -DCMAKE_BUILD_TYPE=Release \
-  -DAUTOTUNE_CORPUS_DIR=/percorso/alle/voci
-cmake --build build-tests --config Release
-ctest --test-dir build-tests -C Release --output-on-failure
+cmake -S . -B build-v1 -DCMAKE_BUILD_TYPE=Release -DNEUMATON_BUILD_V1_TESTS=ON
+cmake --build build-v1 --target PitchCoreStressTest SinglePathPitchRendererTest ScaleDatabaseV1Test ScaleDegreeDisplayTest ScaleEditorGeometryTest
 ```
 
-Per ASan+UBSan con Clang/GCC:
+The executable outputs are in `build-v1/v1-tests/` (with a configuration subdirectory on multi-config generators). The detector and renderer tests may be run with one or more paths to recorded voice WAV files for stress cases.
 
-```bash
-cmake -S Tests -B build-san -DAUTOTUNE_ENABLE_SANITIZERS=ON
-cmake --build build-san
-ASAN_OPTIONS=detect_leaks=0 ctest --test-dir build-san --output-on-failure
-```
+For JUCE-backed factory program/session behaviour, see `Tests/FactoryPresetV1/CMakeLists.txt`. For licensing checks use `-DNEUMATON_BUILD_LICENSING_TESTS=ON` and run `LicensingSkeletonTest`. Independent Community Pack and audio isolation contracts are also used by GitHub Actions.
 
-Nel container usato per questa consegna LeakSanitizer non era avviabile; AddressSanitizer e UndefinedBehaviorSanitizer sono stati eseguiti con `detect_leaks=0`.
+These are structural and regression checks; do not use green synthetic fixtures as proof of real-world audio quality.

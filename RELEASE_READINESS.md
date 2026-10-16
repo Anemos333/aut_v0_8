@@ -1,49 +1,26 @@
-# Neumaton release-readiness contract
+# Neumaton V1 release-readiness checklist
 
-This document applies to `single-wet-quality-reconstruction`, the accepted release line.
+This checklist applies to **main**, the accepted V1 single-path pitch engine. The old single-wet release contract and SHA pins are historical and no longer govern current builds.
 
-## Frozen audio baseline during release hardening
+## Automated contracts
 
-Release-readiness work must not alter the accepted audio engine. `Tests/release_readiness_contract.py` pins the Git blob identity of the single-wet renderer, ModernPitchEngine, LivePitchProcessor and the current PluginProcessor integration. A deliberate later pitch/timbre change must update that baseline only after an explicit audio acceptance test.
+- Linux, Windows and macOS workflows build the VST3 from the active `CMakeLists.txt`.
+- The V1 workflow compiles the pitch core and single-path renderer regressions, and checks that legacy pitch/render sources are absent from the active VST build list.
+- Release Readiness compiles and runs current V1 tests and the licensing skeleton on Linux.
+- The licensing workflow additionally checks audio/licence isolation and local Community Pack contracts.
+- macOS CI includes scale database, scale-editor geometry and Community Pack contracts.
 
-The architectural invariants are:
+These checks cover buildability and structural behaviour; they do not prove objective pitch error, subjective timbre, real-time CPU headroom or DAW round-trip latency. Those must be checked separately.
 
-- one audible wet renderer;
-- one synthesis layer in `SingleWetSpectralRenderer`;
-- no parallel dry/wet rendering architecture;
-- detectors and evidence remain analysis/supervision, not alternate rendering paths;
-- no historical patch workflow may write back into the release branch.
+## Manual release blockers
 
-## Automated release gate
+1. Install the built VST3 in current Windows and macOS DAWs; check instantiation, mono/stereo audio, bypass and mode switching.
+2. Save, close and reopen a DAW project. Check scale, tonal centre, A4, factory/user preset state and all active controls, including legacy-session migration.
+3. Verify 44.1/48/96 kHz and representative host buffer sizes; measure actual audio/host latency for each mode.
+4. Test multiple real vocal recordings (sustained vowels, noisy consonants, glides, rap, breaths, challenging pitch/register, microtonal and sparse scales). Compare dry/wet rendered stems for discontinuities, splices, incorrect targets and artifacts.
+5. Check user preset and `.ecpk` import/export and integrity handling.
+6. Complete platform signing/notarization and legal software/creator licensing before public distribution.
 
-`.github/workflows/release-readiness.yml` is read-only (`contents: read`) and must pass before a release candidate is accepted.
+## Change discipline
 
-It verifies:
-
-1. the frozen audio baseline and single-wet architecture;
-2. DAW session-state save/restore source contracts;
-3. stable and unique host automation parameter IDs;
-4. custom-scale persistence contract and bundled resources;
-5. VST3-only product packaging metadata;
-6. historical source transforms are already fully materialized (no auto-commit is permitted);
-7. ModernPitchEngine/renderer/GUI invariants on Windows and Linux;
-8. VST3-only builds on Windows, Linux and universal macOS (x86_64 + arm64);
-9. packaged artifact checksums;
-10. absence of AU/AAX payloads from release artifacts.
-
-## Release-blocking manual checks
-
-These cannot be proven solely by repository CI and remain mandatory before a public binary is tagged:
-
-- protect `single-wet-quality-reconstruction` in GitHub and require the `Neumaton Release Readiness` checks;
-- install the produced VST3 in at least one current Windows DAW and one current macOS DAW;
-- verify project save -> close -> reopen restores processing mode, root, scale/custom scale, all APVTS controls and factory preset state;
-- verify mono and stereo instantiation, bypass and mode switching in a host;
-- verify 44.1, 48 and 96 kHz sessions and representative host buffer sizes;
-- verify reported latency after each processing-mode switch;
-- perform distribution signing/notarization where required for the intended platform;
-- rerun the accepted V5 audio fixture and confirm no audible regression.
-
-## Release policy
-
-A release candidate is not accepted merely because it compiles. The release gate must be green and the manual host checklist must be completed. Pitch-authority and noise-removal work are separate later phases and must not be mixed into release-hardening changes.
+Local DSP edits should be benchmarked against the last accepted `main` recording set. Do not add a second audible signal path, infer true pitch from UI degrees, or restore deprecated confidence/dry/wet fallback authority. Keep a reversible commit for each validation step.
