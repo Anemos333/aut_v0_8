@@ -131,7 +131,7 @@ MicrotonalAutotuneAudioProcessor::createParameterLayout()
 
     params.push_back (std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID { "speed", 1 }, "Velocita (ms)",
-        juce::NormalisableRange<float> (0.0f, 500.0f, 1.0f), 50.0f));
+        juce::NormalisableRange<float> (0.0f, 50.0f, 1.0f), 50.0f));
 
     params.push_back (std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID { "amount", 1 }, "Amount",
