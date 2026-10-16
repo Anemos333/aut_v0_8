@@ -12,7 +12,7 @@ struct FactoryPreset
     float amount;   // 0..100 narrows the allowed pitch window
     float humanize; // 0..100 adds room around the target
     float boundaryStability;
-    float outputDrive
+    float outputDrive;
 
     bool analogMode;
     float outVolumeDb;
