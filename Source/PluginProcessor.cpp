@@ -548,6 +548,8 @@ void MicrotonalAutotuneAudioProcessor::applyFactoryPreset (int index)
     // parameters and the user's scale, centre and A4 tuning remain untouched.
     setParameterNotifyingHost (apvts, "analogMode", preset.analogMode ? 1.0f : 0.0f);
     setParameterNotifyingHost (apvts, "outVolume", preset.outVolumeDb);
+    setParameterNotifyingHost (apvts, "boundaryStability", preset.boundaryStability);
+    setParameterNotifyingHost (apvts, "outputDrive", preset.outputDrive);
 }
 
 //==============================================================================
