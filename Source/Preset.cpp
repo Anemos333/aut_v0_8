@@ -12,7 +12,7 @@ namespace
         { "Slow Drift", "Studio", "Slower correction and a wider pitch window for flexible phrases.",
           1, 45.0f, 55.0f, 75.0f,25.0f,0.0f, false, -1.2f },
         { "Clean Correction", "Studio", "A quick response with a small pitch window around each scale target.",
-          1, 5.0f, 75.0f, 35.0f,,30.0f,0.0f, false, -0.3f },
+          1, 5.0f, 75.0f, 35.0f,30.0f,0.0f, false, -0.3f },
         { "Full Correction", "Studio", "Immediate correction to the scale target with zero pitch window.",
           1, 0.0f, 100.0f, 0.0f,0.0f,0.0f, false, -1.0f },
 
