@@ -1,31 +1,33 @@
 # Factory presets for the current V1 engine
 
-Factory presets now recall only Mode, Response, Amount, Human Drift, Analog
-Texture and Output. Scale, tonal centre and A4 remain the user's musical choices.
+Factory presets recall Mode, Response, Amount, Human Drift, Boundary Stability,
+Output Drive, Analog Texture and Output. Scale, tonal centre and A4 remain the user's musical choices.
 The bank retains all twelve host program slots and their ordering.
 
-| Slot | Preset | Mode | Response (ms) | Amount (%) | Human Drift (%) | Analog Texture | Output (dB) |
-| --- | --- | --- | ---: | ---: | ---: | --- | ---: |
-| 1 | Studio Gentle | Studio | 80 | 45 | 55 | Off | -1.2 |
-| 2 | Slow Drift | Studio | 120 | 55 | 75 | Off | -1.2 |
-| 3 | Clean Correction | Studio | 45 | 75 | 35 | Off | -0.3 |
-| 4 | Full Correction | Studio | 0 | 100 | 0 | Off | -1.0 |
-| 5 | Live Anchor | Live | 55 | 65 | 45 | Off | -1.5 |
-| 6 | Live Drift | Live | 90 | 50 | 70 | Off | -1.8 |
-| 7 | Stage Tight | Live | 25 | 85 | 25 | Off | -0.9 |
-| 8 | Emergency Tight | Low Latency | 8 | 100 | 5 | Off | -1.5 |
-| 9 | Robot Rite | Studio | 0 | 100 | 0 | On | -2.0 |
-| 10 | Slow Orbit | Studio | 350 | 75 | 65 | Off | -1.2 |
-| 11 | Liquid Steps | Studio | 160 | 100 | 0 | On | -2.0 |
-| 12 | Open Window | Low Latency | 240 | 25 | 100 | Off | -1.5 |
+| Slot | Preset | Mode | Response (ms) | Amount (%) | Human Drift (%) | Boundary (%) | Drive (%) | Analog | Output (dB) |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- | ---: |
+| 1 | Studio Gentle | Studio | 25 | 80 | 55 | 5 | 25 | On | -1.2 |
+| 2 | Slow Drift | Studio | 45 | 55 | 75 | 25 | 0 | Off | -1.2 |
+| 3 | Clean Correction | Studio | 5 | 75 | 35 | 30 | 0 | Off | -0.3 |
+| 4 | Full Correction | Studio | 0 | 100 | 0 | 0 | 0 | Off | -1.0 |
+| 5 | Live Anchor | Live | 10 | 65 | 45 | 15 | 0 | Off | -1.5 |
+| 6 | Live Drift | Live | 19 | 70 | 70 | 50 | 75 | On | -1.8 |
+| 7 | Stage Tight | Live | 5 | 95 | 25 | 75 | 26 | On | -0.9 |
+| 8 | Emergency Tight | Low Latency | 5 | 100 | 3 | 80 | 0 | Off | -1.5 |
+| 9 | Robot Rite | Studio | 0 | 100 | 0 | 0 | 100 | On | -2.0 |
+| 10 | Slow Orbit | Studio | 45 | 75 | 65 | 0 | 0 | Off | -1.2 |
+| 11 | Liquid Steps | Studio | 50 | 100 | 0 | 100 | 48 | On | -2.0 |
+| 12 | Open Window | Low Latency | 50 | 25 | 100 | 5 | 0 | Off | -1.5 |
 
 Full Correction requests the exact nearest scale target with no allowed pitch
 residual and no response smoothing, once the detector supplies a stable F0.
-The normal detector behaviour and declared processing latency still apply.
-Robot Rite uses the same pitch settings with the existing Analog Texture output
-stage. Slow Orbit allows a long slide with some pitch freedom; Liquid Steps slides
-all the way to the target with Analog Texture; Open Window combines slow retuning
-with a wide pitch window. These effects do not use host tempo, a lock or an LFO.
+The normal detector behaviour, boundary transitions and declared processing latency still apply.
+Robot Rite uses the same pitch settings with Analog Texture and maximum Output Drive.
+Slow Orbit allows room for drift; Liquid Steps slides to the target with Analog Texture;
+Open Window combines slow retuning with a wide pitch window. These effects do not use
+host tempo, a lock or an LFO. Response is limited to 0–50 ms in integer steps;
+Boundary Stability and Output Drive use integer percentages. Output Drive is audible
+only when Analog Texture is enabled.
 
 In V1, Amount and Human Drift define an allowed residual pitch window rather than
 a dry/wet mix. If the smallest interval in the scale is S cents, the window is
@@ -53,11 +55,14 @@ from the last selected factory preset, including fresh default settings and
 modified presets. Scale/centre/A4 and retired controls do not affect that label.
 
 New community preset captures store only the eight active APVTS controls
-(`speed`, `amount`, `humanize`, `analogMode`, `outVolume`, `tuningReferenceHz`, `boundaryStability`, `outputDrive`)
+(`speed`, `amount`, `humanize`, `boundaryStability`, `outputDrive`, `analogMode`,
+`outVolume`, `tuningReferenceHz`)
 plus the existing Mode and tonal centre metadata. Old pack Values trees preserve
 all their properties during serialization, so their integrity hashes remain
 valid; applying a preset ignores retired properties. Existing user packs are not
-rewritten on disk.
+rewritten on disk. Older packs that lack a newly introduced control leave that
+control's current value unchanged when recalled. The **Custom** label also compares
+Boundary Stability and Output Drive, even when Analog Texture is switched off.
 
 
 ## Verification

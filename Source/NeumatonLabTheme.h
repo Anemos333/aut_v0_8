@@ -45,9 +45,9 @@ class LabLeverToggleLookAndFeel final : public juce::LookAndFeel_V4
 public:
     struct Options
     {
-        bool compact = false;      // utile per Analog Texture
-        bool dangerOff = false;    // se vuoi OFF più “spento”
-        float leverScale = 1.0f;   // piccolo controllo di grandezza
+        bool compact = false;      // suitable for Analog Texture
+        bool dangerOff = false;    // darker appearance in the OFF position
+        float leverScale = 1.0f;   // small size adjustment
     };
 
     LabLeverToggleLookAndFeel();
@@ -134,9 +134,9 @@ public:
     struct Options
     {
         bool perspectiveScale = false; // per Tempo Mode, non per utility bar
-        bool showEndLabels    = false; // mostra 0 e 100
-        bool strongGlow       = false; // più futuristico/elettrico
-        float thumbScale      = 1.0f;  // grandezza cursore
+        bool showEndLabels    = false; // display 0 and 100
+        bool strongGlow       = false; // brighter, more electric appearance
+        float thumbScale      = 1.0f;  // thumb size
     };
 
     UtilityRailSliderLookAndFeel();

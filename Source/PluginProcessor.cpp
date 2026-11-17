@@ -131,15 +131,15 @@ MicrotonalAutotuneAudioProcessor::createParameterLayout()
     std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
 
     params.push_back (std::make_unique<juce::AudioParameterFloat> (
-        juce::ParameterID { "speed", 1 }, "Velocita (ms)",
+        juce::ParameterID { "speed", 1 }, "Response (ms)",
         juce::NormalisableRange<float> (0.0f, 50.0f, 1.0f), 50.0f));
 
     params.push_back (std::make_unique<juce::AudioParameterFloat> (
-        juce::ParameterID { "amount", 1 }, "Amount",
+        juce::ParameterID { "amount", 1 }, "Correction Amount",
         juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f), 100.0f));
 
     params.push_back (std::make_unique<juce::AudioParameterFloat> (
-        juce::ParameterID { "humanize", 1 }, "Humanize",
+        juce::ParameterID { "humanize", 1 }, "Human Drift",
         juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f), 20.0f));
 
     // Tempo Lab is not exposed in V1, but these parameters stay in the state
@@ -189,7 +189,7 @@ MicrotonalAutotuneAudioProcessor::createParameterLayout()
         juce::NormalisableRange<float> (0.0f, 100.0f, 1.0f), 0.0f));
 
     params.push_back (std::make_unique<juce::AudioParameterBool> (
-        juce::ParameterID { "analogMode", 1 }, "Analog Mode", false));
+        juce::ParameterID { "analogMode", 1 }, "Analog Texture", false));
 
     params.push_back (std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID { "outVolume", 1 }, "Output Volume",

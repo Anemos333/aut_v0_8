@@ -64,7 +64,7 @@ void MainValveLookAndFeel::drawRotarySlider (juce::Graphics& g,
     const float frameRadius = size * 0.455f;
 const float arcRadius   = size * 0.410f;
 
-// Corpo più piccolo: lascia aria tra perno artigianale e cornice moderna.
+// Smaller body leaves space between the handmade pivot and the modern frame.
 const float bodyRadius  = size * 0.165f;
 const float capRadius   = size * 0.125f;
 
@@ -173,8 +173,8 @@ g.strokePath (valueArc,
     // with JUCE's rotary polar convention.
    juce::Path handle;
 
-// Linguetta principale: più meccanica, con punta.
-// Il path punta verso l'alto; la rotazione del controllo la orienta.
+// Main lever: a more mechanical shape with a pointed tip.
+// The path initially points upward; the control rotation sets its direction.
 const float baseW   = bodyRadius * 0.58f;
 const float neckW   = bodyRadius * 0.40f;
 const float tipW    = bodyRadius * 0.18f;
@@ -182,7 +182,7 @@ const float baseY   = bodyRadius * 0.02f;
 const float neckY   = -bodyRadius * 0.95f;
 const float tipY    = -bodyRadius * 1.52f;
 
-// Corpo della linguetta, leggermente rastremato.
+// Slightly tapered lever body.
 handle.startNewSubPath (-baseW * 0.5f, baseY);
 handle.lineTo (-neckW * 0.5f, neckY);
 handle.lineTo (-tipW  * 0.5f, tipY);
@@ -192,8 +192,8 @@ handle.lineTo (neckW * 0.5f, neckY);
 handle.lineTo (baseW * 0.5f, baseY);
 handle.closeSubPath();
 
-// Piccola coda tonda dietro il perno.
-// Serve a farla sembrare una valvola fisica e non solo una lancetta.
+// Short rounded tail behind the pivot makes it feel like a physical valve,
+// rather than simply a needle.
 const float tailW = bodyRadius * 0.34f;
 const float tailH = bodyRadius * 0.44f;
 
@@ -282,7 +282,7 @@ void LabLeverToggleLookAndFeel::drawToggleButton (
     const auto brassDark  = juce::Colour (0xFF6E4B24);
     const auto baseDark   = juce::Colour (0xFF15120E);
 
-    // Area: leva a sinistra, testo a destra.
+    // Layout: lever on the left, text on the right.
     const float leverBoxW = options.compact
         ? juce::jmin (40.0f, bounds.getWidth() * 0.38f)
         : juce::jmin (46.0f, bounds.getWidth() * 0.36f);
@@ -291,7 +291,7 @@ void LabLeverToggleLookAndFeel::drawToggleButton (
     auto textBox  = bounds.reduced (2.0f, 0.0f);
 
     // ---------------------------------------------------------------------
-    // 1. Placca di base
+    // 1. Base plate
     // ---------------------------------------------------------------------
     auto plate = leverBox.reduced (1.0f);
 
@@ -310,7 +310,7 @@ void LabLeverToggleLookAndFeel::drawToggleButton (
     g.drawRoundedRectangle (plate.reduced (0.5f), 5.0f, 1.0f);
 
     // ---------------------------------------------------------------------
-    // 2. Fessura / corsa della leva
+    // 2. Lever slot and travel
     // ---------------------------------------------------------------------
     const auto centre = plate.getCentre();
 
@@ -327,10 +327,10 @@ void LabLeverToggleLookAndFeel::drawToggleButton (
     g.drawRoundedRectangle (slot.reduced (0.4f), slotW * 0.45f, 0.8f);
 
     // ---------------------------------------------------------------------
-    // 3. Leva inclinata
+    // 3. Tilted lever
     // ---------------------------------------------------------------------
-    // OFF: inclinata verso il basso.
-    // ON:  inclinata verso l'alto.
+    // OFF: tilted down.
+    // ON:  tilted up.
     const float pivotY = plate.getCentreY() + plate.getHeight() * 0.22f;
     const float pivotX = plate.getCentreX();
 
@@ -342,14 +342,14 @@ void LabLeverToggleLookAndFeel::drawToggleButton (
         std::sin (leverAngle) * leverLength,
        -std::cos (leverAngle) * leverLength);
 
-    // Glow/stato sotto la leva.
+    // Status glow beneath the lever.
     if (isOn)
     {
         g.setColour (accent.withAlpha (0.22f));
         g.drawLine ({ pivot, end }, juce::jmax (5.0f, plate.getWidth() * 0.13f));
     }
 
-    // Asta metallica.
+    // Metal shaft.
     g.setColour (juce::Colours::black.withAlpha (0.35f));
     g.drawLine ({ pivot.translated (0.0f, 1.0f),
                   end.translated (0.0f, 1.0f) },
@@ -364,7 +364,7 @@ void LabLeverToggleLookAndFeel::drawToggleButton (
     g.drawLine ({ pivot, end },
                 juce::jmax (2.4f, plate.getWidth() * 0.065f));
 
-    // Pomello terminale.
+    // End knob.
     const float tipR = juce::jmax (4.0f, plate.getWidth() * 0.105f);
 
     g.setColour (juce::Colours::black.withAlpha (0.35f));
@@ -389,7 +389,7 @@ void LabLeverToggleLookAndFeel::drawToggleButton (
             .reduced (0.4f),
         0.8f);
 
-    // Fulcro.
+    // Pivot.
     const float pivotR = juce::jmax (4.5f, plate.getWidth() * 0.115f);
 
     g.setColour (baseDark.withAlpha (0.88f));
@@ -405,7 +405,7 @@ void LabLeverToggleLookAndFeel::drawToggleButton (
         1.0f);
 
     // ---------------------------------------------------------------------
-    // 4. Piccola luce di stato
+    // 4. Small status light
     // ---------------------------------------------------------------------
     const float lampR = juce::jmax (2.3f, plate.getWidth() * 0.055f);
     auto lampCentre = juce::Point<float> (
@@ -438,7 +438,7 @@ void LabLeverToggleLookAndFeel::drawToggleButton (
         0.7f);
 
     // ---------------------------------------------------------------------
-    // 5. Testo
+    // 5. Text
     // ---------------------------------------------------------------------
     const float textAlpha = button.isEnabled()
         ? (isOn ? 0.96f : 0.72f)
@@ -500,13 +500,13 @@ void OutputKnobLookAndFeel::drawRotarySlider (juce::Graphics& g,
             centre.y + r * std::sin (a - juce::MathConstants<float>::halfPi));
     };
 
-    // Ombra: il pot deve sembrare montato sul pannello, non disegnato sopra.
+    // Shadow makes the potentiometer look mounted in the panel, not drawn on it.
     g.setColour (juce::Colours::black.withAlpha (0.38f));
     g.fillEllipse (
         juce::Rectangle<float> (outerRadius * 2.0f, outerRadius * 2.0f)
             .withCentre (centre.translated (0.0f, size * 0.045f)));
 
-    // Ghiera esterna metallica.
+    // Outer metal ring.
     auto outer = juce::Rectangle<float> (outerRadius * 2.0f,
                                          outerRadius * 2.0f)
         .withCentre (centre);
@@ -522,7 +522,7 @@ void OutputKnobLookAndFeel::drawRotarySlider (juce::Graphics& g,
     g.setColour (juce::Colours::black.withAlpha (0.55f));
     g.drawEllipse (outer.reduced (0.4f), juce::jmax (1.0f, size * 0.022f));
 
-    // Arco di valore: ambra, abbastanza moderno ma non “magico”.
+    // Amber value arc: modern without feeling supernatural.
     juce::Path backgroundArc;
     backgroundArc.addCentredArc (centre.x,
                                   centre.y,
@@ -561,7 +561,7 @@ void OutputKnobLookAndFeel::drawRotarySlider (juce::Graphics& g,
                                         juce::PathStrokeType::curved,
                                         juce::PathStrokeType::rounded));
 
-    // Corpo centrale scuro, tipo potenziometro/pedale.
+    // Dark central grip, like a potentiometer or pedal control.
     auto grip = juce::Rectangle<float> (gripRadius * 2.0f,
                                         gripRadius * 2.0f)
         .withCentre (centre);
@@ -577,7 +577,7 @@ void OutputKnobLookAndFeel::drawRotarySlider (juce::Graphics& g,
     g.setColour (juce::Colours::black.withAlpha (0.75f));
     g.drawEllipse (grip.reduced (0.5f), juce::jmax (1.0f, size * 0.018f));
 
-    // Piccole scanalature da potenziometro.
+    // Small potentiometer grooves.
     for (int i = 0; i < 18; ++i)
     {
         const float t = static_cast<float> (i) / 18.0f;
@@ -590,7 +590,7 @@ void OutputKnobLookAndFeel::drawRotarySlider (juce::Graphics& g,
         g.drawLine ({ p1, p2 }, juce::jmax (0.55f, size * 0.007f));
     }
 
-    // Indicatore principale: tacca bianca + piccolo glow ambra.
+    // Main indicator: white tick and a subtle amber glow.
     const auto indicatorOuter = polar (angle, gripRadius * 0.82f);
     const auto indicatorInner = polar (angle, gripRadius * 0.34f);
 
@@ -602,7 +602,7 @@ void OutputKnobLookAndFeel::drawRotarySlider (juce::Graphics& g,
     g.drawLine ({ indicatorInner, indicatorOuter },
                 juce::jmax (1.2f, size * 0.026f));
 
-    // Cap centrale metallico.
+    // Metal centre cap.
     auto cap = juce::Rectangle<float> (capRadius * 2.0f,
                                        capRadius * 2.0f)
         .withCentre (centre);
@@ -618,7 +618,7 @@ void OutputKnobLookAndFeel::drawRotarySlider (juce::Graphics& g,
     g.setColour (juce::Colours::black.withAlpha (0.60f));
     g.drawEllipse (cap.reduced (0.4f), juce::jmax (0.8f, size * 0.014f));
 
-    // Puntino centrale scuro: dettaglio da hardware.
+    // Dark centre dot for a hardware-like detail.
     auto pin = cap.reduced (capRadius * 0.52f);
     g.setColour (juce::Colour (0xFF161616).withAlpha (0.85f));
     g.fillEllipse (pin);
@@ -675,8 +675,7 @@ void UtilityRailSliderLookAndFeel::drawLinearSlider (
 
     const bool active = slider.isMouseOverOrDragging();
 
-    // Cursore: abbastanza grande da sembrare un oggetto fisico,
-    // ma non così grande da rubare spazio alla scala.
+    // Thumb: large enough to feel physical, without crowding the scale.
     const float thumbW = juce::jlimit (
         16.0f, 26.0f, area.getHeight() * 0.92f * options.thumbScale);
 
@@ -686,7 +685,7 @@ void UtilityRailSliderLookAndFeel::drawLinearSlider (
     const float pointerH = juce::jlimit (
         4.0f, 8.0f, area.getHeight() * 0.22f * options.thumbScale);
 
-    // Il rail è leggermente inset: così il cursore non esce dai bordi.
+    // Inset rail prevents the thumb from extending beyond its edges.
     auto rail = area.reduced (thumbW * 0.48f, 0.0f);
     rail = rail.withY (area.getBottom() - 8.0f)
                .withHeight (juce::jlimit (4.0f, 6.0f, area.getHeight() * 0.18f));
@@ -694,7 +693,7 @@ void UtilityRailSliderLookAndFeel::drawLinearSlider (
     const float pos = juce::jlimit (rail.getX(), rail.getRight(), sliderPos);
 
     // ---------------------------------------------------------------------
-    // 1. Ombra e binario fisico
+    // 1. Shadow and physical rail
     // ---------------------------------------------------------------------
     g.setColour (juce::Colours::black.withAlpha (0.26f));
     g.fillRoundedRectangle (rail.translated (0.0f, 1.4f), 3.0f);
@@ -710,7 +709,7 @@ void UtilityRailSliderLookAndFeel::drawLinearSlider (
     g.setColour (brassMid.withAlpha (0.72f));
     g.drawRoundedRectangle (rail.reduced (0.4f), 3.0f, 0.9f);
 
-    // Linea attiva: la parte "futuristica" dentro il rail meccanico.
+    // Active line: a futuristic element inside the mechanical rail.
     auto activeRail = rail.reduced (1.5f, rail.getHeight() * 0.26f);
     activeRail.setRight (pos);
 
@@ -727,7 +726,7 @@ void UtilityRailSliderLookAndFeel::drawLinearSlider (
     }
 
     // ---------------------------------------------------------------------
-    // 2. Scala graduata
+    // 2. Graduated scale
     // ---------------------------------------------------------------------
     const float scaleBottomY = rail.getY() - 2.0f;
 
@@ -735,8 +734,8 @@ void UtilityRailSliderLookAndFeel::drawLinearSlider (
     {
         const float t = static_cast<float> (i) / 20.0f;
 
-        // Variante prospettica: utile più avanti per Tempo Mode.
-        // Le tacche al centro sembrano più vicine, quelle ai lati più lontane.
+        // Perspective variant, potentially useful for Tempo Mode later.
+        // Ticks appear closer at the centre and farther apart at the edges.
         const float distanceFromCentre = std::abs (t - 0.5f) * 2.0f;
         const float perspective = options.perspectiveScale
             ? (1.0f - 0.48f * distanceFromCentre)
@@ -750,8 +749,8 @@ void UtilityRailSliderLookAndFeel::drawLinearSlider (
 
         const float alpha = (major ? 0.58f : 0.30f) * perspective;
 
-        // Piccolo abbassamento laterale nella modalità prospettica:
-        // suggerisce che la scala entri sotto il banco.
+        // Slight lowering at the sides in perspective mode suggests
+        // that the scale extends beneath the workbench.
         const float yOffset = options.perspectiveScale
             ? distanceFromCentre * 2.0f
             : 0.0f;
@@ -786,7 +785,7 @@ void UtilityRailSliderLookAndFeel::drawLinearSlider (
     }
 
     // ---------------------------------------------------------------------
-    // 3. Cursore: rettangolo + freccetta
+    // 3. Thumb: rectangle and small arrow
     // ---------------------------------------------------------------------
     const float thumbY = rail.getCentreY() - thumbH * 0.50f;
     auto thumbBody = juce::Rectangle<float> (
@@ -801,12 +800,12 @@ void UtilityRailSliderLookAndFeel::drawLinearSlider (
     pointer.lineTo (pos + thumbW * 0.30f, thumbBody.getY() + 1.0f);
     pointer.closeSubPath();
 
-    // Ombra del cursore.
+    // Thumb shadow.
     g.setColour (juce::Colours::black.withAlpha (0.30f));
     g.fillRoundedRectangle (thumbBody.translated (0.0f, 1.3f), 2.5f);
     g.fillPath (pointer, juce::AffineTransform::translation (0.0f, 1.2f));
 
-    // Corpo ottone.
+    // Brass body.
     juce::ColourGradient thumbGradient (
         brassLight, thumbBody.getX(), thumbBody.getY(),
         brassDark,  thumbBody.getRight(), thumbBody.getBottom(),
@@ -816,13 +815,13 @@ void UtilityRailSliderLookAndFeel::drawLinearSlider (
     g.fillRoundedRectangle (thumbBody, 2.5f);
     g.fillPath (pointer);
 
-    // Zona centrale usurata: come se il pezzo fosse stato spostato col dito.
+    // Worn central area, as though moved by hand.
     auto wear = thumbBody.reduced (thumbW * 0.26f, thumbH * 0.22f);
 
     g.setColour (wearDark.withAlpha (0.56f));
     g.fillRoundedRectangle (wear, 1.8f);
 
-    // Piccola lucidatura sopra e bordo.
+    // Slight polish along the top and edge.
     g.setColour (juce::Colours::white.withAlpha (0.16f));
     g.drawLine (thumbBody.getX() + 2.0f,
                 thumbBody.getY() + 2.0f,
@@ -836,7 +835,7 @@ void UtilityRailSliderLookAndFeel::drawLinearSlider (
     g.setColour (brassLight.withAlpha (0.88f));
     g.strokePath (pointer, juce::PathStrokeType (0.8f));
 
-    // Stato attivo: non mostra un valore, ma rende il cursore più leggibile.
+    // Active state improves thumb visibility without showing a value.
     if (active)
     {
         g.setColour (activeColour.withAlpha (0.36f));
@@ -864,7 +863,7 @@ void Painter::drawBackground (juce::Graphics& g,
         g.fillRect (b);
     }
 
-    // Vignette da laboratorio: tiene insieme placeholder moderni e futuri disegni.
+    // Workshop vignette joins modern placeholders with the planned illustrations.
     juce::ColourGradient vignette (juce::Colours::transparentBlack,
                                    b.getCentreX(), b.getCentreY(),
                                    juce::Colour (0xCC000000),
@@ -873,7 +872,7 @@ void Painter::drawBackground (juce::Graphics& g,
     g.setGradientFill (vignette);
     g.fillRect (b);
 
-    // Polvere/aria: linee quasi invisibili, utili finché mancano gli sfondi finali.
+    // Barely visible dust/air lines until the final backgrounds are ready.
     g.setColour (juce::Colours::white.withAlpha (0.025f));
     for (int y = bounds.getY() + 18; y < bounds.getBottom(); y += 23)
         g.drawHorizontalLine (y, static_cast<float> (bounds.getX()), static_cast<float> (bounds.getRight()));
@@ -923,7 +922,7 @@ void Painter::drawNeedleMeter (juce::Graphics& g,
     if (redWarning)
         lightColour = lightColour.interpolatedWith (warningRed, 0.38f);
 
-    // Più trasparente: il quadrante deve appoggiarsi sul disegno.
+    // A more transparent gauge blends into the underlying artwork.
     drawPanel (g, bounds, 10.0f, 0.42f);
 
     auto meter = bounds.reduced (10.0f, 8.0f);
@@ -943,7 +942,7 @@ void Painter::drawNeedleMeter (juce::Graphics& g,
     const float angle = juce::jmap (normalisedValue, start, end);
     const float glowAngle = juce::jmap (glowNormalisedValue, start, end);
 
-    // Arco base, quasi inciso nel vetro.
+    // Base arc, almost engraved into the glass.
     juce::Path arc;
     arc.addCentredArc (centre.x, centre.y, radius, radius, 0.0f, start, end, true);
 
@@ -959,10 +958,8 @@ void Painter::drawNeedleMeter (juce::Graphics& g,
                                         juce::PathStrokeType::curved,
                                         juce::PathStrokeType::rounded));
 
-    // Arco luminoso ruotato di 90° in senso orario.
-    // Se visivamente ruota dalla parte sbagliata, cambia +halfPi in -halfPi.
-   // Arco luminoso ruotato di 90° in senso orario.
-// Per Correction parte dal centro: 0 cent.
+    // Illuminated arc rotated 90 degrees clockwise. Swap +halfPi for -halfPi
+    // if its visual direction is reversed. Correction starts at zero cents.
 // Unipolar meters start at the beginning of the dial.
 const float glowRotation = juce::MathConstants<float>::halfPi;
 
@@ -971,8 +968,8 @@ const float zeroAngle = juce::jmap (0.5f, start, end);
 const float glowStartAngle = bipolarGlow ? zeroAngle : start;
 const float glowEndAngle   = glowAngle;
 
-// Se la correzione è negativa, glowEndAngle è prima del centro.
-// Usiamo min/max per disegnare comunque il segmento tra 0 e valore.
+// For negative correction glowEndAngle precedes the centre.
+// min/max still draws the segment between zero and the current value.
 const float arcFrom = juce::jmin (glowStartAngle, glowEndAngle);
 const float arcTo   = juce::jmax (glowStartAngle, glowEndAngle);
 
@@ -998,7 +995,7 @@ glowArc.addCentredArc (centre.x,
                                         juce::PathStrokeType::curved,
                                         juce::PathStrokeType::rounded));
 
-    // Tacche.
+    // Ticks.
     for (int i = 0; i <= 8; ++i)
     {
         const float tickNorm = static_cast<float> (i) / 8.0f;
@@ -1017,7 +1014,7 @@ glowArc.addCentredArc (centre.x,
         g.drawLine (juce::Line<float> (inner, outer), major ? 1.3f : 0.75f);
     }
 
-    // Lancetta più caratteristica: non più una semplice linea.
+    // A more distinctive needle, rather than a plain line.
     const auto dir = juce::Point<float> (std::cos (angle), std::sin (angle));
     const auto normal = juce::Point<float> (-dir.y, dir.x);
 
@@ -1052,7 +1049,7 @@ glowArc.addCentredArc (centre.x,
     g.setColour ((redWarning ? warningRed : accent).withAlpha (redWarning ? 0.58f : 0.32f));
     g.strokePath (needle, juce::PathStrokeType (1.2f));
 
-    // Perno centrale.
+    // Central pivot.
     g.setColour (juce::Colours::black.withAlpha (0.34f));
     g.fillEllipse (juce::Rectangle<float> (13.0f, 13.0f)
         .withCentre (centre.translated (0.0f, 1.0f)));
@@ -1066,7 +1063,7 @@ glowArc.addCentredArc (centre.x,
         .reduced (0.5f),
         0.9f);
 
-    // Vetro/lente sopra il quadrante.
+    // Glass lens over the dial.
     auto lens = bounds.reduced (3.0f);
 
     juce::ColourGradient lensGradient (
@@ -1084,7 +1081,7 @@ glowArc.addCentredArc (centre.x,
     g.setColour (juce::Colours::white.withAlpha (0.15f));
     g.drawRoundedRectangle (lens.reduced (0.7f), 10.0f, 0.9f);
 
-    // Testo.
+    // Text.
     g.setColour (p.ink.withAlpha (0.88f));
     g.setFont (juce::FontOptions (11.0f));
     g.drawText (valueText,
@@ -1194,14 +1191,13 @@ void Painter::drawRadioTarget (juce::Graphics& g,
 
     auto f = bounds.toFloat();
 
-    // Più trasparente: deve sembrare uno strumento appoggiato al banco.
+    // More transparency makes the instrument appear to rest on the workbench.
     drawPanel (g, f, 10.0f, 0.46f);
 
    auto area = bounds.reduced (14, 10);
 auto title = area.removeFromTop (22);
 
-// Non disegniamo ancora il titolo: lo ridisegniamo alla fine,
-// sopra vetro e cornice, così non viene coperto.
+// Defer the title until the end so it stays above the glass and frame.
 area.removeFromTop (3);
 
 auto rail = area.reduced (10, 18).withHeight (16);
@@ -1210,13 +1206,13 @@ rail.translate (0, 4);
 
 auto railF = rail.toFloat();
 
-// Cornice più sottile: prima era expanded (9, 12), troppo invadente.
+// Thinner frame: the previous expanded (9, 12) was too intrusive.
 auto frame = rail.expanded (5, 7).toFloat();
-    // Ombra sotto la cornice.
+    // Shadow beneath the frame.
     g.setColour (juce::Colours::black.withAlpha (0.32f));
     g.fillRoundedRectangle (frame.translated (0.0f, 1.2f), 5.5f);
 
-    // Cornice ottone: laboratorio/liutaio.
+    // Brass frame with a workshop / instrument-maker feel.
     juce::ColourGradient frameGradient (
         p.brass.brighter (0.20f),
         frame.getX(),
@@ -1236,7 +1232,7 @@ g.setColour (juce::Colours::white.withAlpha (0.10f));
 g.drawRoundedRectangle (frame.reduced (1.6f), 4.5f, 0.65f);
 
   
-    // Fessura interna, più analogica/radio.
+    // Inner slot with a more analog, radio-like appearance.
     juce::ColourGradient railGradient (
         juce::Colour (0xFF07090D),
         railF.getX(),
@@ -1252,7 +1248,7 @@ g.drawRoundedRectangle (frame.reduced (1.6f), 4.5f, 0.65f);
     g.setColour (p.glassEdge.withAlpha (0.72f));
     g.drawRoundedRectangle (railF.reduced (0.5f), 4.0f, 0.9f);
 
-    // Tacche musicali: ottave e quinte.
+    // Musical ticks for octaves and fifths.
     const auto drawFreqTick = [&] (float hz,
                                    float height,
                                    float thickness,
@@ -1272,7 +1268,7 @@ g.drawRoundedRectangle (frame.reduced (1.6f), 4.5f, 0.65f);
                     thickness);
     };
 
-    // Ottave: tacche principali.
+    // Octaves: major ticks.
     for (float hz = minimumHz; hz <= maximumHz * 1.001f; hz *= 2.0f)
     {
         drawFreqTick (hz,
@@ -1281,7 +1277,7 @@ g.drawRoundedRectangle (frame.reduced (1.6f), 4.5f, 0.65f);
                       p.ink.withAlpha (0.72f));
     }
 
-    // Quinte: tacche medie, meno invadenti.
+    // Fifths: less prominent intermediate ticks.
     for (float hz = minimumHz * 1.5f; hz <= maximumHz * 1.001f; hz *= 2.0f)
     {
         drawFreqTick (hz,
@@ -1290,7 +1286,7 @@ g.drawRoundedRectangle (frame.reduced (1.6f), 4.5f, 0.65f);
                       p.brass.withAlpha (0.64f));
     }
 
-    // Luce detected pitch: radio/sintetica.
+    // Detected-pitch light with a radio / synthetic feel.
     if (detectedHz > 0.0f)
     {
         const float detectedNorm = frequencyToLogPosition (detectedHz, minimumHz, maximumHz);
@@ -1313,8 +1309,7 @@ g.drawRoundedRectangle (frame.reduced (1.6f), 4.5f, 0.65f);
                     1.4f);
     }
 
-    // Cursore target rosso: mantiene il gesto bello che già funziona,
-    // ma diventa più fisico.
+    // Red target thumb keeps the existing gesture but feels more physical.
     const float targetNorm = frequencyToLogPosition (targetHz, minimumHz, maximumHz);
     const float targetX = railF.getX() + targetNorm * railF.getWidth();
 
@@ -1342,7 +1337,7 @@ g.drawRoundedRectangle (frame.reduced (1.6f), 4.5f, 0.65f);
     g.setColour (juce::Colours::white.withAlpha (0.48f));
     g.drawRoundedRectangle (cursor.reduced (0.8f), 1.5f, 0.75f);
 
-    // Vetro sopra tutto il controllo.
+    // Glass covering the entire control.
     auto glass = frame.reduced (2.0f);
     
 
@@ -1361,8 +1356,8 @@ g.drawRoundedRectangle (frame.reduced (1.6f), 4.5f, 0.65f);
     g.setColour (juce::Colours::white.withAlpha (0.12f));
     g.drawRoundedRectangle (glass.reduced (0.7f), 7.0f, 0.8f);
 
-    // Testo Hz.
-    // Titolo sopra cornice e vetro.
+    // Hz text.
+    // Title above the frame and glass.
 g.setColour (p.ink.withAlpha (0.94f));
 g.setFont (juce::FontOptions (12.5f, juce::Font::bold));
 g.drawText ("Target tuning", title, juce::Justification::centred);

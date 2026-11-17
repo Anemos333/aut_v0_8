@@ -48,6 +48,11 @@ void checkFactoryAndState()
 {
     Processor processor;
     require(processor.getNumPrograms() == 12, "host program slots changed");
+    require(processor.getAPVTS().getParameter("speed")->getName(128) == "Response (ms)"
+        && processor.getAPVTS().getParameter("amount")->getName(128) == "Correction Amount"
+        && processor.getAPVTS().getParameter("humanize")->getName(128) == "Human Drift"
+        && processor.getAPVTS().getParameter("analogMode")->getName(128) == "Analog Texture",
+        "host parameter labels are inconsistent with the English UI");
     setLegacy(processor);
     set(processor, "tuningReferenceHz", 432);
     require(processor.activateCommunityScale("scale_0002"), "select factory minor scale");
@@ -66,6 +71,8 @@ void checkFactoryAndState()
         require(close(value(processor, "speed"), processor.getAPVTS().getParameterRange("speed").snapToLegalValue(preset.speedMs)), "preset Response mismatch");
         require(close(value(processor, "amount"), preset.amount), "preset Amount mismatch");
         require(close(value(processor, "humanize"), preset.humanize), "preset Human Drift mismatch");
+        require(close(value(processor, "boundaryStability"), preset.boundaryStability), "preset Boundary Stability mismatch");
+        require(close(value(processor, "outputDrive"), preset.outputDrive), "preset Output Drive mismatch");
         require(close(value(processor, "analogMode"), preset.analogMode ? 1 : 0), "preset texture mismatch");
         require(close(value(processor, "outVolume"), preset.outVolumeDb), "preset output mismatch");
         checkLegacy(processor);
@@ -99,6 +106,8 @@ void checkSharedPresets()
     setLegacy(source);
     source.setCurrentProgram(9);
     set(source, "tuningReferenceHz", 432);
+    set(source, "boundaryStability", 67);
+    set(source, "outputDrive", 43);
     const auto captured = community::CommunityPreset::capture("V1 preset", source.getAPVTS(), 1, 4);
     require(captured.values.getNumProperties() == 8, "new capture contains retired controls");
     for (const auto& entry : legacyValues)
@@ -262,6 +271,12 @@ void checkEditor()
     require(selector->getSelectedId() == 0, "modified preset not labelled Custom");
     processor.setCurrentProgram(9); dispatch();
     require(selector->getText() == "Slow Orbit", "host program change not reflected in editor");
+    set(processor, "boundaryStability", 99); dispatch();
+    require(selector->getSelectedId() == 0, "changed Boundary Stability not labelled Custom");
+    processor.setCurrentProgram(9); dispatch();
+    set(processor, "outputDrive", 43); dispatch();
+    require(selector->getSelectedId() == 0, "changed Output Drive not labelled Custom");
+    processor.setCurrentProgram(9); dispatch();
     setLegacy(processor); dispatch();
     require(selector->getText() == "Slow Orbit", "retired controls affect preset matching");
 }
