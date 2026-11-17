@@ -158,21 +158,13 @@ public:
             node.setProperty ("category", juce::String (scale.category), nullptr);
             node.setProperty ("equaveRatio", scale.equaveRatio, nullptr);
             node.setProperty ("ratios", ratiosToString (scale.ratios), nullptr);
+            node.setProperty ("degreeColours", neumaton::scalecolours::encode (
+                neumaton::scalecolours::defaults (scale.stableId, scale.ratios, scale.equaveRatio)), nullptr);
             entries.push_back (std::move (node));
         }
 
-        for (int i = 0; i < customPresets.getNumPresets(); ++i)
-        {
-            const auto& scale = customPresets.getPreset (i);
-            juce::ValueTree node ("Scale");
-            node.setProperty ("stableId", scale.stableId, nullptr);
-            node.setProperty ("sourcePackId", scale.sourcePackId, nullptr);
-            node.setProperty ("name", scale.name, nullptr);
-            node.setProperty ("category", scale.category, nullptr);
-            node.setProperty ("equaveRatio", scale.equaveRatio, nullptr);
-            node.setProperty ("ratios", ratiosToString (scale.ratios), nullptr);
-            entries.push_back (std::move (node));
-        }
+        for (const auto& scale : customPresets.toValueTree())
+            entries.push_back (scale);
 
         return entries;
     }
@@ -184,43 +176,63 @@ public:
         if (stableId.isEmpty())
             return false;
 
-        const int factoryIndex = ScaleDefinitions::findScaleIndexByStableId (
-            stableId.toStdString());
-        if (factoryIndex >= 0)
+        const auto node = sourcePack == nullptr ? juce::ValueTree()
+            : neumaton::community::CommunityPackLibrary::findEntryByStableId (sourcePack->scales, stableId);
+        if (sourcePack != nullptr && ! node.isValid())
+            return false;
+
+        const int factory = ScaleDefinitions::findScaleIndexByStableId (stableId.toStdString());
+        int local = customPresets.findPresetIndexByStableId (stableId);
+        if (node.isValid())
         {
-            currentScaleIndex.store (factoryIndex, std::memory_order_release);
-            activeCustomPresetIndex.store (-1, std::memory_order_release);
-            refreshScaleSnapshot();
-            return true;
+            // A pack can carry a new palette for a scale already present in the session.
+            // Keep that version independent so switching back restores the original.
+            neumaton::sharing::PackDocument single;
+            single.manifest = sourcePack->manifest;
+            single.scales.addChild (node.createCopy(), -1, nullptr);
+            CustomScalePresets decoded;
+            if (! decoded.importScalePack (single)) return false;
+            const auto& incoming = decoded.getPreset (0);
+            const auto matches = [&incoming] (const auto& ratios, double equave, const auto& colours)
+            {
+                return std::abs (incoming.equaveRatio - equave) < 1.e-10
+                    && incoming.degreeColours == colours && incoming.ratios.size() == ratios.size()
+                    && std::equal (ratios.begin(), ratios.end(), incoming.ratios.begin(),
+                        [] (double a, double b) { return std::abs (a - b) < 1.e-8; });
+            };
+            bool existing = false;
+            if (factory >= 0)
+            {
+                const auto& scale = ScaleDefinitions::getScale (factory);
+                existing = matches (scale.ratios, scale.equaveRatio, neumaton::scalecolours::defaults (
+                    stableId, scale.ratios, scale.equaveRatio));
+            }
+            else if (local >= 0)
+            {
+                const auto& scale = customPresets.getPreset (local);
+                existing = matches (scale.ratios, scale.equaveRatio, scale.degreeColours);
+            }
+            if (! existing)
+            {
+                auto key = stableId;
+                if (factory >= 0 || local >= 0)
+                    key = sourcePack->manifest.stableId + "." + stableId + "." + single.calculatePayloadSha256();
+                local = customPresets.findPresetIndexByStableId (key);
+                if (local < 0)
+                {
+                    auto entry = single.scales.getChild (0);
+                    entry.setProperty ("stableId", key, nullptr);
+                    entry.setProperty ("degreeColours", neumaton::scalecolours::encode (incoming.degreeColours), nullptr);
+                    if (! customPresets.importScalePack (single)) return false;
+                    local = customPresets.findPresetIndexByStableId (key);
+                }
+            }
         }
-
-        const int localIndex = customPresets.findPresetIndexByStableId (stableId);
-        if (localIndex >= 0)
-        {
-            activeCustomPresetIndex.store (localIndex, std::memory_order_release);
-            refreshScaleSnapshot();
-            return true;
-        }
-
-        if (sourcePack == nullptr)
+        if (local < 0 && factory < 0)
             return false;
-
-        const auto node = neumaton::community::CommunityPackLibrary::findEntryByStableId (
-            sourcePack->scales, stableId);
-        if (! node.isValid())
-            return false;
-
-        neumaton::sharing::PackDocument single;
-        single.manifest = sourcePack->manifest;
-        single.scales.addChild (node.createCopy(), -1, nullptr);
-        if (customPresets.importScalePack (single) <= 0)
-            return false;
-
-        const int importedIndex = customPresets.findPresetIndexByStableId (stableId);
-        if (importedIndex < 0)
-            return false;
-
-        activeCustomPresetIndex.store (importedIndex, std::memory_order_release);
+        if (local < 0)
+            currentScaleIndex.store (factory, std::memory_order_release);
+        activeCustomPresetIndex.store (local, std::memory_order_release);
         refreshScaleSnapshot();
         return true;
     }
@@ -232,21 +244,16 @@ public:
         if (! scene.isValid())
             return false;
 
-        const bool scaleApplied = activateCommunityScale (
-            scene.scaleStableId, sourcePack);
+        neumaton::community::CommunityPreset preset;
+        if (sourcePack != nullptr)
+            preset = neumaton::community::CommunityPreset::fromValueTree (
+                neumaton::community::CommunityPackLibrary::findEntryByStableId (
+                    sourcePack->presets, scene.presetStableId));
+        else if (const auto* local = communityPackLibrary.findUserPreset (scene.presetStableId))
+            preset = *local;
 
-        const neumaton::community::CommunityPreset* localPreset =
-            communityPackLibrary.findUserPreset (scene.presetStableId);
-        if (localPreset != nullptr)
-            return scaleApplied && applyCommunityPreset (*localPreset);
-
-        if (sourcePack == nullptr)
-            return false;
-
-        const auto presetTree =
-            neumaton::community::CommunityPackLibrary::findEntryByStableId (
-                sourcePack->presets, scene.presetStableId);
-        return scaleApplied && applyCommunityPresetTree (presetTree);
+        return preset.isValid() && activateCommunityScale (scene.scaleStableId, sourcePack)
+            && applyCommunityPreset (preset);
     }
 
     [[nodiscard]] LivePitchProcessor::Metering getPitchMetering() const noexcept;

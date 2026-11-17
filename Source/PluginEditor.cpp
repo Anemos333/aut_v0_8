@@ -173,6 +173,16 @@ MicrotonalAutotuneAudioProcessorEditor::MicrotonalAutotuneAudioProcessorEditor (
 
     configureHeaderLabel (presetSelectorLabel, Neumaton::UI::Labels::Main::preset);
     presetSelector.setJustificationType (juce::Justification::centredLeft);
+    presetSelector.refresh = [this]
+    {
+        processorRef.getCommunityPackLibrary().refreshMenuSettings();
+        buildPresetMenu();
+    };
+    scaleSelector.refresh = [this]
+    {
+        processorRef.getCommunityPackLibrary().refreshMenuSettings();
+        buildScaleMenu();
+    };
     presetSelector.onChange = [this] { onPresetSelected(); };
     addAndMakeVisible (presetSelector);
     buildPresetMenu();
@@ -328,6 +338,7 @@ MicrotonalAutotuneAudioProcessorEditor::MicrotonalAutotuneAudioProcessorEditor (
     controlRoomButton.setButtonText (Neumaton::UI::Labels::Main::controlRoom);
     controlRoomButton.onClick = [this] { showControlRoom(); };
     addAndMakeVisible (controlRoomButton);
+    controlRoomPage.onCommunity = [this] { openPackComposer(); };
     controlRoomPage.onBack = [this] { closeControlRoom(); };
     addChildComponent (controlRoomPage);
 
@@ -350,6 +361,7 @@ MicrotonalAutotuneAudioProcessorEditor::MicrotonalAutotuneAudioProcessorEditor (
 
 MicrotonalAutotuneAudioProcessorEditor::~MicrotonalAutotuneAudioProcessorEditor()
 {
+    packWindow.deleteAndZero();
     speedKnob.setLookAndFeel (nullptr);
     amountKnob.setLookAndFeel (nullptr);
     humanizeSlider.setLookAndFeel (nullptr);
@@ -420,27 +432,68 @@ void MicrotonalAutotuneAudioProcessorEditor::closeControlRoom()
 void MicrotonalAutotuneAudioProcessorEditor::buildPresetMenu()
 {
     presetSelector.clear (juce::dontSendNotification);
+    auto& root = *presetSelector.getRootMenu();
+    juce::PopupMenu factory, user, packs;
     juce::String lastGroup;
-
-    for (int i = 0; i < FactoryPresets::getNumPresets(); ++i)
+    const int factoryCount = FactoryPresets::getNumPresets();
+    for (int i = 0; i < factoryCount; ++i)
     {
         const auto& preset = FactoryPresets::getPreset (i);
         const juce::String group (preset.group);
-        if (group != lastGroup)
-        {
-            presetSelector.addSectionHeading (group);
-            lastGroup = group;
-        }
-        presetSelector.addItem (preset.name, i + 1);
+        if (lastGroup != group)
+            factory.addSectionHeader (group);
+        lastGroup = group;
+        factory.addItem (i + 1, preset.name);
     }
+    presetItems.clear();
+    recalledMenuId = 0;
+    const auto add = [&] (juce::PopupMenu& menu, const juce::ValueTree& entry,
+                          const neumaton::sharing::PackDocument& pack)
+    {
+        presetItems.push_back ({ entry, pack });
+        const int id = factoryCount + static_cast<int> (presetItems.size());
+        menu.addItem (id, entry["name"].toString());
+        if (entry["stableId"].toString() == recalledEntryId && pack.manifest.stableId == recalledPackId)
+            recalledMenuId = id;
+    };
+    const auto& library = processorRef.getCommunityPackLibrary();
+    for (const auto& preset : library.getUserPresets())
+        add (user, preset.toValueTree(), {});
+    if (! library.getUserScenes().empty())
+        user.addSectionHeader ("Scenes");
+    for (const auto& scene : library.getUserScenes())
+        add (user, scene.toValueTree(), {});
 
+    for (const auto& loaded : library.getLoadedPacks())
+    {
+        const auto& pack = loaded.document;
+        juce::PopupMenu items;
+        for (const auto& collection : { pack.presets, pack.scenes })
+        {
+            if (collection.getNumChildren() > 0)
+                items.addSectionHeader (collection.getType().toString());
+            for (const auto& entry : collection)
+                add (items, entry, pack);
+        }
+        if (items.getNumItems() > 0)
+            packs.addSubMenu (pack.manifest.author + " / " + pack.manifest.name, items);
+    }
+    user.addSeparator();
+    user.addItem (-1, "Save current preset...");
+    packs.addSeparator();
+    packs.addItem (-2, "Choose pack folder...");
+    packs.addItem (-4, "Reload pack folder");
+    packs.addItem (-3, "Create or export pack...");
+    root.addSubMenu ("Factory Presets", factory);
+    root.addSubMenu ("User Presets", user);
+    root.addSubMenu ("Community Packs", packs);
     presetSelector.setTextWhenNothingSelected ("Custom");
     updatePresetPresentation();
 }
 
 void MicrotonalAutotuneAudioProcessorEditor::updatePresetPresentation()
 {
-    if (presetSelector.getNumItems() == 0)
+    if (presetSelector.getRootMenu()->getNumItems() == 0)
         return;
 
     const int index = processorRef.getCurrentProgram();
@@ -448,28 +501,73 @@ void MicrotonalAutotuneAudioProcessorEditor::updatePresetPresentation()
     const auto matches = [this] (const char* id, float expected)
     {
         const auto* value = processorRef.getAPVTS().getRawParameterValue (id);
-        return value != nullptr && std::abs (value->load() - expected) < 0.01f;
+        const auto& range = processorRef.getAPVTS().getParameterRange (id);
+        return value != nullptr && std::abs (value->load() - range.snapToLegalValue (expected)) < 0.01f;
     };
     const bool recalled = processorRef.processingMode.load() == preset.processingMode
         && matches ("speed", preset.speedMs)
         && matches ("amount", preset.amount)
         && matches ("humanize", preset.humanize)
         && matches ("analogMode", preset.analogMode ? 1.0f : 0.0f)
-        && matches ("outVolume", preset.outVolumeDb);
-    const int selectedId = recalled ? index + 1 : 0;
+        && matches ("outVolume", preset.outVolumeDb)
+        && matches ("boundaryStability", preset.boundaryStability)
+        && matches ("outputDrive", preset.outputDrive);
+    bool matchesEntry = recalledMenuId > 0
+        && recalledValues.processingMode == processorRef.processingMode.load()
+        && (recalledValues.tonalCenterIndex < 0 || recalledValues.tonalCenterIndex == processorRef.tonalCenterIndex.load())
+        && (recalledScaleId.isEmpty() || recalledScaleId == processorRef.getCurrentScaleStableId());
+    for (const auto* id : neumaton::community::sharedPresetParameterIds())
+        if (matchesEntry && recalledValues.values.hasProperty (id))
+            matchesEntry = matches (id, static_cast<float> (recalledValues.values[id]));
+    const int selectedId = matchesEntry ? recalledMenuId : (recalled ? index + 1 : 0);
     if (presetSelector.getSelectedId() != selectedId)
         presetSelector.setSelectedId (selectedId, juce::dontSendNotification);
-    presetSelector.setTooltip (recalled ? preset.description
-        : "Custom settings. Select a factory preset to recall its controls.");
+    presetSelector.setTooltip (matchesEntry ? presetSelector.getText() : recalled ? preset.description
+        : "Custom settings. Select a preset to recall its controls.");
 }
 
 void MicrotonalAutotuneAudioProcessorEditor::onPresetSelected()
 {
-    const int index = presetSelector.getSelectedId() - 1;
-    if (index < 0 || index >= FactoryPresets::getNumPresets())
+    const int id = presetSelector.getSelectedId();
+    if (id == -1) { promptSavePreset(); updatePresetPresentation(); return; }
+    if (id == -2) { choosePackFolder(); updatePresetPresentation(); return; }
+    if (id == -4)
+    {
+        processorRef.getCommunityPackLibrary().reloadFromDisk();
+        buildPresetMenu();
+        buildScaleMenu();
         return;
-
-    processorRef.applyFactoryPreset (index);
+    }
+    if (id == -3) { openPackComposer(); updatePresetPresentation(); return; }
+    if (id <= 0) return;
+    recalledMenuId = 0;
+    recalledEntryId.clear();
+    recalledScaleId.clear();
+    const int itemIndex = id - FactoryPresets::getNumPresets() - 1;
+    if (itemIndex < 0)
+        processorRef.applyFactoryPreset (id - 1);
+    else if (itemIndex < static_cast<int> (presetItems.size()))
+    {
+        const auto& item = presetItems[static_cast<size_t> (itemIndex)];
+        const auto* pack = item.pack.manifest.stableId.isEmpty() ? nullptr : &item.pack;
+        const bool scene = item.entry.hasType ("Scene");
+        const bool applied = scene ? processorRef.applyCommunityScene (
+            neumaton::community::CommunityScene::fromValueTree (item.entry), pack)
+            : processorRef.applyCommunityPresetTree (item.entry);
+        if (applied)
+        {
+            recalledMenuId = id;
+            recalledEntryId = item.entry["stableId"].toString();
+            recalledPackId = item.pack.manifest.stableId;
+            recalledScaleId = scene ? processorRef.getCurrentScaleStableId() : juce::String();
+            recalledValues = neumaton::community::CommunityPreset::capture (
+                item.entry["name"].toString(), processorRef.getAPVTS(), processorRef.processingMode.load(),
+                processorRef.tonalCenterIndex.load());
+        }
+        else
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
+                "Recall failed", "The preset or scale required by this item is unavailable.");
+    }
     updatePresetPresentation();
     modeSelector.setSelectedId (processorRef.processingMode.load(), juce::dontSendNotification);
     setMainControlsVisible (! showingScaleEditor && ! showingControlRoom);
@@ -477,9 +575,76 @@ void MicrotonalAutotuneAudioProcessorEditor::onPresetSelected()
     repaint();
 }
 
+void MicrotonalAutotuneAudioProcessorEditor::promptSavePreset()
+{
+    auto* dialog = new juce::AlertWindow ("Save current preset", "Name this configuration.",
+                                          juce::MessageBoxIconType::NoIcon, this);
+    dialog->addTextEditor ("name", {}, "Preset name");
+    dialog->addButton ("Save", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    dialog->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    dialog->enterModalState (true, juce::ModalCallbackFunction::create (
+        [owner = juce::Component::SafePointer<MicrotonalAutotuneAudioProcessorEditor> (this), dialog] (int result)
+        {
+            if (! owner || result != 1) return;
+            auto& instrument = owner->processorRef;
+            const auto id = instrument.saveCurrentCommunityPreset (dialog->getTextEditorContents ("name").trim());
+            const auto* saved = instrument.getCommunityPackLibrary().findUserPreset (id);
+            if (! saved)
+            {
+                juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
+                    "Preset could not be saved", "Enter a name and check that the user library is writable.");
+                return;
+            }
+            owner->recalledEntryId = id;
+            owner->recalledPackId.clear();
+            owner->recalledScaleId.clear();
+            owner->recalledValues = *saved;
+            owner->buildPresetMenu();
+        }), true);
+}
+
+void MicrotonalAutotuneAudioProcessorEditor::openPackComposer()
+{
+    if (packWindow)
+        packWindow->toFront (true);
+    else
+        packWindow = launchCommunityPackWindowV2 (processorRef);
+}
+
+void MicrotonalAutotuneAudioProcessorEditor::choosePackFolder()
+{
+    packFolderChooser = std::make_unique<juce::FileChooser> ("Choose Community Pack folder",
+        processorRef.getCommunityPackLibrary().getPackDirectory());
+    packFolderChooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories,
+        [owner = juce::Component::SafePointer<MicrotonalAutotuneAudioProcessorEditor> (this)] (const juce::FileChooser& chooser)
+        {
+            if (! owner || ! chooser.getResult().isDirectory()) return;
+            owner->processorRef.getCommunityPackLibrary().setPackDirectory (chooser.getResult());
+            owner->buildPresetMenu();
+            owner->buildScaleMenu();
+        });
+}
+
 void MicrotonalAutotuneAudioProcessorEditor::buildScaleMenu()
 {
     scaleSelector.clear (juce::dontSendNotification);
+
+    scaleItems.clear();
+    juce::PopupMenu community;
+    for (const auto& loaded : processorRef.getCommunityPackLibrary().getLoadedPacks())
+    {
+        const auto& pack = loaded.document;
+        juce::PopupMenu items;
+        for (const auto& entry : pack.scales)
+        {
+            scaleItems.push_back ({ entry, pack });
+            items.addItem (-static_cast<int> (scaleItems.size()), entry["name"].toString());
+        }
+        if (items.getNumItems() > 0)
+            community.addSubMenu (pack.manifest.author + " / " + pack.manifest.name, items);
+    }
+    if (community.getNumItems() > 0)
+        scaleSelector.getRootMenu()->addSubMenu ("Community Packs", community);
 
     const auto& scales = ScaleDefinitions::getAllScales();
     juce::String lastCategory;
@@ -518,7 +683,7 @@ void MicrotonalAutotuneAudioProcessorEditor::buildScaleMenu()
     for (int i = 0; i < numCustom; ++i)
     {
         const auto& preset = processorRef.getCustomPresets().getPreset (i);
-        scaleSelector.addItem (preset.name, 10001 + i);
+        scaleSelector.addItem (preset.name, 10001 + 2 * i);
     }
 
     if (numCustom < CustomScalePresets::maxPresets)
@@ -530,13 +695,13 @@ void MicrotonalAutotuneAudioProcessorEditor::buildScaleMenu()
         for (int i = 0; i < numCustom; ++i)
         {
             const auto& preset = processorRef.getCustomPresets().getPreset (i);
-            scaleSelector.addItem ("Delete: " + preset.name, 20001 + i);
+            scaleSelector.addItem ("Delete: " + preset.name, 10002 + 2 * i);
         }
     }
 
     const int customIdx = processorRef.activeCustomPresetIndex.load();
     if (customIdx >= 0 && customIdx < numCustom)
-        scaleSelector.setSelectedId (10001 + customIdx, juce::dontSendNotification);
+        scaleSelector.setSelectedId (10001 + 2 * customIdx, juce::dontSendNotification);
     else
         scaleSelector.setSelectedId (activeFactory + 1, juce::dontSendNotification);
 }
@@ -547,15 +712,36 @@ void MicrotonalAutotuneAudioProcessorEditor::onScaleSelected()
     if (selectedId == 0)
         return;
 
+    if (selectedId < 0 && -selectedId <= static_cast<int> (scaleItems.size()))
+    {
+        const auto& item = scaleItems[static_cast<size_t> (-selectedId - 1)];
+        if (! processorRef.activateCommunityScale (item.entry["stableId"].toString(), &item.pack))
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
+                "Scale unavailable", "This pack scale could not be loaded.");
+        buildScaleMenu();
+        updateCenterPresentation();
+        return;
+    }
+
     if (selectedId == 10000)
     {
         showCustomScaleEditor();
         return;
     }
 
-    if (selectedId >= 20001)
+    if (selectedId >= 10002 && selectedId % 2 == 0)
     {
-        const int deleteIdx = selectedId - 20001;
+        const int deleteIdx = (selectedId - 10002) / 2;
+        const auto& presets = processorRef.getCustomPresets();
+        if (deleteIdx >= presets.getNumPresets()) return;
+        const auto id = presets.getPreset (deleteIdx).stableId;
+        if (! processorRef.getCommunityPackLibrary().storeScale (id, {}))
+        {
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
+                "Scale could not be deleted", "Check that the user library is writable.");
+            buildScaleMenu();
+            return;
+        }
         processorRef.getCustomPresets().removePreset (deleteIdx);
 
         const int active = processorRef.activeCustomPresetIndex.load();
@@ -575,9 +761,9 @@ void MicrotonalAutotuneAudioProcessorEditor::onScaleSelected()
         return;
     }
 
-    if (selectedId >= 10001 && selectedId < 20000)
+    if (selectedId >= 10001)
     {
-        const int customIdx = selectedId - 10001;
+        const int customIdx = (selectedId - 10001) / 2;
         if (customIdx >= 0 && customIdx < processorRef.getCustomPresets().getNumPresets())
         {
             processorRef.activeCustomPresetIndex.store (customIdx);
@@ -692,6 +878,24 @@ void MicrotonalAutotuneAudioProcessorEditor::updateMeterPresentation()
         processorRef.getCurrentScaleEquave(),
         processorRef.getCurrentScaleRatios(),
         displayedMetering.state != LivePitchProcessor::TrackingState::stable);
+    const int index = processorRef.activeCustomPresetIndex.load();
+    if (index >= 0 && index < processorRef.getCustomPresets().getNumPresets())
+        displayedDegree.colours = processorRef.getCustomPresets().getPreset (index).degreeColours;
+    else
+    {
+        const auto& scale = ScaleDefinitions::getScale (processorRef.currentScaleIndex.load());
+        if (cachedFactoryId != scale.stableId)
+        {
+            cachedFactoryId = scale.stableId;
+            cachedFactoryColours = neumaton::scalecolours::defaults (scale.stableId, scale.ratios, scale.equaveRatio);
+        }
+        displayedDegree.colours = cachedFactoryColours;
+    }
+    if (scaleSelector.swatches != displayedDegree.colours)
+    {
+        scaleSelector.swatches = displayedDegree.colours;
+        scaleSelector.repaint();
+    }
     controlRoomPage.setPresentation (
         displayedMetering, displayedDegree,
         processorRef.getLatencySamples(), processorRef.getSampleRate(),

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <vector>
 
@@ -13,6 +14,7 @@ namespace neumaton::ui
 // this helper never chooses a target or changes the audio trajectory.
 struct ScaleDegreeDisplay
 {
+    std::vector<std::uint32_t> colours;
     int degree = 0; // One-based; zero means no target in the current scale.
     int count = 0;
     bool held = false;

@@ -23,6 +23,7 @@ struct Degree
     double phase = 0.0;   // Normalised logarithmic position in [0, 1].
     bool locked = false;  // Locked degrees are fixed anchors for redistribution/warp.
     bool included = true; // Excluded degrees remain editable but are omitted on save.
+    unsigned int colour = 0; // Zero uses the scale hue.
 };
 
 class Geometry

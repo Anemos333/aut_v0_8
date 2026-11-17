@@ -39,13 +39,14 @@ int main()
     const auto library = readFile ("Source/CommunityPackLibrary.h");
     const auto customScales = readFile ("Source/CustomScalePresets.h");
     const auto processor = readFile ("Source/PluginProcessor.h");
+    const auto editor = readFile ("Source/PluginEditor.cpp");
     const auto page = readFile ("Source/CommunityPackPageV2.h");
     const auto controlRoom = readFile ("Source/ControlRoomPage.h");
 
     bool ok = true;
 
     ok &= check (
-        contains (pack, "communityPackExtension = \".ecpk\"")
+        contains (pack, "communityPackExtension = \".epck\"")
             && contains (pack, "ErgasterionCommunityPack")
             && contains (pack, "currentPackSchemaVersion = 3"),
         "ecpk_has_versioned_ergasterion_container_schema3");
@@ -116,16 +117,17 @@ int main()
         "pack_composer_uses_native_checkbox_multi_selection");
 
     ok &= check (
-        contains (page, "Export .ecpk")
-            && contains (page, "addSectionHeading (manifest.author)")
-            && contains (page, "contentType_.addItem (\"Scales\"")
-            && contains (page, "contentType_.addItem (\"Presets\"")
-            && contains (page, "contentType_.addItem (\"Scenes\""),
-        "browser_groups_pack_content_by_author_and_type");
+        contains (page, "exportSelectedPack")
+            && ! contains (page, "applyLoadedItem")
+            && contains (editor, "buildPresetMenu")
+            && contains (editor, "buildScaleMenu")
+            && contains (editor, "Community Packs")
+            && contains (editor, "Save current preset..."),
+        "main_menus_recall_pack_content_and_composer_exports");
 
     ok &= check (
         contains (controlRoom, "CommunityPackPageV2.h")
-            && contains (controlRoom, "launchCommunityPackWindowV2"),
+            && contains (controlRoom, "onCommunity") && contains (editor, "launchCommunityPackWindowV2"),
         "control_room_launches_fixed_community_page");
 
     ok &= check (

@@ -81,6 +81,11 @@ private:
     juce::TextButton saveButton_ { "Save scale" };
     juce::TextButton backButton_ { "Back" };
 
+    float scaleHue_ = juce::Random::getSystemRandom().nextFloat();
+    juce::uint32 unisonColour_ = 0;
+    juce::TextButton colourButton_ { "Tone colour..." };
+    juce::Colour toneColour (int index) const;
+    void chooseColour();
     void configureUi();
     void applyEqualDivision();
     void redistributeFreeDegrees();

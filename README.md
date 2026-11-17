@@ -57,7 +57,11 @@ See [factory presets](PRESETS_V1.md) for the current values and restoration beha
 
 ### Community Packs and planned licensing
 
-`.ecpk` packs can carry scales, presets and scenes in a portable, inspectable format. Schema 3 adds integrity digests and licence metadata; a digest is **not** a creator-authenticity signature. The entitlement skeleton (`Entitlement.h`, `PackVerifier.h`) is separate from the DSP and is not an account/DRM system.
+Open **Preset → User Presets → Save current preset** to keep the current controls. Presets and scenes from installed packs appear under **Preset → Community Packs**, grouped by author and pack. Choose the pack folder there. Pack scales appear at the top of **Scale**. Use **Create or export pack** to assemble a pack and its scenes.
+
+In the scale editor, select a tone and choose **Tone colour**. Click an empty part of the rail to choose **Unison colour**. Unassigned tones use shades of one randomly chosen hue. The scale strip previews the palette and the degree meter identifies the current target. Saved scales retain the palette in the user library, DAW session and exported pack.
+
+`.epck` and `.ecpk` packs can carry scales, presets and scenes in a portable, inspectable format. Schema 3 adds integrity digests and licence metadata; a digest is **not** a creator-authenticity signature. The entitlement skeleton (`Entitlement.h`, `PackVerifier.h`) is separate from the DSP and is not an account/DRM system.
 
 Free / Supporter / Supporter Studio packaging, prices, device policies and creator rights remain **pre-release plans**. No public software/source licence or binding commercial terms are supplied by this repository.
 

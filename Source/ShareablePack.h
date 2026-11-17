@@ -11,8 +11,8 @@
 namespace neumaton::sharing
 {
 inline constexpr int currentPackSchemaVersion = 3;
-inline constexpr const char* communityPackExtension = ".ecpk";
-inline constexpr const char* communityPackWildcard = "*.ecpk";
+inline constexpr const char* communityPackExtension = ".epck";
+inline constexpr const char* communityPackWildcard = "*.ecpk;*.epck";
 
 using PackLicense = licensing::PackLicense;
 
@@ -333,11 +333,21 @@ struct PackDocument
         if (! isValid())
             return false;
 
-        if (! target.hasFileExtension (communityPackExtension))
+        if (! target.hasFileExtension (".ecpk;.epck"))
             target = target.withFileExtension (communityPackExtension);
 
-        auto sealed = *this;
-        sealed.sealIntegrity();
+        // XML attributes are strings on read. Seal the representation that the
+        // receiving plugin will actually verify, including legacy .ecpk readers.
+        const auto source = toValueTree().createXml();
+        if (! source) return false;
+        auto sealed = fromValueTree (juce::ValueTree::fromXml (*source));
+        if (sealed.manifest.hasCompleteSignature() || sealed.manifest.hasPartialSignature())
+        {
+            if (verifyIntegrity() != PackIntegrityStatus::valid)
+                return false;
+        }
+        else
+            sealed.sealIntegrity();
 
         const auto xml = sealed.toValueTree().createXml();
         if (xml == nullptr)
@@ -349,7 +359,7 @@ struct PackDocument
     [[nodiscard]] static PackDocument readFromFile (const juce::File& file)
     {
         PackDocument result;
-        if (! file.existsAsFile() || ! file.hasFileExtension (communityPackExtension))
+        if (! file.existsAsFile() || ! file.hasFileExtension (".ecpk;.epck"))
             return result;
 
         const auto text = file.loadFileAsString();
@@ -360,7 +370,40 @@ struct PackDocument
         if (xml == nullptr)
             return result;
 
-        return fromValueTree (juce::ValueTree::fromXml (*xml));
+        result = fromValueTree (juce::ValueTree::fromXml (*xml));
+        if (result.verifyIntegrity() != PackIntegrityStatus::hashMismatch)
+            return result;
+
+        // Early schema-3 writers hashed in-memory numbers before XML erased
+        // their types. Accept a reconstruction only if the original digest matches.
+        auto legacy = fromValueTree (result.toValueTree());
+        const auto restoreNumber = [] (juce::ValueTree node, juce::Identifier key, bool integer)
+        {
+            if (! node.hasProperty (key)) return;
+            const auto text = node[key].toString();
+            const juce::var number = integer ? juce::var (text.getIntValue())
+                                             : juce::var (text.getDoubleValue());
+            if (number.toString() == text)
+                node.setProperty (key, number, nullptr);
+        };
+        for (const auto& scale : legacy.scales)
+            restoreNumber (scale, "equaveRatio", false);
+        for (const auto& preset : legacy.presets)
+        {
+            restoreNumber (preset, "processingMode", true);
+            restoreNumber (preset, "tonalCenterIndex", true);
+        }
+        if (legacy.verifyIntegrity() == PackIntegrityStatus::valid)
+            return legacy;
+        for (const auto& preset : legacy.presets)
+        {
+            const auto values = preset.getChildWithName ("Values");
+            for (int i = 0; i < values.getNumProperties(); ++i)
+                restoreNumber (values, values.getPropertyName (i), false);
+        }
+        if (legacy.verifyIntegrity() == PackIntegrityStatus::valid)
+            return legacy;
+        return result;
     }
 };
 } // namespace neumaton::sharing

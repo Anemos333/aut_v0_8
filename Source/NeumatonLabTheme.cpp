@@ -1136,7 +1136,12 @@ void Painter::drawScaleDegree (juce::Graphics& g,
     const auto dial = area.toFloat();
     const auto centre = dial.getCentre();
     const float radius = juce::jmin (dial.getWidth() * 0.43f, dial.getHeight() * 0.48f);
-    const auto accent = degree.held ? juce::Colour (0xFFFFA02B) : p.greenFluid;
+    const auto tone = [&degree, &p] (int i)
+    {
+        return i >= 0 && i < static_cast<int> (degree.colours.size())
+            ? juce::Colour (degree.colours[static_cast<size_t> (i)]) : p.brassDark;
+    };
+    const auto accent = tone (degree.degree - 1);
     const int steps = juce::jmax (1, degree.count);
     for (int i = 0; i < steps; ++i)
     {
@@ -1145,7 +1150,7 @@ void Painter::drawScaleDegree (juce::Graphics& g,
             - juce::MathConstants<float>::halfPi;
         const auto direction = juce::Point<float> (std::cos (angle), std::sin (angle));
         const bool selected = degree.degree == i + 1;
-        g.setColour (selected ? accent : p.brassDark.withAlpha (0.72f));
+        g.setColour (selected ? accent : tone (i).withAlpha (0.82f));
         g.drawLine (juce::Line<float> (centre + direction * (radius - 4.0f),
                                       centre + direction * radius), selected ? 2.7f : 1.0f);
     }

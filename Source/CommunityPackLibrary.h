@@ -12,12 +12,14 @@ namespace neumaton::community
 {
 // Capture/apply only current V1 controls. Legacy Values properties still
 // round-trip unchanged in old packs, preserving their content/integrity hashes.
-inline const std::array<const char*, 6>& sharedPresetParameterIds() noexcept
+inline const std::array<const char*, 8>& sharedPresetParameterIds() noexcept
 {
-    static const std::array<const char*, 6> ids {
+    static const std::array<const char*, 8> ids {
         "speed",
         "amount",
         "humanize",
+        "boundaryStability",
+        "outputDrive",
         "analogMode",
         "outVolume",
         "tuningReferenceHz"
@@ -195,6 +197,20 @@ public:
         return userScenes_;
     }
 
+    const juce::ValueTree& getSavedScales() const noexcept { return savedScales_; }
+
+    bool storeScale (const juce::String& id, juce::ValueTree replacement)
+    {
+        juce::InterProcessLock lock ("NeumatonCommunityLibrary");
+        const juce::InterProcessLock::ScopedLockType guard (lock);
+        if (! guard.isLocked()) return false;
+        loadLocalSettings();
+        savedScales_.removeChild (findEntryByStableId (savedScales_, id), nullptr);
+        if (replacement.isValid())
+            savedScales_.addChild (replacement.createCopy(), -1, nullptr);
+        return saveLocalSettings();
+    }
+
     [[nodiscard]] const std::vector<LoadedPack>& getLoadedPacks() const noexcept
     {
         return loadedPacks_;
@@ -214,8 +230,20 @@ public:
         rescanPacks();
     }
 
+    void refreshMenuSettings()
+    {
+        const auto previousDirectory = packDirectory_;
+        loadLocalSettings();
+        if (previousDirectory != packDirectory_)
+            rescanPacks();
+    }
+
     void setPackDirectory (const juce::File& directory)
     {
+        juce::InterProcessLock lock ("NeumatonCommunityLibrary");
+        const juce::InterProcessLock::ScopedLockType guard (lock);
+        if (! guard.isLocked()) return;
+        loadLocalSettings();
         packDirectory_ = directory.isDirectory() ? directory : juce::File();
         saveLocalSettings();
         rescanPacks();
@@ -283,13 +311,25 @@ public:
         if (! preset.isValid())
             return {};
 
+        juce::InterProcessLock lock ("NeumatonCommunityLibrary");
+        const juce::InterProcessLock::ScopedLockType guard (lock);
+        if (! guard.isLocked()) return {};
+        loadLocalSettings();
         userPresets_.push_back (std::move (preset));
-        saveLocalSettings();
+        if (! saveLocalSettings())
+        {
+            userPresets_.pop_back();
+            return {};
+        }
         return userPresets_.back().stableId;
     }
 
-    bool removeUserPreset (const juce::String& stableId)
+    bool removeUserPreset (juce::String stableId)
     {
+        juce::InterProcessLock lock ("NeumatonCommunityLibrary");
+        const juce::InterProcessLock::ScopedLockType guard (lock);
+        if (! guard.isLocked()) return false;
+        loadLocalSettings();
         const auto it = std::find_if (
             userPresets_.begin(), userPresets_.end(),
             [&stableId] (const CommunityPreset& preset)
@@ -307,8 +347,7 @@ public:
                     return scene.presetStableId == stableId;
                 }),
             userScenes_.end());
-        saveLocalSettings();
-        return true;
+        return saveLocalSettings();
     }
 
     [[nodiscard]] juce::String addScene (
@@ -324,13 +363,26 @@ public:
         if (! scene.isValid())
             return {};
 
+        juce::InterProcessLock lock ("NeumatonCommunityLibrary");
+        const juce::InterProcessLock::ScopedLockType guard (lock);
+        if (! guard.isLocked()) return {};
+        loadLocalSettings();
+        if (! findUserPreset (scene.presetStableId)) return {};
         userScenes_.push_back (std::move (scene));
-        saveLocalSettings();
+        if (! saveLocalSettings())
+        {
+            userScenes_.pop_back();
+            return {};
+        }
         return userScenes_.back().stableId;
     }
 
-    bool removeUserScene (const juce::String& stableId)
+    bool removeUserScene (juce::String stableId)
     {
+        juce::InterProcessLock lock ("NeumatonCommunityLibrary");
+        const juce::InterProcessLock::ScopedLockType guard (lock);
+        if (! guard.isLocked()) return false;
+        loadLocalSettings();
         const auto oldSize = userScenes_.size();
         userScenes_.erase (
             std::remove_if (userScenes_.begin(), userScenes_.end(),
@@ -341,8 +393,7 @@ public:
             userScenes_.end());
         if (userScenes_.size() == oldSize)
             return false;
-        saveLocalSettings();
-        return true;
+        return saveLocalSettings();
     }
 
     [[nodiscard]] const CommunityPreset* findUserPreset (
@@ -464,6 +515,7 @@ public:
 private:
     void loadLocalSettings()
     {
+        savedScales_ = juce::ValueTree ("CustomScales");
         userPresets_.clear();
         userScenes_.clear();
         packDirectory_ = juce::File();
@@ -479,6 +531,9 @@ private:
         if (! root.isValid() || root.getType() != juce::Identifier ("CommunityLibrary"))
             return;
 
+        const auto scales = root.getChildWithName ("CustomScales");
+        if (scales.isValid())
+            savedScales_ = scales;
         const auto directoryText = root.getProperty ("packDirectory").toString();
         if (directoryText.isNotEmpty())
         {
@@ -504,12 +559,13 @@ private:
         }
     }
 
-    void saveLocalSettings() const
+    bool saveLocalSettings() const
     {
         juce::ValueTree root ("CommunityLibrary");
         if (packDirectory_.isDirectory())
             root.setProperty ("packDirectory", packDirectory_.getFullPathName(), nullptr);
 
+        root.addChild (savedScales_.createCopy(), -1, nullptr);
         juce::ValueTree presets ("UserPresets");
         for (const auto& preset : userPresets_)
             presets.addChild (preset.toValueTree(), -1, nullptr);
@@ -521,10 +577,10 @@ private:
         root.addChild (scenes, -1, nullptr);
 
         const auto xml = root.createXml();
-        if (xml != nullptr)
-            static_cast<void> (settingsFile_.replaceWithText (xml->toString()));
+        return xml != nullptr && settingsFile_.replaceWithText (xml->toString());
     }
 
+    juce::ValueTree savedScales_ { "CustomScales" };
     juce::File settingsFile_;
     juce::File packDirectory_;
     std::vector<CommunityPreset> userPresets_;

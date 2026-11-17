@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 
 #include "ShareablePack.h"
+#include "ScaleColours.h"
 
 #include <limits>
 #include <vector>
@@ -14,6 +15,7 @@ struct CustomScale
     juce::String name;
     juce::String category { "User" };
     double equaveRatio = 2.0;
+    neumaton::scalecolours::Palette degreeColours;
     std::vector<double> ratios; // sorted [1.0, equaveRatio), unison included
 };
 
@@ -39,7 +41,8 @@ public:
                     const std::vector<double>& ratios,
                     double equaveRatio,
                     const juce::String& stableId = {},
-                    const juce::String& sourcePackId = {});
+                    const juce::String& sourcePackId = {},
+                    const neumaton::scalecolours::Palette& degreeColours = {});
 
     bool removePreset (int index);
 
