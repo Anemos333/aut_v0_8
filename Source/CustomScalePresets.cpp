@@ -40,7 +40,6 @@ std::vector<double> CustomScalePresets::normaliseRatios (
     const double logEquave = std::log2 (equaveRatio);
     std::vector<double> result;
     result.reserve (std::min<std::size_t> (ratios.size() + 1, 96));
-    result.push_back (1.0);
 
     for (double ratio : ratios)
     {
@@ -59,6 +58,7 @@ std::vector<double> CustomScalePresets::normaliseRatios (
             result.push_back (folded);
     }
 
+    result.push_back (1.0);
     std::sort (result.begin(), result.end());
     const auto last = std::unique (result.begin(), result.end(),
         [] (double a, double b)
@@ -66,6 +66,8 @@ std::vector<double> CustomScalePresets::normaliseRatios (
             return std::abs (a - b) < 1.0e-8;
         });
     result.erase (last, result.end());
+    if (result.size() > 96)
+        result.resize (96);
     return result;
 }
 
@@ -79,7 +81,8 @@ bool CustomScalePresets::addPreset (const juce::String& name,
                                     const std::vector<double>& ratios,
                                     double equaveRatio,
                                     const juce::String& stableId,
-                                    const juce::String& sourcePackId)
+                                    const juce::String& sourcePackId,
+                                    const neumaton::scalecolours::Palette& degreeColours)
 {
     if (static_cast<int> (presets_.size()) >= maxPresets || name.trim().isEmpty())
         return false;
@@ -100,6 +103,21 @@ bool CustomScalePresets::addPreset (const juce::String& name,
         ? equaveRatio : 2.0;
     scale.ratios = std::move (normalised);
 
+    scale.degreeColours = neumaton::scalecolours::defaults (scale.stableId, scale.ratios, scale.equaveRatio);
+    // Match by folded ratio so sorting, duplicates and implicit unison cannot shift a colour.
+    for (size_t i = 0; i < std::min (ratios.size(), degreeColours.size()); ++i)
+    {
+        if (degreeColours[i] == 0 || ! std::isfinite (ratios[i]) || ratios[i] <= 0.0)
+            continue;
+        const double period = std::log2 (scale.equaveRatio);
+        double phase = std::fmod (std::log2 (ratios[i]), period);
+        if (phase < 0.0)
+            phase += period;
+        const double folded = std::exp2 (phase);
+        const auto match = std::lower_bound (scale.ratios.begin(), scale.ratios.end(), folded - 1.e-8);
+        if (match != scale.ratios.end() && std::abs (*match - folded) < 1.e-8)
+            scale.degreeColours[static_cast<size_t> (match - scale.ratios.begin())] = degreeColours[i];
+    }
     presets_.push_back (std::move (scale));
     return true;
 }
@@ -135,6 +153,7 @@ juce::ValueTree CustomScalePresets::toValueTree() const
             ratioString += juce::String (preset.ratios[i], 12);
         }
         scaleTree.setProperty ("ratios", ratioString, nullptr);
+        scaleTree.setProperty ("degreeColours", neumaton::scalecolours::encode (preset.degreeColours), nullptr);
         tree.addChild (scaleTree, -1, nullptr);
     }
 
@@ -170,27 +189,15 @@ void CustomScalePresets::fromValueTree (const juce::ValueTree& tree)
         for (const auto& token : tokens)
         {
             const double value = token.getDoubleValue();
-            if (std::isfinite (value) && value > 0.0)
-                ratios.push_back (value);
+            ratios.push_back (value);
         }
 
-        auto normalised = normaliseRatios (ratios, equaveRatio);
-        if (normalised.size() < 3 || normalised.size() > 96)
-            continue;
-
-        CustomScale scale;
-        scale.stableId = scaleTree.getProperty ("stableId").toString();
-        if (scale.stableId.isEmpty())
-            scale.stableId = makeLocalStableId();
-        if (findPresetIndexByStableId (scale.stableId) >= 0)
-            scale.stableId = makeLocalStableId();
-        scale.sourcePackId = scaleTree.getProperty ("sourcePackId").toString();
-        scale.name = name;
-        scale.category = scaleTree.getProperty ("category", "User").toString();
-        scale.equaveRatio = std::isfinite (equaveRatio) && equaveRatio > 1.0
-            ? equaveRatio : 2.0;
-        scale.ratios = std::move (normalised);
-        presets_.push_back (std::move (scale));
+        auto id = scaleTree["stableId"].toString();
+        if (findPresetIndexByStableId (id) >= 0)
+            id = makeLocalStableId();
+        if (addPreset (name, ratios, equaveRatio, id, scaleTree["sourcePackId"].toString(),
+                       neumaton::scalecolours::decode (scaleTree)))
+            presets_.back().category = scaleTree.getProperty ("category", "User").toString();
     }
 }
 
@@ -200,24 +207,8 @@ neumaton::sharing::PackDocument CustomScalePresets::makeScalePack (
     neumaton::sharing::PackDocument pack;
     pack.manifest = manifest;
 
-    for (const auto& preset : presets_)
-    {
-        juce::ValueTree scale ("Scale");
-        scale.setProperty ("stableId", preset.stableId, nullptr);
-        scale.setProperty ("name", preset.name, nullptr);
-        scale.setProperty ("category", preset.category, nullptr);
-        scale.setProperty ("equaveRatio", preset.equaveRatio, nullptr);
-
-        juce::String ratioString;
-        for (std::size_t i = 0; i < preset.ratios.size(); ++i)
-        {
-            if (i != 0)
-                ratioString += ",";
-            ratioString += juce::String (preset.ratios[i], 12);
-        }
-        scale.setProperty ("ratios", ratioString, nullptr);
-        pack.scales.addChild (scale, -1, nullptr);
-    }
+    for (const auto& scale : toValueTree())
+        pack.scales.addChild (scale.createCopy(), -1, nullptr);
 
     return pack;
 }
@@ -245,15 +236,15 @@ int CustomScalePresets::importScalePack (const neumaton::sharing::PackDocument& 
         for (const auto& token : tokens)
         {
             const double value = token.getDoubleValue();
-            if (std::isfinite (value) && value > 0.0)
-                ratios.push_back (value);
+            ratios.push_back (value);
         }
 
         if (addPreset (scale.getProperty ("name").toString(),
                        ratios,
                        static_cast<double> (scale.getProperty ("equaveRatio", 2.0)),
                        scale.getProperty ("stableId").toString(),
-                       pack.manifest.stableId))
+                       pack.manifest.stableId,
+                       neumaton::scalecolours::decode (scale)))
         {
             auto& inserted = presets_.back();
             inserted.category = scale.getProperty ("category", "Imported").toString();

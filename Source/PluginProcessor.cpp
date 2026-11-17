@@ -119,6 +119,7 @@ MicrotonalAutotuneAudioProcessor::MicrotonalAutotuneAudioProcessor()
                           .withOutput ("Output", juce::AudioChannelSet::mono(), true)),
       apvts (*this, nullptr, "Parameters", createParameterLayout())
 {
+    customPresets.fromValueTree (communityPackLibrary.getSavedScales());
     refreshScaleSnapshot();
 }
 
@@ -774,6 +775,8 @@ void MicrotonalAutotuneAudioProcessor::getStateInformation (juce::MemoryBlock& d
     state.setProperty ("processingMode", processingMode.load(), nullptr);
     state.setProperty ("factoryPresetIndex", selectedPresetIndex, nullptr);
 
+    while (state.getChildWithName ("CustomScales").isValid())
+        state.removeChild (state.getChildWithName ("CustomScales"), nullptr);
     state.addChild (customPresets.toValueTree(), -1, nullptr);
 
     std::unique_ptr<juce::XmlElement> xml (state.createXml());
@@ -795,8 +798,12 @@ void MicrotonalAutotuneAudioProcessor::setStateInformation (const void* data,
     apvts.replaceState (tree);
 
     const auto customTree = tree.getChildWithName ("CustomScales");
-    if (customTree.isValid())
-        customPresets.fromValueTree (customTree);
+    auto combined = customTree.isValid() ? customTree.createCopy() : juce::ValueTree ("CustomScales");
+    for (const auto& scale : communityPackLibrary.getSavedScales())
+        if (! neumaton::community::CommunityPackLibrary::findEntryByStableId (
+                combined, scale["stableId"].toString()).isValid())
+            combined.addChild (scale.createCopy(), -1, nullptr);
+    customPresets.fromValueTree (combined);
 
     bool scaleResolved = false;
     const auto stableId = tree.getProperty ("activeScaleStableId").toString();

@@ -19,7 +19,7 @@ public:
                           int latencySamples, double sampleRate,
                           bool analogTexture, float outputDb);
 
-    std::function<void()> onBack;
+    std::function<void()> onBack, onCommunity;
 
     void paint (juce::Graphics& g) override;
     void resized() override;
@@ -32,17 +32,11 @@ private:
             : juce::TextButton ("Community"), owner_ (owner)
         {
             owner_.addAndMakeVisible (*this);
-            setTooltip ("Create, export and browse Ergasterion Community Packs");
+            setTooltip ("Create and export Ergasterion Community Packs");
             onClick = [this]
             {
-                auto* editor = findParentComponentOfClass<juce::AudioProcessorEditor>();
-                if (editor == nullptr)
-                    return;
-
-                auto* processor = dynamic_cast<MicrotonalAutotuneAudioProcessor*> (
-                    editor->getAudioProcessor());
-                if (processor != nullptr)
-                    launchCommunityPackWindowV2 (*processor);
+                if (owner_.onCommunity)
+                    owner_.onCommunity();
             };
         }
 

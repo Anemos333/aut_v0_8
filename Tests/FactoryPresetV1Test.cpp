@@ -63,7 +63,7 @@ void checkFactoryAndState()
         require(processor.getCurrentProgram() == index, "host program index mismatch");
         require(processor.getProgramName(index) == preset.name, "host program name mismatch");
         require(processor.processingMode.load() == preset.processingMode, "preset mode mismatch");
-        require(close(value(processor, "speed"), preset.speedMs), "preset Response mismatch");
+        require(close(value(processor, "speed"), processor.getAPVTS().getParameterRange("speed").snapToLegalValue(preset.speedMs)), "preset Response mismatch");
         require(close(value(processor, "amount"), preset.amount), "preset Amount mismatch");
         require(close(value(processor, "humanize"), preset.humanize), "preset Human Drift mismatch");
         require(close(value(processor, "analogMode"), preset.analogMode ? 1 : 0), "preset texture mismatch");
@@ -100,7 +100,7 @@ void checkSharedPresets()
     source.setCurrentProgram(9);
     set(source, "tuningReferenceHz", 432);
     const auto captured = community::CommunityPreset::capture("V1 preset", source.getAPVTS(), 1, 4);
-    require(captured.values.getNumProperties() == 6, "new capture contains retired controls");
+    require(captured.values.getNumProperties() == 8, "new capture contains retired controls");
     for (const auto& entry : legacyValues)
         require(!captured.values.hasProperty(entry.id), "new capture stored a retired control");
 
@@ -134,6 +134,71 @@ void checkSharedPresets()
         require(close(value(destination, id), value(source, id)), "old pack missed an active control");
     require(destination.processingMode.load() == 1 && destination.tonalCenterIndex.load() == 4,
         "shared preset missed mode/centre");
+}
+
+void checkScaleColours()
+{
+    using namespace neumaton;
+    const scalecolours::Palette colours { 0xffd02030u, 0xff204080u, 0xff40a060u };
+    Processor source;
+    auto& scales = source.getCustomPresets();
+    juce::String scaleId = "test.scale." + juce::Uuid().toString();
+    require(scales.addPreset("Colour test", { 1.5, 1.0, 1.25 }, 3.0, scaleId, {}, colours),
+        "create coloured non-octave scale");
+    const scalecolours::Palette sorted { colours[1], colours[2], colours[0] };
+    const auto manifest = community::CommunityPackLibrary::makeManifest("Test pack", "Regression test");
+    const auto pack = source.getCommunityPackLibrary().buildPack(manifest,
+        source.getCommunityScaleEntries(), { scaleId }, {}, {});
+    for (const auto* extension : { ".epck", ".ecpk" })
+    {
+        juce::TemporaryFile temp(extension);
+        require(pack.writeToFile(temp.getFile()), "write coloured pack");
+        const auto loaded = sharing::PackDocument::readFromFile(temp.getFile());
+        require(loaded.verifyIntegrity() == sharing::PackIntegrityStatus::valid, "palette pack integrity");
+        Processor restored;
+        require(restored.activateCommunityScale(scaleId, &loaded), "recall imported scale");
+        const auto activeColours = [&restored]()
+        {
+            return restored.getCustomPresets().getPreset(restored.activeCustomPresetIndex.load()).degreeColours;
+        };
+        require(activeColours() == sorted, "tone colours shifted during sorting or import");
+        juce::MemoryBlock state;
+        restored.getStateInformation(state);
+        restored.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+        require(activeColours() == sorted, "session restore lost palette");
+
+        auto variant = sharing::PackDocument::fromValueTree(loaded.toValueTree());
+        variant.scales.getChild(0).setProperty("degreeColours", scalecolours::encode(colours), nullptr);
+        require(restored.activateCommunityScale(scaleId, &variant) && activeColours() == colours,
+            "pack variant shadowed by previous local copy");
+        restored.getStateInformation(state);
+        Processor reopened;
+        reopened.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+        require(reopened.getCustomPresets().getPreset(reopened.activeCustomPresetIndex.load()).degreeColours == colours,
+            "second session save resurrected an earlier palette");
+
+        auto legacy = sharing::PackDocument::fromValueTree(loaded.toValueTree());
+        legacy.scales.getChild(0).removeProperty("degreeColours", nullptr);
+        Processor older;
+        require(older.activateCommunityScale(scaleId, &legacy), "read colourless scale");
+        const auto& fallback = older.getCustomPresets().getPreset(older.activeCustomPresetIndex.load()).degreeColours;
+        require(fallback.size() == 3 && fallback.front() != fallback.back(), "missing automatic shades");
+    }
+    juce::TemporaryFile oldFile(".ecpk");
+    auto oldPack = sharing::PackDocument::fromValueTree(pack.toValueTree());
+    oldPack.scales.getChild(0).removeProperty("degreeColours", nullptr);
+    oldPack.sealIntegrity();
+    require(oldFile.getFile().replaceWithText(oldPack.toValueTree().createXml()->toString()), "write legacy XML");
+    require(sharing::PackDocument::readFromFile(oldFile.getFile()).verifyIntegrity()
+        == sharing::PackIntegrityStatus::valid, "read typed digest from old writer");
+    oldPack.scales.getChild(0).setProperty("name", "Changed", nullptr);
+    require(oldFile.getFile().replaceWithText(oldPack.toValueTree().createXml()->toString()), "write tampered XML");
+    require(sharing::PackDocument::readFromFile(oldFile.getFile()).verifyIntegrity()
+        == sharing::PackIntegrityStatus::hashMismatch, "tampered legacy pack accepted");
+    for (const auto& entry : source.getCommunityScaleEntries())
+        require(scalecolours::decode(entry).size() == static_cast<size_t>(
+            juce::StringArray::fromTokens(entry["ratios"].toString(), ",", "").size()),
+            "factory or custom scale lacks a colour per tone");
 }
 
 void checkEffectiveProfiles()
@@ -183,7 +248,7 @@ void checkEditor()
     juce::ComboBox* selector = nullptr;
     for (auto* child : editor->getChildren())
         if (auto* box = dynamic_cast<juce::ComboBox*>(child))
-            if (box->getNumItems() == 12 && box->getItemText(3) == "Full Correction") selector = box;
+            if (box->getNumItems() >= 12 && box->getItemText(3) == "Full Correction") selector = box;
     require(selector != nullptr, "preset menu missing");
     dispatch();
     require(selector->getSelectedId() == 0 && selector->getTextWhenNothingSelected() == "Custom",
@@ -272,6 +337,7 @@ int main(int argc, char** argv)
         juce::ScopedJuceInitialiser_GUI initialise;
         checkFactoryAndState();
         checkSharedPresets();
+        checkScaleColours();
         checkEffectiveProfiles();
         checkEditor();
         for (int i = 1; i < argc; ++i) checkVoice(juce::File(argv[i]));

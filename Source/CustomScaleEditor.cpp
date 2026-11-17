@@ -29,6 +29,40 @@ CustomScaleEditor::CustomScaleEditor (MicrotonalAutotuneAudioProcessor& processo
     refreshInfo();
 }
 
+juce::Colour CustomScaleEditor::toneColour (int index) const
+{
+    if (index < 0)
+        return unisonColour_ ? juce::Colour (unisonColour_) : neumaton::scalecolours::shade (scaleHue_, 0);
+    const auto& degree = geometry_.degrees()[static_cast<size_t> (index)];
+    return degree.colour ? juce::Colour (degree.colour) : neumaton::scalecolours::shade (scaleHue_, degree.phase);
+}
+
+void CustomScaleEditor::chooseColour()
+{
+    auto picker = std::make_unique<juce::ColourSelector> (
+        juce::ColourSelector::showColourAtTop | juce::ColourSelector::showSliders
+            | juce::ColourSelector::showColourspace);
+    const int index = selectedDegree_;
+    picker->setCurrentColour (toneColour (index));
+    picker->setSize (300, 320);
+    auto* selector = picker.get();
+    juce::DialogWindow::LaunchOptions options;
+    options.dialogTitle = index < 0 ? "Unison colour" : "Tone colour";
+    options.content.setOwned (picker.release());
+    options.componentToCentreAround = this;
+    options.useNativeTitleBar = true;
+    auto* dialog = options.create();
+    dialog->enterModalState (true, juce::ModalCallbackFunction::create (
+        [owner = juce::Component::SafePointer<CustomScaleEditor> (this), selector, index] (int)
+        {
+            if (! owner) return;
+            const auto colour = selector->getCurrentColour().withAlpha (1.0f).getARGB();
+            if (index < 0) owner->unisonColour_ = colour;
+            else owner->geometry_.degrees()[static_cast<size_t> (index)].colour = colour;
+            owner->repaint();
+        }), true);
+}
+
 void CustomScaleEditor::configureUi()
 {
     const auto configureLabel = [this] (juce::Label& label,
@@ -168,6 +202,8 @@ void CustomScaleEditor::configureUi()
     infoLabel_.setJustificationType (juce::Justification::centred);
     addAndMakeVisible (infoLabel_);
 
+    addAndMakeVisible (colourButton_);
+    colourButton_.onClick = [this] { chooseColour(); };
     saveButton_.onClick = [this] { onSave(); };
     addAndMakeVisible (saveButton_);
 
@@ -208,9 +244,9 @@ void CustomScaleEditor::paint (juce::Graphics& g)
     {
         const float x1 = xFromPhase (boundaries[i]);
         const float x2 = xFromPhase (boundaries[i + 1]);
-        if ((i % 2u) == 0u)
+        if (i == 0 || geometry_.degrees()[i - 1].included)
         {
-            g.setColour (juce::Colour (0x1419A5C8));
+            g.setColour (toneColour (static_cast<int> (i) - 1).withAlpha (0.70f));
             g.fillRect (juce::Rectangle<float> (
                 x1, rail.getY(), juce::jmax (1.0f, x2 - x1), rail.getHeight()));
         }
@@ -352,10 +388,11 @@ void CustomScaleEditor::resized()
     auto buttonRow = bounds.removeFromTop (36);
     const int width = 126;
     const int gap = 16;
-    const int total = width * 2 + gap;
+    const int total = width * 3 + gap * 2;
     const int x = buttonRow.getCentreX() - total / 2;
     backButton_.setBounds (x, buttonRow.getY(), width, 34);
-    saveButton_.setBounds (x + width + gap, buttonRow.getY(), width, 34);
+    colourButton_.setBounds (x + width + gap, buttonRow.getY(), width, 34);
+    saveButton_.setBounds (x + 2 * (width + gap), buttonRow.getY(), width, 34);
 }
 
 void CustomScaleEditor::mouseDown (const juce::MouseEvent& event)
@@ -603,8 +640,13 @@ void CustomScaleEditor::onSave()
         return;
     }
 
+    neumaton::scalecolours::Palette colours { toneColour (-1).getARGB() };
+    for (size_t i = 0; i < geometry_.degrees().size(); ++i)
+        if (geometry_.degrees()[i].included)
+            colours.push_back (toneColour (static_cast<int> (i)).getARGB());
+
     const bool success = processorRef.getCustomPresets().addPreset (
-        name, ratios, equaveRatio_);
+        name, ratios, equaveRatio_, {}, {}, colours);
 
     if (! success)
     {
@@ -615,6 +657,15 @@ void CustomScaleEditor::onSave()
         return;
     }
 
+    const auto scales = processorRef.getCustomPresets().toValueTree();
+    const auto saved = scales.getChild (scales.getNumChildren() - 1);
+    if (! processorRef.getCommunityPackLibrary().storeScale (saved["stableId"].toString(), saved))
+    {
+        processorRef.getCustomPresets().removePreset (scales.getNumChildren() - 1);
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
+            "Scale could not be saved", "Check that the user library is writable and try again.");
+        return;
+    }
     processorRef.refreshScaleSnapshot();
     juce::AlertWindow::showMessageBoxAsync (
         juce::MessageBoxIconType::InfoIcon,
@@ -637,6 +688,7 @@ void CustomScaleEditor::selectDegree (int index)
 
 void CustomScaleEditor::refreshSelectedControls()
 {
+    colourButton_.setButtonText (selectedDegree_ < 0 ? "Unison colour..." : "Tone colour...");
     const bool valid = selectedDegree_ >= 0
         && selectedDegree_ < static_cast<int> (geometry_.degrees().size());
 

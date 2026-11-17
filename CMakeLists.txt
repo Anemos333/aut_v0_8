@@ -150,6 +150,7 @@ if(NEUMATON_BUILD_V1_TESTS)
     )
     add_executable(ScaleDegreeDisplayTest
         Tests/ScaleDegreeDisplayTest.cpp
+        Source/PitchCore.cpp
     )
     add_executable(ScaleEditorGeometryTest
         Tests/ScaleEditorGeometryTest.cpp

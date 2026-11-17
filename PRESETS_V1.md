@@ -52,8 +52,8 @@ settings of the factory slot. The menu shows **Custom** when those values differ
 from the last selected factory preset, including fresh default settings and
 modified presets. Scale/centre/A4 and retired controls do not affect that label.
 
-New community preset captures store only the six active APVTS controls
-(`speed`, `amount`, `humanize`, `analogMode`, `outVolume`, `tuningReferenceHz`)
+New community preset captures store only the eight active APVTS controls
+(`speed`, `amount`, `humanize`, `analogMode`, `outVolume`, `tuningReferenceHz`, `boundaryStability`, `outputDrive`)
 plus the existing Mode and tonal centre metadata. Old pack Values trees preserve
 all their properties during serialization, so their integrity hashes remain
 valid; applying a preset ignores retired properties. Existing user packs are not

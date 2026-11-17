@@ -67,10 +67,50 @@ private:
     juce::Image bgImage;
     juce::Image bgImageScaleEditor;
 
-    juce::ComboBox presetSelector;
+    struct LibraryMenu : juce::ComboBox
+    {
+        std::function<void()> refresh;
+        neumaton::scalecolours::Palette swatches;
+        void paintOverChildren (juce::Graphics& g) override
+        {
+            if (swatches.empty()) return;
+            const auto area = getLocalBounds().reduced (4, 2).toFloat();
+            const float step = area.getWidth() / static_cast<float> (swatches.size());
+            for (size_t i = 0; i < swatches.size(); ++i)
+            {
+                g.setColour (juce::Colour (swatches[i]));
+                g.fillRect (area.getX() + static_cast<float> (i) * step, area.getBottom() - 3.0f,
+                            step, 3.0f);
+            }
+        }
+        void showPopup() override
+        {
+            if (refresh) refresh();
+            juce::ComboBox::showPopup();
+        }
+    };
+
+    struct LibraryItem
+    {
+        juce::ValueTree entry;
+        neumaton::sharing::PackDocument pack;
+    };
+
+    LibraryMenu presetSelector;
+    std::vector<LibraryItem> presetItems, scaleItems;
+    juce::String recalledEntryId, recalledPackId, recalledScaleId;
+    neumaton::community::CommunityPreset recalledValues;
+    int recalledMenuId = 0;
+    std::unique_ptr<juce::FileChooser> packFolderChooser;
+    std::string cachedFactoryId;
+    neumaton::scalecolours::Palette cachedFactoryColours;
+    juce::Component::SafePointer<juce::DialogWindow> packWindow;
+    void openPackComposer();
+    void promptSavePreset();
+    void choosePackFolder();
     juce::Label presetSelectorLabel;
 
-    juce::ComboBox scaleSelector;
+    LibraryMenu scaleSelector;
     juce::Label scaleSelectorLabel;
 
     // V1 musical placement model: the centre/anchor is separate from A4 tuning.
