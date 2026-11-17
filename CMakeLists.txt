@@ -28,6 +28,13 @@ juce_add_binary_data(BinaryData
         Resources/sfondo3.jpeg
 )
 
+# Keep Linux/Windows VST3-only. On macOS produce both VST3 and Audio Unit
+# from the same universal x86_64 + arm64 build configuration.
+set(NEUMATON_MAC_FORMATS)
+if(APPLE)
+    list(APPEND NEUMATON_MAC_FORMATS AU)
+endif()
+
 juce_add_plugin(Neumaton
     COMPANY_NAME "ERGASTIRION"
     IS_SYNTH FALSE
@@ -38,7 +45,7 @@ juce_add_plugin(Neumaton
     PLUGIN_MANUFACTURER_CODE Nina
     PRODUCT_STATUS COMMERCIAL
     PLUGIN_CODE Matv
-    FORMATS VST3
+    FORMATS VST3 ${NEUMATON_MAC_FORMATS}
     PRODUCT_NAME "Neumaton"
 )
 
