@@ -64,6 +64,23 @@ int main()
     ok &= check(static_cast<int>(visibleIds.size()) == visibleCount,
                 "visible_scale_ids_are_unique");
 
+    // Only display names change; existing stable IDs and pitches must survive.
+    const auto hasName = [] (const char* stableId, const char* expected)
+    {
+        const auto* scale = ScaleDefinitions::findScaleByStableId(stableId);
+        return scale != nullptr && scale->name == expected;
+    };
+    ok &= check(hasName("scale_0002", "Aeolian / Natural Minor")
+                && hasName("scale_0010", "Neapolitan Minor")
+                && hasName("scale_0027", "Hirajōshi (common 12-TET realization)")
+                && hasName("scale_0048", "Meantone (1/4 syntonic comma)")
+                && hasName("scale_0067", "Ptolemy – Soft Chromatic")
+                && hasName("scale_0078", "Byzantine – Hard Chromatic")
+                && hasName("scale_0083", "Maqam Rast – 24-EDO mapping")
+                && hasName("scale_0107", "Twelve lǜ – sanfen sunyi cycle")
+                && hasName("scale_0111", "Salendro TBN – ensemble measurement"),
+                "factory_display_names_are_english");
+
     const int defaultIndex = ScaleDefinitions::findScaleIndexByStableId(
         ScaleDefinitions::defaultScaleStableId);
     ok &= check(defaultIndex == ScaleDefinitions::defaultFactoryScaleIndex,

@@ -152,12 +152,12 @@ std::vector<ScaleInfo> ScaleDefinitions::buildScales()
         }
         std::sort (pythagorean.begin(), pythagorean.end());
         result.push_back (makeHiddenLegacyScale (
-            "legacy.scale.pythagorean-12", "Pitagorica (legacy 12-note)",
+            "legacy.scale.pythagorean-12", "Pythagorean (legacy 12-note)",
             std::move (pythagorean)));
     }
 
     result.push_back (makeHiddenLegacyScale (
-        "legacy.scale.ptolemaic-v0", "Tolemaica (legacy)",
+        "legacy.scale.ptolemaic-v0", "Ptolemaic (legacy)",
         { 1.0, 9.0 / 8.0, 5.0 / 4.0, 4.0 / 3.0,
           3.0 / 2.0, 5.0 / 3.0, 15.0 / 8.0 }));
 
